@@ -200,8 +200,8 @@ type Config struct {
 	// ServiceTimeout bounds the wait for the services' health checks
 	// (DefaultServiceTimeout when 0).
 	ServiceTimeout time.Duration
-	// Stores are the node's package store and cache every session
-	// installs against (ADR 017 §3).
+	// Stores are the package store and cache every session installs
+	// against (ADR 017 §3): the node's, or one org's (WithStores).
 	Stores Stores
 }
 
@@ -703,6 +703,22 @@ func (s *Session) Pods() []Pod {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]Pod(nil), s.pods...)
+}
+
+// WithStores is sb for sessions that install against st in place of
+// the node's Stores: the same runtime, image, limits, network and
+// TempDir, its sessions mounting st's dirs and naming them in their env
+// (Session.Mounts, Session.Env). A node serving several orgs opens each
+// org's sessions on its own org's store (mesh-cli ADR-034), so no
+// session mounts or names another org's pnpm store or npm cache. A nil
+// sb is nil.
+func (sb *Sandbox) WithStores(st Stores) *Sandbox {
+	if sb == nil {
+		return nil
+	}
+	c := *sb
+	c.Config.Stores = st
+	return &c
 }
 
 // Reattach is the session an earlier node process detached: its pod and

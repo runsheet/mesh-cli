@@ -37,6 +37,11 @@ type WorkspaceSpec struct {
 	// place RebuildWorktree looks when neither the shared clone's
 	// refs/heads/<branch> nor origin/<branch> is there.
 	Head string
+	// Repos, when set, is the repos root of the item's org (OrgRoots.Repos,
+	// ADR-034): the shared clone a new checkout is a worktree of is
+	// <Repos>/<owner>/<name>, whatever Git.ReposRoot says, so org A's
+	// worktree is never added from org B's clone.
+	Repos string
 }
 
 // Dir is the workspace directory.
@@ -305,7 +310,14 @@ func (g *Git) sharedClone(spec WorkspaceSpec) string {
 	if spec.Path != "" || spec.Branch == "" || spec.Repo == "" || spec.Seq == 0 || spec.Branch == spec.BaseRef {
 		return ""
 	}
-	reposRoot := g.ReposRoot
+	reposRoot := spec.Repos
+	if reposRoot == "" && spec.Root != "" {
+		// an org's work root names its own repos root (ADR-034)
+		reposRoot = orgReposRootOf(spec.Dir())
+	}
+	if reposRoot == "" {
+		reposRoot = g.ReposRoot
+	}
 	if reposRoot == "" {
 		if spec.Root == "" {
 			return ""
@@ -599,11 +611,15 @@ func registeredDir(admin string) (string, bool) {
 	return filepath.Dir(filepath.Clean(strings.TrimSpace(string(b)))), true
 }
 
-// reposRootFor is the repos root dir's shared clone lives under:
-// ReposRoot when set, else "repos" beside dir's work root (its
-// grandparent's parent: ~/.mesh/repos for ~/.mesh/work/<goal>/<seq>), as
-// sharedClone derives it from a spec's Root.
+// reposRootFor is the repos root dir's shared clone lives under: its
+// org's (~/.mesh/orgs/<org>/repos for ~/.mesh/orgs/<org>/work/<goal>/<seq>,
+// ADR-034), else ReposRoot when set, else "repos" beside dir's work root
+// (its grandparent's parent: ~/.mesh/repos for ~/.mesh/work/<goal>/<seq>),
+// as sharedClone derives it from a spec's Root.
 func (g *Git) reposRootFor(dir string) string {
+	if r := orgReposRootOf(dir); r != "" {
+		return r
+	}
 	if g.ReposRoot != "" {
 		return g.ReposRoot
 	}
