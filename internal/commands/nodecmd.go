@@ -2038,7 +2038,7 @@ func codexSecondOpinionFrom(src codexSource, loop *node.Loop, workRoot string, l
 	if !src.Built() {
 		return secondOpinion{blind: &node.OncePer{}, noVerdict: &node.OncePer{}, left: &node.LeftRunning{}}
 	}
-	c := &harness.Codex{Binary: src.Binary, Sandbox: src.Sandbox, Stderr: sessionsOut, WorkRoot: workRoot, Tokens: tokenKeeper()}
+	c := &harness.Codex{Binary: src.Binary, Sandbox: src.Sandbox, DetachSandboxed: src.Sandbox != nil, Stderr: sessionsOut, WorkRoot: workRoot, Tokens: tokenKeeper()}
 	if c.Binary == "" {
 		c.Binary = "codex"
 	}

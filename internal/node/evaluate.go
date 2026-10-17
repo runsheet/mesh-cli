@@ -386,7 +386,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		job = base
 		job.Env = slices.Clone(base.Env)
 		model, job.Model = fam.model, fam.model
-		job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts, TempDirs: sessionTempDirs(job, acct)}
+		job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts, TempDirs: sessionTempDirs(job, acct), LoginCache: acct.loginCache()}
 		// the second opinion's job: the same brief, none of the first
 		// session's account and none of the pod's services (Codex runs on
 		// the host; a Claude second opinion opens its own account)
@@ -451,12 +451,12 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		e.logf("item %s: evaluate on %s: %s (%d bytes of diff)", label, fam.logName(), branch, len(diff))
 	}
 	h := e.Harness
+	// the session outlives this process: a restart adopts it (ADR 009) —
+	// a Codex one in its pod on a sandboxed node, by its state's adapter
+	// (AdoptEvaluation); Codex on the host still ends with the node
+	job.Outlive = !fam.codex || e.Sandbox != nil
 	if fam.codex {
-		// a Codex session still ends with the node
 		h = e.Codex
-	} else {
-		// the session outlives this process: a restart adopts it (ADR 009)
-		job.Outlive = true
 	}
 	result, err := h.Run(ctx, job, nil)
 	// the usage report rides the verdict (afterEvaluate); Finish logs it
@@ -937,7 +937,14 @@ func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, 
 	if err != nil {
 		return fmt.Errorf("resolve: %w", err)
 	}
-	at, ok := e.Harness.(harness.Attacher)
+	// the harness the session ran on, by its state's adapter: a Codex
+	// pod session's stream is Codex's (ADR 009)
+	h, fam := e.Harness, family{model: s.State.Model, claude: s.State.Model}
+	if s.State.Harness == AdapterCodex {
+		h = e.Codex
+		fam = family{codex: true, model: s.State.Model, claude: EvaluateModel(ctx, e.GW, item, e.Model), priority: res.Goal.Priority}
+	}
+	at, ok := h.(harness.Attacher)
 	if !ok {
 		stopFound(e.logf, "item "+item.ID, s)
 		s.Remove()
@@ -945,10 +952,10 @@ func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, 
 	}
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
 	ctx = WithLockHolder(ctx, label)
-	e.logf("item %s: adopted its %s evaluation (pid %d)", label, s.Liveness(), s.State.PID)
+	e.logf("item %s: adopted its %s evaluation on %s (pid %d)", label, s.Liveness(), fam.logName(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
 	changed, cfg := e.touched(ctx, label, s.State.Workspace, res.BaseRef(), defaultBranchOf(res), item.Outcome == gateway.OutcomeAlreadyDone)
-	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: s.State.Model, fam: family{model: s.State.Model, claude: s.State.Model}, dir: s.State.Workspace, adopted: true, prior: e.priorAttempts(ctx, item, label), changed: changed, setting: cfg.setting(), protected: cfg.ProtectedPaths}, result, err)
+	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: s.State.Model, fam: fam, dir: s.State.Workspace, adopted: true, prior: e.priorAttempts(ctx, item, label), changed: changed, setting: cfg.setting(), protected: cfg.ProtectedPaths}, result, err)
 }
 
 // opinion is the second evaluation's outcome: its verdict and notes, or
