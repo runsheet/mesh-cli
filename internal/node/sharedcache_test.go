@@ -268,8 +268,8 @@ func TestSharedCacheEvictsLeastRecentlyUsedToFit(t *testing.T) {
 	if _, err := os.Stat(c.treePath(newTree.SHA)); err != nil {
 		t.Fatal("recent tree evicted")
 	}
-	if len(logs) != 0 {
-		t.Fatalf("logged %v under the cap", logs)
+	if len(logs) != 1 || !strings.HasPrefix(logs[0], "cache: evicted 3 least recently used entries (") || strings.Contains(logs[0], "over cap") {
+		t.Fatalf("logs %q, want the one eviction line and no finding", logs)
 	}
 }
 
