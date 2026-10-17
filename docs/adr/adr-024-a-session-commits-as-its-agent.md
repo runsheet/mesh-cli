@@ -1,5 +1,5 @@
 ---
-summary: A build or rebase session commits as `Mesh <role> (<slug>) <mesh-<role>+<slug>@runsheet.dev>`, author and committer, with one Co-Authored-By per paired person added by a node-written hook — never as the node's owner.
+summary: A build or rebase session commits as `Mesh <role> (<slug>) <mesh-<role>+<slug>@runsheet.dev>`, author and committer, with one Co-Authored-By per paired person added by a node-written hook that also drops any Claude trailer, its Claude Code settings hiding Claude's own attribution — never as the node's owner, never with a Claude trailer (amended 2026-10-15).
 status: accepted
 ---
 
@@ -72,3 +72,52 @@ its owner's, whichever role made it and whoever was paired with it.
   a real checkout (`TestBuildCommitsAsTheAgentWithThePairer`,
   `TestNoSessionCommitsAsTheOwner`); `internal/sandbox`'s
   `TestOpenWritesTheAgentIdentity`.
+
+## Amendment 2026-10-15: no Claude trailer
+
+Goal `a-sessions-commit-carries-no-claude-trailer`. Commits on runsheet
+still carried `Co-Authored-By: Claude … <noreply@anthropic.com>`: Claude
+Code adds its own attribution unless its settings say not to, and a
+model types the trailer from habit. The pairer's trailer is meant to be
+a commit's only Co-Authored-By; two layers now make it so.
+
+- **The session's settings hide Claude's attribution** (item 1).
+  Every Claude Code session — host or sandbox, every role — is started
+  with `--settings`, the job's `Settings` merged by
+  `harness.SessionSettings` with `"attribution":
+  harness.NoAttributionSettings()`, that is `{"commit": "", "pr": "",
+  "sessionUrl": false}` (`internal/harness/claudecode.go`): no commit
+  trailer, no `Generated with Claude Code` PR text, no session link.
+  The empty-string form, per Claude Code's settings reference
+  (code.claude.com/docs/en/settings-reference, "Git and attribution"),
+  because `attribution: false` is taken only by CLI v2.1.281+ and an
+  older one rejects the whole settings, the tool-trim hook with them;
+  `includeCoAuthoredBy` is deprecated and ignored once `attribution` is
+  set. A job with no `Settings` still gets `--settings`.
+- **The hook drops a Claude trailer.** `prepareCommitMsg` first removes
+  every line matching `claudeTrailer`,
+  `^co-authored-by:[[:space:]]*claude.*<noreply@anthropic\.com>[[:space:]]*$`
+  read case-insensitively (`grep -v -i -E`; GitHub's squash merges write
+  `Co-authored-by:`), in POSIX sh and grep alone, since it runs in the
+  pod's image too; then adds the pairers' trailers as before. A pairer's
+  trailer stays — one named Claude too, whose email is not Anthropic's
+  noreply. git runs prepare-commit-msg for `git commit -m` and
+  `--no-verify` alike, and for the node's own `Git.Commit` in an
+  identified checkout.
+- **A rebase.** git's sequencer runs prepare-commit-msg (source
+  `message`) for every commit it re-creates, so a rebase session's picks
+  pass the same hook: a picked commit carrying a Claude trailer loses
+  it, the pairer's is added, and a rebase never adds a Claude trailer. A
+  pick git fast-forwards (the commit already on its new base) is not
+  re-created and keeps its message as it was.
+- Tests: `TestNilSettingsStillCarryNoAttribution`
+  (`internal/harness/attribution_test.go`);
+  `TestSessionSettingsCarryNoCoAuthor`,
+  `TestPullRequestBodyCarriesNoClaudeAttribution`
+  (`internal/node/attribution_test.go`);
+  `TestBuildCommitDropsClaudeCoAuthorTrailer`,
+  `TestBuildCommitKeepsPairerTrailerBesideDroppedClaude`,
+  `TestBuildSessionCommitCarriesNoCoAuthorClaude`,
+  `TestNodeCommitDropsClaudeCoAuthorTrailer`,
+  `TestRebaseDropsClaudeCoAuthorTrailer`
+  (`internal/node/identity_test.go`).

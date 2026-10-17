@@ -141,6 +141,67 @@ func TestMcpDoctorUnparseableIsLeftAlone(t *testing.T) {
 	}
 }
 
+func TestMcpDoctorDuplicateRunsheetEntryNamesBoth(t *testing.T) {
+	home := installHome(t, ".cursor")
+	path := filepath.Join(home, ".cursor", "mcp.json")
+	if err := os.WriteFile(path, []byte(`{"mcpServers": {
+		"runsheet": {"command": "/usr/local/bin/mesh", "args": ["mcp"]},
+		"mesh": {"command": "/usr/local/bin/mesh", "args": ["mcp"]}
+	}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := doctor(t, false, false)
+	want := "cursor: duplicate runsheet entries: runsheet, mesh (" + path + "); run mesh mcp install"
+	if !strings.Contains(out, want) {
+		t.Fatalf("doctor:\n%s\nwant line %q", out, want)
+	}
+	got := doctorJSON(t, false)
+	if got["cursor"].Status != mcpinstall.Duplicate || len(got["cursor"].Duplicates) != 1 || got["cursor"].Duplicates[0] != "mesh" {
+		t.Fatalf("doctor --json = %+v, want duplicate naming mesh", got["cursor"])
+	}
+}
+
+func TestMcpDoctorLegacyEntryAloneNamesIt(t *testing.T) {
+	home := installHome(t, ".cursor")
+	path := filepath.Join(home, ".cursor", "mcp.json")
+	if err := os.WriteFile(path, []byte(`{"mcpServers": {"mesh-context": {"url": "https://api.runsheet.dev/mcp"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := doctor(t, false, false)
+	want := "cursor: legacy entry mesh-context (" + path + "); run mesh mcp install"
+	if !strings.Contains(out, want) {
+		t.Fatalf("doctor:\n%s\nwant line %q", out, want)
+	}
+	got := doctorJSON(t, false)
+	if got["cursor"].Status != mcpinstall.Legacy || len(got["cursor"].Duplicates) != 1 || got["cursor"].Duplicates[0] != "mesh-context" {
+		t.Fatalf("doctor --json = %+v, want legacy naming mesh-context", got["cursor"])
+	}
+}
+
+func TestMcpDoctorUnrelatedMeshEntryPointingElsewhereIsNotReported(t *testing.T) {
+	home := installHome(t, ".cursor")
+	path := filepath.Join(home, ".cursor", "mcp.json")
+	if err := os.WriteFile(path, []byte(`{"mcpServers": {
+		"runsheet": {"command": "/usr/local/bin/mesh", "args": ["mcp"]},
+		"mesh": {"command": "/usr/local/bin/other-tool"}
+	}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// cursor's instructions are not installed here, so the command still
+	// exits 1 for those alone; what matters is the entry's own status.
+	out := doctor(t, false, false)
+	if strings.Contains(out, "duplicate") {
+		t.Fatalf("doctor reports an unrelated mesh entry as a duplicate:\n%s", out)
+	}
+	got := doctorJSON(t, false)
+	if got["cursor"].Status != mcpinstall.Configured || len(got["cursor"].Duplicates) != 0 {
+		t.Fatalf("doctor --json = %+v, want configured with no duplicates", got["cursor"])
+	}
+}
+
 func TestMcpDoctorNoClient(t *testing.T) {
 	installHome(t)
 	if out := doctor(t, false, true); out != "no client found\n" {

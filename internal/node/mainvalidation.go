@@ -367,7 +367,9 @@ func (g *Git) addDetachedWorktree(ctx context.Context, repo, dir, branch, sha st
 		return err
 	}
 	defer unlock()
-	if _, err := g.run(ctx, clone, "git", "worktree", "prune"); err != nil {
+	// only dir's own stale registration goes: a blanket prune would take
+	// a live item's worktree a pod's mounts had hidden (forgetStaleRegistrations)
+	if err := forgetStaleRegistrations(clone, dir, ""); err != nil {
 		return err
 	}
 	_, err = g.run(ctx, clone, "git", "worktree", "add", "--quiet", "--detach", dir, sha)

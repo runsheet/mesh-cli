@@ -37,7 +37,7 @@ type Evaluator struct {
 	Cfg      *Config
 	Scopes   Scopes
 	WorkRoot string
-	// MCP are the MCP servers the session gets (mesh-context).
+	// MCP are the MCP servers the session gets (runsheet).
 	MCP map[string]any
 	// MaxBudgetUSD caps the review session (3 by default).
 	MaxBudgetUSD float64
@@ -240,6 +240,8 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	// a checkout of its own, never the build's: its Authorize must not
 	// rewrite the credential helper the build's push reads
 	spec := EvalWorkspaceSpec(e.WorkRoot, res.Goal.Slug, item.Seq, res.Repo.FullName(), branch, res.BaseRef())
+	// live on this node while this runs: no cleanup touches it (HoldWorkspace)
+	defer HoldWorkspace(spec.Dir())()
 	// the item's own GitHub token, as its builder had
 	cred, err := NewItemCred(ctx, e.GW, e.WS, e.Scopes, item, spec, e.Fallback, e.logf)
 	if we := WorkspaceErrorOf(err); we != nil {
@@ -351,7 +353,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		second = job
 		second.Env = slices.Clone(job.Env)
 		acct.Apply(&job)
-		// the evaluator's tools, beside the built-in mesh-context. An item in
+		// the evaluator's tools, beside the built-in runsheet. An item in
 		// evaluating cannot be released (the platform releases a claimed or
 		// running one): a required tool this node cannot start leaves it
 		// unevaluated, and the loop does not try again while that holds.
@@ -1115,8 +1117,8 @@ func (e *Evaluator) toolBroken(res harness.Result, acct *SessionAccount, adopted
 	// the node's own servers and, for an adopted session, the built-in
 	// under any name it has had: an evaluation an older node started
 	// under its old name reports that name, not tools.Builtin
-	// (tools.IsBuiltin, an alias read until 2026-10-28). A session this
-	// process started was rendered mesh-context, so a server by the old
+	// (tools.IsBuiltin: mesh-context, or the name before it). A session this
+	// process started was rendered runsheet, so a server by the old
 	// name in its result is a console tool: broken only if required, below.
 	names := map[string]bool{}
 	for name := range e.MCP {

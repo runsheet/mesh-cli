@@ -53,3 +53,30 @@ func GitCommonDir(workspace string) (string, error) {
 	}
 	return resolved, nil
 }
+
+// GitDir is the absolute, symlink-resolved git directory of the checkout
+// at workspace — what `git rev-parse --absolute-git-dir` answers there:
+// for a worktree its own admin entry, `<common>/worktrees/<id>`, which
+// holds its HEAD, index and logs.
+func GitDir(workspace string) (string, error) {
+	abs, err := filepath.Abs(workspace)
+	if err != nil {
+		return "", fmt.Errorf("git dir of %s: %w", workspace, err)
+	}
+	cmd := exec.Command("git", "-C", abs, "rev-parse", "--absolute-git-dir")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git dir of %s: git rev-parse: %w: %s", abs, err, strings.TrimSpace(stderr.String()))
+	}
+	dir := strings.TrimSpace(string(out))
+	if dir == "" {
+		return "", fmt.Errorf("git dir of %s: git rev-parse answered nothing", abs)
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", fmt.Errorf("git dir of %s: %w", abs, err)
+	}
+	return resolved, nil
+}

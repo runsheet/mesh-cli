@@ -3,6 +3,8 @@ package harness
 import (
 	"strings"
 	"testing"
+
+	"projectmesh.io/mesh-cli/internal/tools"
 )
 
 func TestPlanPromptAcceptanceTheEvaluatorCanSee(t *testing.T) {
@@ -290,7 +292,7 @@ func TestParsePlanQuestions(t *testing.T) {
 // The planner chooses each item's model by the rubric, and the graph is
 // still the last thing it writes.
 // A research session served Brave and Perplexity is told, beside
-// mesh-context, when to reach for them — a source for a Scout note or a
+// runsheet, when to reach for them — a source for a Scout note or a
 // pitch's evidence — and cites what it found; with no tools served, no
 // section at all (goal the-director-and-the-planner-get-their-tools).
 func TestResearchPromptNamesItsTools(t *testing.T) {
@@ -340,7 +342,7 @@ func TestPlanPromptModelRubric(t *testing.T) {
 	}
 	// the JSON example, the fallback contract, is followed only by the
 	// tool-call finish (ADR-023)
-	if !strings.Contains(p, "\"model\": \"sonnet\", \"model_reason\": \"…\", \"files\": [\"…\"], \"writes_shared_docs\": true}], \"questions\": []}\n```\n\n# Finish by tool call\n\nEnd the session by calling the mesh-context server's `mesh_plan` tool") {
+	if !strings.Contains(p, "\"model\": \"sonnet\", \"model_reason\": \"…\", \"files\": [\"…\"], \"writes_shared_docs\": true}], \"questions\": []}\n```\n\n# Finish by tool call\n\nEnd the session by calling the runsheet server's `mesh_plan` tool") {
 		t.Error("the plan prompt no longer ends with the JSON example and the mesh_plan finish")
 	}
 }
@@ -437,8 +439,8 @@ func TestEvaluatePromptUnverifiableClause(t *testing.T) {
 	}
 }
 
-// A session with mesh-context's tools is told to use mesh_document and
-// mesh_search, not the prologue_* names — in both shapes of the
+// A session with runsheet's tools is told to use mesh_document and
+// mesh_search, not the alias's <alias>_* names (tools.BuiltinAlias) — in both shapes of the
 // evaluator's context section (with and without a ContextDir).
 func TestEvaluatePromptContextTools(t *testing.T) {
 	withDir := EvaluatePrompt(EvaluateInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main",
@@ -454,14 +456,14 @@ func TestEvaluatePromptContextTools(t *testing.T) {
 				t.Errorf("evaluate prompt lacks %q:\n%s", want, p)
 			}
 		}
-		if strings.Contains(p, "prologue_") {
-			t.Errorf("evaluate prompt still names a prologue_ tool:\n%s", p)
+		if strings.Contains(p, tools.BuiltinAlias()+"_") {
+			t.Errorf("evaluate prompt still names a %s_ tool:\n%s", tools.BuiltinAlias(), p)
 		}
 	}
 }
 
 // The planner is told to use mesh_document and mesh_search when the
-// session has mesh-context's tools.
+// session has runsheet's tools.
 func TestPlanPromptContextTools(t *testing.T) {
 	p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", ContextDir: ".mesh/context", MeshContext: true})
 	for _, want := range []string{"mesh_document", "mesh_search"} {
@@ -469,8 +471,8 @@ func TestPlanPromptContextTools(t *testing.T) {
 			t.Errorf("plan prompt lacks %q:\n%s", want, p)
 		}
 	}
-	if strings.Contains(p, "prologue_") {
-		t.Errorf("plan prompt still names a prologue_ tool:\n%s", p)
+	if strings.Contains(p, tools.BuiltinAlias()+"_") {
+		t.Errorf("plan prompt still names a %s_ tool:\n%s", tools.BuiltinAlias(), p)
 	}
 }
 
@@ -588,7 +590,7 @@ func TestPromptsCarryTheServicesLine(t *testing.T) {
 	if want := "The diff is empty: the branch changed nothing.\n\n# Services\n\n" + line + "\n\n# Rules\n\n1. Judge"; !strings.Contains(eval, want) {
 		t.Errorf("evaluate prompt lacks\n%s\n---\n%s", want, eval)
 	}
-	if !strings.Contains(eval, "Pass only when every clause of the acceptance you can check holds.\n\n# Finish by tool call\n\nEnd the session by calling the mesh-context server's `mesh_verdict` tool") || !strings.Contains(eval, "`"+VerdictPass+"` or `"+VerdictFail+"`") {
+	if !strings.Contains(eval, "Pass only when every clause of the acceptance you can check holds.\n\n# Finish by tool call\n\nEnd the session by calling the runsheet server's `mesh_verdict` tool") || !strings.Contains(eval, "`"+VerdictPass+"` or `"+VerdictFail+"`") {
 		t.Error("the verdict contract line moved")
 	}
 	rebase := RebasePrompt(RebaseInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main", Services: line})
@@ -606,7 +608,7 @@ func TestPromptsCarryTheServicesLine(t *testing.T) {
 	}
 }
 
-// Every prompt that carries mesh-context's tools tells the session to
+// Every prompt that carries runsheet's tools tells the session to
 // search before it reads, and none claims the index lists every
 // document — the inverted default (goal
 // context-is-fetched-not-shipped): the context directory holds only
@@ -644,9 +646,9 @@ func TestPlanPromptFetchList(t *testing.T) {
 	}
 }
 
-// Every prompt given the built-in server names it mesh-context and
+// Every prompt given the built-in server names it runsheet and
 // never sends the session to its old tool prefix (goal
-// builtin-is-mesh-context).
+// builtin-is-runsheet).
 func TestPromptsNameMeshContext(t *testing.T) {
 	prompts := map[string]string{
 		"build":    BuildPrompt(PromptInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Brief: "do it", Repo: "o/r", Branch: "b", BaseRef: "main", ContextDir: ".mesh/context", Project: "acme/mesh", MeshContext: true}),
@@ -656,11 +658,11 @@ func TestPromptsNameMeshContext(t *testing.T) {
 		"rebase":   RebasePrompt(RebaseInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main", ContextDir: ".mesh/context", Project: "acme/mesh", MeshContext: true}),
 	}
 	for name, p := range prompts {
-		if !strings.Contains(p, "mesh-context") {
-			t.Errorf("%s prompt does not name mesh-context:\n%s", name, p)
+		if !strings.Contains(p, "runsheet") {
+			t.Errorf("%s prompt does not name runsheet:\n%s", name, p)
 		}
-		if strings.Contains(p, "mcp__prologue__") {
-			t.Errorf("%s prompt still names mcp__prologue__:\n%s", name, p)
+		if strings.Contains(p, "mcp__"+tools.BuiltinAlias()+"__") {
+			t.Errorf("%s prompt still names mcp__%s__:\n%s", name, tools.BuiltinAlias(), p)
 		}
 	}
 }

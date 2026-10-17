@@ -72,7 +72,7 @@ type Job struct {
 	// runs out is killed and Run returns context.DeadlineExceeded.
 	Timeout time.Duration
 	// MCPServers are MCP servers the session gets (name → config, the
-	// shape of an mcp.json's mcpServers): mesh-context, for context on
+	// shape of an mcp.json's mcpServers): runsheet, for context on
 	// demand.
 	MCPServers map[string]any
 	// Settings are Claude Code settings for this session alone (the
@@ -103,7 +103,7 @@ type Job struct {
 	// the work dir (sessionunit.State) so a later node process can adopt
 	// it. Optional: a job without it still runs, its state file thinner.
 	Meta SessionMeta
-	// tokenFile is the session's mesh-context token file once the
+	// tokenFile is the session's runsheet token file once the
 	// harness placed it (placeMeshContext), for its state.json.
 	tokenFile string
 	// Outlive makes the session outlast the node process (mesh-cli ADR
@@ -249,8 +249,8 @@ type Result struct {
 	// server. See ToolReport.
 	Tools map[string]*ToolStat
 	// ToolNames is the session's MCP calls per <server>__<tool> (e.g.
-	// mesh-context__mesh_document), the prologue alias folded into
-	// mesh-context (tools.IsBuiltin) — finer than Tools' per-server
+	// runsheet__mesh_document), the built-in's old names folded into
+	// runsheet (tools.IsBuiltin) — finer than Tools' per-server
 	// totals (goal context-is-fetched-not-shipped). Nil when the
 	// session made no MCP call.
 	ToolNames map[string]int
@@ -334,7 +334,7 @@ type ToolStat struct {
 // Result.LargestToolResults.
 type ToolResultSize struct {
 	// Tool is the tool_use block's own name (e.g. "Bash" or
-	// "mcp__mesh-context__mesh_document"), not just its MCP server.
+	// "mcp__runsheet__mesh_document"), not just its MCP server.
 	Tool  string
 	Bytes int
 }
@@ -412,7 +412,7 @@ func (r *Result) toolStat(server string) *ToolStat {
 }
 
 // countToolName counts one call to server/tool on ToolNames, keyed
-// <server>__<tool> with the prologue alias folded into mesh-context
+// <server>__<tool> with the built-in's old names folded into runsheet
 // (tools.IsBuiltin), and DocumentsFetched when it is a mesh_document
 // or mesh_search call on the built-in. A tool-less call (server with no tool name) is
 // not counted.

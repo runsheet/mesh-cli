@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"projectmesh.io/mesh-cli/internal/tools"
 )
 
 func TestBuildPrompt(t *testing.T) {
@@ -32,8 +34,8 @@ func TestBuildPrompt(t *testing.T) {
 	}
 }
 
-// A session with mesh-context's tools is told to use mesh_document and
-// mesh_search, not the prologue_* names.
+// A session with runsheet's tools is told to use mesh_document and
+// mesh_search, not the alias's <alias>_* names (tools.BuiltinAlias).
 func TestBuildPromptContextTools(t *testing.T) {
 	p := BuildPrompt(PromptInput{Title: "x", Repo: "acme/widgets", ContextDir: ".mesh/context", Project: "acme/mesh", MeshContext: true})
 	for _, want := range []string{"mesh_document", "mesh_search"} {
@@ -41,8 +43,8 @@ func TestBuildPromptContextTools(t *testing.T) {
 			t.Errorf("build prompt lacks %q:\n%s", want, p)
 		}
 	}
-	if strings.Contains(p, "prologue_") {
-		t.Errorf("build prompt still names a prologue_ tool:\n%s", p)
+	if strings.Contains(p, tools.BuiltinAlias()+"_") {
+		t.Errorf("build prompt still names a %s_ tool:\n%s", tools.BuiltinAlias(), p)
 	}
 }
 
@@ -94,9 +96,9 @@ func TestClaudeCodeArgs(t *testing.T) {
 		}
 	}
 	// with an MCP server: the config inline and its tools allowed
-	with := c.Args(Job{Prompt: "hi", MCPServers: map[string]any{"mesh-context": map[string]any{"type": "http", "url": "https://api.test/mcp"}}})
+	with := c.Args(Job{Prompt: "hi", MCPServers: map[string]any{"runsheet": map[string]any{"type": "http", "url": "https://api.test/mcp"}}})
 	joined := strings.Join(with, "\x00")
-	if !strings.Contains(joined, "--mcp-config\x00{\"mcpServers\":{\"mesh-context\":{\"type\":\"http\",\"url\":\"https://api.test/mcp\"}}}\x00--allowedTools\x00mcp__mesh-context__*\x00--dangerously-skip-permissions") {
+	if !strings.Contains(joined, "--mcp-config\x00{\"mcpServers\":{\"runsheet\":{\"type\":\"http\",\"url\":\"https://api.test/mcp\"}}}\x00--allowedTools\x00mcp__runsheet__*\x00--dangerously-skip-permissions") {
 		t.Fatalf("mcp args: %q", with)
 	}
 }

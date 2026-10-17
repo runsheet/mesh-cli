@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/node"
 	"projectmesh.io/mesh-cli/internal/version"
 )
@@ -96,7 +97,7 @@ func (h *Hosted) endpoint(ctx context.Context) (string, map[string]string, error
 	if err != nil {
 		return "", nil, fmt.Errorf("token: %w", err)
 	}
-	srv, _ := node.MeshContextHTTP(h.BaseURL, tok)["mesh-context"].(map[string]any)
+	srv, _ := node.MeshContextHTTP(h.BaseURL, tok)[harness.BuiltinMCP].(map[string]any)
 	if srv == nil {
 		return "", nil, errors.New("no gateway URL or token")
 	}

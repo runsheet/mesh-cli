@@ -1,0 +1,358 @@
+package node
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"projectmesh.io/mesh-cli/internal/gateway"
+)
+
+// DeadCheckoutIdle is how long a dead checkout must have gone untouched
+// before the quartermaster removes it: a checkout written within the
+// hour may be one a session is still setting up.
+const DeadCheckoutIdle = time.Hour
+
+// deadItemStatuses are the item statuses whose checkouts no session will
+// use again (goal the-quartermaster-keeps-the-nodes-fit, item 3).
+var deadItemStatuses = map[string]bool{
+	"merged": true, "done": true, "already_done": true, "cancelled": true, "superseded": true,
+}
+
+// itemCheckout is one item workspace under the work root: a build's
+// <root>/<goal>/<seq> or an evaluation's <root>/<goal>/<seq>-eval.
+type itemCheckout struct {
+	Dir      string
+	GoalSlug string
+	Seq      int
+	Label    string // <goal>/<seq> or <goal>/<seq>-eval
+}
+
+// DeadCheckoutCheck is the quartermaster's dead-checkout check: every
+// item workspace under root (WorkspaceSpec.Dir's <goal>/<seq> and
+// EvalWorkspaceSpec's <goal>/<seq>-eval) whose item the platform says is
+// merged, done, cancelled or superseded — or does not know — with no
+// session using it (live) and untouched for DeadCheckoutIdle is removed
+// by git.RemoveWorkspace, its bytes counted. A checkout the platform
+// cannot answer for is kept: an outage is not a leak (mesh-cli ADR 008).
+// Every shared clone's prunable worktrees — registered, their directory
+// gone — are counted and pruned. It yields one `dead_checkout` Finding,
+// warn when a dead checkout could not be removed or the platform could
+// not answer.
+func DeadCheckoutCheck(gw Gateway, git *Git, root string, live func(dir string) bool) Check {
+	return func(ctx context.Context, now time.Time) []Finding {
+		return []Finding{deadCheckouts(ctx, gw, git, root, live, now)}
+	}
+}
+
+func deadCheckouts(ctx context.Context, gw Gateway, git *Git, root string, live func(string) bool, now time.Time) Finding {
+	f := Finding{Kind: "dead_checkout", Severity: "ok", Subject: root, At: now}
+	var notes []string
+
+	pruned, pruneErrs := pruneGoneWorktrees(ctx, git, root)
+	notes = append(notes, pruneErrs...)
+
+	items := &checkoutItems{gw: gw}
+	var dead, removed, keptLive, keptRecent, unread int
+	var unreadErr error
+	var failed []string
+	for _, c := range itemCheckouts(root) {
+		status, err := items.status(ctx, c.GoalSlug, c.Seq)
+		if err != nil {
+			unread++
+			if unreadErr == nil {
+				unreadErr = err
+			}
+			continue
+		}
+		if status != "unknown" && !deadItemStatuses[status] {
+			continue
+		}
+		dead++
+		if live != nil && live(c.Dir) {
+			keptLive++
+			continue
+		}
+		if now.Sub(lastTouched(c.Dir)) < DeadCheckoutIdle {
+			keptRecent++
+			continue
+		}
+		size := dirBytes(c.Dir)
+		f.Bytes += size
+		if err := git.RemoveWorkspace(ctx, c.Dir); err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", c.Label, err))
+			continue
+		}
+		removed++
+		f.Reclaimed += size
+	}
+
+	f.Detail = fmt.Sprintf("%d dead found, %d removed, %d bytes reclaimed, %d kept because live", dead, removed, f.Reclaimed, keptLive)
+	if keptRecent > 0 {
+		f.Detail += fmt.Sprintf(", %d kept as touched within %s", keptRecent, DeadCheckoutIdle)
+	}
+	f.Detail += fmt.Sprintf("; %d prunable worktrees pruned", pruned)
+	if unread > 0 {
+		f.Severity = "warn"
+		f.Detail += fmt.Sprintf("; the platform could not answer for %d checkouts, kept: %v", unread, unreadErr)
+	}
+	if len(failed) > 0 {
+		f.Severity = "warn"
+		f.Detail += "; could not remove " + strings.Join(failed, "; ")
+	}
+	if len(notes) > 0 {
+		f.Severity = "warn"
+		f.Detail += "; " + strings.Join(notes, "; ")
+	}
+	return f
+}
+
+// itemCheckouts is every item workspace under root: <goal>/<seq> and
+// <goal>/<seq>-eval with a `.git`, seq at least 1 (the goal doc's
+// <goal>/0, plan and research checkouts and the node's own dirs are not
+// items'), sorted by path.
+func itemCheckouts(root string) []itemCheckout {
+	var out []itemCheckout
+	goals, _ := os.ReadDir(root)
+	for _, g := range goals {
+		if !g.IsDir() || strings.HasPrefix(g.Name(), ".") {
+			continue
+		}
+		subs, _ := os.ReadDir(filepath.Join(root, g.Name()))
+		for _, s := range subs {
+			if !s.IsDir() {
+				continue
+			}
+			seq, ok := checkoutSeq(s.Name())
+			if !ok {
+				continue
+			}
+			dir := filepath.Join(root, g.Name(), s.Name())
+			if _, err := os.Lstat(filepath.Join(dir, ".git")); err != nil {
+				continue
+			}
+			out = append(out, itemCheckout{Dir: dir, GoalSlug: g.Name(), Seq: seq, Label: g.Name() + "/" + s.Name()})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Dir < out[j].Dir })
+	return out
+}
+
+// checkoutSeq reads an item workspace's directory name, <seq> or
+// <seq>-eval, as its seq; ok false for anything else or a seq below 1.
+func checkoutSeq(name string) (int, bool) {
+	seq, err := strconv.Atoi(strings.TrimSuffix(name, "-eval"))
+	if err != nil || seq < 1 || strconv.Itoa(seq) != strings.TrimSuffix(name, "-eval") {
+		return 0, false
+	}
+	return seq, true
+}
+
+// checkoutItems answers an item's status by goal slug and seq, reading
+// each served org's goals once and each goal's items once.
+type checkoutItems struct {
+	gw    Gateway
+	read  bool
+	err   error
+	goals map[string]string // slug → goal id
+	items map[string]map[int]string
+	ierr  map[string]error
+}
+
+// status is the item's status, "unknown" when the platform has no goal
+// of that slug in any served org or no item of that seq in it; an error
+// when the platform could not answer.
+func (c *checkoutItems) status(ctx context.Context, slug string, seq int) (string, error) {
+	if !c.read {
+		c.read = true
+		c.goals = map[string]string{}
+		orgs, err := c.gw.MyOrgs(ctx)
+		if err != nil {
+			c.err = fmt.Errorf("orgs: %w", err)
+		}
+		for _, org := range orgs {
+			goals, err := c.gw.Goals(ctx, org.ID)
+			if err != nil {
+				c.err = fmt.Errorf("goals of %s: %w", org.ID, err)
+				break
+			}
+			for _, g := range goals {
+				c.goals[g.Slug] = g.ID
+			}
+		}
+	}
+	if c.err != nil {
+		return "", c.err
+	}
+	goalID, ok := c.goals[slug]
+	if !ok {
+		return "unknown", nil
+	}
+	if c.items == nil {
+		c.items, c.ierr = map[string]map[int]string{}, map[string]error{}
+	}
+	if err, ok := c.ierr[goalID]; ok {
+		return "", err
+	}
+	rows, ok := c.items[goalID]
+	if !ok {
+		list, err := c.gw.GoalWorkItems(ctx, goalID)
+		if errors.Is(err, gateway.ErrNotFound) {
+			list, err = nil, nil
+		}
+		if err != nil {
+			c.ierr[goalID] = fmt.Errorf("items of %s: %w", slug, err)
+			return "", c.ierr[goalID]
+		}
+		rows = map[int]string{}
+		for _, it := range list {
+			rows[it.Seq] = itemStatus(it)
+		}
+		c.items[goalID] = rows
+	}
+	status, ok := rows[seq]
+	if !ok {
+		return "unknown", nil
+	}
+	return status, nil
+}
+
+// lastTouched is the latest mtime among dir, its entries, its session
+// dir <dir>.session and its git admin files (index, HEAD, logs/HEAD) —
+// what a session writes as it works — without walking the whole tree.
+func lastTouched(dir string) time.Time {
+	var latest time.Time
+	note := func(p string) {
+		if fi, err := os.Lstat(p); err == nil && fi.ModTime().After(latest) {
+			latest = fi.ModTime()
+		}
+	}
+	note(dir)
+	note(dir + ".session")
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		note(filepath.Join(dir, e.Name()))
+	}
+	gitdir := filepath.Join(dir, ".git")
+	if b, err := os.ReadFile(gitdir); err == nil {
+		if p, ok := strings.CutPrefix(strings.TrimSpace(string(b)), "gitdir:"); ok {
+			gitdir = strings.TrimSpace(p)
+			if !filepath.IsAbs(gitdir) {
+				gitdir = filepath.Join(dir, gitdir)
+			}
+		}
+	}
+	for _, name := range []string{"index", "HEAD", filepath.Join("logs", "HEAD")} {
+		note(filepath.Join(gitdir, name))
+	}
+	return latest
+}
+
+// dirBytes is the size of every regular file under dir.
+func dirBytes(dir string) int64 {
+	var n int64
+	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.Type().IsRegular() {
+			if fi, err := d.Info(); err == nil {
+				n += fi.Size()
+			}
+		}
+		return nil
+	})
+	return n
+}
+
+// pruneGoneWorktrees counts each shared clone's prunable worktrees —
+// listed by `git worktree list --porcelain`, their directory gone — and
+// forgets each one's own registration under the repo's lock — no blanket
+// `git worktree prune`; it returns the count and a note per clone it could
+// not list or prune.
+func pruneGoneWorktrees(ctx context.Context, git *Git, root string) (int, []string) {
+	reposRoot := git.ReposRoot
+	if reposRoot == "" {
+		reposRoot = filepath.Join(filepath.Dir(root), "repos")
+	}
+	lockRoot := git.lockRoot(root, "")
+	var n int
+	var notes []string
+	for _, clone := range sharedClones(reposRoot) {
+		out, err := git.run(ctx, clone, "git", "worktree", "list", "--porcelain")
+		if err != nil {
+			notes = append(notes, fmt.Sprintf("worktree list %s: %v", clone, err))
+			continue
+		}
+		prunable := 0
+		for _, line := range strings.Split(out, "\n") {
+			if line == "prunable" || strings.HasPrefix(line, "prunable ") {
+				prunable++
+			}
+		}
+		if prunable == 0 {
+			continue
+		}
+		if err := git.forgetRegistrations(ctx, lockRoot, clone, goneRegistrations(clone)); err != nil {
+			notes = append(notes, fmt.Sprintf("worktree prune %s: %v", clone, err))
+			continue
+		}
+		n += prunable
+	}
+	return n, notes
+}
+
+// sharedClones is every clone under reposRoot — <owner>/<name>, or one
+// directory for a repo named by path — that has a `.git` directory.
+func sharedClones(reposRoot string) []string {
+	isClone := func(p string) bool {
+		fi, err := os.Stat(filepath.Join(p, ".git"))
+		return err == nil && fi.IsDir()
+	}
+	var out []string
+	tops, _ := os.ReadDir(reposRoot)
+	for _, top := range tops {
+		if !top.IsDir() || strings.HasPrefix(top.Name(), ".") {
+			continue
+		}
+		p := filepath.Join(reposRoot, top.Name())
+		if isClone(p) {
+			out = append(out, p)
+			continue
+		}
+		subs, _ := os.ReadDir(p)
+		for _, s := range subs {
+			if s.IsDir() && isClone(filepath.Join(p, s.Name())) {
+				out = append(out, filepath.Join(p, s.Name()))
+			}
+		}
+	}
+	return out
+}
+
+// goneRegistrations are clone's .git/worktrees/<n> whose registered
+// directory is gone and that are not locked — what git lists prunable.
+func goneRegistrations(clone string) []string {
+	admins, _ := filepath.Glob(filepath.Join(clone, ".git", "worktrees", "*"))
+	var gone []string
+	for _, admin := range admins {
+		if _, err := os.Stat(filepath.Join(admin, "locked")); err == nil {
+			continue
+		}
+		dir, ok := registeredDir(admin)
+		if !ok {
+			continue
+		}
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			gone = append(gone, admin)
+		}
+	}
+	return gone
+}

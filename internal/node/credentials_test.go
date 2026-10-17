@@ -832,7 +832,7 @@ func TestCarriedTreatsNoDocumentsFetchedAndNoToolNamesAsLandedAndLogsOncePerRun(
 	joined := errors.Join(gateway.ErrNoDocumentsFetched, gateway.ErrNoToolNames)
 	for i := range 2 {
 		s := &SessionAccount{creds: c}
-		s.Report(harness.Result{SessionID: fmt.Sprintf("s-%d", i), DocumentsFetched: 3, ToolNames: map[string]int{"mesh-context__mesh_document": 3}})
+		s.Report(harness.Result{SessionID: fmt.Sprintf("s-%d", i), DocumentsFetched: 3, ToolNames: map[string]int{"runsheet__mesh_document": 3}})
 		if err := s.Carried(joined); err != nil {
 			t.Fatalf("session %d: Carried = %v, want nil", i, err)
 		}
@@ -879,7 +879,7 @@ func TestCarriedTreatsLossesJoinedWithNoContextUsageAsLanded(t *testing.T) {
 			c := &Credentials{Log: log.New(&logs, "", 0)}
 			for i := range 3 {
 				s := &SessionAccount{creds: c}
-				s.Report(harness.Result{SessionID: fmt.Sprintf("s-%d", i), DocumentsFetched: 3, ToolNames: map[string]int{"mesh-context__mesh_document": 2, "mesh-context__mesh_search": 1}})
+				s.Report(harness.Result{SessionID: fmt.Sprintf("s-%d", i), DocumentsFetched: 3, ToolNames: map[string]int{"runsheet__mesh_document": 2, "runsheet__mesh_search": 1}})
 				if err := s.Carried(tc.err); err != nil {
 					t.Fatalf("session %d: Carried = %v, want nil (landed)", i, err)
 				}

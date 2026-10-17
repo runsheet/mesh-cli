@@ -159,7 +159,8 @@ func TestServicesStartInThePodBeforeTheAgent(t *testing.T) {
 	if pg.Limits != (sandbox.Limits{CPUs: 1, Memory: "2048m", Pids: sandbox.SidecarPids}) {
 		t.Errorf("postgres limits = %+v (half of 2 cpus and 4g each)", pg.Limits)
 	}
-	if !slices.Equal(pg.Env, []string{"POSTGRES_PASSWORD=postgres"}) || !slices.Equal(pg.Command, sandbox.PostgresTuning) {
+	wantEnv := []string{"PGDATA=" + sandbox.PostgresDefaultPGDATA, "POSTGRES_INITDB_ARGS=" + sandbox.PostgresDefaultInitdbArgs, "POSTGRES_PASSWORD=postgres"}
+	if !slices.Equal(pg.Env, wantEnv) || !slices.Equal(pg.Command, sandbox.PostgresTuning) {
 		t.Errorf("postgres = %+v", pg)
 	}
 	const line = "# Services\n\nThe services this repository declares run beside you and are ready on 127.0.0.1 (also listed in `$HOME/.mesh-services`): postgres (postgres:16) at 127.0.0.1:5432; redis (redis:7) at 127.0.0.1:6379.\n\n# Rules\n"

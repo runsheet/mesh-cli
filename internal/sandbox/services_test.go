@@ -22,11 +22,15 @@ func TestResolve(t *testing.T) {
 			source:  SourceFile,
 			want: []Service{{
 				Name: "postgres", Image: "postgres:16", Registry: "docker.io",
-				Env:     map[string]string{"POSTGRES_USER": "postgres", "POSTGRES_PASSWORD": "postgres", "POSTGRES_DB": "app_test"},
+				Env: map[string]string{
+					"POSTGRES_USER": "postgres", "POSTGRES_PASSWORD": "postgres", "POSTGRES_DB": "app_test",
+					"PGDATA": PostgresDefaultPGDATA, "POSTGRES_INITDB_ARGS": PostgresDefaultInitdbArgs,
+				},
 				Ports:   []string{"5432:5432"},
 				Command: pgTuning, Tuned: true,
 				Health:   &HealthCheck{Cmd: "pg_isready -U postgres", Interval: 2 * time.Second, Timeout: 5 * time.Second, Retries: 30},
 				Required: true, From: ".mesh/services.yml",
+				Notes: []string{"defaulted PGDATA, POSTGRES_INITDB_ARGS so the data directory is writable under keep-id"},
 			}},
 		},
 		{
@@ -63,10 +67,14 @@ func TestResolve(t *testing.T) {
 			source:  SourceFile,
 			want: []Service{{
 				Name: "postgres", Image: "postgres:17", Registry: "docker.io",
-				Env:     map[string]string{"POSTGRES_PASSWORD": "postgres"},
+				Env: map[string]string{
+					"POSTGRES_PASSWORD": "postgres",
+					"PGDATA":            PostgresDefaultPGDATA, "POSTGRES_INITDB_ARGS": PostgresDefaultInitdbArgs,
+				},
 				Ports:   []string{"5432:5432"},
 				Command: []string{"-c", "max_connections=200"},
 				From:    ".mesh/services.yml",
+				Notes:   []string{"defaulted PGDATA, POSTGRES_INITDB_ARGS so the data directory is writable under keep-id"},
 			}},
 		},
 		{fixture: "neither", source: SourceNone},
@@ -181,6 +189,135 @@ jobs:
 	}
 	if len(got.Notes) != 1 || !strings.Contains(got.Notes[0], "service broken skipped") {
 		t.Errorf("notes = %q", got.Notes)
+	}
+}
+
+func TestWorkflowPostgresServiceDefaultsPGDATA(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, ".github/workflows/test.yml", `
+jobs:
+  test:
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+    steps: [{run: "go test ./..."}]
+`)
+	got, err := Resolve(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Source != SourceWorkflow {
+		t.Errorf("source = %q, want %q", got.Source, SourceWorkflow)
+	}
+	if len(got.Services) != 1 {
+		t.Fatalf("services = %+v, want one", got.Services)
+	}
+	s := got.Services[0]
+	if s.Env["PGDATA"] != PostgresDefaultPGDATA {
+		t.Errorf("PGDATA = %q, want %q", s.Env["PGDATA"], PostgresDefaultPGDATA)
+	}
+	if s.Env["POSTGRES_INITDB_ARGS"] != PostgresDefaultInitdbArgs {
+		t.Errorf("POSTGRES_INITDB_ARGS = %q, want %q", s.Env["POSTGRES_INITDB_ARGS"], PostgresDefaultInitdbArgs)
+	}
+	if s.Env["POSTGRES_PASSWORD"] != "postgres" {
+		t.Errorf("POSTGRES_PASSWORD = %q, want kept", s.Env["POSTGRES_PASSWORD"])
+	}
+}
+
+func TestPostgresServiceDefaultsPGDATA(t *testing.T) {
+	images := []string{
+		"postgres:17-alpine",
+		"postgres:16",
+		"docker.io/library/postgres:17-alpine",
+		"docker.io/library/postgres:16",
+	}
+	for _, image := range images {
+		t.Run(image, func(t *testing.T) {
+			dir := t.TempDir()
+			write(t, dir, ".mesh/services.yml", "services:\n  pg:\n    image: "+image+"\n")
+			got, err := Resolve(dir, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got.Services) != 1 {
+				t.Fatalf("services = %+v, want one", got.Services)
+			}
+			s := got.Services[0]
+			if s.Env["PGDATA"] != PostgresDefaultPGDATA {
+				t.Errorf("PGDATA = %q, want %q", s.Env["PGDATA"], PostgresDefaultPGDATA)
+			}
+			if s.Env["POSTGRES_INITDB_ARGS"] != PostgresDefaultInitdbArgs {
+				t.Errorf("POSTGRES_INITDB_ARGS = %q, want %q", s.Env["POSTGRES_INITDB_ARGS"], PostgresDefaultInitdbArgs)
+			}
+		})
+	}
+}
+
+func TestPostgresServiceKeepsItsOwnPGDATA(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, ".mesh/services.yml", `
+services:
+  pg-own-pgdata:
+    image: postgres:16
+    env:
+      PGDATA: /custom/data
+  pg-own-initdb-args:
+    image: postgres:16
+    env:
+      POSTGRES_INITDB_ARGS: --foo
+`)
+	got, err := Resolve(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Services) != 2 {
+		t.Fatalf("services = %+v, want two", got.Services)
+	}
+	byName := map[string]Service{}
+	for _, s := range got.Services {
+		byName[s.Name] = s
+	}
+	pgdata := byName["pg-own-pgdata"]
+	if pgdata.Env["PGDATA"] != "/custom/data" {
+		t.Errorf("PGDATA = %q, want own value kept", pgdata.Env["PGDATA"])
+	}
+	if pgdata.Env["POSTGRES_INITDB_ARGS"] != PostgresDefaultInitdbArgs {
+		t.Errorf("POSTGRES_INITDB_ARGS = %q, want the default", pgdata.Env["POSTGRES_INITDB_ARGS"])
+	}
+	initdbArgs := byName["pg-own-initdb-args"]
+	if initdbArgs.Env["POSTGRES_INITDB_ARGS"] != "--foo" {
+		t.Errorf("POSTGRES_INITDB_ARGS = %q, want own value kept", initdbArgs.Env["POSTGRES_INITDB_ARGS"])
+	}
+	if initdbArgs.Env["PGDATA"] != PostgresDefaultPGDATA {
+		t.Errorf("PGDATA = %q, want the default", initdbArgs.Env["PGDATA"])
+	}
+}
+
+func TestNonPostgresServiceGetsNoPGDATA(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, ".mesh/services.yml", `
+services:
+  redis:
+    image: redis:7
+  mysql:
+    image: mysql:8
+`)
+	got, err := Resolve(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range got.Services {
+		if _, ok := s.Env["PGDATA"]; ok {
+			t.Errorf("%s: env = %+v, want no PGDATA", s.Name, s.Env)
+		}
+		if _, ok := s.Env["POSTGRES_INITDB_ARGS"]; ok {
+			t.Errorf("%s: env = %+v, want no POSTGRES_INITDB_ARGS", s.Name, s.Env)
+		}
+		if len(s.Env) != 0 {
+			t.Errorf("%s: env = %+v, want empty", s.Name, s.Env)
+		}
 	}
 }
 

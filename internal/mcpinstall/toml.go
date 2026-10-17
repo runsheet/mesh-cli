@@ -11,7 +11,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-// UpsertTOMLTable sets table (e.g. `mcp_servers.mesh`) in the TOML file
+// UpsertTOMLTable sets table (e.g. `mcp_servers.runsheet`) in the TOML file
 // src to body: its span — the header line to the next header that is
 // not one of its subtables, trailing blank and comment lines kept — is
 // replaced by the header and body, else the table is appended after a

@@ -16,6 +16,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/tools"
 	"projectmesh.io/mesh-cli/internal/version"
 )
 
@@ -407,7 +408,7 @@ func noContext(calls int, why string) map[string]*harness.ToolStat {
 	if calls == 0 {
 		errs = 1
 	}
-	return map[string]*harness.ToolStat{"mesh-context": {Calls: calls, Errors: errs, Wall: 30 * time.Millisecond, FirstError: why}}
+	return map[string]*harness.ToolStat{"runsheet": {Calls: calls, Errors: errs, Wall: 30 * time.Millisecond, FirstError: why}}
 }
 
 // toolRow is the usage report's row for tool.
@@ -431,7 +432,7 @@ func TestCodexWithoutContextIsNotAVerdict(t *testing.T) {
 	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "Holds.\nVERDICT: PASS", "Nothing to read.\nVERDICT: FAIL")
 	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
 	codex.tools = noContext(3, "Auth required during MCP startup")
-	claude.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 2, Wall: 40 * time.Millisecond}}
+	claude.tools = map[string]*harness.ToolStat{"runsheet": {Calls: 2, Wall: 40 * time.Millisecond}}
 	in := evaluateItem1(t, f, ev)
 	if codex.runs() != 1 || len(claude.jobs) != 1 {
 		t.Fatalf("runs: claude %d, codex %d", len(claude.jobs), codex.runs())
@@ -443,15 +444,15 @@ func TestCodexWithoutContextIsNotAVerdict(t *testing.T) {
 	if tok, _ := envOf(cj.Env, "CLAUDE_CODE_OAUTH_TOKEN"); tok != issuedSecret {
 		t.Error("the Claude evaluation is not on the issued Claude account")
 	}
-	want := "Codex (first attempt, gpt-6-luna): no verdict — mesh-context: Auth required during MCP startup\n\nHolds.\n\nevaluators: one — normal/low goal, no protected path\n(evaluated on sonnet)\ntools: mesh-context: first call errored: Auth required during MCP startup"
+	want := "Codex (first attempt, gpt-6-luna): no verdict — runsheet: Auth required during MCP startup\n\nHolds.\n\nevaluators: one — normal/low goal, no protected path\n(evaluated on sonnet)\ntools: runsheet: first call errored: Auth required during MCP startup"
 	if in["passed"] != true || in["notes"] != want || in["costCents"] != float64(165) {
 		t.Fatalf("recorded %+v\nwant notes %q", in, want)
 	}
-	if row := toolRow(t, usageOf(t, f), "mesh-context"); row["calls"] != 5.0 || row["errors"] != 3.0 {
-		t.Fatalf("mesh-context row %v", row)
+	if row := toolRow(t, usageOf(t, f), "runsheet"); row["calls"] != 5.0 || row["errors"] != 3.0 {
+		t.Fatalf("runsheet row %v", row)
 	}
 	for _, s := range []string{
-		"item ship-it/1: evaluation on Codex gpt-6-luna saw no context (mesh-context: Auth required during MCP startup); not a verdict, evaluating on Claude sonnet",
+		"item ship-it/1: evaluation on Codex gpt-6-luna saw no context (runsheet: Auth required during MCP startup); not a verdict, evaluating on Claude sonnet",
 		"item ship-it/1: evaluation passed on Claude sonnet",
 	} {
 		if !strings.Contains(logs.String(), s) {
@@ -470,19 +471,19 @@ func TestClaudeWithoutContextRunsOnCodex(t *testing.T) {
 	known := &KnownAccounts{}
 	ev.CodexAccounts, ev.Credentials.Known = (&Loop{Known: known}).CodexCandidates, known
 	claude.tools = noContext(0, "failed")
-	codex.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 3}}
+	codex.tools = map[string]*harness.ToolStat{"runsheet": {Calls: 3}}
 	in := evaluateItem1(t, f, ev)
 	if codex.runs() != 1 || len(claude.jobs) != 1 || codex.jobs[0].Prompt != claude.jobs[0].Prompt {
 		t.Fatalf("runs: claude %d, codex %d", len(claude.jobs), codex.runs())
 	}
-	want := "Claude (first attempt, sonnet): no verdict — mesh-context: failed\n\nHolds.\n\nevaluators: one — normal/low goal, no protected path\n(evaluated on Codex gpt-6-luna)\ntools: mesh-context served, never called: failed"
+	want := "Claude (first attempt, sonnet): no verdict — runsheet: failed\n\nHolds.\n\nevaluators: one — normal/low goal, no protected path\n(evaluated on Codex gpt-6-luna)\ntools: runsheet served, never called: failed"
 	if in["passed"] != true || in["notes"] != want {
 		t.Fatalf("recorded %+v\nwant notes %q", in, want)
 	}
-	if row := toolRow(t, usageOf(t, f), "mesh-context"); row["calls"] != 3.0 || row["errors"] != 1.0 {
-		t.Fatalf("mesh-context row %v", row)
+	if row := toolRow(t, usageOf(t, f), "runsheet"); row["calls"] != 3.0 || row["errors"] != 1.0 {
+		t.Fatalf("runsheet row %v", row)
 	}
-	if !strings.Contains(logs.String(), "evaluation on Claude sonnet saw no context (mesh-context: failed); not a verdict, evaluating on Codex gpt-6-luna") {
+	if !strings.Contains(logs.String(), "evaluation on Claude sonnet saw no context (runsheet: failed); not a verdict, evaluating on Codex gpt-6-luna") {
 		t.Errorf("node.log:\n%s", logs.String())
 	}
 }
@@ -501,15 +502,15 @@ func TestNoContextWithNoOtherFamilyIsNoVerdict(t *testing.T) {
 	if len(claude.jobs) != 1 || codex.runs() != 0 {
 		t.Fatalf("runs claude %d codex %d", len(claude.jobs), codex.runs())
 	}
-	reason := "evaluation on Claude sonnet saw no context (mesh-context: Auth required); not a verdict, and Codex cannot evaluate it: the node has no Codex harness or account"
+	reason := "evaluation on Claude sonnet saw no context (runsheet: Auth required); not a verdict, and Codex cannot evaluate it: the node has no Codex harness or account"
 	if !sentNoVerdict(in) || in["notes"] != reason || in["costCents"] != float64(125) {
 		t.Fatalf("recorded %+v\nwant notes %q", in, reason)
 	}
 	if f.Item(item1)["status"] != "evaluating" {
 		t.Fatalf("status %v", f.Item(item1)["status"])
 	}
-	if row := toolRow(t, usageOf(t, f), "mesh-context"); row["errors"] != 3.0 {
-		t.Fatalf("mesh-context row %v", row)
+	if row := toolRow(t, usageOf(t, f), "runsheet"); row["errors"] != 3.0 {
+		t.Fatalf("runsheet row %v", row)
 	}
 	if !strings.Contains(logs.String(), "item ship-it/1: evaluation reached no verdict on Claude sonnet, recorded as no verdict ($1.25): "+reason) {
 		t.Fatalf("node.log:\n%s", logs.String())
@@ -540,7 +541,7 @@ func TestNoContextWithNoOtherFamilyWaitsOnAnOlderPlatform(t *testing.T) {
 		t.Fatalf("runs claude %d codex %d, verdicts %d, status %v", len(claude.jobs), codex.runs(), len(f.CallsNamed("evaluateWorkItem")), f.Item(item1)["status"])
 	}
 	for _, line := range []string{
-		"item ship-it/1: evaluation on Claude sonnet saw no context (mesh-context: Auth required); not a verdict, and Codex cannot evaluate it: the node has no Codex harness or account; it stays in evaluating",
+		"item ship-it/1: evaluation on Claude sonnet saw no context (runsheet: Auth required); not a verdict, and Codex cannot evaluate it: the node has no Codex harness or account; it stays in evaluating",
 		"the platform takes no no-verdict outcome; a no-verdict evaluation waits in evaluating (said once per run)",
 	} {
 		if n := strings.Count(logs.String(), line); n != 1 {
@@ -609,9 +610,9 @@ func TestNoVerdictLineOnAnOlderPlatformRecordsNothing(t *testing.T) {
 func TestBlindFirstAttemptThenPassRecordsPassed(t *testing.T) {
 	f, ev, claude, codex, _, _ := familyFixture(t, "high", "sonnet", "Holds.\nVERDICT: PASS", "A clause does not hold.\nVERDICT: FAIL")
 	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
-	codex.tools = noContext(0, "prologue: not found")
+	codex.tools = noContext(0, "runsheet: not found")
 	codex.firstOnly = true
-	claude.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 2}}
+	claude.tools = map[string]*harness.ToolStat{"runsheet": {Calls: 2}}
 	in := evaluateItem1(t, f, ev)
 	if codex.runs() != 1 || len(claude.jobs) != 1 {
 		t.Fatalf("runs: claude %d, codex %d", len(claude.jobs), codex.runs())
@@ -621,8 +622,8 @@ func TestBlindFirstAttemptThenPassRecordsPassed(t *testing.T) {
 	}
 	notes, _ := in["notes"].(string)
 	for _, want := range []string{
-		"Codex (first attempt, gpt-6-luna): no verdict — mesh-context: prologue: not found\n\nHolds.",
-		"Codex second opinion unavailable: it saw no context on the first attempt (mesh-context: prologue: not found)",
+		"Codex (first attempt, gpt-6-luna): no verdict — runsheet: runsheet: not found\n\nHolds.",
+		"Codex second opinion unavailable: it saw no context on the first attempt (runsheet: runsheet: not found)",
 	} {
 		if !strings.Contains(notes, want) {
 			t.Fatalf("notes lack %q:\n%s", want, notes)
@@ -655,9 +656,9 @@ func TestRefusedCallsOnAConnectedContextServerAreNoVerdict(t *testing.T) {
 	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "VERDICT: PASS")
 	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
 	ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
-	stream := `{"type":"system","subtype":"init","model":"claude-sonnet-5","mcp_servers":[{"name":"mesh-context","status":"connected"}]}
-{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"mcp__mesh-context__mesh_document","input":{"slug":"prd"}}]}}
-{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"Claude requested permissions to use mcp__mesh-context__mesh_document, but you haven't granted it yet."}]}}
+	stream := `{"type":"system","subtype":"init","model":"claude-sonnet-5","mcp_servers":[{"name":"runsheet","status":"connected"}]}
+{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"mcp__runsheet__mesh_document","input":{"slug":"prd"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"Claude requested permissions to use mcp__runsheet__mesh_document, but you haven't granted it yet."}]}}
 {"type":"result","subtype":"success","result":"VERDICT: FAIL","total_cost_usd":0.1,"num_turns":1}`
 	claude.tools = harness.ParseStream(strings.NewReader(stream), nil).Tools
 	ev.Blind = &OncePer{}
@@ -668,7 +669,7 @@ func TestRefusedCallsOnAConnectedContextServerAreNoVerdict(t *testing.T) {
 	if !sentNoVerdict(in) {
 		t.Fatalf("recorded %+v", in)
 	}
-	if notes, _ := in["notes"].(string); !strings.Contains(notes, "saw no context (mesh-context: Claude requested permissions") {
+	if notes, _ := in["notes"].(string); !strings.Contains(notes, "saw no context (runsheet: Claude requested permissions") {
 		t.Fatalf("notes %q", notes)
 	}
 }
@@ -678,15 +679,15 @@ func TestRefusedCallsOnAConnectedContextServerAreNoVerdict(t *testing.T) {
 func TestSomeContextIsAVerdict(t *testing.T) {
 	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "Nothing asserts it.\nVERDICT: FAIL")
 	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
-	codex.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 3, Clean: 2, Errors: 1, FirstError: "timeout"}}
+	codex.tools = map[string]*harness.ToolStat{"runsheet": {Calls: 3, Clean: 2, Errors: 1, FirstError: "timeout"}}
 	in := evaluateItem1(t, f, ev)
-	if codex.runs() != 1 || len(claude.jobs) != 0 || in["passed"] != false || in["notes"] != "Nothing asserts it.\n\nevaluators: one — normal/low goal, no protected path\n(evaluated on Codex gpt-6-luna)\ntools: mesh-context: first call errored: timeout" {
+	if codex.runs() != 1 || len(claude.jobs) != 0 || in["passed"] != false || in["notes"] != "Nothing asserts it.\n\nevaluators: one — normal/low goal, no protected path\n(evaluated on Codex gpt-6-luna)\ntools: runsheet: first call errored: timeout" {
 		t.Fatalf("runs claude %d codex %d, recorded %+v", len(claude.jobs), codex.runs(), in)
 	}
 }
 
 // An evaluation an older node started names the built-in by its old
-// name, prologue; adopted, its broken context is still no verdict
+// name (tools.BuiltinAlias); adopted, its broken context is still no verdict
 // (tools.IsBuiltin, an alias read until 2026-10-28).
 func TestNoContextUnderTheOldNameIsNotAVerdict(t *testing.T) {
 	f, ev, _, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "VERDICT: PASS")
@@ -701,7 +702,7 @@ func TestNoContextUnderTheOldNameIsNotAVerdict(t *testing.T) {
 	}
 	// adopted: no account and no second job, as AdoptEvaluation runs it
 	run := evalRun{item: *item, res: res, label: "ship-it/1", model: "sonnet", fam: family{model: "sonnet", claude: "sonnet"}, dir: t.TempDir(), adopted: true}
-	result := harness.Result{Text: "VERDICT: PASS", Tools: map[string]*harness.ToolStat{"prologue": {Calls: 2, Errors: 2, FirstError: "Auth required"}}}
+	result := harness.Result{Text: "VERDICT: PASS", Tools: map[string]*harness.ToolStat{tools.BuiltinAlias(): {Calls: 2, Errors: 2, FirstError: "Auth required"}}}
 	if err := ev.afterEvaluate(context.Background(), run, result, nil); err != nil {
 		t.Fatalf("afterEvaluate = %v", err)
 	}
@@ -709,23 +710,23 @@ func TestNoContextUnderTheOldNameIsNotAVerdict(t *testing.T) {
 	if codex.runs() != 0 || len(calls) != 1 || !sentNoVerdict(calls[0].Input) {
 		t.Fatalf("codex runs %d, verdicts %+v", codex.runs(), calls)
 	}
-	if !strings.Contains(logs.String(), "saw no context (prologue: Auth required); not a verdict") {
+	if !strings.Contains(logs.String(), "saw no context ("+tools.BuiltinAlias()+": Auth required); not a verdict") {
 		t.Fatalf("node.log:\n%s", logs.String())
 	}
 }
 
-// A session this node started was rendered mesh-context, so a prologue
-// in its result is an ordinary console tool, not the built-in's old
-// name: every call of it failing while mesh-context works leaves the
+// A session this node started was rendered runsheet, so the alias
+// (tools.BuiltinAlias) in its result is an ordinary console tool, not the built-in's old
+// name: every call of it failing while runsheet works leaves the
 // verdict standing (the alias, read until 2026-10-28, is for adopted
 // sessions only).
-func TestAConsoleToolNamedPrologueFailingIsNotNoContext(t *testing.T) {
+func TestAConsoleToolNamedAsTheAliasFailingIsNotNoContext(t *testing.T) {
 	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "VERDICT: FAIL")
 	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
 	ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
 	claude.tools = map[string]*harness.ToolStat{
-		"mesh-context": {Calls: 3},
-		"prologue":     {Calls: 2, Errors: 2, FirstError: "upstream down"},
+		"runsheet":           {Calls: 3},
+		tools.BuiltinAlias(): {Calls: 2, Errors: 2, FirstError: "upstream down"},
 	}
 	in := evaluateItem1(t, f, ev)
 	if codex.runs() != 0 || len(claude.jobs) != 1 || in["passed"] != true {

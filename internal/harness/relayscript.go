@@ -2,12 +2,12 @@ package harness
 
 import "path/filepath"
 
-// relayScriptName is the mesh-context relay's script in a pod, beside its
+// relayScriptName is the runsheet relay's script in a pod, beside its
 // mcp.json: the pod has no mesh binary and no route to the host, but the
 // node image carries Node for claude.
-const relayScriptName = "mesh-context-relay.js"
+const relayScriptName = "runsheet-relay.js"
 
-// sandboxRelayServer is mesh-context in a pod whose mcp.json is mcpPath:
+// sandboxRelayServer is runsheet in a pod whose mcp.json is mcpPath:
 // node running RelayScript, written beside it, relaying to url on the
 // bearer it reads from tokenFile per request. The token rides no command
 // line and no config: only the file's path does.
@@ -27,7 +27,7 @@ func sandboxRelayServer(mcpPath, url, tokenFile string) map[string]any {
 // a missing or empty token file is a JSON-RPC error on the request.
 // Messages are sent one at a time, in the order they arrive.
 func RelayScript() []byte {
-	return []byte(`// mesh: the mesh-context relay; written per session.
+	return []byte(`// mesh: the runsheet relay; written per session.
 "use strict";
 const fs = require("fs");
 const url = process.argv[2];
@@ -42,7 +42,7 @@ const rpcError = (id, message) => out({ jsonrpc: "2.0", id, error: { code: -3200
 function token() {
   let t = "";
   try { t = fs.readFileSync(tokenFile, "utf8").trim(); } catch (e) {}
-  if (!t) throw new Error("mesh-context relay: token file " + tokenFile + " is missing or empty");
+  if (!t) throw new Error("runsheet relay: token file " + tokenFile + " is missing or empty");
   return t;
 }
 
@@ -138,7 +138,7 @@ async function handle(msg) {
         if (!answered(res)) body = await res.text().catch(() => "");
       }
       if (!answered(res)) {
-        if (request) rpcError(id, "mesh-context relay: " + url + " answered " + res.status + ": " + body.slice(0, 200));
+        if (request) rpcError(id, "runsheet relay: " + url + " answered " + res.status + ": " + body.slice(0, 200));
         return;
       }
     }

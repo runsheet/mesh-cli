@@ -1362,7 +1362,7 @@ func recordingGit(repos string) (*Git, func() []string) {
 }
 
 // RemoveWorkspace on one of two worktrees removes it by `git worktree
-// remove --force` and `git worktree prune`: its directory is gone and
+// remove --force` after its unlock, and no prune: its directory is gone and
 // unlisted, the other worktree still works, the shared clone stays
 // (mesh ADR 017).
 func TestRemoveWorkspaceRemovesOneWorktreeNeverTheClone(t *testing.T) {
@@ -1399,22 +1399,26 @@ func TestRemoveWorkspaceRemovesOneWorktreeNeverTheClone(t *testing.T) {
 	if err != nil || strings.TrimSpace(string(out)) != BranchName("g", 2) {
 		t.Fatalf("the other worktree on %q: %v", out, err)
 	}
-	var removed, pruned bool
+	var removed, unlocked, pruned bool
 	for _, c := range cmds() {
-		if c == "git worktree remove --force "+dirs[0] {
+		if c == "git worktree unlock "+dirs[0] {
+			unlocked = true
+		}
+		if unlocked && c == "git worktree remove --force "+dirs[0] {
 			removed = true
 		}
-		if removed && c == "git worktree prune" {
+		if strings.HasPrefix(c, "git worktree prune") {
 			pruned = true
 		}
 	}
-	if !removed || !pruned {
-		t.Fatalf("commands lack worktree remove --force then prune:\n%s", strings.Join(cmds(), "\n"))
+	if !removed || pruned {
+		t.Fatalf("commands lack worktree unlock then remove --force, or prune every worktree:\n%s", strings.Join(cmds(), "\n"))
 	}
 }
 
-// A worktree removed by hand — a sweep interrupted after its rm — is
-// pruned by RemoveWorkspace, so the same branch prepares again.
+// A worktree removed by hand — a sweep interrupted after its rm — has its
+// own registration forgotten by RemoveWorkspace, so the same branch
+// prepares again.
 func TestRemoveWorkspaceAfterAnInterruptedSweep(t *testing.T) {
 	root, origin := lockTestOrigin(t)
 	work, repos := filepath.Join(root, "work"), filepath.Join(root, "repos")
@@ -1430,20 +1434,16 @@ func TestRemoveWorkspaceAfterAnInterruptedSweep(t *testing.T) {
 	if err := g.RemoveWorkspace(context.Background(), dir); err != nil {
 		t.Fatalf("remove after the rm: %v", err)
 	}
-	pruned := false
 	for _, c := range cmds() {
-		if c == "git worktree prune" {
-			pruned = true
+		if strings.HasPrefix(c, "git worktree prune") {
+			t.Fatalf("a blanket worktree prune, where only this registration should go:\n%s", strings.Join(cmds(), "\n"))
 		}
-	}
-	if !pruned {
-		t.Fatalf("no worktree prune:\n%s", strings.Join(cmds(), "\n"))
 	}
 	list, _ := exec.Command("git", "-C", SharedClonePath(repos, origin), "worktree", "list").Output()
 	if strings.Contains(string(list), dir) {
 		t.Fatalf("the removed worktree is still registered: %s", list)
 	}
-	// listed above even while prunable: its absence is the prune
+	// listed above even while prunable: its absence is the forgetting
 	if _, err := g.Prepare(context.Background(), spec); err != nil {
 		t.Fatalf("prepare the same branch again: %v", err)
 	}

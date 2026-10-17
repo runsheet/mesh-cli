@@ -72,7 +72,7 @@ type Runner struct {
 	WorkRoot string
 	// BuildCache is a host validation's GOCACHE; "" is BuildCacheDir().
 	BuildCache string
-	// MCP are the MCP servers every session gets (mesh-context).
+	// MCP are the MCP servers every session gets (runsheet).
 	MCP map[string]any
 	// MCPFunc, when set, is asked for them at every item instead: the
 	// node's machine access token expires within the hour, so a build
@@ -347,6 +347,8 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	r.logf("item %s: %q on %s from %s", label, item.Title, res.Repo.FullName(), res.BaseRef())
 
 	spec := WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()}
+	// live on this node while this runs: no cleanup touches it (HoldWorkspace)
+	defer HoldWorkspace(spec.Dir())()
 	// the item's own GitHub token, on the checkout before it is cloned
 	cred, err := NewItemCred(ctx, r.GW, r.WS, r.Scopes, item, spec, r.Fallback, r.logf)
 	if we := WorkspaceErrorOf(err); we != nil {
@@ -477,7 +479,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	acct.SetLabel("item "+label, string(harness.KindBuild))
 	acct.Apply(&job)
 	job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts, TempDirs: sessionTempDirs(job, acct)}
-	// the item's tools, beside the built-in mesh-context: a required one this
+	// the item's tools, beside the built-in runsheet: a required one this
 	// node cannot start hands the item back for a node that can
 	runtimes := r.runtimes()
 	st := SelectTools(mcp, acct.Tools, tools.RoleFor(string(harness.KindBuild)), runtimes)
@@ -1035,6 +1037,8 @@ func (r *Runner) AdoptItem(ctx context.Context, item gateway.WorkItem, s FoundSe
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
 	ctx = WithLockHolder(ctx, label)
 	spec := WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()}
+	// live on this node while this runs: no cleanup touches it (HoldWorkspace)
+	defer HoldWorkspace(spec.Dir())()
 	// the item's token on the checkout again: the session's pushes, and
 	// the node's, need a live one
 	cred, err := NewItemCred(ctx, r.GW, r.WS, r.Scopes, item, spec, r.Fallback, r.logf)
