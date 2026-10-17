@@ -727,6 +727,12 @@ func (c *ClaudeCode) runSandboxed(ctx context.Context, job Job, onProgress func(
 	if le := (*sandbox.LimitError)(nil); errors.As(waitErr, &le) && ctx.Err() == nil {
 		return res, le
 	}
+	if re := (*sandbox.RuntimeError)(nil); errors.As(waitErr, &re) && ctx.Err() == nil {
+		// the runtime itself could not start the pod: the node's
+		// condition, kept typed for the node to hand the work back
+		// runtime_broken (ADR-030)
+		return res, fmt.Errorf("harness claude-code: %w", waitErr)
+	}
 	return finishClaude(ctx, job, res, waitErr, &errBuf, rawOut)
 }
 

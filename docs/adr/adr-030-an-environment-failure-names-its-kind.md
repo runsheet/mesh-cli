@@ -220,3 +220,53 @@ own exit 1 with `error opening storage` on its stderr stays `Exit{Code:
 `TestProbeOnABrokenRuntime` and
 `TestRuntimeErrorReasonOpensWithItsKind` (`validate.Reason` opens
 `runtime_broken: `).
+
+## Amendment 2026-10-15: a session whose pod cannot start hands its work back `runtime_broken`
+
+Goal `a-runtime-that-cannot-start-a-session-stops-claiming`, item 2.
+Before it, a build whose services' pod the runtime could not start went
+to `FailWorkItem` (`services: …`, an attempt charged), an evaluation
+returned `services: …` and left the item in evaluating with nothing
+recorded, and a pod the harness itself opened failed the item as a
+plain harness error. Each is the node's condition, never the item's —
+mesh-specs ADR 046's rule that a refusal before the builder runs is no
+attempt.
+
+A `*sandbox.RuntimeError` out of any session start — `OpenSessionPod`,
+or the harness's own pod (`ClaudeCode.runSandboxed` now returns it
+wrapped `%w`, as a `*LimitError` is, where it was flattened to text) —
+is found by `RuntimeErrorOf` and its reason is `RuntimeReason`:
+`runtime_broken: <op>: <podman's words>`, scrubbed, cut to 2000
+(`internal/node/runtime_release.go`):
+
+| session | what it sends |
+| --- | --- |
+| build (`Runner.releaseRuntime`) | `ReleaseOnRuntime`: `ReleaseWorkItem` with the reason, attempts unchanged, the reason the item's last note; refused, `FailWorkItem` with the same reason; a cancelled ctx sends nothing — `ReleaseOnInfrastructure`'s shape |
+| rebase (`rebaseRun.releaseRuntime`) | the same release; refused, `FailWorkItemRebase` with the same reason |
+| evaluation (`Evaluator.runtimeNoVerdict`) | `EvaluateWorkItemNoVerdict` with the reason, so the item's notes read an environment failure, never a verdict; `ErrNoVerdictOutcome` logs `left in evaluating: …` and leaves it, as before |
+| plan (`Planner.releaseRuntime`) | `ReleasePlan` with the reason, no try counted against `MaxPlanAttempts` |
+| main validation (`Runner.validateCommit`) | the loop's fail as before — `FailMergeBatchValidation`/`FailWorkItemMainValidation`, which release the claim — its reason already `runtime_broken: …` by `validate.Reason` |
+
+Each logs one line naming the item (or goal, or batch) and podman's
+words — `item <label>: container runtime broken, released, no attempt
+charged: runtime_broken: …`, `… not evaluated: …`, `goal <slug>:
+container runtime broken; plan claim released, no try counted: …`,
+`<batch prefix>: container runtime broken, claim released: …` — holds
+the item or goal off this node for `WorkspaceReleaseHold` on the
+session's `Declines` (`holdRuntime`, as `holdInfrastructure`), and
+tells the session's `RuntimeBroken func(error)` hook (on `Runner`,
+`Evaluator`, `Planner`, `Rebaser`; nil tells no one), which item 3
+wires to the loop to stop claiming.
+
+### Tests
+
+`internal/node/runtime_release_test.go`, on a sandbox `Fake` whose
+`CreatePodErr` is a podman storage error: `TestRuntimeReleaseOfABuild`
+(the harness's pod and the services' pod: one `ReleaseWorkItem` opening
+`runtime_broken: `, no `FailWorkItem`, attempts unchanged, held, the
+hook once), `TestRuntimeReleaseOfAnEvaluation` (one
+`EvaluateWorkItemNoVerdict` opening `runtime_broken: `, no
+`EvaluateWorkItem`, the hook once),
+`TestRuntimeReleaseOfAnEvaluationWithoutNoVerdict`,
+`TestRuntimeReleaseOfAPlan` (`releasePlan` with the reason, no try, the
+hook once) and `TestRuntimeReleaseOfARebase`.
