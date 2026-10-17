@@ -1,0 +1,4 @@
+mesh node: 2026/10/15 06:00:00 item ship-it/1: validation on abc123: vet, api
+mesh node: 2026/10/15 06:00:01 item ship-it/1: attestation recorded abc123 vet,api ok
+mesh node: 2026/10/15 06:15:00 item ship-it/2: attestation recorded def456 vet ok
+mesh node: 2026/10/15 06:30:00 item ship-it/3: attestation refused some error
