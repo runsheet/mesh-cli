@@ -1920,6 +1920,11 @@ func oneShotHarness() *harness.ClaudeCode {
 	// a sandboxed session's agent runs detached in its pod and outlives
 	// the node like a host one: the next node adopts it (ADR 009)
 	h := &harness.ClaudeCode{Stderr: sessionsOut, Sandbox: sessionSandbox, MeshBinary: meshBinary(), DetachSandboxed: sessionSandbox != nil, Tokens: tokenKeeper()}
+	// a job with no work dir keeps its session dir in the node's scratch
+	// root, never /tmp
+	if root, err := node.ScratchRoot(""); err == nil {
+		h.ScratchRoot = root
+	}
 	if nodeUnattended {
 		h.ExtraArgs = []string{"--dangerously-skip-permissions"}
 	}
@@ -2142,11 +2147,11 @@ func rebaser(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harnes
 }
 
 func planner(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, workRoot string, accounts *node.Credentials, logger *log.Logger) *node.Planner {
-	return &node.Planner{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodePlanBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.PlanModel(), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Log: logger}
+	return &node.Planner{GW: gw, Harness: h, Sandbox: sessionSandbox, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodePlanBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.PlanModel(), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Log: logger}
 }
 
 func director(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, workRoot string, accounts *node.Credentials, logger *log.Logger) *node.Director {
-	return &node.Director{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeResearchBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("research"), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Log: logger}
+	return &node.Director{GW: gw, Harness: h, Sandbox: sessionSandbox, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeResearchBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("research"), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Log: logger}
 }
 
 // adoptSessions takes up, before the first claim, every session under the

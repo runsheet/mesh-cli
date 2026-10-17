@@ -506,8 +506,9 @@ func unlessDetached(ctx context.Context, fn func()) {
 }
 
 // sessionTempDirs are the temporary dirs a session runs in — its
-// CLAUDE_CONFIG_DIR and GH_CONFIG_DIR — for its state file, so the node
-// that ends a detached session removes them.
+// CLAUDE_CONFIG_DIR, GH_CONFIG_DIR and a host session's scratch, its
+// TMPDIR (sessionScratch) — for its state file, so the node that ends a
+// detached session removes them.
 func sessionTempDirs(job harness.Job, acct *SessionAccount) []string {
 	var dirs []string
 	if acct != nil && acct.AccountSession != nil && acct.ConfigDir != "" {
@@ -515,6 +516,9 @@ func sessionTempDirs(job harness.Job, acct *SessionAccount) []string {
 	}
 	for _, kv := range job.Env {
 		if v, ok := strings.CutPrefix(kv, "GH_CONFIG_DIR="); ok && v != "" {
+			dirs = append(dirs, v)
+		}
+		if v, ok := strings.CutPrefix(kv, "TMPDIR="); ok && v != "" {
 			dirs = append(dirs, v)
 		}
 	}
