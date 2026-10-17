@@ -38,6 +38,11 @@ type Job struct {
 	Kind Kind
 	// Workspace is the checked-out repo the session runs in.
 	Workspace string
+	// KeptRoot is the kept-sessions dir of the job's org (node
+	// OrgRoots.Kept, ADR-034): a Codex session's note, output.jsonl and
+	// stderr.log are kept under it and its sweep reads it alone. Empty
+	// is Codex.WorkRoot/kept-sessions, a node serving one org.
+	KeptRoot string
 	// Prompt is the whole prompt (see BuildPrompt).
 	Prompt string
 	// MaxBudgetUSD caps the session's spend; 0 means the adapter's default.
