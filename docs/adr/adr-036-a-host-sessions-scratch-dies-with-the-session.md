@@ -1,6 +1,6 @@
 ---
 title: "ADR-036: A host session's scratch dies with the session"
-summary: An unsandboxed session or validation never writes into the node process's /tmp — each gets a scratch dir of its own under the scratch root `<work root>/.scratch` (`<kind>-<subject>-<rand>`, `validate-<item|batch>-<rand>`) as its TMPDIR and GOTMPDIR, every one shares the node's Go build cache `<user cache dir>/mesh/cache/go` as GOCACHE, held with the cache root under node.yaml's `validation_cache_max_bytes` (default 20 GiB, trimmed hourly below 80% of it), and the scratch is removed when the session or validation ends, however it ends, by the node that ends it; a start-up sweep removes what a killed node left — every dir under the scratch root and the node's own `mesh-session-`/`mesh-gh-`/`mesh-claude-`/`mesh-node-*`/(host only) `mesh-home-` dirs under /tmp — keeping what an adopted session's state names, a path held live, another user's dir and symlinks; `mesh node status` prints `cache: <size> of <cap> (<root>); scratch <size> (<root>); measured <t>`, and `scripts/host-tmp-reading.sh` takes the before/after reading.
+summary: An unsandboxed session or validation never writes into the node process's /tmp — each gets a scratch dir of its own under the scratch root `<work root>/.scratch` (`<kind>-<subject>-<rand>`, `validate-<item|batch>-<rand>`) as its TMPDIR and GOTMPDIR, every one shares the node's Go build cache `<user cache dir>/mesh/cache/go` as GOCACHE, held with the cache root under node.yaml's `validation_cache_max_bytes` (default 20 GiB, trimmed hourly below 80% of it), and the scratch is removed when the session or validation ends, however it ends, by the node that ends it; a start-up sweep removes what a killed node left — every dir under the scratch root and the node's own `mesh-session-`/`mesh-gh-`/`mesh-claude-`/`mesh-node-*`/(host only) `mesh-home-` dirs under /tmp — keeping what an adopted session's state names, a path held live, the process's HOME, another user's dir and symlinks; `mesh node status` prints `cache: <size> of <cap> (<root>); scratch <size> (<root>); measured <t>`, and `scripts/host-tmp-reading.sh` takes the before/after reading.
 status: accepted
 ---
 
@@ -120,6 +120,12 @@ It **keeps**:
   that holds such a path: its session dir, workspace, HOME, every
   `TempDirs` entry, and its token file's dir;
 - a path held live in this process (`WorkspaceLive`);
+- the process's own HOME (`os.UserHomeDir`), and any dir that holds it.
+  A session whose HOME is a `mesh-home-*` dir under /tmp (a pod's HOME
+  mounted at its host path), when it runs `go test ./...` and the
+  package's `mesh node start` tests with it, would otherwise sweep its
+  own HOME and Go build cache. `internal/commands`' `TestMain` also gives
+  those tests a TMPDIR of their own;
 - a dir not owned by the node's uid;
 - a symlink, which is never followed or removed;
 - every other prefix (`runsheet-*`, `latchkey-*`, `go-build*`), which is

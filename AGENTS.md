@@ -950,7 +950,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `mesh-node-pull-/image-/push-`, plus `mesh-home-` on a host node)
   under `os.TempDir()` that the node's uid owns. It keeps what a found
   session names (dir, workspace, HOME, TempDirs, token file's dir), what
-  `WorkspaceLive` holds, and symlinks, and logs `scratch: swept N dirs, M
+  `WorkspaceLive` holds, the process's own HOME (`internal/commands`'
+  `TestMain` gives the package's tests a TMPDIR of their own), and symlinks, and logs `scratch: swept N dirs, M
   bytes at start (K kept)`. `scripts/host-tmp-reading.sh [--baseline
   FILE] <user>...` takes the /tmp reading by prefix.
   `host_scratch_e2e_test.go`'s `TestHostScratchE2E` (`go test
