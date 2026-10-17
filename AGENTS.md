@@ -714,7 +714,15 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   containers and HOMEs (`sandbox.SweepKeeping`), and `LiveProbe.Sandbox`
   counts a sandboxed build by its container.
   `sandboxed_swap_e2e_test.go` proves an upgrade mid sandboxed build
-  finishing on the new node. Codex sessions still end with the node.
+  finishing on the new node. A Codex evaluation on a sandboxed node is
+  `Outlive` the same way (`Codex.DetachSandboxed`, `Codex.runDetached`):
+  `state.json` names `harness: codex`, the pod, container and HOME and
+  the login's `loginFile`/`loginCache` paths (`SessionMeta.LoginCache`,
+  the credential's `CodexLoginCache`), `Codex.Attach` follows the
+  container and parses the Codex stream, writes a refreshed `auth.json`
+  back and removes the pod and HOME, and `AdoptEvaluation` routes by the
+  state's adapter (`TestCodexPodSessionAdopted`); a host Codex session
+  still ends with the node.
   **Claims outlive the node too** (`claims.go`, ADR-009
   Claims): a plan or research claim is recorded as a `ClaimRecord` in
   `<root>/.claims/` (`Loop.ClaimsDir`) the moment it is granted and
