@@ -190,7 +190,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	// the checkout's services, started in the session's pod before its
 	// agent; the pod and its sidecars go on every way out. A required one
 	// that does not come up gives the rebase up, naming it.
-	pod, err := OpenSessionPod(ctx, r.Sandbox, dir, job.Label, harness.KindRebase, ident.Sandbox(dir), r.logf)
+	pod, err := openOrgSessionPod(ctx, r.Sandbox, r.Roots, r.Scopes, item.OrgID, dir, job.Label, harness.KindRebase, ident.Sandbox(dir), r.logf)
 	defer pod.Close() // nothing, once the harness detached the session (Session.Detach)
 	if re := RuntimeErrorOf(err); re != nil {
 		return rb.releaseRuntime(ctx, re)

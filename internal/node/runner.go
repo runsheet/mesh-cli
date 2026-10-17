@@ -511,7 +511,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	}
 	// the checkout's services, started in the session's pod before its
 	// agent; the pod and its sidecars go on every way out
-	pod, err := OpenSessionPod(ctx, r.Sandbox, dir, label, harness.KindBuild, ident.Sandbox(dir), r.logf)
+	pod, err := openOrgSessionPod(ctx, r.Sandbox, r.Roots, r.Scopes, item.OrgID, dir, label, harness.KindBuild, ident.Sandbox(dir), r.logf)
 	// a session the harness detached at the node's shutdown runs on in
 	// its pod, its services and HOME (Session.Detach makes this Close
 	// nothing): the node that adopts it removes them
@@ -1084,7 +1084,7 @@ func (r *Runner) AdoptItem(ctx context.Context, item gateway.WorkItem, s FoundSe
 	b := &buildRun{r: r, item: item, res: res, label: label, spec: spec, dir: s.State.Workspace, cred: cred, runtimes: r.runtimes(), ident: ident, model: s.State.Model, lastText: "session adopted", sessionID: s.State.SessionID, nodeID: s.State.NodeID}
 	where := fmt.Sprintf("pid %d", s.State.PID)
 	attachCtx := func(c context.Context) context.Context { return c }
-	if pod := r.adoptedPod(s); pod != nil {
+	if pod := r.adoptedPod(s, item); pod != nil {
 		// the session's pod and HOME, kept past the agent's end for the
 		// validation in it, go once the build is handed in — unless this
 		// node lets go of the session in turn
@@ -1106,18 +1106,24 @@ func (r *Runner) AdoptItem(ctx context.Context, item gateway.WorkItem, s FoundSe
 // host session, a node with no sandbox, or a HOME already gone —
 // validation then opens a fresh session of its own (validator.start),
 // and Attach's end removes what is left.
-func (r *Runner) adoptedPod(s FoundSession) *SessionPod {
+func (r *Runner) adoptedPod(s FoundSession, item gateway.WorkItem) *SessionPod {
 	if !s.Sandboxed() || r.Sandbox == nil || s.State.Home == "" {
 		return nil
 	}
 	if _, err := os.Stat(s.State.Home); err != nil {
 		return nil
 	}
+	// the adopted session's own org's store, as its Open had (orgSandbox)
+	sb, err := orgSandbox(r.Sandbox, r.Roots, r.Scopes, item.OrgID)
+	if err != nil {
+		r.logf("item %s: adopted pod: package store: %v; validating in a fresh session", s.State.Label, err)
+		return nil
+	}
 	var sess *sandbox.Session
 	if s.standingPod() {
-		sess = r.Sandbox.Reattach(sandbox.Pod{Name: s.State.Pod}, s.State.Home, s.State.Label)
+		sess = sb.Reattach(sandbox.Pod{Name: s.State.Pod}, s.State.Home, s.State.Label)
 	} else {
-		sess = r.Sandbox.ReattachHome(s.State.Pod, s.State.Home, s.State.Label)
+		sess = sb.ReattachHome(s.State.Pod, s.State.Home, s.State.Label)
 	}
 	return &SessionPod{Session: sess, logf: r.logf}
 }

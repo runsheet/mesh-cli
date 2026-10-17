@@ -418,7 +418,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	// service that does not come up leaves it unevaluated, and the loop
 	// does not try again while that holds; a missing optional one is in
 	// the verdict's notes.
-	pod, err := OpenSessionPod(ctx, e.Sandbox, dir, job.Label, harness.KindEvaluate, sandbox.GitIdentity{}, e.logf)
+	pod, err := openOrgSessionPod(ctx, e.Sandbox, e.Roots, e.Scopes, item.OrgID, dir, job.Label, harness.KindEvaluate, sandbox.GitIdentity{}, e.logf)
 	defer pod.Close() // nothing, once the harness detached the session (Session.Detach)
 	if re := RuntimeErrorOf(err); re != nil {
 		return e.runtimeNoVerdict(ctx, evalRun{item: item, res: res, label: label, model: model, fam: fam, dir: dir, acct: acct}, re, harness.Result{})

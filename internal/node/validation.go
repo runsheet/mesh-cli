@@ -263,7 +263,12 @@ func (vr validator) start(ctx context.Context, t validationTarget) (*buildValida
 		if t.job != nil {
 			git = sandbox.GitIdentityFromEnv(t.job.Env)
 		}
-		s, err := vr.Sandbox.Open(t.label, "validate", git)
+		osb, err := orgSandbox(vr.Sandbox, vr.Roots, vr.Scopes, t.item.OrgID)
+		if err != nil {
+			removeScratch()
+			return nil, fmt.Errorf("package store: %w", err)
+		}
+		s, err := osb.Open(t.label, "validate", git)
 		if err != nil {
 			removeScratch()
 			return nil, err

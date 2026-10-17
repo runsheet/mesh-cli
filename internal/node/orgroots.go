@@ -23,6 +23,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"projectmesh.io/mesh-cli/internal/sandbox"
 )
 
 // OrgsDirName is the per-org roots' parent under ~/.mesh.
@@ -291,4 +293,22 @@ func scratchRootFor(roots *OrgRootSet, scopes Scopes, orgID, workRoot string) (s
 		return "", err
 	}
 	return r.Scratch, nil
+}
+
+// orgSandbox is the sandbox a session of orgID opens its pod on: sb
+// itself — today's one ~/.mesh/store — when no roots are laid out or the
+// node serves one org, else sb on that org's own store
+// (PackageStores(roots.Store), sandbox.WithStores), so its pod mounts
+// and its env names only its org's pnpm store and npm cache. An org the
+// node does not serve is refused, never given another org's store. A nil
+// sb is nil.
+func orgSandbox(sb *sandbox.Sandbox, roots *OrgRootSet, scopes Scopes, orgID string) (*sandbox.Sandbox, error) {
+	if sb == nil || roots == nil || roots.Single() {
+		return sb, nil
+	}
+	r, err := roots.ForOrgID(scopes, orgID)
+	if err != nil {
+		return nil, err
+	}
+	return sb.WithStores(PackageStores(r.Store)), nil
 }

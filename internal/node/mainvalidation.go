@@ -294,7 +294,7 @@ func (r *Runner) validateCheckout(ctx context.Context, t validationTarget, c mai
 		// no validate.yml on the commit is nothing to attest: the caller's
 		return validate.Attestation{}, err
 	}
-	pod, err := OpenSessionPod(ctx, r.Sandbox, dir, t.label, CandidateKind, sandbox.GitIdentity{}, r.logf)
+	pod, err := openOrgSessionPod(ctx, r.Sandbox, r.Roots, r.Scopes, t.item.OrgID, dir, t.label, CandidateKind, sandbox.GitIdentity{}, r.logf)
 	defer pod.Close()
 	if err != nil {
 		return validate.Attestation{}, err

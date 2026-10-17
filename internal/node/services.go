@@ -22,6 +22,17 @@ type SessionPod struct {
 	logf func(string, ...any)
 }
 
+// openOrgSessionPod is OpenSessionPod on the sandbox of the org whose
+// id is orgID (orgSandbox): the session's pod mounts and names its own
+// org's package store. An org the node does not serve opens nothing.
+func openOrgSessionPod(ctx context.Context, sb *sandbox.Sandbox, roots *OrgRootSet, scopes Scopes, orgID, dir, label string, kind harness.Kind, git sandbox.GitIdentity, logf func(string, ...any)) (*SessionPod, error) {
+	osb, err := orgSandbox(sb, roots, scopes, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("package store: %w", err)
+	}
+	return OpenSessionPod(ctx, osb, dir, label, kind, git, logf)
+}
+
 // OpenSessionPod resolves the services the checkout at dir declares
 // (sandbox.Resolve on the node's registries) and starts them in the
 // session's pod. A nil sandbox (`sandbox: off`) is a nil pod: no
