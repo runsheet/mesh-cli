@@ -139,3 +139,15 @@ build of two hours started late in a token's life was certain to.
   the handful from bad clients are read by
   `scripts/mcp-auth-reading.sh` (item 4, `docs/mcp-auth-reading.md`)
   once this ships.
+
+## Amendment 2026-10-17: a build's file holds its own session's bearer
+
+[ADR-035](adr-035-a-session-reads-mesh-context-on-its-own-bearer.md):
+a build session's token file is kept from the id token of its own mesh
+session (runsheet ADR 056, `POST /mesh/v1/sessions`), not from
+`gateway.Client.Bearer`, and sits under its org's MCP root
+(`~/.mesh/orgs/<org>/mcp/sessions/<item>-<attempt>/`) on the host; each
+kept file refreshes from its own source alone. The machine bearer stays
+the source of every other session kind's file, and of a build's on a
+one-org node whose platform opens no mesh sessions; a node serving
+several orgs on such a platform releases the build instead.

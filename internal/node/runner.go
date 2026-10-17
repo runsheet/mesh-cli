@@ -95,6 +95,10 @@ type Runner struct {
 	Credentials *Credentials
 	// ProgressEvery is how often progress is reported (60 s).
 	ProgressEvery time.Duration
+	// Bearers opens each build's mesh session for its own runsheet
+	// bearer (ADR-035); nil keeps every session on the token keeper's
+	// machine bearer.
+	Bearers *SessionBearers
 	// Fallback is the node's one old-platform notice (nil: every item).
 	Fallback *TokenFallback
 	// BatchFallback is its merge batch candidates' notice, a platform
@@ -490,6 +494,23 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	acct.SetLabel("item "+label, string(harness.KindBuild))
 	acct.Apply(&job)
 	job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts, TempDirs: sessionTempDirs(job, acct)}
+	// the session's runsheet reads on its own mesh session's bearer, its
+	// token file under its org's MCP root, never the machine's bearer
+	// on a node serving several orgs (ADR-035)
+	unbind, err := r.bindSessionBearer(ctx, item, sc.NodeID, &job)
+	if err != nil {
+		reason := err.Error()
+		r.logf("item %s: %s; released", label, reason)
+		if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason); rerr != nil {
+			r.logf("item %s: release: %v", label, rerr)
+		}
+		return nil
+	}
+	defer unbind()
+	if job.TokenDir != "" {
+		tokenDir := job.TokenDir
+		defer unlessDetached(ctx, func() { RemoveTokenDir(tokenDir) })
+	}
 	// the item's tools, beside the built-in runsheet: a required one this
 	// node cannot start hands the item back for a node that can
 	runtimes := r.runtimes()
@@ -1092,6 +1113,14 @@ func (r *Runner) AdoptItem(ctx context.Context, item gateway.WorkItem, s FoundSe
 		attachCtx = harness.WithPodKept
 		defer unlessDetached(ctx, pod.Close)
 	}
+	// the adopted session's token file is kept from its own mesh
+	// session's bearer again: a second open of the claim replaces the
+	// bearer the last node held (ADR-035)
+	unbind, err := r.Bearers.Open(ctx, item, s.State.NodeID)
+	if err != nil {
+		r.logf("item %s: adopted session's own bearer: %v", label, err)
+	}
+	defer unbind()
 	r.logf("item %s: adopted its %s session (%s, from byte %d)", label, s.Liveness(), where, s.State.Offset)
 	result, runErr := b.run(ctx, func(sctx context.Context, onProgress func(harness.Progress)) (harness.Result, error) {
 		return at.Attach(attachCtx(sctx), s.Dir, onProgress)
@@ -1223,4 +1252,19 @@ func (r *Runner) retryChangedPaths(ctx context.Context, label, dir, base, def st
 		r.logf("item %s: retry turn: base %s is gone (merged); changed paths from origin/%s", label, base, from)
 	}
 	return paths
+}
+
+// bindSessionBearer opens the mesh session of item's claim and binds its
+// bearer for the build's token file (SessionBearers.Open), and names the
+// file's directory under the item's org's MCP root on job (ADR-035). Its
+// error is the release's reason: a node serving several orgs on a
+// platform that opens no mesh sessions, or a session the platform would
+// not open.
+func (r *Runner) bindSessionBearer(ctx context.Context, item gateway.WorkItem, nodeID string, job *harness.Job) (func(), error) {
+	if r.Roots != nil {
+		if roots, err := r.Roots.ForOrgID(r.Scopes, item.OrgID); err == nil && roots.MCP != "" {
+			job.TokenDir = MeshSessionTokenDir(roots.MCP, item.ID, item.Attempts)
+		}
+	}
+	return r.Bearers.Open(ctx, item, nodeID)
 }

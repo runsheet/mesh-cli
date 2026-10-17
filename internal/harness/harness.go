@@ -103,6 +103,11 @@ type Job struct {
 	// the work dir (sessionunit.State) so a later node process can adopt
 	// it. Optional: a job without it still runs, its state file thinner.
 	Meta SessionMeta
+	// TokenDir, when set, is where a host session's runsheet token file
+	// goes in place of its own session directory: its org's MCP root
+	// (mesh-cli ADR-035). A pod's file stays in the pod's HOME, the only
+	// place the pod can read it.
+	TokenDir string
 	// tokenFile is the session's runsheet token file once the
 	// harness placed it (placeMeshContext), for its state.json.
 	tokenFile string

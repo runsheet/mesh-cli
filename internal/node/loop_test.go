@@ -227,6 +227,8 @@ type fakeHarness struct {
 	// workCalls are the mesh-work tool inputs a run reports
 	// (Result.WorkCalls, ADR-023).
 	workCalls map[string]map[string]any
+	// onRun, when set, is told each job as its run starts.
+	onRun func(harness.Job)
 }
 
 func (h *fakeHarness) Name() string { return "claude-code" }
@@ -240,7 +242,11 @@ func (h *fakeHarness) Run(ctx context.Context, job harness.Job, on func(harness.
 	if len(h.texts) > 0 {
 		text, h.texts = h.texts[0], h.texts[1:]
 	}
+	onRun := h.onRun
 	h.mu.Unlock()
+	if onRun != nil {
+		onRun(job)
+	}
 	if on == nil {
 		on = func(harness.Progress) {}
 	}

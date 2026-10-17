@@ -28,7 +28,7 @@ import (
 // {window, percent}; a tool {id, slug, name, kind, need,
 // url, command, args, runtime, builtin, builtIn, account, headers, env}
 // with headers and env as [{name, value} | {name, source}]. The node
-// is not named: the platform knows it from the bearer.
+// is named by NodeIDHeader (Session's nodeID), beside the bearer.
 
 // sessionFields is the pair of fields and the argument a session ref's
 // subject is read with.
@@ -68,11 +68,13 @@ func (c *Client) SessionCredentials(ctx context.Context, ref SessionRef, nodeID 
 // platform without the credentials field answers IsUnsupported, and the
 // node falls back to node.yaml's accounts; one without the tools field
 // is asked for the credentials alone from then on, and the session gets
-// no console tools. nodeID is kept for the interface: the platform
-// knows the node from the bearer. No error, log line or report carries
+// no console tools. nodeID is the node holding the claim, sent on the
+// read as NodeIDHeader: one machine credential may stand for several
+// node ids, one per served org, so the bearer alone does not say which
+// node asks (mesh-cli ADR-035). No error, log line or report carries
 // a secret.
 func (c *Client) Session(ctx context.Context, ref SessionRef, nodeID string) (*Session, error) {
-	_ = nodeID
+	ctx = withNodeID(ctx, nodeID)
 	f, err := fieldsFor(ref)
 	if err != nil {
 		return nil, err
