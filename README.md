@@ -2125,8 +2125,10 @@ research or a rebase session — runs in its own rootless **Podman** pod
 (mesh-specs ADR 007; `internal/sandbox/`), created when the session
 starts and removed when it ends. Build, evaluate and rebase sessions
 get their repository's services beside them in the pod (see
-[Services](#services)). Channel-mode sessions and Codex do not run in
-one yet.
+[Services](#services)). A Codex session — an evaluation, its preflight
+and the second opinion — runs in its pod too, from the image's `codex`
+(see [Codex on a node](#codex-on-a-node)). Channel-mode sessions do not
+run in one yet.
 
 - **Runtime.** `podman` on the node's `PATH`, rootless (the operator
   needs a subuid/subgid range, and the `cpu`, `memory` and `pids` cgroup
@@ -2143,13 +2145,16 @@ one yet.
   path, and a fresh temporary HOME (removed after the session) holding
   the `--mcp-config` file, `CLAUDE_CONFIG_DIR` (`$HOME/.claude`), an
   empty `GH_CONFIG_DIR` (`$HOME/.config/gh`) and a `.gitconfig` with the
-  operator's commit identity. Never the operator's home, `~/.mesh`, a
-  runner's directory or a container socket.
+  operator's commit identity — and, for a Codex session, its
+  `CODEX_HOME` at `$HOME/.codex` with the session's `config.toml` and
+  the issued credential's `auth.json`. Never the operator's home,
+  `~/.mesh`, a runner's directory or a container socket.
 - **Environment.** Built from an allow-list, never inherited:
   `PATH`, `HOME`, `LANG`, `TZ`, `TERM`, `CLAUDE_CONFIG_DIR`,
   `MESH_ITEM`, `MESH_SESSION_KIND`, `DISABLE_AUTOUPDATER=1`, and of what the node gave the
   session: `GH_TOKEN`, `GH_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN` or
-  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CODEX_API_KEY`,
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CODEX_API_KEY`, `CODEX_HOME`
+  (moved under the session's HOME),
   `MESH_ACCOUNT` and the tool secrets `MESH_TOOL_*`. Values reach
   podman through its own environment (`--env NAME`), never its command
   line. A sandboxed session has no operator login to fall back on: it
@@ -2545,8 +2550,11 @@ the other family by the rule below
 **The node's family choice** (ADR-011): before an evaluation starts, the node
 judges headroom across the issued Codex credentials and the Claude accounts and
 prefers Codex when an issued Codex credential has headroom for the item's priority.
-`mesh node start` says so in node.log: `codex: evaluations on Codex when an
-issued Codex credential has headroom, else on Claude`.
+`mesh node start` says once where its Codex comes from: `codex: evaluations on
+Codex from the node image (codex 0.157.0) when an issued Codex credential has
+headroom, else on Claude; …` on a sandboxed node, `… from the host binary <path>
+…` with the sandbox off, or `codex: no Codex evaluations: <why>` when neither
+has it.
 A planner may pin an item's evaluator to a family through the agent model;
 a pinned family with no headroom waits (not claimed, not failed).
 
@@ -2565,6 +2573,11 @@ path` or `evaluators: two — <reason>`.
 
 ### Install the CLI
 
+**A sandboxed node needs none**: its Codex sessions run in their pods
+from the node image's `codex` (ADR-007's amendment 2026-10-17), the
+preflight there too, and a host `codex` is never used. Install the CLI
+on the host only for a node with `sandbox: off`.
+
 Verified with **codex-cli 0.157.0**. With Node.js:
 
 ```bash
@@ -2580,8 +2593,10 @@ every session starts with a `Code Mode is unavailable` warning.
 
 ### The sandbox on Ubuntu
 
-Codex runs on the host, not in the node's pod (ADR 007), and its
-workspace-write sandbox is its own bundled bubblewrap. On Ubuntu with
+With `sandbox: off` Codex runs on the host, and its
+workspace-write sandbox is its own bundled bubblewrap. (On a sandboxed
+node it runs in the session's pod and the probe below runs there, `node`
+binding the socket in place of `mesh sandbox-probe`.) On Ubuntu with
 `kernel.apparmor_restrict_unprivileged_userns = 1` (the default since
 23.10) that bubblewrap cannot set up its network namespace and fails
 with `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`.
