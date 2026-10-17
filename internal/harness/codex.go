@@ -49,10 +49,11 @@ type Codex struct {
 	HomeRoot string
 	// WorkRoot is the node's work root (node.WorkRoot()); when set, Run
 	// keeps the session's whole event stream and stderr under
-	// WorkRoot/kept-sessions (KeepSessionOutput, openKeptSession) and
-	// sweeps directories older than that on every run
-	// (SweepKeptSessions). Empty keeps nothing: the stream lives only in
-	// the 64KB in-memory buffer, as before.
+	// WorkRoot/kept-sessions (KeepSessionOutput, openKeptSession) — or
+	// the job's own KeptRoot, its org's, when it names one — and sweeps
+	// directories older than that there on every run
+	// (SweepKeptSessions). Both empty keeps nothing: the stream lives
+	// only in the 64KB in-memory buffer, as before.
 	WorkRoot string
 	// Probe is the command the preflight's sandbox probe runs inside
 	// Codex's sandbox (SandboxProbe); nil is this executable's
@@ -799,15 +800,17 @@ type keptCodex struct {
 	redactors []*streamRedactor
 }
 
-// keepSession opens the session's kept files under WorkRoot, sweeping
-// older ones first; a failure keeps nothing and says so.
+// keepSession opens the session's kept files under the job's kept dir
+// (keptDir: its KeptRoot, else WorkRoot/kept-sessions), sweeping older
+// ones there first; a failure keeps nothing and says so.
 func (c *Codex) keepSession(job Job, secrets []string) *keptCodex {
 	k := &keptCodex{secrets: secrets}
-	if c.WorkRoot == "" {
+	kept := keptDir(c.WorkRoot, job)
+	if kept == "" {
 		return k
 	}
 	now := time.Now()
-	if err := SweepKeptSessions(c.WorkRoot, now); err != nil && c.Stderr != nil {
+	if err := SweepKeptSessions(kept, now); err != nil && c.Stderr != nil {
 		fmt.Fprintf(c.Stderr, "harness codex: sweep kept sessions: %v\n", err)
 	}
 	var err error

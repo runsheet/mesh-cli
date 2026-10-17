@@ -631,7 +631,7 @@ func TestSweepKeptSessions(t *testing.T) {
 	}
 	old := mkKept("old-1", now.Add(-25*time.Hour))
 	young := mkKept("young-1", now.Add(-1*time.Hour))
-	if err := SweepKeptSessions(root, now); err != nil {
+	if err := SweepKeptSessions(filepath.Join(root, keptSessionsDir), now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(old); !os.IsNotExist(err) {
@@ -639,6 +639,51 @@ func TestSweepKeptSessions(t *testing.T) {
 	}
 	if _, err := os.Stat(young); err != nil {
 		t.Fatalf("young kept dir was removed: %v", err)
+	}
+}
+
+// A job naming its org's KeptRoot keeps its note, output.jsonl and
+// stderr.log there alone: nothing under another org's Kept root, nor
+// under WorkRoot/kept-sessions (ADR-034).
+func TestOpenKeptSessionWritesUnderTheJobsOrgKeptRoot(t *testing.T) {
+	work := t.TempDir()
+	keptA := filepath.Join(t.TempDir(), "orgs", "a", "work", "kept-sessions")
+	keptB := filepath.Join(t.TempDir(), "orgs", "b", "work", "kept-sessions")
+	if err := os.MkdirAll(keptB, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	job := Job{Kind: KindEvaluate, Label: "g/3 evaluate", KeptRoot: keptA, Meta: SessionMeta{ItemID: "item-a"}}
+	dir, out, errf, err := openKeptSession(work, job, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out.Close()
+	errf.Close()
+	if filepath.Dir(dir) != keptA {
+		t.Fatalf("kept dir %s is not under org A's %s", dir, keptA)
+	}
+	for _, f := range []string{sessionunit.StateFile, sessionunit.OutputFile, sessionunit.StderrFile} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			t.Fatalf("%s not under org A's kept root: %v", f, err)
+		}
+	}
+	if entries, _ := os.ReadDir(keptB); len(entries) != 0 {
+		t.Fatalf("org B's kept root holds %d entries", len(entries))
+	}
+	if _, err := os.Stat(filepath.Join(work, keptSessionsDir)); !os.IsNotExist(err) {
+		t.Fatalf("WorkRoot/kept-sessions exists (err %v)", err)
+	}
+
+	// Unset, it falls back to WorkRoot/kept-sessions.
+	job.KeptRoot = ""
+	dir, out, errf, err = openKeptSession(work, job, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out.Close()
+	errf.Close()
+	if filepath.Dir(dir) != filepath.Join(work, keptSessionsDir) {
+		t.Fatalf("kept dir %s is not under WorkRoot/kept-sessions", dir)
 	}
 }
 
