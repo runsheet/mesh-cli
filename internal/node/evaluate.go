@@ -333,7 +333,11 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	model := fam.model
 	budget, budgetSource := e.budgetWithSource(res.Goal, model)
 	e.logf("item %s: evaluate budget $%.2f (%s)", label, budget, budgetSource)
-	job := harness.Job{Kind: harness.KindEvaluate, Workspace: dir, Prompt: harness.EvaluatePrompt(in), MaxBudgetUSD: budget, Label: label + " evaluate", Timeout: e.Timeout, MCPServers: e.MCP, Model: model}
+	kept, err := keptRootFor(e.Roots, e.Scopes, item.OrgID)
+	if err != nil {
+		return err
+	}
+	job := harness.Job{Kind: harness.KindEvaluate, Workspace: dir, Prompt: harness.EvaluatePrompt(in), MaxBudgetUSD: budget, Label: label + " evaluate", Timeout: e.Timeout, MCPServers: e.MCP, Model: model, KeptRoot: kept}
 	if tok := cred.Token(); tok != nil {
 		ghDir, err := NewGHConfigDir()
 		if err != nil {

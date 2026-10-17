@@ -207,6 +207,52 @@ func TestARebaseWhoseRepoCacheIsLockedIsReleasedAsInfrastructure(t *testing.T) {
 	}
 }
 
+// A rebase whose own worktree cannot be made (ADR-028, A rebase gets its
+// own worktree) runs no session and is released as an infrastructure
+// hold — attempts unchanged, held off this node — never failed: no
+// FailWorkItemRebase, no FailWorkItem, and the token never written into
+// anything (ADR-024).
+func TestARebaseWhoseWorktreeCannotBeMadeIsReleasedAsInfrastructure(t *testing.T) {
+	f := seed(t)
+	requestRebase(f, item1, "mesh/ship-it-1")
+	f.WorkItems[item1]["attempts"] = 2
+	ws := &fakeWS{root: t.TempDir(), rebaseErr: errors.New("git worktree add --quiet --detach /home/mesh/.mesh/work/ship-it/1-rebase refs/remotes/origin/mesh/ship-it-1: exit status 128: error: could not lock config file /home/mesh/.mesh/repos/acme/widgets/.git/config: File exists")}
+	h := &fakeHarness{}
+	var logs strings.Builder
+	loop, _ := rebaseNodeOn(t, f, "test-node", h, ws, ws.root, &logs)
+	rec := &releaseRecorder{Gateway: loop.GW}
+	loop.Declines = &Declines{}
+	rb := &Rebaser{Credentials: testCreds(rec), GW: rec, Harness: h, WS: ws, Scopes: loop.Scopes, WorkRoot: ws.root, ProgressEvery: time.Hour, Declines: loop.Declines, Log: log.New(&logs, "", 0)}
+	loop.Rebase = func(ctx context.Context, item gateway.WorkItem) { _ = rb.Rebase(ctx, item) }
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	loop.Tick(ctx)
+	loop.wg.Wait()
+
+	if len(h.jobs) != 0 {
+		t.Fatalf("a session ran: %d", len(h.jobs))
+	}
+	infraReleaseOK(t, rec, f)
+	if !strings.HasPrefix(rec.releases[0], "infrastructure: workspace: git worktree add") {
+		t.Fatalf("release reason = %q", rec.releases[0])
+	}
+	if n := len(f.CallsNamed("failWorkItemRebase")); n != 0 {
+		t.Fatalf("failWorkItemRebase called %d time(s)\n%s", n, logs.String())
+	}
+	if len(ws.authorized) != 0 || len(ws.prepared) != 0 {
+		t.Fatalf("the token went into a checkout: authorized %v, prepared %v", ws.authorized, ws.prepared)
+	}
+	if it := f.Item(item1); asInt(it["attempts"]) != 2 {
+		t.Fatalf("row: %v", it)
+	}
+	if !loop.Declines.Holds(item1, nil, time.Now()) {
+		t.Fatal("the rebase must be held off this node")
+	}
+	if ev := strings.Join(ws.Events(), ","); ev != "rebase-worktree mesh/ship-it-1,remove 1-rebase" {
+		t.Fatalf("workspace events: %s", ev)
+	}
+}
+
 // A token the platform refuses is not the node's fault: no
 // *WorkspaceError, and the build is failed as before.
 func TestATokenRefusalIsNoWorkspaceError(t *testing.T) {
