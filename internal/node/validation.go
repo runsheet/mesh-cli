@@ -128,6 +128,10 @@ type validationTarget struct {
 	// base's place: a merged item's merge commit is diffed against its
 	// first parent, since main already holds it (mainvalidation.go).
 	diffFrom string
+	// served, set, is a commit materialised from GitHub's served diff
+	// at dir (serveddiff.go): no git there, so its changed paths are the
+	// compare's, its head and tree the ones read and checked.
+	served *servedTree
 }
 
 func (r *Runner) validator() validator {
@@ -309,6 +313,9 @@ func (vr validator) run(ctx context.Context, t validationTarget, v *buildValidat
 	if err != nil {
 		return validate.Attestation{}, err
 	}
+	if t.served != nil {
+		return vr.runServed(ctx, t, v, cfg)
+	}
 	changed, from, err := vr.changedPaths(ctx, t)
 	var te *fetchTokenError
 	if errors.As(err, &te) {
@@ -330,6 +337,24 @@ func (vr validator) run(ctx context.Context, t validationTarget, v *buildValidat
 	if err != nil {
 		return validate.Attestation{}, err
 	}
+	return vr.runSteps(ctx, t, v, cfg, changed, head, func(results []validate.StepResult, meta validate.Meta) (validate.Attestation, error) {
+		return validate.Build(t.dir, head, results, meta)
+	})
+}
+
+// runServed is run on a served checkout: the compare's paths select the
+// suites, and the attestation names the head and tree read from GitHub.
+func (vr validator) runServed(ctx context.Context, t validationTarget, v *buildValidation, cfg validate.Config) (validate.Attestation, error) {
+	s := t.served
+	return vr.runSteps(ctx, t, v, cfg, s.changed, s.head, func(results []validate.StepResult, meta validate.Meta) (validate.Attestation, error) {
+		return validate.BuildWithTree(t.dir, s.head, s.tree, results, meta)
+	})
+}
+
+// runSteps runs the suites changed selects on head and builds, keeps
+// and writes the run's attestation by build.
+func (vr validator) runSteps(ctx context.Context, t validationTarget, v *buildValidation, cfg validate.Config, changed []string, head string,
+	build func([]validate.StepResult, validate.Meta) (validate.Attestation, error)) (validate.Attestation, error) {
 	steps := validate.Select(cfg, changed)
 	names := make([]string, len(steps))
 	for i, s := range steps {
@@ -346,7 +371,7 @@ func (vr validator) run(ctx context.Context, t validationTarget, v *buildValidat
 	}
 	meta := v.meta
 	meta.SessionID = t.session()
-	att, err := validate.Build(t.dir, head, results, meta)
+	att, err := build(results, meta)
 	if err != nil {
 		return att, err
 	}
