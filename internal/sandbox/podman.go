@@ -176,16 +176,25 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// mountsHold says whether dir is a mount's target or inside one.
+// mountsHold says whether dir is writable in the pod: the deepest mount
+// whose target is dir or holds it is read-write.
 func mountsHold(mounts []Mount, dir string) bool {
 	dir = filepath.Clean(dir)
+	best, held := -1, false
 	for _, m := range mounts {
 		t := filepath.Clean(m.Target)
-		if !m.ReadOnly && (dir == t || strings.HasPrefix(dir, t+string(filepath.Separator))) {
-			return true
+		if dir == t || strings.HasPrefix(dir, t+string(filepath.Separator)) {
+			if d := mountDepth(m); d > best {
+				best, held = d, !m.ReadOnly
+			}
 		}
 	}
-	return false
+	return held
+}
+
+// mountDepth is how many path elements a mount's target has.
+func mountDepth(m Mount) int {
+	return strings.Count(filepath.Clean(m.Target), string(filepath.Separator))
 }
 
 // agentArgs are the agent's `podman run` flags up to its image: mode is
@@ -198,6 +207,11 @@ func agentArgs(mode string, pod Pod, spec AgentSpec, mounts []Mount) []string {
 	if spec.TimeoutSeconds > 0 {
 		args = append(args, "--timeout", strconv.Itoa(spec.TimeoutSeconds))
 	}
+	// A mount nested in another (a worktree's own entry inside the
+	// read-only .git/worktrees inside the common dir) must come after
+	// it so the deeper one wins: shallowest target first, else as given.
+	mounts = append([]Mount(nil), mounts...)
+	sort.SliceStable(mounts, func(i, j int) bool { return mountDepth(mounts[i]) < mountDepth(mounts[j]) })
 	for _, m := range mounts {
 		opt := "rw"
 		if m.ReadOnly {
