@@ -142,6 +142,142 @@ func TestBuildCommitsWithEveryPairer(t *testing.T) {
 	}
 }
 
+// commitBody is rev's whole message.
+func commitBody(t *testing.T, dir, rev string) string {
+	t.Helper()
+	cmd := exec.Command("git", "log", "-1", "--format=%B", rev)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
+}
+
+// assertNoClaudeTrailer fails when rev's message carries a Claude
+// Co-Authored-By in any case.
+func assertNoClaudeTrailer(t *testing.T, dir, rev string) {
+	t.Helper()
+	if body := commitBody(t, dir, rev); strings.Contains(strings.ToLower(body), "co-authored-by: claude") {
+		t.Fatalf("%s carries a Claude trailer:\n%s", rev, body)
+	}
+}
+
+// A Claude trailer the session typed itself is dropped by the hook,
+// whatever its case: GitHub's squash merges write `Co-authored-by:`
+// (ADR-024's amendment 2026-10-15).
+func TestBuildCommitDropsClaudeCoAuthorTrailer(t *testing.T) {
+	_, h, _ := identityRunner(t, nil, false,
+		"turn 1\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
+		"turn 2\n\nCo-authored-by: Claude Sonnet 5 <noreply@anthropic.com>")
+	dir := h.jobs[0].Workspace
+	for rev, subject := range map[string]string{"HEAD~1": "turn 1", "HEAD": "turn 2"} {
+		if got := commitLine(t, dir, rev); got != agentMini {
+			t.Fatalf("%s: %q, want %q", rev, got, agentMini)
+		}
+		if got := strings.TrimSpace(commitBody(t, dir, rev)); got != subject {
+			t.Fatalf("%s: message %q, want %q", rev, got, subject)
+		}
+	}
+}
+
+// The pairer's trailer stays beside a dropped Claude one — a pairer
+// named Claude too, whose email is not Anthropic's noreply.
+func TestBuildCommitKeepsPairerTrailerBesideDroppedClaude(t *testing.T) {
+	_, h, _ := identityRunner(t, []Pairer{{Name: "Ann", Email: "ann@example.com"}, {Name: "Claude Monet", Email: "claude@example.com"}}, false,
+		"turn 1\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>")
+	dir := h.jobs[0].Workspace
+	want := agentMini + "Co-Authored-By: Ann <ann@example.com>\nCo-Authored-By: Claude Monet <claude@example.com>"
+	if got := commitLine(t, dir, "HEAD"); got != want {
+		t.Fatalf("HEAD: %q, want %q", got, want)
+	}
+	if body := commitBody(t, dir, "HEAD"); strings.Contains(body, "noreply@anthropic.com") {
+		t.Fatalf("HEAD keeps Claude's trailer:\n%s", body)
+	}
+}
+
+// End to end: the build session is started with item 1's attribution
+// settings, and the commit it makes typing Claude's trailer anyway
+// carries none.
+func TestBuildSessionCommitCarriesNoCoAuthorClaude(t *testing.T) {
+	_, h, _ := identityRunner(t, nil, false,
+		"build it\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>")
+	job := h.jobs[0]
+	s := settingsOf(t, (&harness.ClaudeCode{}).Args(job))
+	at, _ := s["attribution"].(map[string]any)
+	if at == nil || at["commit"] != "" || at["pr"] != "" || at["sessionUrl"] != false {
+		t.Fatalf("attribution = %v, want commit \"\", pr \"\", sessionUrl false", s["attribution"])
+	}
+	assertNoClaudeTrailer(t, job.Workspace, "HEAD")
+	if got := commitLine(t, job.Workspace, "HEAD"); got != agentMini {
+		t.Fatalf("HEAD: %q, want %q", got, agentMini)
+	}
+}
+
+// identifiedClone is a clone of a fresh origin whose checkout Git.Identify
+// has made the agent's.
+func identifiedClone(t *testing.T, id Identity) (origin, dir string) {
+	t.Helper()
+	origin = originRepo(t, nil)
+	dir = filepath.Join(t.TempDir(), "w")
+	gitRun(t, filepath.Dir(dir), "clone", "--quiet", origin, dir)
+	if err := (&Git{}).Identify(context.Background(), dir, id); err != nil {
+		t.Fatal(err)
+	}
+	return origin, dir
+}
+
+// The node's own Git.Commit goes through the same hook: a message
+// carrying Claude's trailer is committed without it.
+func TestNodeCommitDropsClaudeCoAuthorTrailer(t *testing.T) {
+	name, email := AgentIdentity("builder", "mini")
+	_, dir := identifiedClone(t, Identity{Name: name, Email: email})
+	writeFiles(t, dir, map[string]string{"api/node.go": "package api // node\n"})
+	if err := (&Git{}).Commit(context.Background(), dir, []string{"api/node.go"}, "node\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(commitBody(t, dir, "HEAD")); got != "node" {
+		t.Fatalf("HEAD: message %q, want %q", got, "node")
+	}
+}
+
+// A rebase never adds a Claude trailer, and drops one a picked commit
+// carried: git's sequencer runs prepare-commit-msg (source `message`)
+// for every commit it re-creates, so a rebase session's picks pass the
+// same hook; a pairer's trailer stays.
+func TestRebaseDropsClaudeCoAuthorTrailer(t *testing.T) {
+	name, email := AgentIdentity("rebase", "mini")
+	ann := Pairer{Name: "Ann", Email: "ann@example.com"}
+	id := Identity{Name: name, Email: email, Pairers: []Pairer{ann}}
+	origin, dir := identifiedClone(t, id)
+	// the feature commit predates the hook: made with no hooks at all
+	writeFiles(t, dir, map[string]string{"api/feature.go": "package api // feature\n"})
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "feature\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>")
+	if !strings.Contains(commitBody(t, dir, "HEAD"), "noreply@anthropic.com") {
+		t.Fatal("the feature commit was made without its Claude trailer")
+	}
+	// main moves on
+	other := filepath.Join(t.TempDir(), "o")
+	gitRun(t, filepath.Dir(other), "clone", "--quiet", origin, other)
+	writeFiles(t, other, map[string]string{"web/more.go": "package web // more\n"})
+	gitRun(t, other, "add", "-A")
+	gitRun(t, other, "commit", "--quiet", "-m", "more")
+	gitRun(t, other, "push", "--quiet", "origin", "HEAD:main")
+
+	cmd := exec.Command("git", "pull", "--quiet", "--rebase", "origin", "main")
+	cmd.Dir, cmd.Env = dir, append(os.Environ(), id.Env()...) // as the rebase session's job.Env
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("rebase: %v: %s", err, out)
+	}
+	assertNoClaudeTrailer(t, dir, "HEAD")
+	// the author is the feature commit's; the committer and the trailer
+	// are the rebase's
+	if got, want := commitLine(t, dir, "HEAD"), "|Mesh rebase (mini)|mesh-rebase+mini@runsheet.dev|"+ann.Trailer(); !strings.HasSuffix(got, want) {
+		t.Fatalf("HEAD: %q, want it to end %q", got, want)
+	}
+}
+
 // The node's owner has a global git identity; no session commit is
 // theirs — neither one on the job's env nor one that drops it and falls
 // back to the checkout's config.

@@ -34,7 +34,7 @@ func writeFile(t *testing.T, path, body string) {
 func TestDoctorReportsEachDetectedClient(t *testing.T) {
 	home := doctorHome(t, ".codex", ".cursor")
 	writeFile(t, filepath.Join(home, ".codex", "config.toml"),
-		"model = \"o3\"\n\n[mcp_servers.mesh]\ncommand = \"/bin/mesh\"\nargs = [\"mcp\"]\n")
+		"model = \"o3\"\n\n[mcp_servers.runsheet]\ncommand = \"/bin/mesh\"\nargs = [\"mcp\"]\n")
 	writeFile(t, filepath.Join(home, ".cursor", "mcp.json"),
 		`{"mcpServers": {"other": {"command": "x"}}}`)
 
@@ -54,7 +54,7 @@ func TestDoctorReportsEachDetectedClient(t *testing.T) {
 func TestDoctorReadsARemoteEntrysURL(t *testing.T) {
 	home := doctorHome(t, ".cursor")
 	writeFile(t, filepath.Join(home, ".cursor", "mcp.json"),
-		`{"mcpServers": {"mesh": {"url": "https://api.runsheet.dev/mcp"}}}`)
+		`{"mcpServers": {"runsheet": {"url": "https://api.runsheet.dev/mcp"}}}`)
 	got := Doctor(Clients(skillText), home)
 	if len(got) != 1 || got[0].Status != Configured || got[0].URL != "https://api.runsheet.dev/mcp" || got[0].Command != "" {
 		t.Fatalf("reports = %+v", got)

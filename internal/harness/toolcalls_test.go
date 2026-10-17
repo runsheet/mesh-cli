@@ -52,26 +52,34 @@ func TestParseStreamToolCalls(t *testing.T) {
 	}
 }
 
-// A session an older node started called the built-in under its old
-// name, mcp__prologue__*: adopted, its stream counts those calls for
-// prologue, which tools.IsBuiltin reads as the built-in — the alias for
-// reading, removed 2026-10-28 with this fixture
-// (stream_tool_calls_prologue.jsonl, the one kept on the old name).
-func TestParseStreamCountsTheOldBuiltinName(t *testing.T) {
-	f, err := os.Open("testdata/stream_tool_calls_prologue.jsonl")
+// aliasFixture reads testdata/<name> with each {{alias}} replaced by
+// the built-in's old name (tools.BuiltinAlias), so a fixture recorded
+// on that name is read as it was streamed.
+func aliasFixture(t *testing.T, name string) *strings.Reader {
+	t.Helper()
+	raw, err := os.ReadFile("testdata/" + name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
-	res := ParseStream(f, nil)
+	return strings.NewReader(strings.ReplaceAll(string(raw), "{{alias}}", tools.BuiltinAlias()))
+}
+
+// A session an older node started called the built-in under its old
+// name (tools.BuiltinAlias): adopted, its stream counts those calls for
+// the alias, which tools.IsBuiltin reads as the built-in — the alias
+// for reading, removed 2026-10-28 with this fixture
+// (stream_tool_calls_alias.jsonl, the one kept on the old name).
+func TestParseStreamCountsTheOldBuiltinName(t *testing.T) {
+	res := ParseStream(aliasFixture(t, "stream_tool_calls_alias.jsonl"), nil)
 	builtin := 0
 	for server, calls := range res.ToolCalls {
 		if tools.IsBuiltin(server) {
 			builtin += calls
 		}
 	}
-	if builtin != 1 || res.ToolCalls["prologue"] != 1 || res.ToolCalls["search"] != 2 {
-		t.Fatalf("ToolCalls = %v, want prologue:1 read as the built-in, search:2", res.ToolCalls)
+	alias := tools.BuiltinAlias()
+	if builtin != 1 || res.ToolCalls[alias] != 1 || res.ToolCalls["search"] != 2 {
+		t.Fatalf("ToolCalls = %v, want %s:1 read as the built-in, search:2", res.ToolCalls, alias)
 	}
 }
 
@@ -97,12 +105,12 @@ func TestParseStreamCountsDocumentsFetched(t *testing.T) {
 	}
 }
 
-// A call on prologue (the built-in's old name, tools.IsBuiltin) folds
-// into mesh-context and counts as fetched.
-func TestParseStreamFoldsPrologueIntoDocumentsFetched(t *testing.T) {
+// A call on the built-in's old name (tools.BuiltinAlias, read by
+// tools.IsBuiltin) folds into mesh-context and counts as fetched.
+func TestParseStreamFoldsTheAliasIntoDocumentsFetched(t *testing.T) {
 	stream := strings.Join([]string{
 		`{"type":"system","subtype":"init","session_id":"s-old","model":"claude-sonnet-5"}`,
-		`{"type":"assistant","session_id":"s-old","message":{"role":"assistant","content":[{"type":"tool_use","name":"mcp__prologue__mesh_document","id":"t1"}]}}`,
+		`{"type":"assistant","session_id":"s-old","message":{"role":"assistant","content":[{"type":"tool_use","name":"mcp__` + tools.BuiltinAlias() + `__mesh_document","id":"t1"}]}}`,
 		`{"type":"result","subtype":"success","session_id":"s-old","is_error":false,"result":"Done."}`,
 	}, "\n")
 	res := ParseStream(strings.NewReader(stream), nil)
@@ -187,13 +195,13 @@ func TestParseCodexStreamToolCallNoID(t *testing.T) {
 }
 
 // The Codex stream counts the same: two mesh_document calls and one
-// mesh_search on mesh-context are 3 documents fetched, a prologue call
+// mesh_search on mesh-context are 3 documents fetched, a call on the alias
 // folded into mesh-context, mesh_items on ToolNames alone.
 func TestParseCodexStreamCountsDocumentsFetched(t *testing.T) {
 	stream := strings.Join([]string{
 		`{"type":"thread.started","thread_id":"th-docs"}`,
 		`{"type":"item.completed","item":{"id":"i1","type":"mcp_tool_call","server":"mesh-context","tool":"mesh_document","status":"completed"}}`,
-		`{"type":"item.completed","item":{"id":"i2","type":"mcp_tool_call","server":"prologue","tool":"mesh_document","status":"completed"}}`,
+		`{"type":"item.completed","item":{"id":"i2","type":"mcp_tool_call","server":"` + tools.BuiltinAlias() + `","tool":"mesh_document","status":"completed"}}`,
 		`{"type":"item.completed","item":{"id":"i3","type":"mcp_tool_call","server":"mesh-context","tool":"mesh_search","status":"completed"}}`,
 		`{"type":"item.completed","item":{"id":"i4","type":"mcp_tool_call","server":"mesh-context","tool":"mesh_items","status":"completed"}}`,
 		`{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}`,
@@ -361,7 +369,7 @@ func TestToolStatReachedCountsAnswersNotStartupErrors(t *testing.T) {
 	}
 }
 
-// `prologue: not found`, as a Codex evaluation on the mini streamed it
+// `<alias>: not found` (tools.BuiltinAlias), as a Codex evaluation on the mini streamed it
 // on 2026-09-29 (v0.2.188): a mesh_document call for a slug the gateway
 // does not have, `failed` with `error` null and the server's own `not
 // found` as its result — Answered, Reached. Beside it a call Codex
@@ -369,15 +377,10 @@ func TestToolStatReachedCountsAnswersNotStartupErrors(t *testing.T) {
 // Clean nor Answered, never reached.
 func TestParseCodexStreamAnsweredNotFound(t *testing.T) {
 	fakeClock(t)
-	f, err := os.Open("testdata/codex_mcp_not_found.jsonl")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	res := ParseCodexStream(f, "gpt-6-sol", nil)
-	stat := res.Tools["prologue"]
+	res := ParseCodexStream(aliasFixture(t, "codex_mcp_not_found.jsonl"), "gpt-6-sol", nil)
+	stat := res.Tools[tools.BuiltinAlias()]
 	if stat == nil || stat.Calls != 1 || stat.Errors != 1 || stat.Answered != 1 || stat.Clean != 0 || stat.FirstError != "not found" || !stat.Reached() {
-		t.Fatalf("Tools[prologue] = %+v, want 1 call, 1 error, 1 answered, reached", stat)
+		t.Fatalf("Tools[alias] = %+v, want 1 call, 1 error, 1 answered, reached", stat)
 	}
 	refused := res.Tools["search"]
 	if refused == nil || refused.Calls != 1 || refused.Errors != 1 || refused.Answered != 0 || refused.Clean != 0 || refused.Reached() {

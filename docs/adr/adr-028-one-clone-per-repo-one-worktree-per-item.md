@@ -84,7 +84,8 @@ token on a command's `GIT_CONFIG_*` environment, a stale `config.lock`
 is removed after a minute, and a wait on the repo lock names its
 holder ([ADR-030, a session never writes the shared clone's
 config](adr-030-a-session-never-writes-the-shared-clones-config.md)). The sandbox
-mounts the clone's whole `.git` (below), so a session could read a
+mounts the clone's whole `.git` (below; `.git/worktrees` read-only but
+the session's own entry, ADR-034), so a session could read a
 sibling worktree's `config.worktree`; it is a token for the same repo,
 an hour long.
 
@@ -116,6 +117,15 @@ worktree's `.git` file resolves in the pod and commits land in the
 shared object store. Nothing else of `~/.mesh/repos` is mounted. A full
 clone's mounts are unchanged; a `GitCommonDir` error is logged and the
 full-clone list kept.
+
+**Amended 2026-10-17 by [ADR-034](adr-034-a-session-cannot-prune-the-shared-clones-worktrees.md):**
+`<common>/worktrees` is mounted again read-only over the common dir and
+the workspace's own entry, `<common>/worktrees/<id>` (`sandbox.GitDir`),
+read-write over that — the only writable path under `.git/worktrees`.
+Every other item's work tree is absent in the pod, so its entry's
+`gitdir` pointer dangles there, and a `git worktree prune` in the pod
+deleted live entries on the host, twice on dl360. Pruning stays the
+node's, on the host under the repo lock.
 
 ### One pnpm store and one npm cache per node
 

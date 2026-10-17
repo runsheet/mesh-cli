@@ -323,9 +323,9 @@ func TestCarriedTakesContextToolsAndDetailTogether(t *testing.T) {
 
 // The built-in comes first among the other servers that errored under
 // its old name too: an adopted session from an older node reports
-// prologue (tools.IsBuiltin, an alias read until 2026-10-28).
+// tools.BuiltinAlias (tools.IsBuiltin, an alias read until 2026-10-28).
 func TestUseNoteNamesTheBuiltinFirstUnderEitherName(t *testing.T) {
-	for _, name := range []string{"mesh-context", "prologue"} {
+	for _, name := range []string{"mesh-context", tools.BuiltinAlias()} {
 		res := harness.Result{Tools: map[string]*harness.ToolStat{
 			"aardvark": {Calls: 1, Errors: 1, FirstError: "down"},
 			name:       {Calls: 1, Errors: 1, FirstError: "401"},

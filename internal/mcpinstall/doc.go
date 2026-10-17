@@ -7,7 +7,7 @@
 // ["mcpServers", "mesh"] — replacing an existing value's span in place,
 // appending the entry inside its parent object, or making a minimal
 // document from an empty or absent file. UpsertTOMLTable does the same
-// for one table of a TOML file, e.g. `mcp_servers.mesh`: the span from
+// for one table of a TOML file, e.g. `mcp_servers.runsheet`: the span from
 // its header to the next header that is not one of its own subtables
 // (trailing blank and comment lines left where they are) is replaced by
 // the header and the body, else the table is appended after a blank

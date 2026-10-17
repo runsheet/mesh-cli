@@ -72,11 +72,15 @@ const Builtin = "mesh-context"
 // builtin-is-mesh-context), removed 2026-10-28.
 const builtinAlias = "prologue"
 
+// BuiltinAlias is the built-in's old name (builtinAlias), for a test or
+// a reader that must name it without spelling it out.
+func BuiltinAlias() string { return builtinAlias }
+
 // IsBuiltin reports whether name is the built-in server: mesh-context,
-// or its old name, prologue, until 2026-10-28 — for reading the stream
-// and state of a session an older node started and this one adopted.
-// Reading only: the clash check (check) refuses Builtin alone, so a
-// console tool named prologue is an ordinary tool.
+// or its old name (builtinAlias) until 2026-10-28 — for reading the
+// stream and state of a session an older node started and this one
+// adopted. Reading only: the clash check (check) refuses Builtin alone,
+// so a console tool named as the alias is an ordinary tool.
 func IsBuiltin(name string) bool {
 	return name == Builtin || name == builtinAlias
 }
