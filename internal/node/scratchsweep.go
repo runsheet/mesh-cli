@@ -60,13 +60,18 @@ func (r ScratchSweepResult) Line() string {
 	return fmt.Sprintf("scratch: swept %d dirs, %d bytes at start (%d kept)", r.Dirs, r.Bytes, r.Kept)
 }
 
-// keptPaths are every path a found session names.
+// keptPaths are every path a found session names, and the process's own
+// HOME: a session or test whose HOME is a mesh-home-* dir under /tmp (a
+// pod's HOME mounted at its host path) never has it swept from under it.
 func (s ScratchSweep) keptPaths() []string {
 	var kept []string
 	add := func(p string) {
 		if p != "" {
 			kept = append(kept, filepath.Clean(p))
 		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		add(home)
 	}
 	for _, f := range s.Found {
 		add(f.Dir)
