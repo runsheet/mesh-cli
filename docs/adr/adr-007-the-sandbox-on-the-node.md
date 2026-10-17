@@ -296,7 +296,10 @@ session's unit, below).
   nothing.
 
 The hourly cron the dl360 ran in the meantime (`/etc/cron.hourly/mesh-home-sweep`)
-has the same shape and goes once this lands there.
+has the same shape and goes once a node there runs the quartermaster:
+[ADR-034](adr-034-the-quartermaster-keeps-the-node-fit.md)'s scratch
+check runs this sweep every ten minutes, not only at start, beside the
+`/tmp` reaping that replaces `/etc/cron.d/mesh-tmp-clean`.
 
 ## Amendment 2026-10-13: the image carries Postgres and headless Chromium
 
