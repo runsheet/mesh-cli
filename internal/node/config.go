@@ -23,6 +23,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/selfupdate"
+	"projectmesh.io/mesh-cli/internal/tripline"
 )
 
 // Config is ~/.mesh/node.yaml, written by `mesh node register`. A node
@@ -186,6 +187,10 @@ type Config struct {
 	// beside it) may hold, in bytes; left out or 0,
 	// DefaultValidationCacheMaxBytes. Over it SharedCache.Enforce evicts.
 	ValidationCacheMaxBytes int64 `yaml:"validation_cache_max_bytes,omitempty"`
+	// Tripline is where the node reports its failures: dsn, and enabled
+	// (left out, on when a dsn is set). MESH_TRIPLINE_DSN overrides the
+	// dsn at load.
+	Tripline tripline.Config `yaml:"tripline,omitempty"`
 }
 
 // DefaultValidationCacheMaxBytes is the cache root's cap when node.yaml
@@ -1396,6 +1401,7 @@ func LoadConfig() (*Config, error) {
 	if c.ValidationCacheMaxBytes < 0 {
 		return nil, fmt.Errorf("%s: validation_cache_max_bytes: cannot be negative", path)
 	}
+	c.Tripline.FromEnv = strings.TrimSpace(os.Getenv(tripline.EnvDSN))
 	switch c.Owner {
 	case "", "person", "enterprise", "org":
 	default:

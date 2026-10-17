@@ -714,7 +714,15 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   containers and HOMEs (`sandbox.SweepKeeping`), and `LiveProbe.Sandbox`
   counts a sandboxed build by its container.
   `sandboxed_swap_e2e_test.go` proves an upgrade mid sandboxed build
-  finishing on the new node. Codex sessions still end with the node.
+  finishing on the new node. A Codex evaluation on a sandboxed node is
+  `Outlive` the same way (`Codex.DetachSandboxed`, `Codex.runDetached`):
+  `state.json` names `harness: codex`, the pod, container and HOME and
+  the login's `loginFile`/`loginCache` paths (`SessionMeta.LoginCache`,
+  the credential's `CodexLoginCache`), `Codex.Attach` follows the
+  container and parses the Codex stream, writes a refreshed `auth.json`
+  back and removes the pod and HOME, and `AdoptEvaluation` routes by the
+  state's adapter (`TestCodexPodSessionAdopted`); a host Codex session
+  still ends with the node.
   **Claims outlive the node too** (`claims.go`, ADR-009
   Claims): a plan or research claim is recorded as a `ClaimRecord` in
   `<root>/.claims/` (`Loop.ClaimsDir`) the moment it is granted and
@@ -1195,9 +1203,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `docs/adr/adr-011-evaluations-run-on-the-family-with-headroom.md`,
   amending `adr-005-codex-second-opinion.md`; goal
   `codex-sessions-reach-the-context-tool`): `Evaluator.Codex` is the
-  Codex harness (`codexSecondOpinion` in `nodecmd.go`: built whenever
-  the codex binary is found, with or without a `codex:` block, with no
-  account of its own) and `CodexAccounts` is
+  Codex harness (`codexSecondOpinion` in `nodecmd.go`, with or without
+  a `codex:` block, with no account of its own: on a sandboxed node from
+  the node image's codex, `Sandbox.CodexVersion`, never the host's; with
+  the sandbox off from the host binary; neither, none — logged once per
+  start by `codexSourceOf`, `codex: evaluations on Codex from the node
+  image (…)`, `… from the host binary <path> …` or `codex: no Codex
+  evaluations: <why>`; ADR-007's amendment 2026-10-17) and `CodexAccounts` is
   `Loop.CodexCandidates` — the issued Codex accounts `Known` holds and
   only those: no Codex session runs on the machine's own login, and a
   Codex job with no placed `CODEX_HOME` is refused by the harness
@@ -1689,8 +1701,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   containers, mesh pods with no running container, `mesh-home-*` dirs no
   running container mounts) and logs `sandbox: swept N homes, M pods, K
   containers at start (L homes in use)` (ADR-007's amendment
-  2026-10-10). Channel-mode sessions and Codex are not in
-  the pod yet. **A runtime that cannot start a pod at all is told apart
+  2026-10-10). A Codex session runs in its pod too
+  (`harness.Codex.Sandbox`, `runSandboxed`: the image's `codex exec`,
+  the same two mounts, CODEX_HOME at `Session.CodexHome()` inside the
+  HOME, the env by name, the preflight by `Session.Exec` in that pod;
+  ADR-007's amendment 2026-10-17, `TestCodexEvaluationInAPodE2E`).
+  Channel-mode sessions are not in the pod yet. **A runtime that cannot start a pod at all is told apart
   from the agent's own failure inside one that started fine**
   (ADR-030's amendment,
   `docs/adr/adr-034-a-node-whose-runtime-is-broken-stops-claiming.md`,
