@@ -113,6 +113,10 @@ type Evaluator struct {
 	// runtime the node lacks, so the loop does not try it again (nil:
 	// not remembered).
 	Declines *Declines
+	// RuntimeBroken is told the error when a session's pod could not
+	// start on a broken container runtime (a *sandbox.RuntimeError) and
+	// its work was handed back runtime_broken; nil tells no one.
+	RuntimeBroken func(error)
 	// Sandbox, when set, runs the session in its own pod with the
 	// services its checkout declares (as Runner.Sandbox).
 	Sandbox *sandbox.Sandbox
@@ -408,6 +412,9 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	// the verdict's notes.
 	pod, err := OpenSessionPod(ctx, e.Sandbox, dir, job.Label, harness.KindEvaluate, sandbox.GitIdentity{}, e.logf)
 	defer pod.Close() // nothing, once the harness detached the session (Session.Detach)
+	if re := RuntimeErrorOf(err); re != nil {
+		return e.runtimeNoVerdict(ctx, evalRun{item: item, res: res, label: label, model: model, fam: fam, dir: dir, acct: acct}, re, harness.Result{})
+	}
 	if err != nil {
 		return fmt.Errorf("services: %w", err)
 	}
@@ -540,6 +547,9 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	defer harness.RemoveSession(ev.dir)
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("evaluator session ran out of time (%s)", e.Timeout)
+	}
+	if re := RuntimeErrorOf(err); re != nil {
+		return e.runtimeNoVerdict(ctx, ev, re, result)
 	}
 	if err != nil {
 		return fmt.Errorf("evaluator session: %w%s", acct.RedactErr(err), keptAt(result))
