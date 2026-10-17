@@ -568,8 +568,10 @@ func (c *SharedCache) Size() (int64, error) {
 }
 
 // Enforce holds the cache root under MaxBytes: least recently used
-// trees, commits and blobs first, then `go clean -cache` on go/ when
-// the rest is not enough. Still over after both is a finding, logged
+// trees, commits and blobs first — logged once per call that evicts,
+// `cache: evicted <n> least recently used entries (<size>) to hold the
+// cap of <cap>; <size> now` — then `go clean -cache` on go/ when the
+// rest is not enough. Still over after both is a finding, logged
 // once until the cache is back under: `cache over cap: <size> of
 // <cap>`.
 func (c *SharedCache) Enforce(ctx context.Context) error {
@@ -584,6 +586,7 @@ func (c *SharedCache) Enforce(ctx context.Context) error {
 	}
 	if total > c.MaxBytes {
 		sort.Slice(entries, func(i, j int) bool { return entries[i].used.Before(entries[j].used) })
+		evicted, freed := 0, int64(0)
 		for _, e := range entries {
 			if total <= c.MaxBytes {
 				break
@@ -593,6 +596,11 @@ func (c *SharedCache) Enforce(ctx context.Context) error {
 				continue
 			}
 			total -= e.size
+			evicted++
+			freed += e.size
+		}
+		if evicted > 0 {
+			c.logf("cache: evicted %d least recently used entries (%s) to hold the cap of %s; %s now", evicted, FormatBytes(freed), FormatBytes(c.MaxBytes), FormatBytes(total))
 		}
 	}
 	goDir := filepath.Join(c.Root, "go")

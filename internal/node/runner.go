@@ -107,6 +107,10 @@ type Runner struct {
 	// limits kill it (Loop.NoteCondition, the heartbeat's reason); nil
 	// tells no one.
 	Condition func(reason string)
+	// RuntimeBroken is told the error when a session's pod could not
+	// start on a broken container runtime (a *sandbox.RuntimeError) and
+	// its work was handed back runtime_broken; nil tells no one.
+	RuntimeBroken func(error)
 	// Budgets is node.yaml's `budgets:` in force, read live (ADR 012,
 	// Loop.KindModelBudget); nil falls back to Cfg's own, read once at
 	// start.
@@ -505,6 +509,11 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	// its pod, its services and HOME (Session.Detach makes this Close
 	// nothing): the node that adopts it removes them
 	defer pod.Close()
+	if re := RuntimeErrorOf(err); re != nil {
+		// the runtime itself cannot start the pod: the node's condition,
+		// handed back, never an attempt charged (ADR-030)
+		return r.releaseRuntime(ctx, item, label, re)
+	}
 	if err != nil {
 		return r.fail(ctx, item, fmt.Errorf("services: %w", err))
 	}
@@ -806,6 +815,10 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 			r.logf("item %s: release: %v", label, rerr)
 		}
 		return nil
+	}
+	if re := RuntimeErrorOf(runErr); re != nil {
+		// the pod the harness opened could not start: handed back
+		return r.releaseRuntime(ctx, item, label, re)
 	}
 	if runErr != nil {
 		runErr = b.acct.RedactErr(runErr)

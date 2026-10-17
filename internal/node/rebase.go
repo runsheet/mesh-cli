@@ -80,7 +80,11 @@ type Rebaser struct {
 	// Declines keeps the node off an item it released as an
 	// infrastructure hold, shared with the loop (nil: no hold).
 	Declines *Declines
-	Log      *log.Logger
+	// RuntimeBroken is told the error when a session's pod could not
+	// start on a broken container runtime (a *sandbox.RuntimeError) and
+	// its work was handed back runtime_broken; nil tells no one.
+	RuntimeBroken func(error)
+	Log           *log.Logger
 }
 
 func (r *Rebaser) logf(format string, args ...any) {
@@ -181,6 +185,9 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	// that does not come up gives the rebase up, naming it.
 	pod, err := OpenSessionPod(ctx, r.Sandbox, dir, job.Label, harness.KindRebase, ident.Sandbox(dir), r.logf)
 	defer pod.Close() // nothing, once the harness detached the session (Session.Detach)
+	if re := RuntimeErrorOf(err); re != nil {
+		return rb.releaseRuntime(ctx, re)
+	}
 	if err != nil {
 		return fail(fmt.Errorf("services: %w", err))
 	}
@@ -382,6 +389,8 @@ func (r *Rebaser) afterRebase(ctx context.Context, rb *rebaseRun, acct *SessionA
 	switch {
 	case errors.Is(runErr, context.DeadlineExceeded):
 		return fail(fmt.Errorf("the rebase session ran out of time (%s)", r.Timeout))
+	case RuntimeErrorOf(runErr) != nil:
+		return rb.releaseRuntime(ctx, RuntimeErrorOf(runErr))
 	case runErr != nil:
 		return fail(fmt.Errorf("rebase session: %w", acct.RedactErr(runErr)))
 	}

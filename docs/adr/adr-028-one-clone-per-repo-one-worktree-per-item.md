@@ -179,3 +179,26 @@ item takes the worktree path.
   whole clone's did before.
 - In a pod the package store saves downloads, not disk, until a mount
   layout lets pnpm hardlink without exposing other items.
+
+## Amendment 2026-10-17: validations of pushed commits take no worktree
+
+Goal `a-node-validates-from-a-served-diff-with-a-shared-cache`,
+[ADR-034](adr-034-a-node-validates-from-a-served-diff-with-a-shared-cache.md).
+A main validation — a merge batch candidate (ADR-032) or a merged item's
+merge commit — is no longer a detached worktree of the shared clone at
+`<work root>/merge-batches/<id>-<attempt>` or
+`<work root>/main-validations/<item>-<attempt>`. The node reads the
+commit and the compare from GitHub's Git Data API on the run's minted
+token, materialises the merge base from its one shared tree cache
+(`<user cache dir>/mesh/cache`, filled from this ADR's shared clone when
+it holds an object, else from GitHub) into a scratch dir of its own
+under `<work root>/.scratch`, applies the diff there and removes the
+scratch on every path: no fetch into the clone, no repo lock, no
+`.git/worktrees` entry. The worktree stays only as the fallback, when
+the served diff cannot give the commit (a diff past GitHub's cap, a
+truncated tree, no minted token, a tree that does not match), said once
+per run per reason. Item worktrees, their reworks and the evaluation's
+own `<seq>-eval` checkout are as above. mesh-specs ADR 017's §2 ("the
+locked fetch … before a new worktree, a rework or an evaluation") needs
+the same narrowing on its side; that is recorded as a note for
+runsheet/mesh-specs, not edited here.

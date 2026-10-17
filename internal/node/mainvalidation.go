@@ -174,7 +174,22 @@ type mainCommit struct {
 // t.batchID is set, else as t.item's. A red suite is a red attestation
 // and nil; a failure of the node's own is returned with nothing
 // attested. The scratch or worktree is removed on every path.
+// A pod the container runtime itself cannot start (a
+// *sandbox.RuntimeError) is logged once naming podman's words and told
+// to RuntimeBroken; the loop's fail, its reason `runtime_broken: …`
+// (validate.Reason), releases the claim back to requested (ADR-030).
 func (r *Runner) validateCommit(ctx context.Context, t validationTarget, c mainCommit) (validate.Attestation, error) {
+	att, err := r.validateCommitIn(ctx, t, c)
+	if re := RuntimeErrorOf(err); re != nil && ctx.Err() == nil {
+		r.logf("%s: container runtime broken, claim released: %s", t.prefix, oneLine(RuntimeReason(re)))
+		if r.RuntimeBroken != nil {
+			r.RuntimeBroken(re)
+		}
+	}
+	return att, err
+}
+
+func (r *Runner) validateCommitIn(ctx context.Context, t validationTarget, c mainCommit) (validate.Attestation, error) {
 	prefix := t.prefix
 	r.logf("%s: validating %s at %s", prefix, c.what, short(c.sha))
 	dir, served, err := r.checkoutServed(ctx, t, c)

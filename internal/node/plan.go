@@ -40,6 +40,10 @@ type Planner struct {
 	// runtime the node lacks, so the loop does not claim its plan again
 	// while the runtimes are unchanged (nil: not remembered).
 	Declines *Declines
+	// RuntimeBroken is told the error when a session's pod could not
+	// start on a broken container runtime (a *sandbox.RuntimeError) and
+	// its work was handed back runtime_broken; nil tells no one.
+	RuntimeBroken func(error)
 	// MaxBudgetUSD caps the planning session (5 by default).
 	MaxBudgetUSD float64
 	// Budgets is node.yaml's `budgets:` in force, read live (ADR 012,
@@ -198,6 +202,13 @@ func (p *Planner) Plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		default:
 			p.logf("goal %s: %v; plan release refused: %v", goal.Slug, err, rerr)
 		}
+		return err
+	}
+	if re := RuntimeErrorOf(err); re != nil && ctx.Err() == nil {
+		// the session's pod could not start on a broken container
+		// runtime: the node's condition, not the goal's — the claim goes
+		// back with runtime_broken and no try is counted (ADR-030)
+		p.releaseRuntime(ctx, goal, scope, re)
 		return err
 	}
 	var fe *PlanFetchError

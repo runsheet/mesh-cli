@@ -875,7 +875,17 @@ line naming the credential this machine runs on — the machine, its org
 and operator, and when its access token is next refreshed, or the rs_*
 console token it is still on — and a line for the node process on this
 machine: running (its pid), draining, or none (see Drain below). While
-a node runs here it also prints a **Held goals** section — a table of
+a node runs here it prints the **quartermaster**'s findings — `findings:`
+then one line per finding, `  <kind> <severity> <subject>: <detail>`,
+critical first (`disk critical /home/mesh/.mesh/work: 4% free (…)`,
+`scratch ok /tmp: reaped 3 dirs, 12.0K; 0 in use kept`, `dead_checkout
+ok …: 1 dead found, 1 removed, …`, `version warn v1.0.0: … desired
+v1.1.0, differing for 1h1m0s`), or `findings: none` — read from
+`~/.mesh/node.findings`, which the node rewrites every ten minutes as it
+checks its disk, reaps stale `/tmp` scratch and dead checkouts, and
+compares its version with the desired one
+([ADR-034](docs/adr/adr-034-the-quartermaster-keeps-the-node-fit.md)).
+It also prints a **Held goals** section — a table of
 org, goal, kind (`plan` or `item`), since, until and why for every goal
 the node holds off claiming for (a plan claim released by a repeating
 refusal, or an item claim refused for budget, pause or approval), or
@@ -893,6 +903,12 @@ its ready items as last listed (`-` when that read failed) — read from
 when there is none; the heartbeat's holding report carries the same rows
 as `holding.orgs`
 ([ADR-023](docs/adr/adr-023-every-org-gets-its-share.md), Reporting).
+It also prints the shared validation cache's line — `validation cache:
+75% hits (30/40), 1.2 GiB of 20.0 GiB`, the hit rate over every tree and
+blob lookup the node's served-diff validations made (counts persisted
+in `~/.mesh/node.cache`), the cache root's size on disk and node.yaml's
+`validation_cache_max_bytes` — or `validation cache: no lookups yet`
+(Main validations from the served diff, below).
 
 ### Start
 
@@ -1977,6 +1993,43 @@ recorded <n> refused <m> (1h)`, and `mesh node status` prints
 half is runsheet goal `an-attestation-is-about-a-commit-not-an-item-state`:
 until it is deployed every upload is refused, which the counts show.
 ADR-014 (its 2026-10-09 amendment) has the detail.
+
+### Main validations from the served diff
+
+A merge batch candidate or a merged item's merge commit is validated
+without a clone: the node reads the commit and the compare
+`base...head` from GitHub's Git Data API on the minted token, writes the
+merge base out of its one **shared validation cache** —
+`<user cache dir>/mesh/cache` (`~/.cache/mesh/cache` on Linux), blobs,
+trees and commits by sha, filled from the repo's shared clone when it
+has the object and from GitHub otherwise — into a scratch dir of its own
+under `~/.mesh/work/.scratch`, applies the diff's files through the
+cache, checks what is on disk against the commit's tree, and runs
+`.runsheet/validate.yml` there, its suites chosen by the compare's
+paths. No worktree is added and nothing is fetched. The step's TMPDIR,
+GOTMPDIR and GOCACHE point into the scratch and the node's Go build
+cache; a sandboxed run mounts that scratch read-write, the Go cache
+read-write and the cache's `blobs/` read-only, nothing else of the
+cache. The scratch is removed on every path, so a validation leaves
+nothing under `/tmp` or `~/.mesh/work` but an empty `.scratch`.
+
+The cache is held under node.yaml's `validation_cache_max_bytes`
+(default 20 GiB, the Go build cache counted): the least recently used
+entries go first, logged `cache: evicted <n> least recently used
+entries (<size>) to hold the cap of <cap>; <size> now`, then `go clean
+-cache`; still over after both is the finding `cache over cap: <size> of
+<cap>`, logged once until it is back under. A diff past GitHub's
+300-file cap, a truncated tree, no minted token or a materialised tree
+that does not match the commit's falls back to the worktree of
+[ADR-032](docs/adr/adr-032-a-node-validates-a-merge-batch-candidate.md),
+said once per run per reason (`served diff: <reason>; validating from a
+worktree`). A merged item's request runs on the operator's credentials
+today, with no minted token to read the diff on, so it takes the
+worktree (`served diff: no minted token`) until the platform mints one
+for it. An evaluation still runs on the item's own checkout (ADR-027).
+`mesh node status` prints the hit rate (above).
+[ADR-034](docs/adr/adr-034-a-node-validates-from-a-served-diff-with-a-shared-cache.md)
+has the detail.
 
 ### Credentials on fetch, push and pull
 
