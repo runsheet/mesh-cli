@@ -22,8 +22,6 @@ type ActivityRow struct {
 	WorkItemID string    `json:"workItemId"`
 }
 
-const activityFields = "id at kind summary actor logSeq workItemId"
-
 // ItemActivity reads the item's MeshActivityIndex rows by work_item_id,
 // oldest first (by at, then the log's sequence). A platform without
 // meshActivityIndexs is Unsupported (IsUnsupported).
@@ -31,7 +29,7 @@ func (c *Client) ItemActivity(ctx context.Context, itemID string) ([]ActivityRow
 	var out struct {
 		Rows []ActivityRow `json:"meshActivityIndexs"`
 	}
-	q := fmt.Sprintf(`{ meshActivityIndexs(namespace: %q, where: [%s]) { %s } }`, NS, where("work_item_id", itemID), activityFields)
+	q := fmt.Sprintf(`{ meshActivityIndexs(namespace: %q, where: [%s]) { %s } }`, NS, where("work_item_id", itemID), meshActivityFields)
 	if err := c.Query(ctx, q, nil, &out); err != nil {
 		return nil, unsupportedRead(err, "meshActivityIndexs")
 	}

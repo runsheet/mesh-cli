@@ -98,9 +98,6 @@ func recordFromActivity(rows []gateway.ActivityRow) []RecordEntry {
 		default:
 			continue
 		}
-		if row.Actor != "" && e.Kind == "answer" {
-			e.Text += " (" + row.Actor + ")"
-		}
 		e.At = row.At
 		out = append(out, e)
 	}
