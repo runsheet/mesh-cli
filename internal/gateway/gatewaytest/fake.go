@@ -319,6 +319,10 @@ type Fake struct {
 	// their bearer.
 	MCPHits    int
 	MCPRefused int
+	// MCPRequests is every /mcp request the fake took, in order: its
+	// JSON-RPC method, its Mcp-Session-Id and its bearer — whether a
+	// session's tools/list reached the platform (MCPRequestsNamed).
+	MCPRequests []MCPRequest
 	// Claims is every claimWorkItem the fake was sent, refused or not
 	// (Calls holds only the ones it took): whether a node asked.
 	Claims []Call

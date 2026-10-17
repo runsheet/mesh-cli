@@ -100,8 +100,8 @@ var mcpDiscoverAuth = mcpinstall.DiscoverAuth
 // registration, else a bearer read from $MESH_TOKEN, never a token in a
 // file (ADR-025, Remote).
 // Every other entry of the client's servers map that is runsheet's
-// (mcpinstall.IsRunsheetEntry) — a legacy `mesh`, `mesh-context` or
-// `prologue` — is removed, so one `runsheet` entry remains, each said
+// (mcpinstall.IsRunsheetEntry) — under a legacy name,
+// mcpinstall.LegacyNames — is removed, so one `runsheet` entry remains, each said
 // `<client>: removed <name> from <path>`; a legacy name pointing
 // elsewhere is kept, `<client>: kept <name> (not runsheet's)`.
 // A file it cannot parse, or one that differs without --force, is
