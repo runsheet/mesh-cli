@@ -20,6 +20,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
+	"projectmesh.io/mesh-cli/internal/tripline"
 	"projectmesh.io/mesh-cli/internal/validate"
 )
 
@@ -111,6 +112,9 @@ type Runner struct {
 	// limits kill it (Loop.NoteCondition, the heartbeat's reason); nil
 	// tells no one.
 	Condition func(reason string)
+	// Tripline reports the node's failure classes to Tripline (ADR-034,
+	// a node reports its errors to Tripline); nil reports nothing.
+	Tripline *tripline.Reporter
 	// RuntimeBroken is told the error when a session's pod could not
 	// start on a broken container runtime (a *sandbox.RuntimeError) and
 	// its work was handed back runtime_broken; nil tells no one.
@@ -844,6 +848,9 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	}
 	if runErr != nil {
 		runErr = b.acct.RedactErr(runErr)
+		if _, ok := harness.AsUnavailable(runErr); ok {
+			reportFailure(r.Tripline, tripline.HarnessUnavailable, runErr, item, label, repoOf(b.res), gateway.RoleBuilder)
+		}
 		b.report(ctx, "harness error: "+runErr.Error())
 		return r.fail(ctx, item, runErr)
 	}
@@ -852,7 +859,9 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	if !result.Success {
 		b.report(ctx, "session ended without success: "+result.Text)
 		b.reportToolUse(ctx, result)
-		return r.fail(ctx, item, fmt.Errorf("session ended without success: %s", truncate(result.Text, 500)))
+		failed := fmt.Errorf("session ended without success: %s", truncate(result.Text, 500))
+		reportFailure(r.Tripline, tripline.SessionFailed, failed, item, label, repoOf(b.res), gateway.RoleBuilder)
+		return r.fail(ctx, item, failed)
 	}
 	b.report(ctx, result.Text)
 	b.reportToolUse(ctx, result)
