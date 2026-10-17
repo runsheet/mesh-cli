@@ -679,6 +679,19 @@ func (g *Git) removeWorktree(ctx context.Context, root, clone, dir string) error
 	return nil
 }
 
+// pruneWorktrees runs `git worktree prune` in clone under its repo lock,
+// removing the admin entries of worktrees the quartermaster found gone
+// (pruneGoneWorktrees).
+func (g *Git) pruneWorktrees(ctx context.Context, root, clone string) error {
+	unlock, err := lockRepo(ctx, root, g.repoKeyOf(ctx, clone))
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	_, err = g.run(ctx, clone, "git", "worktree", "prune")
+	return err
+}
+
 // forgetRegistrations removes admins — clone's .git/worktrees/<n> of a
 // worktree already gone — under clone's repo lock.
 func (g *Git) forgetRegistrations(ctx context.Context, root, clone string, admins []string) error {
