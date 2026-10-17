@@ -47,9 +47,10 @@ and the verdict, `unchanged` when the total is the baseline's, else
 `grew` or `shrank`. A row the baseline lacks counts from zero.
 
 $TMPDIR_ROOT is overridable so a test can read a fixture directory;
-$STAT (default `stat`) is the binary asked an entry's owner as
-`$STAT -c %U <path>`, overridable so a test can name two users
-without root.
+$STAT (default `stat`) is the command asked an entry's owner as
+`$STAT -c %U <path>`, split on spaces (`bash /path/fake-stat` runs a
+script from a dir mounted noexec), overridable so a test can name two
+users without root.
 EOF
 }
 
@@ -80,7 +81,7 @@ if [[ -n $baseline && ! -r $baseline ]]; then
 fi
 
 root="${TMPDIR_ROOT:-/tmp}"
-stat_bin="${STAT:-stat}"
+read -r -a stat_cmd <<<"${STAT:-stat}"
 prefixes=("runsheet-*" "latchkey-*" "mesh-home-*" "mesh-eval*" "mesh-session-*" "go-build*" "other")
 
 # prefix_of <name>: the first of $prefixes the name matches, else other.
@@ -109,7 +110,7 @@ notes=()
 shopt -s nullglob dotglob
 for path in "$root"/*; do
   [[ -L $path ]] && continue
-  owner=$("$stat_bin" -c %U -- "$path" 2>/dev/null) || { notes+=("cannot stat $path"); continue; }
+  owner=$("${stat_cmd[@]}" -c %U -- "$path" 2>/dev/null) || { notes+=("cannot stat $path"); continue; }
   match=""
   for u in "${users[@]}"; do
     [[ $owner == "$u" ]] && { match=$u; break; }

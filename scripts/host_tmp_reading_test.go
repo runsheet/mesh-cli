@@ -1,5 +1,5 @@
 // Tests scripts/host-tmp-reading.sh on a fixture /tmp built in a temp
-// dir, TMPDIR_ROOT pointed at it and STAT at a fake stat that names
+// dir, TMPDIR_ROOT pointed at it and STAT at `bash <fake stat>` that names
 // each entry's owner from a map file, so two users' files can be read
 // without root (ADR-020, this is a `Measure:` item's reading, never a
 // verdict on a build).
@@ -54,15 +54,18 @@ func hostTmpFixture(t *testing.T) (root, stat string) {
 	if err := os.WriteFile(ownersFile, []byte(m.String()), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	stat = filepath.Join(dir, "stat")
-	script := "#!/usr/bin/env bash\n" +
-		"# fake stat: stat -c %U -- <path>, owner from the map, else alice (a file the test adds later)\n" +
-		"p=${@: -1}; n=${p##*/}\n" +
-		"o=$(awk -v n=\"$n\" '$1 == n { print $2 }' " + ownersFile + ")\n" +
+	// The fake is run as `bash <path>`, never executed itself: the
+	// validation pod's TMPDIR, where t.TempDir lives, may be noexec. It
+	// reads the map in bash alone, no awk.
+	fake := filepath.Join(dir, "stat")
+	script := "# fake stat: stat -c %U -- <path>, owner from the map, else alice (a file the test adds later)\n" +
+		"p=${@: -1}; n=${p##*/}; o=\n" +
+		"while read -r name owner; do [[ $name == \"$n\" ]] && o=$owner; done < '" + ownersFile + "'\n" +
 		"echo \"${o:-alice}\"\n"
-	if err := os.WriteFile(stat, []byte(script), 0o755); err != nil {
+	if err := os.WriteFile(fake, []byte(script), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	stat = "bash " + fake
 	return root, stat
 }
 
