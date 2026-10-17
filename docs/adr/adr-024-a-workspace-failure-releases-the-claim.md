@@ -1,5 +1,5 @@
 ---
-summary: A workspace that cannot be prepared before the harness starts — a fetch, a checkout, the agent's identity, the context written into it — releases the item's claim with `workspace: <error>` as the reason (ReleaseWorkItem, attempts unchanged) instead of failing it, holds the item off that node for ten minutes, and fails it only when the platform refuses the release.
+summary: A workspace that cannot be prepared before the harness starts — a fetch, a checkout, the agent's identity, the context written into it — releases the item's claim with `workspace: <error>` as the reason (ReleaseWorkItem, attempts unchanged) instead of failing it, holds the item off that node for ten minutes, and fails it only when the platform refuses the release; a rebase whose fresh worktree cannot be made is released the same way, never failed, its claim left to lapse when the release is refused.
 status: accepted
 ---
 
@@ -59,6 +59,22 @@ Until that lands, the node has to avoid calling it one.
   `item <label>: workspace failed and the release was refused (<why>);
   failed instead: <reason>`. A cancelled context (the node's own
   shutdown) releases and fails nothing and returns `ctx.Err()`.
+- A rebase follows the same rule (amended 2026-10-17, goal
+  `a-rebase-session-runs-in-a-fresh-checkout`). A rebase runs in a
+  fresh worktree of its own (ADR-028, A rebase gets its own worktree),
+  and when that worktree cannot be made (`AddRebaseWorktree`'s error,
+  run inside `NewItemCredAt`), or the token cannot be written into it,
+  the error is a `*WorkspaceError` (`workspace: <git's words>` for the
+  checkout). `rebaseRun.releaseInfrastructure` hands it to
+  `ReleaseOnInfrastructure` and holds the item off this node in
+  `Declines` for `WorkspaceReleaseHold`. No session runs, attempts are
+  unchanged, and no `FailWorkItemRebase` is sent: the conflict is no
+  reason to hand the item to its builder. The platform has no release
+  for a rebase claim and refuses `ReleaseWorkItem` on an item in
+  `review`, so a refused release leaves the claim to lapse on its
+  15-minute timer, as a rebase with no credential does, logged `the
+  rebase claim is left to lapse on the platform's timer`
+  (`TestARebaseWhoseWorktreeCannotBeMadeIsReleasedAsInfrastructure`).
 
 ## Consequences
 

@@ -1,5 +1,5 @@
 ---
-summary: A node keeps one clone per repo at ~/.mesh/repos/<owner>/<name>, cloned and fetched under the per-repo lock, and makes each new item's ~/.mesh/work/<goal>/<seq> a git worktree of it on its own per-worktree token; evaluation, goal-doc, plan and research checkouts stay clones of their own; sessions install against one pnpm store and one npm cache per node under ~/.mesh/store; every worktree is locked while its item is live and nothing runs a blanket `git worktree prune`, RemoveWorkspace refusing a live dir and removing only a finished worktree and its own registration, never the clone; a worktree whose .git/worktrees/<n> is gone is rebuilt for its branch at its recorded head and the step retried, never failed or released; a full clone from before is used until swept.
+summary: A node keeps one clone per repo at ~/.mesh/repos/<owner>/<name>, cloned and fetched under the per-repo lock, and makes each new item's ~/.mesh/work/<goal>/<seq> a git worktree of it on its own per-worktree token; evaluation, goal-doc, plan and research checkouts stay clones of their own; a rebase gets a fresh detached worktree of its own at <goal>/<seq>-rebase, never the item's build checkout; sessions install against one pnpm store and one npm cache per node under ~/.mesh/store; every worktree is locked while its item is live and nothing runs a blanket `git worktree prune`, RemoveWorkspace refusing a live dir and removing only a finished worktree and its own registration, never the clone; a worktree whose .git/worktrees/<n> is gone is rebuilt for its branch at its recorded head and the step retried, never failed or released; a full clone from before is used until swept.
 status: accepted
 ---
 
@@ -112,6 +112,50 @@ detached at the base), stay full clones of their own off the shared
 clone. Each would otherwise ask git for a branch another worktree holds
 — the build's branch in its worktree, the base in the shared clone — and
 git refuses that. A clone of its own asks nothing of the shared one.
+
+### A rebase gets its own worktree
+
+Amended 2026-10-17, goal `a-rebase-session-runs-in-a-fresh-checkout`.
+A rebase session never runs in the item's build checkout
+`<goal>/<seq>`. That checkout may be gone (swept, deleted by hand) or
+left with a `.git` naming a `.git/worktrees/<n>` that was pruned — on
+2026-10-17 06:32Z the rebase of PR #4236 failed at `github token: git
+remote set-url origin …: fatal: not a git repository:
+…/.git/worktrees/<n>`, because the token was written into exactly that
+checkout. Instead `Rebaser.Rebase` builds `RebaseWorkspaceSpec(spec)`,
+`<goal>/<seq>-rebase` beside the build's (`Path` set, the item's `Root`
+and `Repos` kept, so the repo lock and shared clone are the build's),
+and makes it with `Git.AddRebaseWorktree(ctx, repo, dir, branch)`
+(`internal/node/rebaseworktree.go`) before the item's token is written
+anywhere: `NewItemCredAt` issues the token, runs the checkout on a ctx
+carrying it (`OnItemToken`), then `Authorize`s the rebase checkout
+alone. `AddRebaseWorktree` is `addDetachedWorktree`, as a merge batch
+candidate's (`AddCandidateWorktree`): `branch` fetched into the shared
+clone's `refs/remotes/origin/<branch>` under the fetch lock, the ref
+verified, and `git worktree add --detach` of it under the repo lock. It
+runs nothing in the item's checkout. A stale dir at the rebase path (a
+plain dir, a worktree whose admin is gone) is removed by
+`RemoveWorkspace` first, and only that dir's own stale registration is
+forgotten (`forgetStaleRegistrations`), never a blanket prune. The
+worktree is detached because the item's own worktree, live or dangling,
+may still hold the branch and git refuses a second checkout of it. So
+the session rebases the detached HEAD and pushes it with `git push
+--force-with-lease=<branch>:origin/<branch> origin
+HEAD:refs/heads/<branch>` (`harness.RebasePrompt`). Then
+`Identify`, `WriteContext` and the session (`job.Workspace`) all take
+the rebase checkout, and once `afterRebase` has handled the end it is
+removed by `RemoveWorkspace` (and its `.hooks`), unless the session was
+left running for the next node to adopt. `AdoptRebase` keeps the
+state's workspace: a `-rebase` dir is authorized and removed the same
+way, and an item checkout an older node ran the rebase in is
+authorized as before and never removed. A rebase worktree that cannot
+be made releases the claim as infrastructure (ADR-024, a workspace
+failure releases the claim). `TestRebaseWorktreeDeletedCheckoutE2E`,
+`TestRebaseWorktreeReplacesStaleDirE2E`,
+`TestRebaseWorktreeDanglingGitFileE2E` and
+`TestRebaseWorktreeBranchHeldE2E` prove the method, and
+`TestRebaseRunsInAFreshCheckout` (`-tags e2e`) proves the rebase lands
+with the item's checkout deleted and with it dangling.
 
 ### Plan and research checkouts stay clones
 

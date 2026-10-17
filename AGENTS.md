@@ -1044,8 +1044,24 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   lists them in each served org (`RequestedRebases`), in goal priority
   then seq (`rebaseOrder`), and claims each with `ClaimWorkItemRebase`
   — a refusal is the ordinary answer, not an error. The session works
-  in the item's own checkout on its token, rebases onto the base,
-  re-runs the acceptance and pushes with `--force-with-lease`; the node
+  in a fresh checkout of its own, never the item's build checkout
+  (ADR-028, A rebase gets its own worktree): `RebaseWorkspaceSpec`'s
+  `<goal>/<seq>-rebase`, made by `Git.AddRebaseWorktree` — a detached
+  worktree of the shared clone at `origin/<branch>`, by
+  `addDetachedWorktree` as a batch candidate's, a stale dir there
+  removed first, nothing run in the item's checkout, deleted or
+  dangling — on the item's token before `NewItemCredAt` `Authorize`s it
+  there; a worktree that cannot be made is a `*WorkspaceError` released
+  as infrastructure (`rebaseRun.releaseInfrastructure`, held in
+  `Declines`, never `FailWorkItemRebase`; a refused release leaves the
+  claim to lapse; ADR-024), and the checkout is removed after
+  `afterRebase` unless left for adoption (`AdoptRebase` keeps the
+  state's workspace). It rebases the detached HEAD onto the base,
+  re-runs the acceptance and pushes `HEAD:refs/heads/<branch>` with
+  `--force-with-lease=<branch>:origin/<branch>`
+  (`TestRebaseRunsInAFreshCheckout`, `-tags e2e`, lands one with the
+  item's checkout deleted and with it dangling;
+  `rebaseworktree_e2e_test.go` the method's own cases); the node
   reads the pushed head back (`Workspacer.PushedHead`) and hands it in
   with `FinishWorkItemRebase`, or `FailWorkItemRebase` with the reason
   for *anything* else but `ErrNoCredential` (a wait: the claim lapses)

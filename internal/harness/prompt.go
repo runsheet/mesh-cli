@@ -1867,7 +1867,7 @@ func RebasePrompt(in RebaseInput) string {
 	if strings.TrimSpace(in.Acceptance) != "" {
 		fmt.Fprintf(&b, "## Acceptance (this item)\n\n%s\n\n", strings.TrimSpace(in.Acceptance))
 	}
-	fmt.Fprintf(&b, "# The conflict\n\nYou are in %s with `%s` checked out at the head the builder pushed. It conflicts with `origin/%s`.", in.Repo, in.Branch, in.BaseRef)
+	fmt.Fprintf(&b, "# The conflict\n\nYou are in a fresh checkout of %s made for this rebase alone, not the item's build checkout: a detached HEAD at `origin/%s`, the head the builder pushed. There is no local branch `%s` here, and you do not make one (another worktree may hold it); you rebase the detached HEAD and push it to the branch. It conflicts with `origin/%s`.", in.Repo, in.Branch, in.Branch, in.BaseRef)
 	if len(in.Files) > 0 {
 		fmt.Fprintf(&b, " The files: %s.", strings.Join(in.Files, ", "))
 	}
@@ -1895,11 +1895,11 @@ func RebasePrompt(in RebaseInput) string {
 	} else {
 		b.WriteString("The mesh-branch-rebase skill's steps:\n\n")
 	}
-	fmt.Fprintf(&b, "1. Fetch: `git fetch origin && git checkout -B %s origin/%s`.\n", in.Branch, in.Branch)
+	fmt.Fprintf(&b, "1. Fetch: `git fetch origin && git checkout --detach origin/%s`.\n", in.Branch)
 	fmt.Fprintf(&b, "2. Rebase: `git rebase origin/%s`.\n", in.BaseRef)
 	b.WriteString("3. Resolve each conflicting file on its own, reading both sides and why each changed (`git log` of the base since the branch forked, the brief above). Keep both sides' intent: never drop either side's change to make the conflict go away. Generated code is regenerated from the merged source, not merged by hand. Then `git add` it and `git rebase --continue`.\n")
 	b.WriteString("4. Run the item's acceptance checks on the rebased head (the repository's AGENTS.md or CLAUDE.md says how), and fix only what the rebase broke.\n")
-	fmt.Fprintf(&b, "5. Push: `git push --force-with-lease origin %s`. If the push is refused, the branch moved under you: say so, do not force it.\n\n", in.Branch)
+	fmt.Fprintf(&b, "5. Push: `git push --force-with-lease=%s:origin/%s origin HEAD:refs/heads/%s`. If the push is refused, the branch moved under you: say so, do not force it.\n\n", in.Branch, in.Branch, in.Branch)
 	b.WriteString("# Rules\n\n")
 	b.WriteString("1. Rebase, resolve, check, push: nothing else. No new features, no refactors, no pull requests, nothing outside this workspace.\n")
 	b.WriteString("2. If a conflict cannot be resolved without dropping one side's intent, or the acceptance fails on the rebased head for a reason the rebase cannot fix, give up: `git rebase --abort`, push nothing, and say exactly why — which file, which change on each side. The builder is handed the item with your words.\n")

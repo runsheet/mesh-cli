@@ -1879,6 +1879,15 @@ func nodeQuartermaster(gw node.Gateway, loop *node.Loop, workRoot, tempDir strin
 		scratch.Check,
 		node.DeadCheckoutCheck(gw, &node.Git{Log: sessionsOut}, workRoot, loop.LiveCheckout),
 		node.VersionCheck(loop),
+		// every served org's kept session streams, swept whether or not
+		// a Codex session of that org starts again (ADR-034)
+		node.KeptSessionsCheck(func() *node.OrgRootSet {
+			roots, err := node.NewOrgRootSetFor(loop.CurrentScopes())
+			if err != nil {
+				return nil
+			}
+			return roots
+		}, workRoot),
 	}}
 }
 
