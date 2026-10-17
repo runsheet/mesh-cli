@@ -23,21 +23,21 @@ mesh mcp install --client cursor
 With no `--client` it installs into every client it finds on the
 machine (config dir present, or its binary on `PATH`); `--client all`
 is every client regardless. Each writes two things from one source
-(`skills/mesh/SKILL.md`, embedded): the `mesh` server entry
+(`skills/mesh/SKILL.md`, embedded): the `runsheet` server entry
 (`<this binary> mcp` over stdio) in the client's own config file and
 format, and the same instructions rendered for how that client reads
 them —
 
-- **claude**: `~/.claude.json`'s `mcpServers.mesh` (or
+- **claude**: `~/.claude.json`'s `mcpServers.runsheet` (or
   `$CLAUDE_CONFIG_DIR/.claude.json`), and the skill itself at
   `$CLAUDE_CONFIG_DIR/skills/mesh/SKILL.md`, or
   `~/.claude/skills/mesh/SKILL.md` when that is unset.
-- **codex**: `[mcp_servers.mesh]` in `$CODEX_HOME/config.toml` (or
+- **codex**: `[mcp_servers.runsheet]` in `$CODEX_HOME/config.toml` (or
   `~/.codex/config.toml`), a custom prompt at
   `$CODEX_HOME/prompts/mesh.md` (`/prompts:mesh <form> $ARGUMENTS`),
   and a `mesh`-marked section spliced into `$CODEX_HOME/AGENTS.md` —
   the rest of that file, yours, is untouched.
-- **cursor**: `~/.cursor/mcp.json`'s `mcpServers.mesh`, a user skill at
+- **cursor**: `~/.cursor/mcp.json`'s `mcpServers.runsheet`, a user skill at
   `~/.cursor/skills/mesh/SKILL.md` and a command at
   `~/.cursor/commands/mesh.md`, both keeping the `/mesh` form Claude
   Code uses. Nothing is written under the directory you run it from.
@@ -49,23 +49,47 @@ writes nothing. It refuses to overwrite a whole instruction file that
 differs from the one mesh-cli ships unless you pass `--force`
 (docs/adr/adr-025-mesh-mcp-install-is-one-table-per-client.md).
 
-`mesh mcp doctor` checks it afterwards, reading only: for each client it
-finds, a line saying whether mesh is configured and what it points at,
-then one line per instruction file, `current`, `stale` or `missing` —
+Runsheet's server is one entry per client, named `runsheet`. An earlier
+install kept it under a legacy name — `mesh`, `mesh-context` or
+`prologue` — and an install now removes every other entry of the
+client's servers map that is runsheet's (it runs a `mesh` binary's
+`mcp` or `mcp-relay`, or its URL is `/mcp` on `api.runsheet.dev` or the
+configured gateway), saying `<client>: removed mesh from <path>`. A
+legacy name pointing at something else is not runsheet's and is kept:
+`<client>: kept mesh (not runsheet's)`.
+
+`mesh mcp doctor` checks it afterwards, reading only. It opens with who
+the runsheet server acts as and what it reaches — the person, by the
+identity rule of runsheet ADR 056 and Latchkey ADR 013: an `rs_*`
+token's user, or a machine credential's operator via the machine — and
+the projects of the person's orgs; then, for each client it finds, a
+line saying whether runsheet is configured and what it points at, and
+one line per instruction file, `current`, `stale` or `missing` —
 
 ```text
+identity: you@example.com (person, via machine 4f1c…)
+projects: runsheet/mesh, runsheet/runsheet
 codex: configured /usr/local/bin/mesh (/home/you/.codex/config.toml)
   /home/you/.codex/prompts/mesh.md: current
   /home/you/.codex/AGENTS.md: stale
-cursor: missing in /home/you/.cursor/mcp.json
+cursor: duplicate runsheet entries: runsheet, mesh (/home/you/.cursor/mcp.json); run mesh mcp install
 ```
+
+With no credential the first line is `identity: not signed in; run
+mesh auth login`; a gateway that cannot answer is `identity: <email>
+(projects unavailable: <err>)` and the client lines still follow. A
+client whose runsheet entry sits beside a legacy one is `duplicate`;
+one with only a legacy entry is `legacy`; with neither it is `missing
+in <path>`.
 
 A whole file is current when it is byte-for-byte what this binary
 renders; the AGENTS.md section when the text between its markers is —
-what you wrote outside them never counts. `--json` prints the same as a
-list of reports (`client`, `status`, `command`, `url`, `path`, `error`,
-`instructions`). It exits 1 when any client found is not configured and
-current — an entry missing or unparseable, an instruction stale or
+what you wrote outside them never counts. `--json` prints the same as
+`{"identity": {"person", "via", "projects", "error"}, "clients": [...]}`,
+each client a report (`client`, `status`, `command`, `url`, `path`,
+`error`, `duplicates`, `instructions`). It exits 1 when no credential
+loads, or when any client found is not configured and current — an
+entry missing, unparseable, duplicate or legacy, an instruction stale or
 missing — so `mesh mcp install` again is the fix; 0 otherwise.
 
 With no local binary to run, `mesh mcp install --remote` writes each

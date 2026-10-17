@@ -42,15 +42,31 @@ func doctor(t *testing.T, asJSON, healthy bool) string {
 	return out
 }
 
+// doctorOutput is `mesh mcp doctor --json`'s shape.
+type doctorOutput struct {
+	Identity struct {
+		Person   string   `json:"person"`
+		Via      string   `json:"via"`
+		Projects []string `json:"projects"`
+		Error    string   `json:"error"`
+	} `json:"identity"`
+	Clients []mcpinstall.Report `json:"clients"`
+}
+
+func parseDoctorJSON(t *testing.T, out string) doctorOutput {
+	t.Helper()
+	var got doctorOutput
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("doctor --json does not unmarshal into {identity, clients}: %v\n%s", err, out)
+	}
+	return got
+}
+
 func doctorJSON(t *testing.T, healthy bool) map[string]mcpinstall.Report {
 	t.Helper()
 	out := doctor(t, true, healthy)
-	var reports []mcpinstall.Report
-	if err := json.Unmarshal([]byte(out), &reports); err != nil {
-		t.Fatalf("doctor --json does not unmarshal into []Report: %v\n%s", err, out)
-	}
 	byClient := map[string]mcpinstall.Report{}
-	for _, r := range reports {
+	for _, r := range parseDoctorJSON(t, out).Clients {
 		byClient[r.Client] = r
 	}
 	return byClient
@@ -132,7 +148,8 @@ func TestMcpDoctorUnparseableIsLeftAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := doctor(t, false, false)
-	first, _, _ := strings.Cut(out, "\n")
+	_, rest, _ := strings.Cut(out, "projects: none\n")
+	first, _, _ := strings.Cut(rest, "\n")
 	if !strings.HasPrefix(first, "cursor: unparseable "+path+" (") || !strings.HasSuffix(first, "); left alone") {
 		t.Fatalf("doctor:\n%s", out)
 	}
@@ -204,11 +221,12 @@ func TestMcpDoctorUnrelatedMeshEntryPointingElsewhereIsNotReported(t *testing.T)
 
 func TestMcpDoctorNoClient(t *testing.T) {
 	installHome(t)
-	if out := doctor(t, false, true); out != "no client found\n" {
-		t.Fatalf("doctor = %q", out)
+	want := "identity: someone@example.com (person)\nprojects: none\nno client found\n"
+	if out := doctor(t, false, true); out != want {
+		t.Fatalf("doctor = %q, want %q", out, want)
 	}
-	if out := doctor(t, true, true); strings.TrimSpace(out) != "[]" {
-		t.Fatalf("doctor --json = %q", out)
+	if got := parseDoctorJSON(t, doctor(t, true, true)); got.Clients == nil || len(got.Clients) != 0 {
+		t.Fatalf("doctor --json clients = %#v, want []", got.Clients)
 	}
 }
 

@@ -17,8 +17,12 @@ type Fake struct {
 	mu sync.Mutex
 	// VersionErr makes Version fail, as a node without podman does.
 	VersionErr error
-	Pods       []PodSpec
-	Agents     []AgentSpec
+	// CreatePodErr makes CreatePod fail, as a broken runtime does
+	// (Probe honours both: a *RuntimeError already, or any other error,
+	// answers one either way).
+	CreatePodErr error
+	Pods         []PodSpec
+	Agents       []AgentSpec
 	// Detached are the agents StartAgent started; each is also a running
 	// container in Running, mounting its spec's host paths, in a pod in
 	// Standing. States, when it names one, is what AgentState answers
@@ -81,8 +85,11 @@ func (f *Fake) Version(context.Context) (string, error) {
 func (f *Fake) CreatePod(_ context.Context, spec PodSpec) (Pod, error) {
 	f.call("create " + spec.Name)
 	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.CreatePodErr != nil {
+		return Pod{}, f.CreatePodErr
+	}
 	f.Pods = append(f.Pods, spec)
-	f.mu.Unlock()
 	return Pod{Name: spec.Name}, nil
 }
 

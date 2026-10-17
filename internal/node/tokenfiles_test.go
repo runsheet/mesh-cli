@@ -54,6 +54,29 @@ func (c *tokenClock) Ticker(every time.Duration) (<-chan time.Time, func()) {
 	}
 }
 
+// waitForTicker blocks until Keep's refresh goroutine has registered
+// its ticker (Ticker runs in a goroutine Keep starts and returns
+// before): without it, a step called right after Keep can race the
+// registration, find no ticks to deliver to, and return having moved
+// the clock but told nobody — the token never refreshed and the
+// assertion right after it flaky.
+func (c *tokenClock) waitForTicker() {
+	c.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		c.mu.Lock()
+		n := len(c.ticks)
+		c.mu.Unlock()
+		if n > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			c.t.Fatal("a kept file's refresher never registered its ticker")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // step moves the clock one Every on and delivers the tick to every kept
 // file's refresher twice: the second is taken only once the first's
 // refresh is done, so the files are what the tick made of them.
@@ -116,6 +139,7 @@ func fileAtExpiry(t *testing.T, start, expiry time.Time, every time.Duration) (s
 	if err != nil {
 		t.Fatal(err)
 	}
+	clock.waitForTicker()
 	held := readToken(t, path)
 	for {
 		if now := clock.step(); !now.Before(expiry) {
@@ -168,6 +192,7 @@ func TestTokenFileRewrittenBeforeExpiryAndRemovedAtTheEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	clock.waitForTicker()
 	if got := readToken(t, path); got != "rs_old" {
 		t.Fatalf("token file = %q", got)
 	}
