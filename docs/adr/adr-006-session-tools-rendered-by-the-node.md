@@ -1,5 +1,5 @@
 ---
-summary: The node renders each session's tools (internal/tools) in the agent's own format — Claude Code mcpServers beside the built-in mesh-context server (prologue until goal builtin-is-mesh-context, amended 2026-09-28; read as a deprecated alias until 2026-10-28), allowed by --allowedTools mcp__<name>__*, and Codex [mcp_servers.<name>] tables in a 0600 config.toml under the session's CODEX_HOME (console tools by tools.CodexConfig, the built-in by CodexMCPConfig with any ${VAR} resolved or refused, every server's tools approved for exec's workspace-write sandbox) — with every secret value in the session's environment only (MESH_TOOL_<NAME>_<KEY>, or the key itself for a Codex local tool's env_vars), the configs carrying variable names, a clash with the built-in refused, and a local tool whose runtime the node lacks omitted when nice-to-have (noted on the item) or declining the build (released, not reclaimed while the node's runtimes are unchanged) when required; priced tool calls, counted per MCP server from the stream, go to the platform as recordUsage records (calls × pricePerCallCents) after a build or evaluation.
+summary: The node renders each session's tools (internal/tools) in the agent's own format — Claude Code mcpServers beside the built-in runsheet server (amended 2026-10-15; mesh-context, its name from goal builtin-is-mesh-context, and prologue before it, read as aliases on adoption), allowed by --allowedTools mcp__<name>__*, and Codex [mcp_servers.<name>] tables in a 0600 config.toml under the session's CODEX_HOME (console tools by tools.CodexConfig, the built-in by CodexMCPConfig with any ${VAR} resolved or refused, every server's tools approved for exec's workspace-write sandbox) — with every secret value in the session's environment only (MESH_TOOL_<NAME>_<KEY>, or the key itself for a Codex local tool's env_vars), the configs carrying variable names, a clash with the built-in refused, and a local tool whose runtime the node lacks omitted when nice-to-have (noted on the item) or declining the build (released, not reclaimed while the node's runtimes are unchanged) when required; priced tool calls, counted per MCP server from the stream, go to the platform as recordUsage records (calls × pricePerCallCents) after a build or evaluation.
 status: accepted
 ---
 
@@ -438,3 +438,32 @@ it; this repo's gateway package has no `prologue` word left. This is
 the context-read path (decision 7's claim-time tool read is separate);
 the `tools.IsBuiltin` MCP-server-name alias for an adopted session is
 untouched here.
+
+## Amendment — 2026-10-15 (goal the-node-calls-the-context-server-runsheet, item 1)
+
+**The built-in is `runsheet`.** The server the node attaches to every
+session is now named `runsheet` (`tools.Builtin = "runsheet"`,
+`harness.BuiltinMCP`): Claude Code's `mcpServers` key and
+`--allowedTools mcp__runsheet__*`, a build's `--disallowedTools
+mcp__runsheet__mesh_finish,mcp__runsheet__mesh_fail`, Codex's
+`[mcp_servers.runsheet]` table and its preflight's `codex mcp get
+runsheet`, `meshmcp.Hosted`'s key in `node.MeshContextHTTP`. The relay's
+token file is `runsheet.token` and its pod script `runsheet-relay.js`;
+an adopted session keeps the paths its `state.json` and `mcp.json`
+name. The tool names (`mesh_search`, `mesh_finish`, …) are the
+platform's and do not change.
+
+**`mesh-context` and `prologue` read as aliases.** `tools.IsBuiltin`
+takes both old names, one alias declaration (`builtinAliases`), for the
+stream and state of a session an older node started and this one
+adopts: `harness.Result.ToolNames` and `DocumentsFetched` fold either
+into `runsheet`, a `mesh_finish`/`mesh_fail`/`mesh_verdict`/`mesh_plan`
+call is a work call whatever server it came through
+(`mcp__mesh-context__mesh_finish` as `mcp__runsheet__mesh_finish`), and
+an adopted evaluation's `toolBroken` reads the built-in under any of
+its names. The clash check (`check`) still refuses `Builtin` alone: a
+console tool named `runsheet` is a clash, one named `mesh-context` or
+`prologue` an ordinary tool. The `prologue` spelling is confined to that
+declaration: tests and fixtures name the oldest alias through
+`tools.BuiltinAlias()` (`tools.BuiltinAliases()` lists both), and the
+gateway's `/prologue/v1` fallback is gone (the amendment above).

@@ -53,8 +53,8 @@ type ClaudeCode struct {
 	// finish tools run from (NodeWorkMCP, `mesh session-tools`); empty is
 	// this process's executable.
 	MeshBinary string
-	// Tokens keeps each session's mesh-context token file fresh, when
-	// the job's mesh-context is the relay (MeshContextRelay, mesh-cli
+	// Tokens keeps each session's runsheet token file fresh, when
+	// the job's runsheet is the relay (MeshContextRelay, mesh-cli
 	// ADR-029); an adopted session's too, from its state's TokenFile.
 	Tokens TokenKeeper
 }
@@ -163,7 +163,7 @@ func mcpConfig(servers map[string]any) ([]byte, string, bool) {
 
 // SandboxArgs is Args for a session in a pod: the same, but the MCP
 // config is the file at mcpPath (under the session's HOME) rather than
-// inline, so the mesh-context bearer is on no command line. A build's
+// inline, so the runsheet bearer is on no command line. A build's
 // own finish tools run as WorkScript beside that file (sandboxServers).
 func (c *ClaudeCode) SandboxArgs(job Job, mcpPath string) []string {
 	servers := sandboxServers(job, mcpPath)
@@ -306,7 +306,7 @@ func (c *ClaudeCode) runHost(ctx context.Context, job Job, onProgress func(Progr
 	}()
 	job, _, releaseToken, err := placeMeshContext(job, c.Tokens, dir, false, "")
 	if err != nil {
-		return Result{}, fmt.Errorf("harness claude-code: mesh-context token: %w", err)
+		return Result{}, fmt.Errorf("harness claude-code: runsheet token: %w", err)
 	}
 	detachedToken := false
 	defer func() { releaseToken(!detachedToken) }()
@@ -675,10 +675,10 @@ func (c *ClaudeCode) runSandboxed(ctx context.Context, job Job, onProgress func(
 			// the pod has no mesh binary: the relay is RelayScript in
 			// its HOME, on a token file there the node keeps fresh
 			if _, err = sess.WriteFile(relayScriptName, RelayScript()); err != nil {
-				return Result{}, fmt.Errorf("harness claude-code: mesh-context relay: %w", err)
+				return Result{}, fmt.Errorf("harness claude-code: runsheet relay: %w", err)
 			}
 			if job, _, releaseToken, err = placeMeshContext(job, c.Tokens, sess.Home, true, mcpPath); err != nil {
-				return Result{}, fmt.Errorf("harness claude-code: mesh-context token: %w", err)
+				return Result{}, fmt.Errorf("harness claude-code: runsheet token: %w", err)
 			}
 		}
 	}

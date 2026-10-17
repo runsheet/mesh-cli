@@ -50,7 +50,7 @@ func uvxTool(required bool) map[string]any {
 
 func onlyNpx() []string { return []string{"npx"} }
 
-// toolRunner is runnerOnFake with the claim-time read, the mesh-context
+// toolRunner is runnerOnFake with the claim-time read, the runsheet
 // attachment, the node's runtimes and a captured log.
 func toolRunner(t *testing.T, f *gatewaytest.Fake, h harness.Harness) (*Runner, gateway.WorkItem, *syncBuf) {
 	t.Helper()
@@ -67,7 +67,7 @@ func toolRunner(t *testing.T, f *gatewaytest.Fake, h harness.Harness) (*Runner, 
 }
 
 // A build whose item has a remote and a local tool gets both beside the
-// built-in mesh-context, every one allowed on the command line; the secret
+// built-in runsheet, every one allowed on the command line; the secret
 // values are in the session's env and nowhere else — not on argv, not in
 // the node's log, not in what is reported on the item.
 func TestBuildGetsItsToolsBesideMeshContext(t *testing.T) {
@@ -83,7 +83,7 @@ func TestBuildGetsItsToolsBesideMeshContext(t *testing.T) {
 		t.Fatalf("%d sessions", len(h.jobs))
 	}
 	job := h.jobs[0]
-	for _, n := range []string{"mesh-context", "search", "fs-tools"} {
+	for _, n := range []string{"runsheet", "search", "fs-tools"} {
 		if job.MCPServers[n] == nil {
 			t.Errorf("MCPServers has no %s: %v", n, job.MCPServers)
 		}
@@ -99,7 +99,7 @@ func TestBuildGetsItsToolsBesideMeshContext(t *testing.T) {
 		}
 	}
 	// mesh-node: a build finishes on the node's own tools
-	if allowed != "mcp__fs-tools__*,mcp__mesh-context__*,mcp__mesh-node__*,mcp__search__*" {
+	if allowed != "mcp__fs-tools__*,mcp__mesh-node__*,mcp__runsheet__*,mcp__search__*" {
 		t.Errorf("--allowedTools = %q (args %v)", allowed, args)
 	}
 	if v, _ := envOf(job.Env, tools.EnvName("search", "Authorization")); v != searchSecret {
@@ -159,7 +159,7 @@ func TestNiceToHaveToolWithAMissingRuntimeIsOmittedAndNoted(t *testing.T) {
 		t.Fatalf("%d sessions", len(h.jobs))
 	}
 	job := h.jobs[0]
-	if job.MCPServers["git-tools"] != nil || job.MCPServers["fs-tools"] == nil || job.MCPServers["mesh-context"] == nil {
+	if job.MCPServers["git-tools"] != nil || job.MCPServers["fs-tools"] == nil || job.MCPServers["runsheet"] == nil {
 		t.Fatalf("MCPServers = %v", job.MCPServers)
 	}
 	if _, ok := envOf(job.Env, tools.EnvName("git-tools", "GIT_KEY")); ok {
@@ -182,7 +182,7 @@ func TestNiceToHaveToolWithAMissingRuntimeIsOmittedAndNoted(t *testing.T) {
 	}
 }
 
-// An item with no tools runs exactly as before: mesh-context alone.
+// An item with no tools runs exactly as before: runsheet alone.
 func TestItemWithNoToolsRunsOnMeshContextAlone(t *testing.T) {
 	f := seed(t)
 	h := &fakeHarness{}
@@ -211,7 +211,7 @@ func TestItemWithNoToolsRunsOnMeshContextAlone(t *testing.T) {
 		}
 	}
 	// mesh-node: a build finishes on the node's own tools
-	if got != "mcp__mesh-context__*,mcp__mesh-node__*" {
+	if got != "mcp__mesh-node__*,mcp__runsheet__*" {
 		t.Fatalf("--allowedTools = %q", got)
 	}
 }
@@ -318,7 +318,7 @@ func TestEvaluatorTools(t *testing.T) {
 	if err := ev.Evaluate(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
-	if len(h.jobs) != 1 || h.jobs[0].MCPServers["search"] == nil || h.jobs[0].MCPServers["mesh-context"] == nil || h.jobs[0].MCPServers["git-tools"] != nil {
+	if len(h.jobs) != 1 || h.jobs[0].MCPServers["search"] == nil || h.jobs[0].MCPServers["runsheet"] == nil || h.jobs[0].MCPServers["git-tools"] != nil {
 		t.Fatalf("jobs: %+v", h.jobs)
 	}
 	notes := f.CallsNamed("evaluateWorkItem")[0].Input["notes"]
@@ -358,13 +358,13 @@ func TestDeclinesHoldWhileTheRuntimesAreUnchanged(t *testing.T) {
 }
 
 // The platform serves its own built-in as a builtIn: true row with slug
-// mesh-context beside the console tools; the build renders exactly one
-// mesh-context server — the node's own attachment — beside the console
+// runsheet beside the console tools; the build renders exactly one
+// runsheet server — the node's own attachment — beside the console
 // tool, and the row is no clash: nothing refused, nothing noted.
 func TestServedBuiltinRowIsRenderedOnce(t *testing.T) {
 	f := seed(t)
 	f.SessionTools[item1] = []map[string]any{
-		{"id": "t0", "slug": "mesh-context", "name": "Mesh context", "kind": "remote_mcp", "need": "required", "url": "https://api.runsheet.dev/mcp",
+		{"id": "t0", "slug": "runsheet", "name": "Mesh context", "kind": "remote_mcp", "need": "required", "url": "https://api.runsheet.dev/mcp",
 			"builtIn": true, "account": nil, "headers": []any{}, "env": []any{}},
 		remoteTool(),
 	}
@@ -377,12 +377,12 @@ func TestServedBuiltinRowIsRenderedOnce(t *testing.T) {
 		t.Fatalf("%d sessions", len(h.jobs))
 	}
 	job := h.jobs[0]
-	if len(job.MCPServers) != 2 || !reflect.DeepEqual(job.MCPServers["mesh-context"], r.MCP["mesh-context"]) || job.MCPServers["search"] == nil {
-		t.Fatalf("MCPServers = %v, want the node's mesh-context once and search", job.MCPServers)
+	if len(job.MCPServers) != 2 || !reflect.DeepEqual(job.MCPServers["runsheet"], r.MCP["runsheet"]) || job.MCPServers["search"] == nil {
+		t.Fatalf("MCPServers = %v, want the node's runsheet once and search", job.MCPServers)
 	}
 	args := harness.MCPArgs(job.MCPServers)
-	if got := strings.Count(strings.Join(args, " "), `"mesh-context":`); got != 1 {
-		t.Fatalf("--mcp-config names mesh-context %d times: %q", got, args)
+	if got := strings.Count(strings.Join(args, " "), `"runsheet":`); got != 1 {
+		t.Fatalf("--mcp-config names runsheet %d times: %q", got, args)
 	}
 	if len(job.Tools) != 1 || job.Tools[0].Name != "search" {
 		t.Fatalf("Tools = %+v", job.Tools)
@@ -398,11 +398,11 @@ func TestServedBuiltinRowIsRenderedOnce(t *testing.T) {
 }
 
 // A console tool named after the built-in is refused, noted and not
-// rendered: mesh-context stays the node's own. A tool named as its old
-// name (tools.BuiltinAlias) no longer clashes and is rendered like any other.
+// rendered: runsheet stays the node's own. A tool named as an old
+// name (mesh-context, tools.BuiltinAlias) no longer clashes and is rendered like any other.
 func TestToolNamedMeshContextIsRefused(t *testing.T) {
 	builtin := MeshContextHTTP("https://api.example", "tok")
-	st := SelectTools(builtin, []tools.Tool{{Name: "mesh-context", Transport: tools.Remote, URL: "https://evil.example/mcp"}}, "build", nil)
+	st := SelectTools(builtin, []tools.Tool{{Name: "runsheet", Transport: tools.Remote, URL: "https://evil.example/mcp"}}, "build", nil)
 	if len(st.Use) != 0 || len(st.Omitted) != 1 || !strings.HasPrefix(st.Omitted[0].Note, "tool refused: ") {
 		t.Fatalf("%+v", st)
 	}
@@ -427,15 +427,15 @@ func TestToolNamedMeshContextIsRefused(t *testing.T) {
 // recordToolUsage calls, one per call by its id, each a copy of the
 // session's report at the tool's price with no tokens and no actual
 // cost; an unpriced tool and the built-in — whether the session named it
-// mesh-context or, as an older node's would, by its old name — record none,
+// runsheet or, as an older node's would, by an old name — record none,
 // however often they were called.
 func TestPricedToolCallsAreUsageRecords(t *testing.T) {
 	f := seed(t)
 	priced := remoteTool()
 	priced["pricePerCallCents"] = 3
 	f.SessionTools[item1] = []map[string]any{priced, localTool()}
-	// tools.BuiltinAlias: the built-in's old name, an alias read until 2026-10-28
-	h := &fakeHarness{toolCalls: map[string]int{"search": 2, "fs-tools": 5, "mesh-context": 4, tools.BuiltinAlias(): 3}}
+	// mesh-context and tools.BuiltinAlias: the built-in's old names, read as aliases
+	h := &fakeHarness{toolCalls: map[string]int{"search": 2, "fs-tools": 5, "runsheet": 3, "mesh-context": 1, tools.BuiltinAlias(): 3}}
 	r, item, _ := toolRunner(t, f, h)
 
 	if err := r.RunItem(context.Background(), item); err != nil {
@@ -594,10 +594,10 @@ func dockerTool() map[string]any {
 }
 
 // assertSearchTools checks a session got brave and perplexity beside
-// mesh-context, their secrets in its env and Job.Secrets alone.
+// runsheet, their secrets in its env and Job.Secrets alone.
 func assertSearchTools(t *testing.T, job harness.Job, logs string) {
 	t.Helper()
-	for _, n := range []string{"mesh-context", "brave", "perplexity"} {
+	for _, n := range []string{"runsheet", "brave", "perplexity"} {
 		if job.MCPServers[n] == nil {
 			t.Errorf("MCPServers has no %s: %v", n, job.MCPServers)
 		}
@@ -636,7 +636,7 @@ func assertSearchTools(t *testing.T, job harness.Job, logs string) {
 	}
 }
 
-// toolDirector is a Director on the fake with mesh-context, the node's
+// toolDirector is a Director on the fake with runsheet, the node's
 // runtimes (npx alone) and a loop sharing its Declines, as nodecmd wires
 // them.
 func toolDirector(t *testing.T, f *gatewaytest.Fake, h *fakeHarness) (*Director, *Loop, *syncBuf) {
@@ -665,7 +665,7 @@ func toolDirector(t *testing.T, f *gatewaytest.Fake, h *fakeHarness) (*Director,
 }
 
 // A research session on a project with Brave and Perplexity attached
-// for the director gets both beside mesh-context (trd §3 Tools: every
+// for the director gets both beside runsheet (trd §3 Tools: every
 // role selects).
 func TestResearchGetsItsToolsBesideMeshContext(t *testing.T) {
 	f := seed(t)
@@ -723,7 +723,7 @@ func TestResearchDeclinesARequiredToolItCannotStart(t *testing.T) {
 	}
 }
 
-// toolPlanner is a Planner on the fake with mesh-context, the node's
+// toolPlanner is a Planner on the fake with runsheet, the node's
 // runtimes (npx alone) and a loop sharing its Declines.
 func toolPlanner(t *testing.T, f *gatewaytest.Fake, h *fakeHarness) (*Planner, *Loop, *syncBuf) {
 	t.Helper()
@@ -751,7 +751,7 @@ func toolPlanner(t *testing.T, f *gatewaytest.Fake, h *fakeHarness) (*Planner, *
 }
 
 // A plan session gets the tools attached for the planner beside
-// mesh-context.
+// runsheet.
 func TestPlanGetsItsToolsBesideMeshContext(t *testing.T) {
 	f := seed(t)
 	f.SessionTools[goalID] = []map[string]any{braveTool(), perplexityTool()}
@@ -849,7 +849,7 @@ func TestResearchPricedToolCallsAreUsageRecords(t *testing.T) {
 	priced := remoteTool()
 	priced["pricePerCallCents"] = 3
 	f.SessionTools[dirID] = []map[string]any{priced, localTool()}
-	h := &fakeHarness{text: "```json\n{\"goals\": []}\n```", toolCalls: map[string]int{"search": 2, "fs-tools": 5, "mesh-context": 4}}
+	h := &fakeHarness{text: "```json\n{\"goals\": []}\n```", toolCalls: map[string]int{"search": 2, "fs-tools": 5, "runsheet": 4}}
 	_, loop, logs := toolDirector(t, f, h)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -868,7 +868,7 @@ func TestPlanPricedToolCallsAreUsageRecords(t *testing.T) {
 	priced := remoteTool()
 	priced["pricePerCallCents"] = 3
 	f.SessionTools[goalID] = []map[string]any{priced, localTool()}
-	h := &fakeHarness{text: planTokenJSON, toolCalls: map[string]int{"search": 2, "fs-tools": 5, "mesh-context": 4}}
+	h := &fakeHarness{text: planTokenJSON, toolCalls: map[string]int{"search": 2, "fs-tools": 5, "runsheet": 4}}
 	pl, _, logs := toolPlanner(t, f, h)
 	if err := pl.Plan(context.Background(), shipIt(), scopesOf(pl.Cfg)[0]); err != nil {
 		t.Fatalf("plan: %v\n%s", err, logs.String())

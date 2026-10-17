@@ -31,7 +31,7 @@ const MachineKind = "machine"
 // renewed. The node talks to the gateway every interval (30s by
 // default), so a minute is ample and stays honest for the short
 // access_ttl a machine may be registered with.
-// A session's mesh-context token file is rewritten well inside it
+// A session's runsheet token file is rewritten well inside it
 // (node.TokenRefreshEvery).
 const RefreshSkew = time.Minute
 

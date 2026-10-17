@@ -29,13 +29,13 @@ type Session struct {
 	Cfg *node.Config
 	// Orgs are the logins the node serves, for the system prompt.
 	Orgs []string
-	// MCP are MCP servers the session gets beside the mesh channel (mesh-context).
+	// MCP are MCP servers the session gets beside the mesh channel (runsheet).
 	MCP map[string]any
 	// MCPFunc, when set, is asked for them at every session start
 	// instead: a credential that refreshes (the node's machine token)
 	// gives each restarted process a live bearer.
 	MCPFunc func() map[string]any
-	// Tokens keeps the mesh-context relay's token file fresh for each
+	// Tokens keeps the runsheet relay's token file fresh for each
 	// process's life (mesh-cli ADR-029): the session runs for hours,
 	// across many rotations of the node's bearer.
 	Tokens harness.TokenKeeper
@@ -292,12 +292,12 @@ func (s *Session) once(ctx context.Context, bin, workRoot string) error {
 	// kept fresh while it lives and removed when it exits
 	tokDir, err := os.MkdirTemp("", "mesh-channel-*")
 	if err != nil {
-		return fmt.Errorf("mesh-context token dir: %w", err)
+		return fmt.Errorf("runsheet token dir: %w", err)
 	}
 	defer os.RemoveAll(tokDir)
 	servers, _, release, err := harness.PlaceMeshContext(s.mcp(), s.Tokens, tokDir, false, "")
 	if err != nil {
-		return fmt.Errorf("mesh-context token: %w", err)
+		return fmt.Errorf("runsheet token: %w", err)
 	}
 	defer release(true)
 	cmd := exec.CommandContext(ctx, bin, s.args(workRoot, servers)...)

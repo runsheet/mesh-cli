@@ -14,7 +14,7 @@ var (
 	mcpRelayTokenFile string
 )
 
-// mcpRelayCmd is a session's mesh-context server: a stdio MCP relay to
+// mcpRelayCmd is a session's runsheet server: a stdio MCP relay to
 // the gateway's /mcp whose bearer is a file the node keeps fresh, read
 // on every request, so the session outlives any one token.
 var mcpRelayCmd = &cobra.Command{

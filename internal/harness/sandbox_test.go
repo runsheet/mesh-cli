@@ -35,7 +35,7 @@ func TestClaudeCodeRunsInTheSandbox(t *testing.T) {
 	ws := t.TempDir()
 	job := Job{Kind: KindBuild, Label: "g/1", Workspace: ws, Prompt: "build it", Model: "opus",
 		Env:        []string{"GH_TOKEN=ghs_x", "NOT_ALLOWED=1"},
-		MCPServers: map[string]any{"mesh-context": map[string]any{"type": "http", "url": "https://gw/mcp", "headers": map[string]string{"Authorization": "Bearer rs_secret"}}}}
+		MCPServers: map[string]any{"runsheet": map[string]any{"type": "http", "url": "https://gw/mcp", "headers": map[string]string{"Authorization": "Bearer rs_secret"}}}}
 	res, err := c.Run(context.Background(), job, nil)
 	if err != nil || !res.Success || res.Text != "done" || res.SessionID != "s1" {
 		t.Fatalf("run: %+v %v", res, err)
@@ -54,11 +54,11 @@ func TestClaudeCodeRunsInTheSandbox(t *testing.T) {
 	}
 	for _, a := range spec.Command {
 		if strings.Contains(a, "rs_secret") {
-			t.Fatalf("the mesh-context bearer is on the command line: %v", spec.Command)
+			t.Fatalf("the runsheet bearer is on the command line: %v", spec.Command)
 		}
 	}
-	if spec.Command[len(spec.Command)-1] != "--dangerously-skip-permissions" || flagAt(spec.Command, "--allowedTools") != "mcp__mesh-context__*,mcp__mesh-node__*" ||
-		flagAt(spec.Command, "--disallowedTools") != "mcp__mesh-context__mesh_finish,mcp__mesh-context__mesh_fail" {
+	if spec.Command[len(spec.Command)-1] != "--dangerously-skip-permissions" || flagAt(spec.Command, "--allowedTools") != "mcp__mesh-node__*,mcp__runsheet__*" ||
+		flagAt(spec.Command, "--disallowedTools") != "mcp__runsheet__mesh_finish,mcp__runsheet__mesh_fail" {
 		t.Fatalf("command = %v", spec.Command)
 	}
 	// a build's own finish tools: node running the script beside mcp.json

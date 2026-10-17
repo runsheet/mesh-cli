@@ -900,7 +900,7 @@ func (s *SessionAccount) subject() (noun, id string) {
 // InputPerTurnMax, LargestToolResults) — those are the whole session's
 // figures, not this one call's, and would be summed as if every priced
 // call were its own session. An unpriced tool, one not called and a
-// built-in server (mesh-context) are none: the loop is over s.used, the
+// built-in server (runsheet) are none: the loop is over s.used, the
 // rendered console tools, which never holds the built-in whatever it is
 // named — 2026-09-28, a session adopted from an older node (ADR-009) may
 // still call the built-in by its old name (tools.IsBuiltin), and that is

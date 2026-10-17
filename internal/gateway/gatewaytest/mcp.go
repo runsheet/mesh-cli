@@ -60,7 +60,7 @@ func (f *Fake) mcp(w http.ResponseWriter, r *http.Request) {
 	case "initialize":
 		w.Header().Set("Mcp-Session-Id", mcpSession)
 		reply(map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{"tools": map[string]any{}},
-			"serverInfo": map[string]any{"name": "mesh-context", "version": "fake"}})
+			"serverInfo": map[string]any{"name": "runsheet", "version": "fake"}})
 	case "tools/list":
 		names := append([]string(nil), contextTools...)
 		if f.HostedWorkTools {
