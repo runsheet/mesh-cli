@@ -1013,8 +1013,24 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   lists them in each served org (`RequestedRebases`), in goal priority
   then seq (`rebaseOrder`), and claims each with `ClaimWorkItemRebase`
   — a refusal is the ordinary answer, not an error. The session works
-  in the item's own checkout on its token, rebases onto the base,
-  re-runs the acceptance and pushes with `--force-with-lease`; the node
+  in a fresh checkout of its own, never the item's build checkout
+  (ADR-028, A rebase gets its own worktree): `RebaseWorkspaceSpec`'s
+  `<goal>/<seq>-rebase`, made by `Git.AddRebaseWorktree` — a detached
+  worktree of the shared clone at `origin/<branch>`, by
+  `addDetachedWorktree` as a batch candidate's, a stale dir there
+  removed first, nothing run in the item's checkout, deleted or
+  dangling — on the item's token before `NewItemCredAt` `Authorize`s it
+  there; a worktree that cannot be made is a `*WorkspaceError` released
+  as infrastructure (`rebaseRun.releaseInfrastructure`, held in
+  `Declines`, never `FailWorkItemRebase`; a refused release leaves the
+  claim to lapse; ADR-024), and the checkout is removed after
+  `afterRebase` unless left for adoption (`AdoptRebase` keeps the
+  state's workspace). It rebases the detached HEAD onto the base,
+  re-runs the acceptance and pushes `HEAD:refs/heads/<branch>` with
+  `--force-with-lease=<branch>:origin/<branch>`
+  (`TestRebaseRunsInAFreshCheckout`, `-tags e2e`, lands one with the
+  item's checkout deleted and with it dangling;
+  `rebaseworktree_e2e_test.go` the method's own cases); the node
   reads the pushed head back (`Workspacer.PushedHead`) and hands it in
   with `FinishWorkItemRebase`, or `FailWorkItemRebase` with the reason
   for *anything* else but `ErrNoCredential` (a wait: the claim lapses)
@@ -1203,9 +1219,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `docs/adr/adr-011-evaluations-run-on-the-family-with-headroom.md`,
   amending `adr-005-codex-second-opinion.md`; goal
   `codex-sessions-reach-the-context-tool`): `Evaluator.Codex` is the
-  Codex harness (`codexSecondOpinion` in `nodecmd.go`: built whenever
-  the codex binary is found, with or without a `codex:` block, with no
-  account of its own) and `CodexAccounts` is
+  Codex harness (`codexSecondOpinion` in `nodecmd.go`, with or without
+  a `codex:` block, with no account of its own: on a sandboxed node from
+  the node image's codex, `Sandbox.CodexVersion`, never the host's; with
+  the sandbox off from the host binary; neither, none — logged once per
+  start by `codexSourceOf`, `codex: evaluations on Codex from the node
+  image (…)`, `… from the host binary <path> …` or `codex: no Codex
+  evaluations: <why>`; ADR-007's amendment 2026-10-17) and `CodexAccounts` is
   `Loop.CodexCandidates` — the issued Codex accounts `Known` holds and
   only those: no Codex session runs on the machine's own login, and a
   Codex job with no placed `CODEX_HOME` is refused by the harness
@@ -1697,8 +1717,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   containers, mesh pods with no running container, `mesh-home-*` dirs no
   running container mounts) and logs `sandbox: swept N homes, M pods, K
   containers at start (L homes in use)` (ADR-007's amendment
-  2026-10-10). Channel-mode sessions and Codex are not in
-  the pod yet. **A runtime that cannot start a pod at all is told apart
+  2026-10-10). A Codex session runs in its pod too
+  (`harness.Codex.Sandbox`, `runSandboxed`: the image's `codex exec`,
+  the same two mounts, CODEX_HOME at `Session.CodexHome()` inside the
+  HOME, the env by name, the preflight by `Session.Exec` in that pod;
+  ADR-007's amendment 2026-10-17, `TestCodexEvaluationInAPodE2E`).
+  Channel-mode sessions are not in the pod yet. **A runtime that cannot start a pod at all is told apart
   from the agent's own failure inside one that started fine**
   (ADR-030's amendment,
   `docs/adr/adr-034-a-node-whose-runtime-is-broken-stops-claiming.md`,

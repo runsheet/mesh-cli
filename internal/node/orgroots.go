@@ -23,7 +23,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
+	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 )
 
@@ -311,4 +313,54 @@ func orgSandbox(sb *sandbox.Sandbox, roots *OrgRootSet, scopes Scopes, orgID str
 		return nil, err
 	}
 	return sb.WithStores(PackageStores(r.Store)), nil
+}
+
+// keptRootFor is the kept-sessions dir a session of orgID keeps its
+// stream under (harness.Job.KeptRoot): its org's Kept when roots are
+// laid out, else "" — the harness's own <work root>/kept-sessions, as
+// before. An org the node does not serve is refused, never given
+// another org's.
+func keptRootFor(roots *OrgRootSet, scopes Scopes, orgID string) (string, error) {
+	if roots == nil {
+		return "", nil
+	}
+	r, err := roots.ForOrgID(scopes, orgID)
+	if err != nil {
+		return "", err
+	}
+	return r.Kept, nil
+}
+
+// keptRootOfScope is keptRootFor for a plan or research of scope.
+func keptRootOfScope(roots *OrgRootSet, scope Scope) (string, error) {
+	if roots == nil {
+		return "", nil
+	}
+	r, err := roots.For(scope.Name())
+	if err != nil {
+		return "", err
+	}
+	return r.Kept, nil
+}
+
+// SweepKeptSessions runs harness.SweepKeptSessions over every served
+// org's Kept dir (ADR-034), each org's own kept sessions only, so an org
+// no new Codex session has started for is swept too. It goes on past
+// an org it cannot read and returns the errors joined.
+func (s *OrgRootSet) SweepKeptSessions(now time.Time) error {
+	if s == nil {
+		return nil
+	}
+	var errs []error
+	for _, org := range s.Orgs() {
+		roots, err := s.For(org)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if err := harness.SweepKeptSessions(roots.Kept, now); err != nil {
+			errs = append(errs, fmt.Errorf("kept sessions of %s: %w", org, err))
+		}
+	}
+	return errors.Join(errs...)
 }
