@@ -79,9 +79,9 @@ func (h *freshRebaseHarness) Run(ctx context.Context, job harness.Job, on func(h
 // rebase checkout is gone after.
 func TestRebaseRunsInAFreshCheckout(t *testing.T) {
 	for _, c := range []struct {
-		name   string
+		name    string
 		breakIt func(t *testing.T, dir string)
-		left   bool // the item's dir is still there after
+		left    bool // the item's dir is still there after
 	}{
 		{"deleted", func(t *testing.T, dir string) {
 			if err := os.RemoveAll(dir); err != nil {
