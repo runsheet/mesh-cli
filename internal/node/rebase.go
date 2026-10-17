@@ -23,8 +23,10 @@ import (
 // Rebaser is a node's session of kind rebase (runsheet ADR 008 step 2,
 // trd §6a): an item whose pull request conflicts with its base in a way
 // the integrator could not resolve itself, claimed with
-// ClaimWorkItemRebase. The session checks out the branch in the item's
-// own checkout, rebases it onto the base keeping both sides' intent,
+// ClaimWorkItemRebase. The session runs in a fresh detached worktree of
+// the branch at origin/<branch> (RebaseWorkspaceSpec, never the item's
+// build checkout; a worktree that cannot be made releases the claim as
+// infrastructure, ADR-024), rebases it onto the base keeping both sides' intent,
 // re-runs the acceptance and pushes with --force-with-lease; the node
 // reads the pushed head back and records it with FinishWorkItemRebase —
 // or gives the rebase up with FailWorkItemRebase and the reason, which
@@ -140,19 +142,39 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	if err != nil {
 		return fail(fmt.Errorf("workspace: %w", err))
 	}
-	// live on this node while this runs: no cleanup touches it (HoldWorkspace)
-	defer HoldWorkspace(spec.Dir())()
-	// the item's own GitHub token: the push is the session's whole point
-	cred, err := NewItemCred(ctx, r.GW, r.WS, r.Scopes, item, spec, r.Fallback, r.logf)
+	// the rebase's own fresh worktree at origin/<branch>, never the
+	// item's build checkout: that one may be gone, swept, or pointing at
+	// a pruned worktree registration (ADR-028, A rebase gets its own
+	// worktree)
+	rspec := RebaseWorkspaceSpec(spec)
+	dir := rspec.Dir()
+	wt, ok := r.WS.(rebaseWorktrees)
+	if !ok {
+		return fail(fmt.Errorf("workspace: %w", ErrNoRebaseWorktrees))
+	}
+	// live on this node while this runs: no cleanup touches it
+	// (HoldWorkspace); removed once the rebase is over, unless the
+	// session is left for the next node to adopt
+	release, made := HoldWorkspace(dir), false
+	defer func() {
+		release()
+		if made {
+			unlessDetached(ctx, func() { r.removeCheckout(ctx, wt, label, dir) })
+		}
+	}()
+	// the item's own GitHub token, written into the fresh worktree once
+	// it is made: the push is the session's whole point
+	cred, err := NewItemCredAt(ctx, r.GW, r.WS, r.Scopes, item, rspec, r.Fallback, r.logf, func(tctx context.Context) error {
+		made = true // a half-made worktree goes too
+		return wt.AddRebaseWorktree(tctx, rspec.Repo, dir, branch)
+	})
 	if we := WorkspaceErrorOf(err); we != nil {
+		// a worktree that cannot be made, or a token that cannot be
+		// written into it, is the node's condition (ADR-024)
 		return rb.releaseInfrastructure(ctx, we)
 	}
 	if err != nil {
 		return fail(err)
-	}
-	dir, err := r.WS.Prepare(ctx, spec)
-	if err != nil {
-		return fail(fmt.Errorf("workspace: %w", err))
 	}
 	// the rebased commits are the agent's, with the pairers' trailers
 	// (ADR-024)
@@ -326,16 +348,20 @@ func (rb *rebaseRun) fail(ctx context.Context, cause error) error {
 	return cause
 }
 
-// releaseInfrastructure answers a rebase whose token could not be
-// written into the repo cache (NewItemCred's *WorkspaceError): released
-// as an infrastructure hold (ReleaseOnInfrastructure) and held off this
-// node for WorkspaceReleaseHold; a release the platform refuses is the
-// rebase's failure with the same reason, as every rebase that could not
-// start has been.
+// releaseInfrastructure answers a rebase that could not start for the
+// node's own condition (ADR-024) — its fresh worktree could not be made,
+// or its token could not be written into it (NewItemCredAt's
+// *WorkspaceError): released as an infrastructure hold
+// (ReleaseOnInfrastructure) and held off this node for
+// WorkspaceReleaseHold, never failed — the conflict is no reason to hand
+// the item to its builder. A release the platform refuses, as it refuses
+// one of an item in review today (it has no release for a rebase
+// claim), leaves the claim to lapse on its 15-minute timer, as a rebase
+// with no credential does; no FailWorkItemRebase is sent.
 func (rb *rebaseRun) releaseInfrastructure(ctx context.Context, we *WorkspaceError) error {
 	sc, _ := rb.r.Scopes.ByOrg(rb.item.OrgID)
-	err := ReleaseOnInfrastructure(ctx, rb.r.GW, rb.item.ID, sc.NodeID, rb.label, we, func(reason string) {
-		rb.fail(ctx, errors.New(reason))
+	err := ReleaseOnInfrastructure(ctx, rb.r.GW, rb.item.ID, sc.NodeID, rb.label, we, func(string) {
+		rb.r.logf("item %s: the rebase claim is left to lapse on the platform's timer", rb.label)
 	}, rb.r.logf)
 	if ctx.Err() == nil {
 		holdInfrastructure(rb.r.Declines, rb.item.ID, rb.label, we, rb.r.logf)
@@ -440,6 +466,16 @@ func (r *Rebaser) afterRebase(ctx context.Context, rb *rebaseRun, acct *SessionA
 	return nil
 }
 
+// removeCheckout removes a rebase's own checkout and the hooks Identify
+// made beside it, once its end is handled; a failure is logged, never
+// the rebase's.
+func (r *Rebaser) removeCheckout(ctx context.Context, wt rebaseWorktrees, label, dir string) {
+	if err := wt.RemoveWorkspace(context.WithoutCancel(ctx), dir); err != nil {
+		r.logf("item %s: remove rebase checkout %s: %v", label, dir, err)
+	}
+	_ = os.RemoveAll(HooksDir(dir))
+}
+
 // AdoptRebase takes up a rebase session a node process before this one
 // started (ADR 009): the item's token back on the checkout, the session
 // followed to its end — or read from its file when it is gone — with the
@@ -469,8 +505,22 @@ func (r *Rebaser) AdoptRebase(ctx context.Context, item gateway.WorkItem, s Foun
 	if err != nil {
 		return rb.fail(ctx, fmt.Errorf("workspace: %w", err))
 	}
-	// live on this node while this runs: no cleanup touches it (HoldWorkspace)
-	defer HoldWorkspace(spec.Dir())()
+	// the session's own checkout, as its state names it: the rebase's
+	// fresh worktree (RebaseWorkspaceSpec), else the item's checkout an
+	// older node ran it in
+	if rspec := RebaseWorkspaceSpec(spec); isRebaseDir(rb.dir) || rb.dir == "" {
+		spec = rspec
+		rb.dir = rspec.Dir()
+	}
+	// live on this node while this runs: no cleanup touches it
+	// (HoldWorkspace); a rebase's own checkout removed once it is over
+	release := HoldWorkspace(rb.dir)
+	defer func() {
+		release()
+		if wt, ok := r.WS.(rebaseWorktrees); ok && isRebaseDir(rb.dir) {
+			unlessDetached(ctx, func() { r.removeCheckout(ctx, wt, rb.label, rb.dir) })
+		}
+	}()
 	if rb.cred, err = NewItemCred(ctx, r.GW, r.WS, r.Scopes, item, spec, r.Fallback, r.logf); err != nil {
 		if we := WorkspaceErrorOf(err); we != nil {
 			stopFound(r.logf, "item "+item.ID, s)
