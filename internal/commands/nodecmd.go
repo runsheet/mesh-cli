@@ -1294,6 +1294,10 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 	// adopts is swept; an adopted one's pod and HOME are kept (ADR-007's
 	// amendment, ADR 009)
 	node.SweepSandbox(ctx, sessionSandbox, found, logger.Printf)
+	// and what a killed node's host sessions left of their scratch, on
+	// every node: the scratch root's dirs and the node's own /tmp dirs no
+	// adopted session names
+	sweepScratch(workRoot, found, logger)
 	// plan and research claims it held but had not opened are taken again
 	reopenClaims(ctx, loop, workRoot, found, logger)
 	// items this node held when it last stopped are taken up again: a
@@ -1678,6 +1682,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	second := codexSecondOpinion(cfg, loop, workRoot, logger)
 	found := adoptSessions(ctx, gw, cfg, oneShot, second, loop, &node.Runner{GW: gw, Harness: oneShot, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, RuntimeBroken: loop.NoteRuntimeBroken, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Machine: loop.Machine, Host: loop.HostThresholds, Tripline: loop.Tripline, Log: logger}, workRoot, fallback, accounts, logger)
 	node.SweepSandbox(ctx, sessionSandbox, found, logger.Printf)
+	sweepScratch(workRoot, found, logger)
 	loop.Evaluate = evaluateWith(gw, cfg, observed(loop, logger), second, loop, workRoot, fallback, accounts, logger)
 	mainRunner := &node.Runner{GW: gw, WS: ws, RuntimeBroken: loop.NoteRuntimeBroken, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, BatchFallback: &node.TokenFallback{}, Sandbox: sessionSandbox, Notices: validationNotices, Log: logger}
 	// a pushed commit is validated from GitHub's served diff through the
@@ -1921,6 +1926,17 @@ func tokenKeeper() harness.TokenKeeper {
 
 // sessionSandbox is the pod every one-shot session runs in (OpenSandbox);
 // nil runs it on the host, as `sandbox: off` does.
+// sweepScratch is the start-up scratch sweep (node.SweepScratch) of
+// workRoot's scratch root and os.TempDir(), keeping what found names.
+func sweepScratch(workRoot string, found []node.FoundSession, logger *log.Logger) {
+	root, err := node.ScratchRoot(workRoot)
+	if err != nil {
+		logger.Printf("scratch: sweep at start: %v", err)
+		return
+	}
+	node.SweepScratch(node.ScratchSweep{Roots: []string{root}, Sandboxed: sessionSandbox != nil, Found: found, InUse: node.WorkspaceLive}, logger.Printf)
+}
+
 var sessionSandbox *sandbox.Sandbox
 
 // oneShotHarness is `claude -p` for a session that ends with its turn:
