@@ -112,8 +112,9 @@ type Job struct {
 	// adopt, and Run returns ctx.Err() at once; only the job's own
 	// Timeout stops it. The session directory is also left when the
 	// session ends, for the node to remove (RemoveSession) once it has
-	// handled the end. A host Claude session only: a sandboxed or Codex
-	// one still ends with its ctx. A ctx cancelled with a cause that Is
+	// handled the end. A host Claude session, and a sandboxed Claude or
+	// Codex one whose harness runs it detached (DetachSandboxed); a host
+	// Codex one still ends with its ctx. A ctx cancelled with a cause that Is
 	// ErrStopSession is no shutdown: the unit is stopped and killed as at
 	// any other end (StopRequested).
 	Outlive bool
@@ -161,6 +162,11 @@ type SessionMeta struct {
 	// Account is the account label the session runs on; empty takes the
 	// job's MESH_ACCOUNT.
 	Account string
+	// LoginCache is where a Codex login the session refreshed is kept
+	// for the next session on its credential (node.CodexLoginCache): a
+	// node that adopts the session writes a refreshed one there, as the
+	// account's Cleanup does for the node that started it.
+	LoginCache string
 	// TempDirs are the temporary dirs the session runs in (its
 	// CLAUDE_CONFIG_DIR, GH_CONFIG_DIR): RemoveSession removes them with
 	// the session directory, whichever node process ends it.
