@@ -36,7 +36,7 @@ func (c *Codex) runDetached(ctx context.Context, job Job, sess *sandbox.Session,
 		ctx, cancel = context.WithTimeout(ctx, job.Timeout)
 		defer cancel()
 	}
-	dir, files, err := openSessionDir(job)
+	dir, files, err := openSessionDir(job, "")
 	if err != nil {
 		return Result{}, fmt.Errorf("harness codex: session dir: %w", err), false
 	}
