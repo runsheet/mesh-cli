@@ -392,6 +392,7 @@ var nodeStatusCmd = &cobra.Command{
 			fmt.Println(line)
 		}
 		fmt.Println(cacheStatusLine(state, cfg.ValidationCacheCap()))
+		fmt.Println(cacheSizeStatusLine(state))
 		scaling, scales := localScaling(state)
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "ORG\tNAME\tSLUG\tSTATUS\tRUNNING\tCAPACITY\tVERSION\tLAST_SEEN")
@@ -642,6 +643,24 @@ func cacheStatusLine(state node.RunState, cap int64) string {
 	}
 	return fmt.Sprintf("validation cache: %d%% hits (%d/%d), %s of %s",
 		hits*100/lookups, hits, lookups, node.FormatBytes(size), node.FormatBytes(cap))
+}
+
+// cacheSizeStatusLine is `mesh node status`'s line for the cache root's
+// size against its cap and the scratch root's size, as the node's last
+// CacheTrim reading left them in node.cachesize — `cache: 4.2 GiB of
+// 20.0 GiB (/home/u/.cache/mesh/cache); scratch 1.0 GiB
+// (/home/u/.mesh/work/.scratch); measured 2026-10-17T18:00:00Z` — and
+// `cache: size unknown (no reading yet)` before the first.
+func cacheSizeStatusLine(state node.RunState) string {
+	r, ok := state.CacheSize()
+	if !ok {
+		return "cache: size unknown (no reading yet)"
+	}
+	line := fmt.Sprintf("cache: %s of %s (%s)", node.FormatBytes(r.Bytes), node.FormatBytes(r.Cap), r.Root)
+	if r.ScratchRoot != "" {
+		line += fmt.Sprintf("; scratch %s (%s)", node.FormatBytes(r.ScratchBytes), r.ScratchRoot)
+	}
+	return line + "; measured " + r.At.UTC().Format(time.RFC3339)
 }
 
 // localScaling is the capacity the node on this machine has in force
@@ -1661,6 +1680,13 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 		logger.Printf("served diff: %v; main validations take worktrees", err)
 	} else {
 		mainRunner.ServedDiff(&gitdata.Client{}, cache)
+		// the same cache, Go build cache included, measured and trimmed
+		// under its cap at the first tick and hourly after
+		trim := &node.CacheTrim{Cache: cache, State: cache.State, Logf: logger.Printf}
+		if root, err := node.ScratchRoot(workRoot); err == nil {
+			trim.ScratchRoot = root
+		}
+		loop.CacheTrim = trim
 	}
 	loop.ValidateBatch = mainRunner.ValidateCandidate
 	loop.ValidateMain = mainRunner.ValidateMainRequest

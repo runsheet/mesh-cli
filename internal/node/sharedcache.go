@@ -584,11 +584,43 @@ func (c *SharedCache) Enforce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if total > c.MaxBytes {
+	_, err = c.enforce(ctx, total, entries, c.MaxBytes)
+	return err
+}
+
+// TrimFraction is how far below the cap Trim brings an over-cap cache
+// root: 80% of MaxBytes, so the next hour's builds do not put it straight
+// back over.
+const TrimFraction = 0.8
+
+// Trim is Enforce for the hourly trim (CacheTrim): a cache root over
+// MaxBytes is brought under TrimFraction of it — least recently used
+// entries first, then `go clean -cache` on go/ — and one under the cap
+// is left untouched. It returns the size before and after; equal, and
+// false, when nothing was trimmed.
+func (c *SharedCache) Trim(ctx context.Context) (before, after int64, trimmed bool, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	total, entries, err := c.scan()
+	if err != nil {
+		return 0, 0, false, err
+	}
+	if c.MaxBytes <= 0 || total <= c.MaxBytes {
+		return total, total, false, nil
+	}
+	after, err = c.enforce(ctx, total, entries, int64(float64(c.MaxBytes)*TrimFraction))
+	return total, after, after < total, err
+}
+
+// enforce evicts and cleans until total is at most target, saying so
+// once while still over MaxBytes; c.mu is held. It returns the size it
+// left.
+func (c *SharedCache) enforce(ctx context.Context, total int64, entries []cacheFile, target int64) (int64, error) {
+	if total > target {
 		sort.Slice(entries, func(i, j int) bool { return entries[i].used.Before(entries[j].used) })
 		evicted, freed := 0, int64(0)
 		for _, e := range entries {
-			if total <= c.MaxBytes {
+			if total <= target {
 				break
 			}
 			if err := os.Remove(e.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -604,13 +636,13 @@ func (c *SharedCache) Enforce(ctx context.Context) error {
 		}
 	}
 	goDir := filepath.Join(c.Root, "go")
-	if total > c.MaxBytes {
+	if total > target {
 		if _, err := os.Stat(goDir); err == nil {
 			if err := c.cleanGo(ctx, goDir); err != nil {
 				c.logf("cache: go clean -cache: %v", err)
 			}
 			if total, _, err = c.scan(); err != nil {
-				return err
+				return total, err
 			}
 		}
 	}
@@ -619,10 +651,10 @@ func (c *SharedCache) Enforce(ctx context.Context) error {
 			c.overCapSaid = true
 			c.logf("cache over cap: %s of %s", FormatBytes(total), FormatBytes(c.MaxBytes))
 		}
-		return nil
+		return total, nil
 	}
 	c.overCapSaid = false
-	return nil
+	return total, nil
 }
 
 // scan is the size of everything under Root and the evictable entries
