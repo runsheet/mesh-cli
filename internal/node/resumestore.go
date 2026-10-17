@@ -108,6 +108,11 @@ func (r ResumeStore) Keep(itemID string, rec ResumeRecord, transcriptSrc string)
 		return err
 	}
 	dst := r.itemDir(itemID)
+	// the record's entries (record.jsonl) outlive every session kept:
+	// moved, never copied or rewritten, into the new dir
+	if err := os.Rename(r.recordJSONLPath(itemID), filepath.Join(tmp, "record.jsonl")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("resume store: item %s: record: %w", itemID, err)
+	}
 	if err := os.RemoveAll(dst); err != nil {
 		return err
 	}

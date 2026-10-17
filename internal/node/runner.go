@@ -562,7 +562,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	// that built the item when this node kept it, else a fresh session
 	// told the same failure, saying why
 	turn, retrying := retryAfterEvaluation(item, latest)
-	freshPrompt, notResumed := job.Prompt, ""
+	freshPrompt, notResumed, freshWhy := job.Prompt, "", ""
 	if retrying {
 		turn.Branch = spec.Branch
 		turn.HeadSHA, _ = gitHead(ctx, dir)
@@ -574,7 +574,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 			job.Prompt = harness.RetryTurnPrompt(turn)
 			r.logf("item %s: resuming session %s with the failure", label, rec.SessionID)
 		} else {
-			notResumed = notResumedLine(label, why)
+			notResumed, freshWhy = notResumedLine(label, why), why
 			job.Prompt = freshPrompt
 		}
 	}
@@ -582,6 +582,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	// the session outlives this process: a restart adopts it (ADR 009)
 	job.Outlive = true
 	b := &buildRun{r: r, item: item, res: res, label: label, spec: spec, dir: dir, cred: cred, acct: acct, runtimes: runtimes, ident: ident, model: model, lastText: "session started", job: &job, pod: pod, started: time.Now(), nodeID: sc.NodeID}
+	b.rec = b.newRecorder()
 	b.report(ctx, "session started: "+spec.Branch+" on "+modelName(model))
 	endRetry := func() {}
 	if retrying {
@@ -601,7 +602,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		b.report(ctx, note)
 	}
 	result, runErr := b.run(ctx, func(sctx context.Context, onProgress func(harness.Progress)) (harness.Result, error) {
-		res, err := r.Harness.Run(sctx, job, onProgress)
+		res, err := b.recordedRun(job, freshWhy, func() (harness.Result, error) { return r.Harness.Run(sctx, job, onProgress) })
 		if job.Resume != "" && sctx.Err() == nil && harness.IsUnknownSession(err) {
 			// the agent has no such session: fresh, once, with the failure
 			line := notResumedLine(label, notResumedUnknownAgent)
@@ -610,7 +611,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 			endRetry()
 			endRetry = r.noteRetry(item.ID, "", true)
 			job.Resume, job.Prompt = "", freshPrompt
-			res, err = r.Harness.Run(sctx, job, onProgress)
+			res, err = b.recordedRun(job, notResumedUnknownAgent, func() (harness.Result, error) { return r.Harness.Run(sctx, job, onProgress) })
 		}
 		return res, err
 	})
@@ -650,6 +651,9 @@ type buildRun struct {
 	// set while the session runs.
 	nodeID string
 	watch  *claimWatch
+	// rec writes the item's record.jsonl as the session goes
+	// (recordwrite.go).
+	rec *recorder
 	// lastHeard is when the session's stream last said something, in
 	// unix nanoseconds, for the starve check (starve.go).
 	lastHeard atomic.Int64
@@ -781,6 +785,7 @@ func (b *buildRun) run(ctx context.Context, start func(ctx context.Context, onPr
 		if p.CostUSD > 0 {
 			b.cost.observe(p.CostUSD)
 		}
+		b.rec.workCall(p.WorkCall)
 	})
 }
 
@@ -1106,6 +1111,7 @@ func (r *Runner) AdoptItem(ctx context.Context, item gateway.WorkItem, s FoundSe
 	// session committed as, though this process did not start it
 	ident := identityFor(r.Cfg, tools.RoleFor(string(harness.KindBuild)), item, res.Goal)
 	b := &buildRun{r: r, item: item, res: res, label: label, spec: spec, dir: s.State.Workspace, cred: cred, runtimes: r.runtimes(), ident: ident, model: s.State.Model, lastText: "session adopted", sessionID: s.State.SessionID, nodeID: s.State.NodeID}
+	b.rec = b.newRecorder()
 	where := fmt.Sprintf("pid %d", s.State.PID)
 	attachCtx := func(c context.Context) context.Context { return c }
 	if pod := r.adoptedPod(s, item); pod != nil {
