@@ -181,7 +181,9 @@ func (r *Runner) validateCommit(ctx context.Context, t validationTarget, c mainC
 	if err == nil {
 		t.dir, t.served = dir, served
 		defer func() {
-			if err := RemoveScratch(dir); err != nil {
+			// the validation's close removed it after the pod; this is
+			// every path that ended before one (validator.removeScratch)
+			if err := r.validator().removeScratch(dir); err != nil {
 				r.logf("%s: remove scratch %s: %v", prefix, dir, err)
 			}
 			_ = os.RemoveAll(sessionunit.Dir(dir))

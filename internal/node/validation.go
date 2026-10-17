@@ -85,8 +85,12 @@ type validator struct {
 	// WorkRoot is the node's work root, under which a host run's
 	// scratch is made (ScratchRoot, scratch.go); "" is ~/.mesh/work.
 	WorkRoot string
-	// BuildCache is a host run's GOCACHE; "" is BuildCacheDir().
+	// BuildCache is a run's GOCACHE; "" is CacheRoot's go/.
 	BuildCache string
+	// CacheRoot is the shared cache's root (the Runner's Cache.Root),
+	// whose blobs/ a sandboxed run mounts read-only; "" is
+	// SharedCacheRoot().
+	CacheRoot string
 }
 
 // validationTarget is what a validation needs of the session it
@@ -135,7 +139,40 @@ type validationTarget struct {
 }
 
 func (r *Runner) validator() validator {
-	return validator{GW: r.GW, WS: r.WS, Scopes: r.Scopes, Sandbox: r.Sandbox, Inspect: r.Inspect, Notices: r.Notices, logf: r.logf, WorkRoot: r.WorkRoot, BuildCache: r.BuildCache}
+	vr := validator{GW: r.GW, WS: r.WS, Scopes: r.Scopes, Sandbox: r.Sandbox, Inspect: r.Inspect, Notices: r.Notices, logf: r.logf, WorkRoot: r.WorkRoot, BuildCache: r.BuildCache}
+	if r.Cache != nil {
+		vr.CacheRoot = r.Cache.Root
+	}
+	return vr
+}
+
+// cacheDirs are a run's Go build cache and the shared cache's blob
+// store: BuildCache, else go/ under the cache root, and blobs/ under it.
+func (vr validator) cacheDirs() (goCache, blobs string, err error) {
+	root := vr.CacheRoot
+	if root == "" {
+		if root, err = SharedCacheRoot(); err != nil {
+			return "", "", err
+		}
+	}
+	goCache = vr.BuildCache
+	if goCache == "" {
+		goCache = filepath.Join(root, "go")
+	}
+	return goCache, filepath.Join(root, "blobs"), nil
+}
+
+// removeScratch removes a run's scratch dir: on the host as
+// RemoveScratch does, and with a sandbox as a pod's HOME is removed
+// (Sandbox.RemoveTree), so files a step left there owned by the pod's
+// mapped user go too.
+func (vr validator) removeScratch(dir string) error {
+	if vr.Sandbox == nil {
+		return RemoveScratch(dir)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return vr.Sandbox.RemoveTree(ctx, dir)
 }
 
 // target is the build as its validation needs it.
@@ -169,35 +206,44 @@ func (vr validator) start(ctx context.Context, t validationTarget) (*buildValida
 	}
 	sc, _ := vr.Scopes.ByOrg(t.item.OrgID)
 	v := &buildValidation{meta: validate.Meta{NodeID: sc.NodeID, ItemID: t.item.ID}, close: func() {}}
+	// the run's own scratch, removed by close on every path, and the
+	// node's one build cache (scratch.go): nothing of it left in /tmp —
+	// a sandboxed run's mounted into its pods with the shared cache's
+	// blob store read-only (sandbox.ValidationCache)
+	root, err := ScratchRoot(vr.WorkRoot)
+	if err != nil {
+		return nil, fmt.Errorf("scratch: %w", err)
+	}
+	cache, blobs, err := vr.cacheDirs()
+	if err != nil {
+		return nil, fmt.Errorf("build cache: %w", err)
+	}
+	if err := os.MkdirAll(cache, 0o700); err != nil {
+		return nil, fmt.Errorf("build cache: %w", err)
+	}
+	subject := t.item.ID
+	if t.batchID != "" {
+		subject = t.batchID
+	}
+	scratch, err := MakeScratch(root, "validate", subject)
+	if err != nil {
+		return nil, err
+	}
+	// removes the run's scratch and, a served checkout being node-owned
+	// scratch too, the checkout: after the pod, whatever a step left
+	removeScratch := func() {
+		dirs := []string{scratch}
+		if t.served != nil {
+			dirs = append(dirs, t.dir)
+		}
+		for _, d := range dirs {
+			if err := vr.removeScratch(d); err != nil {
+				vr.logf("%s: validation: remove scratch %s: %v", t.prefix, d, err)
+			}
+		}
+	}
 	if vr.Sandbox == nil {
-		// the run's own scratch, removed by close on every path, and the
-		// node's one build cache (scratch.go): nothing of it left in /tmp
-		root, err := ScratchRoot(vr.WorkRoot)
-		if err != nil {
-			return nil, fmt.Errorf("scratch: %w", err)
-		}
-		cache := vr.BuildCache
-		if cache == "" {
-			if cache, err = BuildCacheDir(); err != nil {
-				return nil, fmt.Errorf("build cache: %w", err)
-			}
-		}
-		if err := os.MkdirAll(cache, 0o700); err != nil {
-			return nil, fmt.Errorf("build cache: %w", err)
-		}
-		subject := t.item.ID
-		if t.batchID != "" {
-			subject = t.batchID
-		}
-		scratch, err := MakeScratch(root, "validate", subject)
-		if err != nil {
-			return nil, err
-		}
-		v.close = func() {
-			if err := RemoveScratch(scratch); err != nil {
-				vr.logf("%s: validation: remove scratch %s: %v", t.prefix, scratch, err)
-			}
-		}
+		v.close = removeScratch
 		host, _ := os.Hostname()
 		v.runner = validate.HostRunner{Dir: t.dir, Env: hostValidationEnv(t.job, scratch, cache)}
 		v.meta.RunnerImage, v.meta.Sandboxed = "host:"+host, false
@@ -212,19 +258,24 @@ func (vr validator) start(ctx context.Context, t validationTarget) (*buildValida
 		}
 		s, err := vr.Sandbox.Open(t.label, "validate", git)
 		if err != nil {
+			removeScratch()
 			return nil, err
 		}
-		sess, v.close = s, func() {
+		sess = s
+		v.close = func() {
 			if err := s.Close(); err != nil {
 				vr.logf("%s", sandbox.CloseLine(s.Label, err))
 			}
+			removeScratch()
 		}
+	} else {
+		v.close = removeScratch
 	}
 	var env []string
 	if t.job != nil {
 		env = t.job.Env
 	}
-	v.runner = sandboxRunner{sess: sess, dir: t.dir, env: env}
+	v.runner = sandboxRunner{sess: sess, dir: t.dir, env: env, cache: &sandbox.ValidationCache{Scratch: scratch, GoCache: cache, Blobs: blobs}}
 	image := vr.Sandbox.Config.Image
 	run := vr.Inspect
 	if run == nil {
@@ -1142,10 +1193,13 @@ type sandboxRunner struct {
 	sess *sandbox.Session
 	dir  string
 	env  []string
+	// cache is the run's scratch and the node's shared cache, mounted in
+	// every step's pod and named as its TMPDIR, GOTMPDIR and GOCACHE.
+	cache *sandbox.ValidationCache
 }
 
 func (s sandboxRunner) Run(ctx context.Context, cmd string, timeout time.Duration, stdout, stderr io.Writer) (int, error) {
-	err := s.sess.Run(ctx, sandbox.RunSpec{Workspace: s.dir, Env: s.env, Command: []string{"sh", "-c", cmd}, Timeout: timeout, Stdout: stdout, Stderr: stderr})
+	err := s.sess.Run(ctx, sandbox.RunSpec{Workspace: s.dir, Env: s.env, Cache: s.cache, Command: []string{"sh", "-c", cmd}, Timeout: timeout, Stdout: stdout, Stderr: stderr})
 	var ee *sandbox.ExitError
 	var le *sandbox.LimitError
 	switch {

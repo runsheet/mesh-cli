@@ -66,8 +66,9 @@ const ToolEnvPrefix = "MESH_TOOL_"
 // BaseEnv are the variables the sandbox sets itself for every session.
 // DISABLE_AUTOUPDATER keeps claude from updating itself: the node image's
 // own ENV says so too, but --unsetenv-all drops the image's variables.
-// The package variables are set only when the node names its Stores.
-var BaseEnv = []string{"PATH", "HOME", "LANG", "TZ", "TERM", "CLAUDE_CONFIG_DIR", "MESH_ITEM", "MESH_SESSION_KIND", "DISABLE_AUTOUPDATER", "npm_config_store_dir", "pnpm_config_store_dir", "PNPM_HOME", "npm_config_cache"}
+// The package variables are set only when the node names its Stores, the
+// scratch and Go cache ones only for a run given a ValidationCache.
+var BaseEnv = []string{"PATH", "HOME", "LANG", "TZ", "TERM", "CLAUDE_CONFIG_DIR", "MESH_ITEM", "MESH_SESSION_KIND", "DISABLE_AUTOUPDATER", "npm_config_store_dir", "pnpm_config_store_dir", "PNPM_HOME", "npm_config_cache", "TMPDIR", "GOTMPDIR", "GOCACHE"}
 
 // Stores are the node's package store and cache, one of each per node and
 // shared by every session (mesh-specs ADR 017 §3): Pnpm is pnpm's
@@ -112,6 +113,78 @@ func (st Stores) Env() []string {
 		e = append(e, "npm_config_cache="+st.Npm)
 	}
 	return e
+}
+
+// ValidationCache is what a validation's pod is given of the node beside
+// its workspace (goal a-node-validates-from-a-served-diff-with-a-shared-cache):
+// Scratch, the run's own dir under the node's scratch root, read-write
+// and the steps' TMPDIR and GOTMPDIR, so nothing a step makes lands in
+// the host's /tmp; GoCache, the node's one Go build cache, read-write
+// and their GOCACHE; and Blobs, the shared tree cache's blob store,
+// read-only, so no session user can change what every later validation
+// copies out of it. Nothing else of the cache root — its trees, its
+// commits, its counts — is mounted. Each is its own bind mount at its
+// own path, as the Stores are: link(2) refuses to cross them (EXDEV), so
+// a step copies out of the blob store rather than hardlinking, which is
+// the price of not mounting the cache root whole. Empty is none.
+type ValidationCache struct {
+	Scratch string
+	GoCache string
+	Blobs   string
+}
+
+// Mounts are the cache's mounts: the scratch and the Go cache
+// read-write, the blob store read-only.
+func (c ValidationCache) Mounts() []Mount {
+	var m []Mount
+	for _, d := range []struct {
+		path string
+		ro   bool
+	}{{c.Scratch, false}, {c.GoCache, false}, {c.Blobs, true}} {
+		if d.path != "" {
+			m = append(m, Mount{Source: d.path, Target: d.path, ReadOnly: d.ro})
+		}
+	}
+	return m
+}
+
+// Env is env with TMPDIR and GOTMPDIR the scratch and GOCACHE the Go
+// cache, each once: a value env already has is replaced, not shadowed.
+func (c ValidationCache) Env(env []string) []string {
+	set := map[string]string{}
+	if c.Scratch != "" {
+		set["TMPDIR"], set["GOTMPDIR"] = c.Scratch, c.Scratch
+	}
+	if c.GoCache != "" {
+		set["GOCACHE"] = c.GoCache
+	}
+	out := make([]string, 0, len(env)+len(set))
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		if _, ok := set[name]; !ok {
+			out = append(out, kv)
+		}
+	}
+	for _, name := range []string{"TMPDIR", "GOTMPDIR", "GOCACHE"} {
+		if v, ok := set[name]; ok {
+			out = append(out, name+"="+v)
+		}
+	}
+	return out
+}
+
+// ensure makes the directories a bind mount needs: the Go cache and the
+// blob store on first use. The scratch is the caller's, made per run.
+func (c ValidationCache) ensure() error {
+	for _, d := range []string{c.GoCache, c.Blobs} {
+		if d == "" {
+			continue
+		}
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return fmt.Errorf("sandbox: validation cache: %w", err)
+		}
+	}
+	return nil
 }
 
 // Config is a node's sandbox: the image, the agent's and the services'
@@ -425,7 +498,10 @@ func (s *Session) worktreeMounts(workspace, common string) []Mount {
 type RunSpec struct {
 	Workspace string
 	// Env is the job's environment; Env filters it (Session.Env).
-	Env     []string
+	Env []string
+	// Cache, set, is a validation's scratch and shared cache, mounted
+	// beside the session's own and named in its env (ValidationCache).
+	Cache   *ValidationCache
 	Command []string
 	Timeout time.Duration
 	Stdin   io.Reader
@@ -458,6 +534,13 @@ func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 	}
 	defer s.remove(ctx, pod)
 
+	mounts, env := s.Mounts(spec.Workspace), s.Env(spec.Env)
+	if c := spec.Cache; c != nil {
+		if err := c.ensure(); err != nil {
+			return err
+		}
+		mounts, env = append(mounts, c.Mounts()...), c.Env(env)
+	}
 	timeout := runtimeTimeout(spec.Timeout)
 	tail := &tailBuffer{max: 8 << 10}
 	stderr := io.Writer(tail)
@@ -469,8 +552,8 @@ func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 		Name:           AgentName(pod),
 		Image:          cfg.Image,
 		Workdir:        spec.Workspace,
-		Mounts:         s.Mounts(spec.Workspace),
-		Env:            s.Env(spec.Env),
+		Mounts:         mounts,
+		Env:            env,
 		Command:        spec.Command,
 		Limits:         cfg.Limits,
 		TimeoutSeconds: timeout,
@@ -709,7 +792,7 @@ func (s *Session) Close() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := s.sb.removeHome(ctx, s.Home); err != nil {
+	if err := s.sb.RemoveTree(ctx, s.Home); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
@@ -728,12 +811,14 @@ func (s *Session) CloseAndLog() {
 	}
 }
 
-// removeHome removes a session's HOME whatever the agent left in it:
-// a plain RemoveAll; failing that, the tree made writable (Go's module
-// cache is 0555 directories of 0444 files) and RemoveAll again; failing
-// that, the runtime's removal inside its user namespace, for files the
-// pod's mapped users own. The error names every step that failed.
-func (sb *Sandbox) removeHome(ctx context.Context, home string) error {
+// RemoveTree removes a dir a pod wrote in — a session's HOME, a
+// validation's scratch — whatever the agent left in it: a plain
+// RemoveAll; failing that, the tree made writable (Go's module cache is
+// 0555 directories of 0444 files) and RemoveAll again; failing that, the
+// runtime's removal inside its user namespace, for files the pod's
+// mapped users own. The error names every step that failed; a dir
+// already gone is nil.
+func (sb *Sandbox) RemoveTree(ctx context.Context, home string) error {
 	if home == "" {
 		return nil
 	}
@@ -747,10 +832,10 @@ func (sb *Sandbox) removeHome(ctx context.Context, home string) error {
 		return nil
 	}
 	if err3 := sb.Runtime.RemoveTree(ctx, home); err3 != nil {
-		return fmt.Errorf("remove home %s: %w; in the user namespace: %w", home, err2, err3)
+		return fmt.Errorf("remove %s: %w; in the user namespace: %w", home, err2, err3)
 	}
 	if _, err := os.Lstat(home); !os.IsNotExist(err) {
-		return fmt.Errorf("remove home %s: %w; still there after the removal in the user namespace", home, err2)
+		return fmt.Errorf("remove %s: %w; still there after the removal in the user namespace", home, err2)
 	}
 	return nil
 }
