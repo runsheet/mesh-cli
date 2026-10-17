@@ -967,7 +967,7 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 
 	// every session's plan standing lands in Limits: the heartbeat
 	// carries it and the loop paces by it
-	loop := &node.Loop{GW: gw, Cfg: cfg, Scopes: scopes, Owned: owned, ClaimsDir: node.ClaimsDir(workRoot), Version: version.Resolved(), Commit: version.Commit(), Harness: "claude-code", Interval: nodeIntervalFlag, Log: logger, Limits: &node.Limits{},
+	loop := &node.Loop{GW: gw, Cfg: cfg, Scopes: scopes, Owned: owned, ClaimsDir: node.ClaimsDir(workRoot), WorkRoot: workRoot, Version: version.Resolved(), Commit: version.Commit(), Harness: "claude-code", Interval: nodeIntervalFlag, Log: logger, Limits: &node.Limits{},
 		// a ranged capacity scales by the plan's windows, capped by this
 		// machine's load and memory (adr-004)
 		Machine: node.HostMachine(),
