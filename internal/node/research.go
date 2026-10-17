@@ -231,9 +231,14 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		Tools: toolHints(st.Use), Goals: existing, Room: room, Proposes: direction.Proposes(),
 	})
 	budget, budgetSource := d.budgetWithSource()
+	kept, err := keptRootOfScope(d.Roots, scope)
+	if err != nil {
+		return err
+	}
 	job := harness.Job{
 		Kind: harness.KindResearch, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget,
 		Label: project.Slug + "/" + direction.Slug + " research", Timeout: d.Timeout, MCPServers: d.MCP, Model: d.Model,
+		KeptRoot: kept,
 	}
 	if toks != nil {
 		// gh in the session runs on the first sorted repo's token and a

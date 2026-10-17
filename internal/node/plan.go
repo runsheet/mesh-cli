@@ -560,7 +560,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	p.logf("goal %s: planning in %s (%d repos), budget $%.2f (%s)", goal.Slug, dir, len(repos), budget, budgetSource)
 	ctx = withSubject(ctx, scope, goal.ProjectID, project.Slug)
 	gr, hasGoalRepo := goalRepo(goal, project, repos)
-	items, reasons, flags, questions, checkpoints, drafts, added, cost, acct, err := p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged, goalItems, replacing, sessionTok, gr, hasGoalRepo)
+	items, reasons, flags, questions, checkpoints, drafts, added, cost, acct, err := p.ask(ctx, goal, scope, dir, budget, in, repos, merged, goalItems, replacing, sessionTok, gr, hasGoalRepo)
 	acct.SetContextBytes(written.Bytes)
 	acct.SetLabel("goal "+goal.Slug, string(harness.KindPlan))
 	// the session's usage report rides the plan's hand-in; Finish logs it
@@ -584,7 +584,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		in.OverCap = over > in.MaxItems
 		var again float64
 		var second *SessionAccount
-		items, reasons, flags, questions, checkpoints, drafts, added, again, second, err = p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged, goalItems, replacing, sessionTok, gr, hasGoalRepo)
+		items, reasons, flags, questions, checkpoints, drafts, added, again, second, err = p.ask(ctx, goal, scope, dir, budget, in, repos, merged, goalItems, replacing, sessionTok, gr, hasGoalRepo)
 		defer second.Finish(ctx, harness.Result{})
 		second.SetContextBytes(written.Bytes)
 		second.SetLabel("goal "+goal.Slug, string(harness.KindPlan))
@@ -828,7 +828,8 @@ func (p *Planner) handInSplit(ctx context.Context, goal gateway.Goal, drafts []g
 // its goal drafts in place of all of those (ADR-023 (a)) — the session's cost and its account, whose usage report is built as the
 // session ends: the caller hands it in and Finishes it. An error means
 // there is no graph to hand in.
-func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int, goalItems []gateway.WorkItem, replacing *gateway.WorkItem, tok *gateway.GitHubToken, gr gateway.Repo, hasGoalRepo bool) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, []string, []gateway.GoalDraft, []addedDep, float64, *SessionAccount, error) {
+func (p *Planner) ask(ctx context.Context, goal gateway.Goal, scope Scope, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int, goalItems []gateway.WorkItem, replacing *gateway.WorkItem, tok *gateway.GitHubToken, gr gateway.Repo, hasGoalRepo bool) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, []string, []gateway.GoalDraft, []addedDep, float64, *SessionAccount, error) {
+	nodeID := scope.NodeID
 	acct, err := p.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goal.ID}, nodeID, Adapter(p.Harness))
 	if err != nil {
 		// an ErrNoCredential among them: no session starts, and the loop
@@ -850,7 +851,11 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 	// Tools: the served tools, so PlanPrompt can name them and say when
 	// to search.
 	in.Tools = toolHints(st.Use)
-	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: harness.PlanPrompt(in), MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model}
+	kept, err := keptRootOfScope(p.Roots, scope)
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, nil, 0, acct, err
+	}
+	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: harness.PlanPrompt(in), MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model, KeptRoot: kept}
 	if tok != nil {
 		// gh in the session runs on the goal's token and a config dir of
 		// its own, never the operator's login (adr-022)
