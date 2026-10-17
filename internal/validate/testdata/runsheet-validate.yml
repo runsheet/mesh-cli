@@ -36,6 +36,6 @@ suites:
       - e2e/**
       - platform/**
       - gateway/**
-      - prologue/**
+      - mesh-context/**
     reports:
       - integration.json

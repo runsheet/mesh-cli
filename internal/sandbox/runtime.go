@@ -155,6 +155,11 @@ type Runtime interface {
 	// RemoveContainer removes a container and its anonymous volumes,
 	// forced.
 	RemoveContainer(ctx context.Context, name string) error
+	// ImageExec runs cmd in a throwaway container of image — no pod, no
+	// network, no mount — and returns its stdout: what the image
+	// carries, read once at start (Sandbox.CodexVersion). A non-zero
+	// exit, or an image the runtime cannot have, is the error.
+	ImageExec(ctx context.Context, image string, cmd []string) (string, error)
 }
 
 // Container is one container as the runtime lists it.

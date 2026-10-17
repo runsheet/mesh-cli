@@ -176,3 +176,126 @@ func TestFreshConfigLockIsNotClearedAndFailsAsBefore(t *testing.T) {
 		t.Fatalf("young lock removed: stat err %v", statErr)
 	}
 }
+
+// gitlockTestWorktree makes a real origin repo, clones it, and adds a
+// worktree on a new branch off it: the clone plus worktree shape
+// withStaleLockRetry's callers run against (ADR-028, one clone per repo,
+// one worktree per item), so the common dir a worktree's config.lock
+// belongs to is the clone's, not the worktree's own .git file.
+func gitlockTestWorktree(t *testing.T) (clone, worktree string) {
+	t.Helper()
+	root := t.TempDir()
+	origin := filepath.Join(root, "origin")
+	gitlockTestRun(t, root, "init", "-q", origin)
+	gitlockTestRun(t, origin, "config", "user.email", "a@a.com")
+	gitlockTestRun(t, origin, "config", "user.name", "a")
+	if err := os.WriteFile(filepath.Join(origin, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitlockTestRun(t, origin, "add", "f")
+	gitlockTestRun(t, origin, "commit", "-q", "-m", "init")
+
+	clone = filepath.Join(root, "clone")
+	gitlockTestRun(t, root, "clone", "-q", origin, clone)
+	worktree = filepath.Join(root, "wt")
+	gitlockTestRun(t, clone, "worktree", "add", "-q", "-b", "wt-branch", worktree)
+	return clone, worktree
+}
+
+// TestStaleConfigLockIsCleared is this item's acceptance: a config.lock
+// on the shared clone older than PreclearGitLockAge with no live git
+// process holding it is removed before set-url is ever tried, so the
+// write succeeds on its first run; one under that age, or one a git
+// process holds, is left for the ordinary after-the-failure path
+// instead.
+func TestStaleConfigLockIsCleared(t *testing.T) {
+	t.Run("stale lock with no holder is cleared before set-url", func(t *testing.T) {
+		clone, worktree := gitlockTestWorktree(t)
+		lock := filepath.Join(clone, ".git", "config.lock")
+		if err := os.WriteFile(lock, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-6 * time.Minute)
+		if err := os.Chtimes(lock, old, old); err != nil {
+			t.Fatal(err)
+		}
+
+		saved := gitLockHolder
+		gitLockHolder = func(roots ...string) bool { return false }
+		t.Cleanup(func() { gitLockHolder = saved })
+
+		var logs []string
+		g := &Git{Logf: func(format string, args ...any) {
+			logs = append(logs, fmt.Sprintf(format, args...))
+		}}
+		runs := 0
+		if _, err := g.withStaleLockRetry(worktree, func() (string, error) {
+			runs++
+			return g.run(context.Background(), worktree, "git", "remote", "set-url", "origin", "https://example.com/a/b.git")
+		}); err != nil {
+			t.Fatalf("withStaleLockRetry: %v", err)
+		}
+		if runs != 1 {
+			t.Fatalf("fn ran %d time(s), want 1 (succeeded on its first run)", runs)
+		}
+		if _, statErr := os.Stat(lock); !os.IsNotExist(statErr) {
+			t.Fatalf("stale lock still on disk: stat err %v", statErr)
+		}
+		found := false
+		for _, l := range logs {
+			if strings.Contains(l, "removed stale git lock") && strings.Contains(l, lock) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("log lines %v do not report removing %s", logs, lock)
+		}
+	})
+
+	t.Run("lock under five minutes old is left in place", func(t *testing.T) {
+		clone, worktree := gitlockTestWorktree(t)
+		lock := filepath.Join(clone, ".git", "config.lock")
+		if err := os.WriteFile(lock, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		young := time.Now().Add(-4 * time.Minute)
+		if err := os.Chtimes(lock, young, young); err != nil {
+			t.Fatal(err)
+		}
+
+		saved := gitLockHolder
+		gitLockHolder = func(roots ...string) bool {
+			t.Fatal("gitLockHolder consulted for a lock under PreclearGitLockAge")
+			return false
+		}
+		t.Cleanup(func() { gitLockHolder = saved })
+
+		g := &Git{}
+		g.preclearStaleLock(worktree)
+		if _, statErr := os.Stat(lock); statErr != nil {
+			t.Fatalf("young lock removed: stat err %v", statErr)
+		}
+	})
+
+	t.Run("lock a git process holds is left in place", func(t *testing.T) {
+		clone, worktree := gitlockTestWorktree(t)
+		lock := filepath.Join(clone, ".git", "config.lock")
+		if err := os.WriteFile(lock, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-6 * time.Minute)
+		if err := os.Chtimes(lock, old, old); err != nil {
+			t.Fatal(err)
+		}
+
+		saved := gitLockHolder
+		gitLockHolder = func(roots ...string) bool { return true }
+		t.Cleanup(func() { gitLockHolder = saved })
+
+		g := &Git{}
+		g.preclearStaleLock(worktree)
+		if _, statErr := os.Stat(lock); statErr != nil {
+			t.Fatalf("held lock removed: stat err %v", statErr)
+		}
+	})
+}

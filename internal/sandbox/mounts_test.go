@@ -70,8 +70,16 @@ func TestMountsOfAWorktreeAddTheCommonDir(t *testing.T) {
 	if !slices.Contains(got, Mount{Source: common, Target: common, ReadOnly: false}) {
 		t.Fatalf("mounts = %+v, want %s read-write", got, common)
 	}
+	wts := filepath.Join(common, "worktrees")
+	own, err := GitDir(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
 	under := 0
 	for _, m := range got {
+		if m.Source == wts || m.Source == own {
+			continue
+		}
 		src, err := filepath.EvalSymlinks(m.Source)
 		if err != nil {
 			t.Fatal(err)
@@ -89,9 +97,64 @@ func TestMountsOfAWorktreeAddTheCommonDir(t *testing.T) {
 	if under != 1 {
 		t.Fatalf("%d mounts under %s, want the common dir alone", under, parent)
 	}
-	want := []Mount{{Source: worktree, Target: worktree}, {Source: sess.Home, Target: sess.Home}, {Source: common, Target: common}}
+	want := []Mount{{Source: worktree, Target: worktree}, {Source: sess.Home, Target: sess.Home}, {Source: common, Target: common},
+		{Source: wts, Target: wts, ReadOnly: true}, {Source: own, Target: own}}
 	if !slices.Equal(got, want) {
 		t.Fatalf("mounts = %+v, want %+v", got, want)
+	}
+}
+
+// A worktree's pod cannot prune its siblings: for a clone with two
+// worktrees, Mounts(worktree) holds the common dir read-write,
+// <common>/worktrees read-only and the workspace's own entry read-write,
+// nothing of the other worktree, and no other read-write mount under
+// <common>/worktrees.
+func TestMountsOfAWorktreeKeepOtherWorktreeEntriesReadOnly(t *testing.T) {
+	clone, worktree := cloneAndWorktree(t)
+	other := filepath.Join(filepath.Dir(worktree), "2")
+	gitRun(t, clone, "worktree", "add", "-q", "-b", "item-2", other, "main")
+	common, err := filepath.EvalSymlinks(filepath.Join(clone, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wts := filepath.Join(common, "worktrees")
+	own, err := GitDir(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherEntry, err := GitDir(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherTree, err := filepath.EvalSymlinks(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("common %s, own entry %s, other entry %s", common, own, otherEntry)
+	if filepath.Dir(own) != wts || filepath.Dir(otherEntry) != wts || own == otherEntry {
+		t.Fatalf("entries %s and %s are not two entries of %s", own, otherEntry, wts)
+	}
+	sess := openSession(t, "")
+	got := sess.Mounts(worktree)
+	t.Logf("Mounts(%s) = %+v", worktree, got)
+	for _, want := range []Mount{
+		{Source: common, Target: common},
+		{Source: wts, Target: wts, ReadOnly: true},
+		{Source: own, Target: own},
+	} {
+		if !slices.Contains(got, want) {
+			t.Fatalf("mounts = %+v, want %+v", got, want)
+		}
+	}
+	for _, m := range got {
+		for _, p := range []string{m.Source, m.Target} {
+			if p == otherEntry || p == otherTree || p == other {
+				t.Fatalf("mounted the other worktree's %s: %+v", p, m)
+			}
+		}
+		if !m.ReadOnly && strings.HasPrefix(m.Target, wts+string(filepath.Separator)) && m.Target != own {
+			t.Fatalf("read-write mount %+v under %s other than the session's own entry", m, wts)
+		}
 	}
 }
 
@@ -154,8 +217,47 @@ func TestPodmanArgsOfAWorktreeMountTheCommonDir(t *testing.T) {
 	if !slices.Contains(vols, common+":"+common+":rw") {
 		t.Fatalf("volumes = %v, want --volume %s:%s:rw", vols, common, common)
 	}
-	want := []string{worktree + ":" + worktree + ":rw", sess.Home + ":" + sess.Home + ":rw", common + ":" + common + ":rw"}
+	wts := filepath.Join(common, "worktrees")
+	own, err := GitDir(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ro := slices.Index(vols, wts+":"+wts+":ro")
+	rw := slices.Index(vols, own+":"+own+":rw")
+	if ro < 0 || rw < 0 || ro > rw {
+		t.Fatalf("volumes = %v, want %s read-only before the own entry %s read-write", vols, wts, own)
+	}
+	if c := slices.Index(vols, common+":"+common+":rw"); c > ro {
+		t.Fatalf("volumes = %v, want the common dir before %s", vols, wts)
+	}
+}
+
+// agentArgs passes a nested mount after the one it is nested in, the
+// shallowest target first, whatever order the mounts were given in, so
+// the deeper mount wins in the pod.
+func TestAgentArgsOrderNestedMountsShallowestFirst(t *testing.T) {
+	mounts := []Mount{
+		{Source: "/r/.git/worktrees/1", Target: "/r/.git/worktrees/1"},
+		{Source: "/w/1", Target: "/w/1"},
+		{Source: "/r/.git/worktrees", Target: "/r/.git/worktrees", ReadOnly: true},
+		{Source: "/r/.git", Target: "/r/.git"},
+	}
+	args := AgentRunArgs(Pod{Name: "p"}, AgentSpec{Name: "a", Image: "i", Mounts: mounts})
+	var vols []string
+	for i, a := range args {
+		if a == "--volume" {
+			vols = append(vols, args[i+1])
+		}
+	}
+	want := []string{"/w/1:/w/1:rw", "/r/.git:/r/.git:rw", "/r/.git/worktrees:/r/.git/worktrees:ro", "/r/.git/worktrees/1:/r/.git/worktrees/1:rw"}
+	t.Logf("volumes = %v", vols)
 	if !slices.Equal(vols, want) {
 		t.Fatalf("volumes = %v, want %v", vols, want)
+	}
+	if mountsHold(mounts, "/r/.git/worktrees/2") {
+		t.Fatal("mountsHold(/r/.git/worktrees/2) = true under a read-only mount")
+	}
+	if !mountsHold(mounts, "/r/.git/worktrees/1/logs") || !mountsHold(mounts, "/r/.git/objects") {
+		t.Fatal("mountsHold false for a path under a read-write mount")
 	}
 }

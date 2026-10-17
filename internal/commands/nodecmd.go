@@ -967,7 +967,7 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 
 	// every session's plan standing lands in Limits: the heartbeat
 	// carries it and the loop paces by it
-	loop := &node.Loop{GW: gw, Cfg: cfg, Scopes: scopes, Owned: owned, ClaimsDir: node.ClaimsDir(workRoot), Version: version.Resolved(), Commit: version.Commit(), Harness: "claude-code", Interval: nodeIntervalFlag, Log: logger, Limits: &node.Limits{},
+	loop := &node.Loop{GW: gw, Cfg: cfg, Scopes: scopes, Owned: owned, ClaimsDir: node.ClaimsDir(workRoot), WorkRoot: workRoot, Version: version.Resolved(), Commit: version.Commit(), Harness: "claude-code", Interval: nodeIntervalFlag, Log: logger, Limits: &node.Limits{},
 		// a ranged capacity scales by the plan's windows, capped by this
 		// machine's load and memory (adr-004)
 		Machine: node.HostMachine(),
@@ -1828,6 +1828,8 @@ func oneShotHarness() *harness.ClaudeCode {
 // limits are kept; the zero value is no Codex at all.
 type secondOpinion struct {
 	h harness.Harness
+	// codex is the Codex harness h observes, nil for none
+	codex *harness.Codex
 	// preflight is the Codex harness's: the built-in context server
 	// checked before any Codex session starts
 	preflight  func(context.Context, harness.Job) error
@@ -1850,8 +1852,9 @@ type secondOpinion struct {
 	left *node.LeftRunning
 }
 
-// codexSecondOpinion builds the evaluator's Codex harness whenever its
-// binary is found, with or without a `codex:` block. It has no account
+// codexSecondOpinion builds the evaluator's Codex harness from where
+// this node's codex is (codexSourceOf), with or without a `codex:`
+// block, and says once per start which it is and why. It has no account
 // of its own: an issued OpenAI credential serving codex supplies every
 // session's login, and the operator's own Codex login is never one (ADR
 // 011's amendment 2026-10-02). An evaluation runs on Codex when an
@@ -1859,26 +1862,95 @@ type secondOpinion struct {
 // Claude, and the second opinion runs on the other family
 // (docs/adr/adr-011-evaluations-run-on-the-family-with-headroom.md).
 // Its readings land in the loop's Limits under codex:<label>. No
-// binary, or no issued Codex account: the node evaluates as before. Every session's whole event stream and stderr
+// codex, or no issued Codex account: the node evaluates as before. Every session's whole event stream and stderr
 // are kept under workRoot/kept-sessions for harness.KeepSessionOutput
 // (docs/adr/adr-005-codex-second-opinion.md, "Amendment, 2026-09-28:
 // the stream is kept 24 hours").
 func codexSecondOpinion(cfg *node.Config, loop *node.Loop, workRoot string, logger *log.Logger) secondOpinion {
+	ctx, cancel := context.WithTimeout(context.Background(), codexImageCheckTimeout)
+	defer cancel()
+	return codexSecondOpinionFrom(codexSourceOf(ctx, cfg, sessionSandbox, exec.LookPath), loop, workRoot, logger)
+}
+
+// codexImageCheckTimeout bounds the start's one look into the node
+// image for codex, a pull of the image included.
+const codexImageCheckTimeout = 5 * time.Minute
+
+// codexSource is where a node's Codex sessions come from: the node
+// image, in the session's pod (ADR 007's amendment for Codex), the host
+// binary when the sandbox is off, or nowhere.
+type codexSource struct {
+	// Image is the node image's codex: Sandbox is set and every Codex
+	// session runs in its pod.
+	Image bool
+	// Binary is the host's codex, the sandbox off; "" with Image unset
+	// is no Codex evaluator.
+	Binary string
+	// Version is the image's `codex <version>`.
+	Version string
+	// Sandbox is the node's sandbox the image's codex runs in.
+	Sandbox *sandbox.Sandbox
+	// Why is the reason there is none.
+	Why string
+}
+
+// Built is a source a Codex evaluator is built from.
+func (s codexSource) Built() bool { return s.Image || s.Binary != "" }
+
+// Line is the start's one line saying which source and why.
+func (s codexSource) Line() string {
+	switch {
+	case s.Image:
+		return fmt.Sprintf("codex: evaluations on Codex from the node image (%s) when an issued Codex credential has headroom, else on Claude; the second opinion on the other family", s.Version)
+	case s.Binary != "":
+		return fmt.Sprintf("codex: evaluations on Codex from the host binary %s when an issued Codex credential has headroom, else on Claude; the second opinion on the other family", s.Binary)
+	default:
+		return "codex: no Codex evaluations: " + s.Why
+	}
+}
+
+// codexSourceOf decides where the node's Codex comes from, once at
+// start. A sandboxed node runs the image's codex, whether or not the
+// host has one — asked of the image through the runtime
+// (Sandbox.CodexVersion) — and never the host's, which would run outside
+// the pod; a node with the sandbox off runs the host binary
+// (node.yaml's codex.binary, else `codex`) found by lookPath, as before.
+func codexSourceOf(ctx context.Context, cfg *node.Config, sb *sandbox.Sandbox, lookPath func(string) (string, error)) codexSource {
 	bin := cfg.Codex.Binary
 	if bin == "" {
 		bin = "codex"
 	}
-	if _, err := exec.LookPath(bin); err != nil {
-		if !cfg.Codex.IsZero() {
-			logger.Printf("codex: no Codex evaluations: %v", err)
+	host, hostErr := lookPath(bin)
+	if sb != nil {
+		ver, err := sb.CodexVersion(ctx)
+		if err == nil {
+			return codexSource{Image: true, Version: ver, Sandbox: sb}
 		}
+		if hostErr != nil {
+			return codexSource{Why: fmt.Sprintf("neither the node image nor the host has codex (image %s: %v; host: %v)", sb.Config.Image, err, hostErr)}
+		}
+		return codexSource{Why: fmt.Sprintf("the node image has no codex (image %s: %v), and a sandboxed node runs none on the host (%s)", sb.Config.Image, err, host)}
+	}
+	if hostErr != nil {
+		return codexSource{Why: fmt.Sprintf("the sandbox is off and the host has no codex (%v)", hostErr)}
+	}
+	return codexSource{Binary: host}
+}
+
+// codexSecondOpinionFrom builds the evaluator's Codex harness from src
+// and logs src's line.
+func codexSecondOpinionFrom(src codexSource, loop *node.Loop, workRoot string, logger *log.Logger) secondOpinion {
+	logger.Print(src.Line())
+	if !src.Built() {
 		return secondOpinion{blind: &node.OncePer{}, noVerdict: &node.OncePer{}, left: &node.LeftRunning{}}
 	}
-	c := &harness.Codex{Binary: bin, Stderr: sessionsOut, WorkRoot: workRoot, Tokens: tokenKeeper()}
-	logger.Printf("codex: evaluations on Codex when an issued Codex credential has headroom, else on Claude; the second opinion on the other family")
+	c := &harness.Codex{Binary: src.Binary, Sandbox: src.Sandbox, Stderr: sessionsOut, WorkRoot: workRoot, Tokens: tokenKeeper()}
+	if c.Binary == "" {
+		c.Binary = "codex"
+	}
 	h := node.ObserveLimits(c, loop.Limits)
 	loop.CodexRoom = (&node.Evaluator{Codex: h, CodexAccounts: loop.CodexCandidates, Limits: loop.Limits, Thresholds: loop.Thresholds}).CodexHeadroom
-	return secondOpinion{h: h, preflight: c.Preflight, limits: loop.Limits, thresholds: loop.Thresholds, accounts: loop.CodexCandidates, waits: &node.OncePer{}, blind: &node.OncePer{}, noVerdict: &node.OncePer{}, left: &node.LeftRunning{}}
+	return secondOpinion{h: h, codex: c, preflight: c.Preflight, limits: loop.Limits, thresholds: loop.Thresholds, accounts: loop.CodexCandidates, waits: &node.OncePer{}, blind: &node.OncePer{}, noVerdict: &node.OncePer{}, left: &node.LeftRunning{}}
 }
 
 // evaluateWith is the loop's Evaluate hook: a fresh evaluator session per
