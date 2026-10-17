@@ -89,6 +89,26 @@ var goalFields = strings.Join(goalRequired, " ")
 // goalOptionalFields is the selection of goalOptional.
 var goalOptionalFields = strings.Join(goalOptional, " ")
 
+// meshActivityRequired are the MeshActivityIndex fields every supported platform serves (fields/MeshActivityIndex.txt).
+var meshActivityRequired = []string{
+	"actor",
+	"at",
+	"id",
+	"kind",
+	"logSeq",
+	"summary",
+	"workItemId",
+}
+
+// meshActivityOptional are the MeshActivityIndex fields an older platform may lack (a `?` in fields/MeshActivityIndex.txt).
+var meshActivityOptional = []string{}
+
+// meshActivityFields is the selection of meshActivityRequired.
+var meshActivityFields = strings.Join(meshActivityRequired, " ")
+
+// meshActivityOptionalFields is the selection of meshActivityOptional.
+var meshActivityOptionalFields = strings.Join(meshActivityOptional, " ")
+
 // nodeRequired are the NodeIndex fields every supported platform serves (fields/NodeIndex.txt).
 var nodeRequired = []string{
 	"capacity",

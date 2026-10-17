@@ -89,6 +89,15 @@ func ItemRecord(store ResumeStore, itemID string) (entries []RecordEntry, lines 
 	if len(allEntries) == 0 {
 		return nil, nil, 0, true
 	}
+	entries, lines, dropped = clipRecord(allEntries, allLines)
+	return entries, lines, dropped, true
+}
+
+// clipRecord holds a record's entries and their source lines under
+// RecordBudget: the oldest whole entries are dropped first, the first
+// turn entry never, until what remains fits; an entry is never
+// shortened. It returns what is kept, oldest first, and how many went.
+func clipRecord(allEntries []RecordEntry, allLines []string) (entries []RecordEntry, lines []string, dropped int) {
 	total := 0
 	for _, l := range allLines {
 		total += len(l)
@@ -120,5 +129,5 @@ func ItemRecord(store ResumeStore, itemID string) (entries []RecordEntry, lines 
 			lines = append(lines, allLines[i])
 		}
 	}
-	return entries, lines, dropped, true
+	return entries, lines, dropped
 }
