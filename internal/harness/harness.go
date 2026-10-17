@@ -6,6 +6,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
 	"time"
@@ -189,6 +190,20 @@ type Progress struct {
 	// RateLimit is the account's plan standing, when the session has
 	// just reported it.
 	RateLimit *RateLimit
+	// WorkCall is a mesh-work tool call (tools.IsWorkTool) the stream
+	// has just carried, one Progress per call and in the stream's order;
+	// such a Progress carries nothing else — no Text, cost or session id
+	// — so a reader of those never mistakes it for one.
+	WorkCall *WorkCall
+}
+
+// WorkCall is one mesh-work tool call as the stream carried it: the
+// tool's own name (mesh_progress, mesh_ask, …) and its input byte for
+// byte, never re-marshalled. Result.WorkCalls still keeps the last
+// input per tool.
+type WorkCall struct {
+	Tool  string
+	Input json.RawMessage
 }
 
 // Result is how the session ended.
@@ -243,7 +258,7 @@ type Result struct {
 	ToolCallIDs map[string][]string
 	// WorkCalls is the input of each hosted mesh-work tool the session
 	// called (tools.IsWorkTool: mesh_finish, mesh_fail, mesh_verdict,
-	// mesh_plan, mesh_progress), keyed by the tool's own name without
+	// mesh_plan, mesh_progress, mesh_ask), keyed by the tool's own name without
 	// its mcp__<server>__ prefix, the last call's input winning: a
 	// Claude tool_use block's input, a Codex mcp_tool_call's arguments.
 	// The node reads a session's end from it before the final message

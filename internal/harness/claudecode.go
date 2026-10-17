@@ -807,6 +807,9 @@ func parseClaude(stdout io.Reader, onProgress func(Progress), after func(Event))
 			if t := ev.Text(); t != "" {
 				onProgress(Progress{Text: t, SessionID: ev.SessionID})
 			}
+			for _, call := range ev.WorkCalls() {
+				onProgress(Progress{WorkCall: &call})
+			}
 		case "system":
 			if ev.Subtype == "init" && ev.SessionID != "" {
 				onProgress(Progress{SessionID: ev.SessionID})
