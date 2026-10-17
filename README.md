@@ -24,7 +24,8 @@ With no `--client` it installs into every client it finds on the
 machine (config dir present, or its binary on `PATH`); `--client all`
 is every client regardless. Each writes two things from one source
 (`skills/mesh/SKILL.md`, embedded): the `runsheet` server entry
-(`<this binary> mcp` over stdio) in the client's own config file and
+(`<this binary> mcp` over stdio, its initialize naming itself
+`runsheet`) in the client's own config file and
 format, and the same instructions rendered for how that client reads
 them —
 
@@ -476,7 +477,7 @@ and leaves it for a node.
   each conflict keeping both sides' intent, re-runs the item's
   acceptance and pushes with `--force-with-lease`. The runbook is the
   mesh-branch-rebase skill in runsheet/runsheet
-  (`skill-mesh-branch-rebase`, read through mesh-context); the prompt
+  (`skill-mesh-branch-rebase`, read through runsheet); the prompt
   carries its steps for when it cannot be fetched. The session ends with
   `REBASED: <sha>` and `RESOLVED: <files>`, or `REBASE FAILED: <why>`.
 - **Finish.** The node reads the pushed head back from the remote and
@@ -1019,7 +1020,7 @@ already_done, evidence}` with no branch, when main already holds the
 item's work (the merged PRs or commits that satisfy its acceptance; the
 evaluator checks them, mesh-specs ADR 003) — `mesh_fail {item_id, error}`, `mesh_evaluate
 {item_id, passed, notes}`, `mesh_context {goal_slug}` (the project's
-mesh-context documents: instructions, ADRs, PRD, TRD), `mesh_items {status}`,
+runsheet context documents: instructions, ADRs, PRD, TRD), `mesh_items {status}`,
 `mesh_record {item_id, summary}` (a milestone note to the platform; see below) and `reply`. The daemon
 has already cloned or fetched the repo into
 `~/.mesh/work/<goal-slug>/<seq>` and checked out `mesh/<goal-slug>-<seq>`
@@ -1041,7 +1042,7 @@ available on Bedrock, Vertex or Foundry; Team/Enterprise orgs must enable
 **Poll mode** (`--mode poll`). Each claimed item runs its own
 `claude -p "<prompt>" --output-format stream-json --verbose --max-budget-usd <budget>`
 in `~/.mesh/work/<goal-slug>/<seq>` (a worktree of the repo's clone, cloned with your `gh`, branch
-`mesh/<goal-slug>-<seq>` from the base ref), with the goal's mesh-context
+`mesh/<goal-slug>-<seq>` from the base ref), with the goal's runsheet
 context written under `.mesh/context/` (excluded from git). The node
 keeps one clone per repo at `~/.mesh/repos/<owner>/<name>`, cloned by
 the repo's first item and fetched by every later one, and makes each new
@@ -1051,9 +1052,18 @@ one worktree only. Each worktree's credential helper is its own
 (`git config --worktree`); the shared clone's config holds no token. A
 rework reuses its worktree; an evaluation's `<seq>-eval`, the goal doc's
 `<goal>/0` and plan and research checkouts stay clones of their own; a
-full clone left by an older node is used as it is until swept. The sweep
-removes a finished item's worktree with `git worktree remove --force`
-and `git worktree prune`, never the shared clone. Every session installs
+full clone left by an older node is used as it is until swept. Each
+worktree is locked (`git worktree lock`) while its item is live and the
+node never runs a blanket `git worktree prune`: the sweep removes only a
+finished item's worktree, with `git worktree remove --force` and its own
+`.git/worktrees/<n>`, refuses one whose item is live on the node, and
+never touches the shared clone. A workspace whose `.git/worktrees/<n>`
+has gone anyway is rebuilt for its branch at its recorded head, its
+files kept, and the step that found it — a `git remote set-url`, a
+prepare, the validation — runs once more, logged `workspace <dir>:
+worktree admin <path> gone; rebuilt for <branch> at <sha>`, nothing
+failed or released. A `.git/config.lock` older than five minutes that
+no git process holds is cleared before a config write. Every session installs
 against one pnpm store and one npm cache per node, `~/.mesh/store/pnpm`
 and `~/.mesh/store/npm` (ADR-028,
 `docs/adr/adr-028-one-clone-per-repo-one-worktree-per-item.md`, after
@@ -1667,27 +1677,33 @@ orphan: stopped …`; past capacity the node claims nothing and says
 
 A session gets the tools its project and role have, configured in the
 console and handed to the node that claimed the session (ADR-006, trd
-§3 Tools). The mesh-context MCP server is not one of them: the node
-attaches it to every session itself, and a console tool named
-`mesh-context` is refused and noted. A tool named `prologue`, the
-built-in's old name, is an ordinary tool now; the node reads `prologue`
-as the built-in only in a session an older node started and this one
-adopted, a deprecated alias it drops on 2026-10-28.
+§3 Tools). The built-in context server, `runsheet`, is not one of
+them: the node attaches it to every session itself (`mcp__runsheet__*`
+in Claude Code, `[mcp_servers.runsheet]` for Codex), and a console tool
+named `runsheet` is refused and noted. Its old names, `mesh-context` and
+`prologue`, are aliases now: a console tool so named is an ordinary
+tool, and the node reads either as the built-in only in the stream and
+state of a session an older node started and this one adopted — that
+session's `mcp__mesh-context__mesh_finish` is its finish, as
+`mcp__runsheet__mesh_finish` is a new one's (ADR-006's amendment
+2026-10-15). The node reads the platform's context under `/mesh/v1`
+only; the `/prologue/v1` fallback is gone.
 
-**mesh-context goes through a relay.** The built-in is no http entry
+**runsheet goes through a relay.** The built-in is no http entry
 with a bearer header: a session's token would rotate under it and
 Claude Code never re-reads its MCP config, so the session would lose
 its tools mid-build. It is a stdio relay, `mesh mcp-relay --url
 <gateway>/mcp --token-file <path>` (in a pod, `node
-mesh-context-relay.js <url> <path>` from the session's HOME), which
+runsheet-relay.js <url> <path>` from the session's HOME), which
 reads the bearer from the file on every request. The file,
-`mesh-context.token`, is 0600 in the session's own directory
+`runsheet.token`, is 0600 in the session's own directory
 (`<workdir>.session/`, the pod's HOME, a Codex session's `CODEX_HOME`);
 the node writes it from its own credential when the session starts,
 rewrites it within 15 seconds of the credential renewing — a minute
 before the old token expires — and removes it when the
 session's end is handled. A node that adopts a session keeps the file
-its `state.json` names (docs/adr/adr-029-a-sessions-mcp-token-is-refreshed-by-the-node.md).
+its `state.json` names — an older session's `mesh-context.token`
+included (docs/adr/adr-029-a-sessions-mcp-token-is-refreshed-by-the-node.md).
 
 **What the node reports.** Every tick the node looks on its `PATH` for
 the tool runtimes it can start — `npx`, `uvx`, `docker` — and the agent
@@ -1701,13 +1717,13 @@ credentials and its `tools` (name, remote `url`/`headers` or local
 keeps the tools whose `roles` include the session's — `builder` for a
 build, `evaluator` for an evaluation, `planner` for a plan, `director`
 for research (`tools.RoleFor`); rebase and channel sessions keep
-mesh-context alone for now. A plan or research session that cannot
+runsheet alone for now. A plan or research session that cannot
 start a required tool starts no agent: the plan's claim is released
 with the reason, the research hands in an empty one naming it, and the
 node leaves that goal or direction alone while its runtimes are
 unchanged. Each agent gets them in its own format:
 
-- **Claude Code**: `--mcp-config` with `mcpServers` — mesh-context plus one
+- **Claude Code**: `--mcp-config` with `mcpServers` — runsheet plus one
   entry per tool, `{type: http, url, headers}` remote or `{command, args,
   env}` local (`npx -y …`, `uvx …`, `docker run -i --rm -e KEY… image
   …`) — and `--allowedTools mcp__<name>__*` for each, so a print-mode
@@ -1745,7 +1761,7 @@ named `mcp__<name>__…`, Codex's `mcp_tool_call` items) and, after a
 build or evaluation, hands the platform one `recordToolUsage` per call
 of a priced tool — the item, the call's id, the tool, and the session's
 usage report at the tool's price per call — beside the session's own
-report on its finish. Unpriced tools and mesh-context report nothing.
+report on its finish. Unpriced tools and runsheet report nothing.
 A platform without `recordToolUsage` gets none: the node says so once
 per run, logs each call instead, and the item goes on.
 
@@ -1760,7 +1776,7 @@ session logs it. A platform whose usage report takes no `tools` gets the
 total alone: the node says so once per run and logs each session's list.
 
 A platform that does not hand out `tools` yet costs nothing: sessions
-run on mesh-context alone, as before.
+run on runsheet alone, as before.
 
 ### Context budget
 
@@ -2384,11 +2400,11 @@ poll mode writes nothing either — a build's branch carries only its own
 work. A session reads live status from `.mesh/context/INDEX.md` or the
 platform.
 
-mesh-context is read-only over git, so a goal still writes itself into the
+The runsheet context server is read-only over git, so a goal still writes itself into the
 repo once, when it ends: `specs/goal-<goal-slug>.md` (frontmatter
 `title: Goal — …`, `kind: plan`, `status: approved` when done /
 `superseded` when cancelled, `summary:`, `parent:` the project's PRD when
-mesh-context lists one), with the statement, the acceptance and the final
+runsheet lists one), with the statement, the acceptance and the final
 `## Items` table. `internal/node/goaldoc.go` is its only writer. The node
 writes it after an item finishes: it re-reads the goal, and if the goal
 has ended (`done` or `cancelled`) it checks out the project's primary repo
@@ -2750,7 +2766,7 @@ out of `models` takes its default: `gpt-6-sol` for Opus, `gpt-6-luna`
 for Sonnet and Haiku. An empty model, or one of no tier, runs on
 Codex's own default.
 
-The session's MCP servers (mesh-context) are written to `config.toml` in
+The session's MCP servers (runsheet) are written to `config.toml` in
 its temporary home. Secrets are named there by variable, never by value
 (mesh-specs ADR 006). What Codex's event stream reports is documented
 in [docs/codex-events.md](docs/codex-events.md): the final message,

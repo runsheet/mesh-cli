@@ -1,6 +1,6 @@
 ---
 title: "ADR-030: A session never writes the shared clone's config"
-summary: Two sessions of one repo on a node share one clone's .git/config, so a session writes nothing there — its identity, hooks and credential helper go in its worktree's own config.worktree, its item token rides GIT_CONFIG_* in the command's environment, origin and extensions.worktreeConfig are written once per clone under the repo lock after a read, a git lock older than a minute is removed with a log line and the write retried once, and a wait on the repo lock names the item holding it.
+summary: Two sessions of one repo on a node share one clone's .git/config, so a session writes nothing there — its identity, hooks and credential helper go in its worktree's own config.worktree, its item token rides GIT_CONFIG_* in the command's environment, origin and extensions.worktreeConfig are written once per clone under the repo lock after a read, a git lock older than a minute is removed with a log line and the write retried once, a config.lock older than five minutes no git process holds is removed before the write, and a wait on the repo lock names the item holding it.
 status: accepted
 ---
 
@@ -90,6 +90,16 @@ file older than `StaleGitLockAge`, one minute, is removed and logged
 once (`withStaleLockRetry`; `gitConfigWrite` for Identify). A younger
 lock is another writer's: it is left alone and the error stands, a
 workspace failure released as ADR-024 says, never an item failure.
+
+**Amended 2026-10-17** (goal `a-workspace-whose-worktree-is-gone-is-rebuilt`
+item 1): `withStaleLockRetry` first calls `preclearStaleLock`, so a
+repository's `config.lock` is cleared before the write, not only after
+one fails on it. The lock is the clone's (`commonDirConfigLock`, `git
+rev-parse --git-common-dir`); one older than `PreclearGitLockAge`, five
+minutes, that no git process holds (`gitLockHolder`, which scans `/proc`
+for a `git` whose cwd or `GIT_DIR` is under the worktree or the lock's
+directory) is removed with the same `removed stale git lock` line
+(`TestStaleConfigLockIsCleared`).
 
 ### 5. A wait on the repo lock names its holder
 

@@ -175,7 +175,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   item `already_done` with no push, adr-003). The builder ends by
   calling the hosted `mesh_finish(item_id, branch, head_sha)` — or
   `mesh_finish(item_id, outcome=already_done, evidence)`, or
-  `mesh_fail(item_id, error)` — on `mesh-context` (BuildPrompt's
+  `mesh_fail(item_id, error)` — on `runsheet` (BuildPrompt's
   `# Finish by tool call`): the harness keeps each mesh-work tool's input
   (`tools.IsWorkTool`: mesh_finish, mesh_fail, mesh_verdict, mesh_plan,
   mesh_progress) on `Result.WorkCalls` by tool name, from Claude's
@@ -251,16 +251,44 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   under the repo lock (`sharedOrigin`, `syncSharedClone`,
   `addWorktree`), a git lock older than a minute is removed — `removed
   stale git lock <path> (age <d>)` — and the write retried once
-  (`ClearStaleGitLock`, `withStaleLockRetry`), and a wait on the repo
+  (`ClearStaleGitLock`, `withStaleLockRetry`), and a `config.lock`
+  older than five minutes no git process holds is cleared before the
+  write (`preclearStaleLock` at the top of `withStaleLockRetry`,
+  `PreclearGitLockAge`, `gitLockHolder` scanning `/proc`,
+  `commonDirConfigLock`; `TestStaleConfigLockIsCleared`), and a wait on the repo
   lock logs `repo lock <key>: waiting on <goal>/<seq> (pid <n>, held
   <d>)` (`WithLockHolder`, `SetRepoLockLogf`);
   `TestConcurrentSessionsOnOneRepoE2E` (`-tags e2e`) starts two sessions
   of one repo at once twenty times over, a rework reusing its worktree and keeping unpushed commits,
-  a full clone from before the layout used in place until swept, and
-  `Git.RemoveWorkspace` the sweep's remover — a worktree by `git
-  worktree remove --force` + `git worktree prune` under the repo's
+  a full clone from before the layout used in place until swept; every
+  worktree locked while its item is live (`lockWorktree`, `git worktree
+  lock --reason 'mesh: item <goal>/<seq> live'`, by `addWorktree` and on
+  reuse by Prepare and Authorize; the clone's `gc.worktreePruneExpire`
+  `never`) and no blanket `git worktree prune` anywhere
+  (`forgetStaleRegistrations`, the quartermaster's
+  `pruneGoneWorktrees`, forget only a gone, unlocked, not-live
+  registration), and `Git.RemoveWorkspace` the sweep's remover —
+  refusing a dir held live on this node (`HoldWorkspace`/
+  `WorkspaceLive`, `liveworkspaces.go`, held by the Runner, Evaluator
+  and Rebaser), a worktree unlocked and removed by `git worktree remove
+  --force` with only its own `.git/worktrees/<n>` under the repo's
   lock, a full clone by RemoveAll, a path under the repos root refused,
-  never the shared clone — its evaluation's
+  never the shared clone (`TestWorkspaceCleanupNeverRemovesALiveWorktree`)
+  — and a worktree whose `.git` names a `.git/worktrees/<n>` that is
+  gone (`worktreeAdminGone`) rebuilt, never failed or released:
+  `Git.RebuildWorktree` under the repo lock adds a `--no-checkout`
+  worktree of the branch at its recorded head (the clone's
+  `refs/heads/<branch>`, else `origin/<branch>`, else
+  `WorkspaceSpec.Head`) under the lost admin's name, moves its `.git`
+  in, `git worktree repair`, a mixed `git reset` (the files left) and
+  the lock, logged `workspace <dir>: worktree admin <path> gone;
+  rebuilt for <branch> at <sha>` (an own-clone checkout, `-eval`,
+  removed for Prepare to clone again); Prepare and Authorize check
+  first, and `PrepareWithRetry` and the validation run
+  (`rebuildAndRetry` on `IsWorktreeAdminGone`) rebuild once, re-write
+  the token's helper (`ItemCred.Reauthorize`) and retry once
+  (`TestWorkspaceWithMissingWorktreeAdminIsRebuilt`; ADR-028's
+  amendments 2026-10-17) — its evaluation's
   at `<goal>/<seq>-eval` (`EvalWorkspaceSpec`, the same Root, ADR-027),
   a clone of its own, as are the goal doc's `<goal>/0` on the base and
   plan and research checkouts (`Git.sharedClone` returns ""), so an
@@ -341,7 +369,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `internal/channel/`: channel mode (one session per org, turns).
   `internal/meshmcp/`: the stdio MCP server (`Server`, `Tool`,
   `ObjectSchema`) channel mode and `mesh mcp` share — only channel mode
-  sets `Server.Channel`, advertising `claude/channel` — and `mesh mcp`'s
+  sets `Server.Channel`, advertising `claude/channel`; `mesh mcp`'s
+  initialize answers `serverInfo.name` `runsheet` (`meshmcp.ServerName`),
+  channel mode's stays `mesh` (`channel.ServerName`, the
+  `--dangerously-load-development-channels server:mesh` flag's key;
+  ADR-023's amendment 2026-10-17) — and `mesh mcp`'s
   personal tools (`NewServer`, `Personal`: `mesh_goals` and
   `mesh_status` read the gateway and `~/.mesh/mcp-state.json`,
   `mesh_join` claims an item and makes its checkout in
@@ -380,7 +412,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   gateway (`HostOf`) — is removed byte for byte (`RemoveJSON`,
   `RemoveTOMLTable`, its own trailing comments through EOF), printed
   `<client>: removed <name> from <path>`, and a `LegacyNames` entry
-  (`mesh`, `mesh-context`, `prologue`) pointing elsewhere kept,
+  (`mesh`, then the built-in's old names, `tools.BuiltinAliases()`)
+  pointing elsewhere kept,
   `<client>: kept <name> (not runsheet's)` (ADR-025, Legacy entries); `--remote
   [--url]` writes `RemoteEntry` for the gateway's `/mcp`
   (`node.MeshMCPURL`) instead, `DiscoverAuth` asked once — OAuth, the
@@ -1182,7 +1215,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   loop starts an evaluation on Codex room (`Loop.CodexRoom`) when no
   Claude account has any. Before any Codex session starts,
   `Evaluator.CodexPreflight` (`Codex.Preflight`: `codex mcp get
-  mesh-context` and an MCP tools/list handshake in the session's own home
+  runsheet` and an MCP tools/list handshake in the session's own home
   and env, then the sandbox probe `codex sandbox -c
   sandbox_mode="workspace-write" -c
   sandbox_workspace_write.network_access=true -- mesh sandbox-probe`, the
@@ -1258,7 +1291,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   credentials alone from then on. `Loop.Runtimes()` is what the last
   probe found. Build, evaluate, plan and research sessions get theirs
   (`SelectTools` by `tools.RoleFor(kind)` — builder, evaluator, planner,
-  director — and runtimes, `SessionTools.Apply`: mesh-context
+  director — and runtimes, `SessionTools.Apply`: runsheet
   plus each tool in `Job.MCPServers`, secret values in `Job.Env` and
   `Job.Secrets` only, the tools on `Job.Tools` for Codex); a
   nice-to-have tool the node cannot start is omitted and noted on the
@@ -1267,12 +1300,26 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   no try counted), a research hands in an empty one with the reason as
   its note — and `Declines` keeps the loop off the item, goal or
   direction while the runtimes are unchanged, the reason on the plan's
-  holding line. Rebase and channel sessions keep mesh-context alone.
+  holding line. Rebase and channel sessions keep runsheet alone.
   `tools.IsBuiltin(name)`
-  knows the built-in by its current name and, until 2026-10-28, its old
-  one, `prologue` — read only from a session an older node started and
-  this one adopted (`Evaluator.toolBroken`, `UseNote`); a console tool
-  named `prologue` is an ordinary tool, one named `mesh-context` clashes.
+  knows the built-in by its name, `runsheet` (`tools.Builtin`), and by
+  its old names, `mesh-context` and the one before it — one declaration,
+  `tools.builtinAliases` (`BuiltinAliases()`, `BuiltinAlias()` the
+  oldest, so no other file spells it) — read only from the stream and
+  state of a session an older node started and this one adopted
+  (`Result.ToolNames`/`DocumentsFetched` folded into runsheet, a
+  `mcp__mesh-context__mesh_finish` a work call like
+  `mcp__runsheet__mesh_finish`, `Evaluator.toolBroken`, `UseNote`); a
+  console tool named `runsheet` clashes, one named as an old name is an
+  ordinary tool (ADR-006's amendment 2026-10-15, goal
+  the-node-calls-the-context-server-runsheet).
+  `internal/node/runsheet_server_e2e_test.go` (`-tags e2e`) runs a build
+  through the real Claude Code harness on the gatewaytest fake: its
+  `--mcp-config` names `runsheet` and no old name, its relay's
+  tools/list reaches the fake's `/mcp` (`Fake.MCPRequestsNamed`), its
+  `mcp__runsheet__mesh_finish` is the finish handed in, and a session
+  adopted with `mesh-context.token` and a stream naming `mesh-context`
+  still finishes.
 - **Tool results** (`internal/harness/trim.go`, node.yaml
   `tool_results.max_kb`, default 16, 0 off): a host build session gets
   a `PreToolUse` hook on `Bash` in its `--settings` (`Job.Settings`,
@@ -1685,15 +1732,17 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   evaluation); a required one releases a build, declines an evaluation
   (`Declines`) or fails a rebase, naming it, and no agent starts; a
   required refused one makes no pod at all.
-- Every session gets mesh-context as an MCP server — the stdio relay
+- Every session gets the built-in context server, `runsheet`
+  (`tools.Builtin`, `harness.BuiltinMCP`; `mcp__runsheet__*`), as an
+  MCP server — the stdio relay
   `<mesh> mcp-relay --url <MeshMCPURL> --token-file <path>`
   (`node.MeshContextMCP` → `harness.MeshContextRelay`; `internal/mcprelay`,
   NDJSON JSON-RPC POSTed on the file's bearer read per request,
   `Mcp-Session-Id` carried, a 401 re-reading the file once, a forgotten
   session re-initialised once, a missing or empty file a JSON-RPC error),
-  in a pod `node <HOME>/mesh-context-relay.js <url> <path>`
+  in a pod `node <HOME>/runsheet-relay.js <url> <path>`
   (`harness.RelayScript`, `sandboxRelayServer`), for Codex the same
-  stdio table — on `mesh-context.token`, 0600 in the session's own
+  stdio table (`[mcp_servers.runsheet]`) — on `runsheet.token`, 0600 in the session's own
   directory (`harness.PlaceMeshContext`: `<workdir>.session/`, the pod's
   HOME, the CODEX_HOME, the channel session's own temp dir), written
   from `gw.Bearer` by `node.TokenFiles` (the harnesses' and
@@ -1702,10 +1751,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   15s) the bearer rotated, a failed start releasing it,
   removed when the session's end is handled and left on a detach;
   `state.json`'s `tokenFile` names it and `ClaudeCode.Attach` keeps an
-  adopted session's (`keepAdopted`) — no bearer in any config, so a
+  adopted session's (`keepAdopted`, an older session's
+  `mesh-context.token` path as its state names it) — no bearer in any config, so a
   session outlives a rotation (ADR-029,
   `docs/adr/adr-029-a-sessions-mcp-token-is-refreshed-by-the-node.md`;
-  `meshmcp.Hosted` keeps the http form, `node.MeshContextHTTP`) — and
+  `meshmcp.Hosted` keeps the http form, `node.MeshContextHTTP`; the
+  gateway's context reads are `/mesh/v1` only, the `/prologue/v1`
+  fallback removed, ADR-006's amendment 2026-10-15) — and
   the project's context on disk under `.mesh/context/` with `INDEX.md`:
   its own repos' instructions, then the screen, then `## Goal` — the
   session's own goal and its items (seq, title, status, repo, branch),
@@ -1729,7 +1781,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `recordToolUsage`; the subject the item, else the plan's goal, else
   the research's direction, ADR-006's amendment 2026-10-03) per call of a rendered tool with
   `pricePerCallCents > 0` — the session's report at the tool's price,
-  no tokens, no actual cost; mesh-context and unpriced tools are none.
+  no tokens, no actual cost; runsheet and unpriced tools are none.
   A platform without `recordToolUsage` is said once per run and each
   call logged instead; it never fails the item.
   Every server's calls, errors, ms and first error's text (200 chars,
@@ -1741,7 +1793,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (kept an hour). A Codex call's error is its `error.message`, and a
   server Codex says failed to start is an error with no call. A served
   console tool never called, or whose first call errored, and any other
-  server that errored — the built-in `mesh-context` first — is named by
+  server that errored — the built-in `runsheet` first — is named by
   `SessionTools.UseNote` — a build's progress note, the evaluation's
   notes, the research hand-in's notes and its log line, a plan's log
   line (`planGoal` takes no notes) (ADR-006 amendments

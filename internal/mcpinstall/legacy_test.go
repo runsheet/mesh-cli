@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"projectmesh.io/mesh-cli/internal/tools"
 )
 
 func TestInstallIsRunsheetEntry(t *testing.T) {
@@ -40,7 +42,9 @@ func TestInstallIsRunsheetEntry(t *testing.T) {
 func TestInstallPlanRemovesRunsheetEntriesUnderAnyName(t *testing.T) {
 	home := t.TempDir()
 	cfg := filepath.Join(home, "mcp.json")
-	in := `{"mcpServers": {"a-relay": {"command": "/x/mesh", "args": ["mcp-relay"]}, "mesh": {"url": "https://gw.test/mcp"}, "prologue": {"command": "node"}, "x": {"command": "y"}}}`
+	// the oldest legacy name, pointing elsewhere: kept
+	alias := tools.BuiltinAlias()
+	in := strings.ReplaceAll(`{"mcpServers": {"a-relay": {"command": "/x/mesh", "args": ["mcp-relay"]}, "mesh": {"url": "https://gw.test/mcp"}, "{{alias}}": {"command": "node"}, "x": {"command": "y"}}}`, "{{alias}}", alias)
 	if err := os.WriteFile(cfg, []byte(in), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -51,10 +55,10 @@ func TestInstallPlanRemovesRunsheetEntriesUnderAnyName(t *testing.T) {
 		t.Fatalf("plan: %v %v", changes, err)
 	}
 	ch := changes[0]
-	if !reflect.DeepEqual(ch.Removed, []string{"a-relay", "mesh"}) || !reflect.DeepEqual(ch.Kept, []string{"prologue"}) {
+	if !reflect.DeepEqual(ch.Removed, []string{"a-relay", "mesh"}) || !reflect.DeepEqual(ch.Kept, []string{alias}) {
 		t.Fatalf("removed %v kept %v", ch.Removed, ch.Kept)
 	}
-	want := `{"mcpServers": {"prologue": {"command": "node"}, "x": {"command": "y"},"runsheet":{"type":"stdio","command":"/bin/mesh","args":["mcp"]}}}`
+	want := strings.ReplaceAll(`{"mcpServers": {"{{alias}}": {"command": "node"}, "x": {"command": "y"},"runsheet":{"type":"stdio","command":"/bin/mesh","args":["mcp"]}}}`, "{{alias}}", alias)
 	if string(ch.After) != want {
 		t.Fatalf("after:\n%s\nwant\n%s", ch.After, want)
 	}
