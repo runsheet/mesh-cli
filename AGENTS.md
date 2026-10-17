@@ -272,7 +272,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `<root>/.locks/<owner>--<name>.lock`, `Git.LockRoot` else the spec's
   Root else the checkout's grandparent; released before any checkout,
   never held across a session or a push; ADR-023, fetches of one repo
-  are serialised on the node) — and the project's
+  are serialised on the node) — a main validation takes none of it:
+  it runs in a scratch dir of the node's own under `<work
+  root>/.scratch` from the served diff (ADR-034, Main validation below),
+  a worktree only as its fallback, so the work root holds nothing of a
+  validation's once it ends but an empty `.scratch` — and the project's
   context (`workspace.go`: `FetchContext`, `RenderIndex`, ADR-015 — on disk only the instructions of the session's own repos (`ContextOptions.Repos`), keyed by repo and path — a slug several repos share, as every AGENTS.md's `agents` is, read from the session's own checkout (`ContextOptions.Checkouts`), never by slug from the gateway, which answers one repo's body for all — each as `instructions-<owner>-<repo>-<path>.md` (`contextFileName`: the path without `.md`, so one repo's two paths of one slug are two files), and, in INDEX.md, its own goal (`ContextOptions.Goal`: statement, acceptance, items; none for research); no ADR, PRD or TRD body is fetched; INDEX.md is a screen with no document table and no other goal — what is on disk, `mesh_search`/`mesh_document`/`mesh_documents`/`mesh_projects`/`mesh_items` for the rest, the ADRs and TRD binding, one count line; node.yaml `context:` (`ContextConfig`, re-read each tick, `Loop.ContextBudget`) `bytes_max` is the cap, default 80KB, INDEX.md included, an instructions document past it left whole to INDEX.md as binding, to fetch (`Context.Dropped`), and the cap held on what is written — `RenderIndex` never past the room the files leave (the goal's item table cut at a row with the rest to `mesh_items`, then its statement and acceptance; at last a cut), `Context.fit` again in `WriteContext`, which measures what it rendered and writes nothing past the cap, and clears `.mesh/context` first, an empty context included; past the 40KB target (`ContextBytesTarget`) a session logs `ContextWritten.TargetWarning`; `doc_bytes_max` holds each instructions document),
   evaluate, plan and research sessions, the service install (`launchd` /
   `systemd --user`). A project's repos — for the planner, the director
@@ -1350,7 +1354,52 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `checkBatchToken` refuses, empty, malformed (`tokenShape`) or for
   another repo — fetches nothing and fails the validation `github token for merge batch <n>: …` (ADR-032's
   amendment 2026-10-14). A request runs on the operator's credentials.
-  The worktree is removed on every path. Green and
+  The worktree is removed on every path. **Both are first validated
+  from the served diff** (`internal/node/serveddiff.go`,
+  `checkoutServed`, ADR-034,
+  `docs/adr/adr-034-a-node-validates-from-a-served-diff-with-a-shared-cache.md`,
+  amending ADR-028 and ADR-032): the commit and `compare
+  <base>...<sha>` read from GitHub's Git Data API
+  (`internal/gitdata`: `Commit`, `Compare`, `Tree`, `Blob`; a capped
+  diff `DiffTooLargeError`, a truncated tree `TruncatedError`) on the
+  run's minted token (`gitdata.WithToken`, `validator.servedToken`), the
+  merge base materialised from the node's one shared tree cache
+  (`internal/node/sharedcache.go`, `SharedCache`: `SharedCacheRoot()`,
+  `<user cache dir>/mesh/cache`, `blobs/`, `trees/`, `commits/` by sha,
+  a miss filled once from the repo's shared clone else the `BlobSource`,
+  `GitDataSource`; `Runner.ServedDiff`, `NewServedDiffCache`) into
+  `MakeScratch(ScratchRoot(WorkRoot), "served", <subject>)`, the diff
+  applied through the cache (`ApplyDiff`) and checked against the
+  commit's tree (`checkMaterialized`) — logged `<prefix>: materialised
+  <sha7> from <base7> and <n> changed file(s) of the served diff` — no
+  worktree, no fetch, no repo lock; the suites chosen by the compare's
+  paths, the scratch removed on every path (`validator.removeScratch`,
+  after a sandboxed run's pod). The cache's hits and misses
+  (`CacheCounts`) persist to `~/.mesh/node.cache`
+  (`RunState.WriteCacheCounts`); `SharedCache.Enforce` holds the cache
+  root, `go/` included, under node.yaml's `validation_cache_max_bytes`
+  (`Config.ValidationCacheCap`, default 20 GiB) after every
+  materialisation and applied diff — least recently used entries
+  evicted, logged `cache: evicted <n> least recently used entries
+  (<size>) to hold the cap of <cap>; <size> now`, then `go clean
+  -cache`, still over the finding `cache over cap: <size> of <cap>`,
+  once until back under. A diff past the cap, a truncated tree, no
+  minted token (a request today), no cache, no parent or a tree
+  mismatch takes the worktree above, `<prefix>: served diff: <reason>;
+  validating from a worktree (said once per run)` (`servedFallback`,
+  `noteServedFallback`). A sandboxed validation's pod mounts
+  `sandbox.ValidationCache` (`RunSpec.Cache`): its scratch rw (TMPDIR,
+  GOTMPDIR), the Go build cache rw (GOCACHE), the cache's `blobs/`
+  read-only, nothing else of the cache root, the scratch removed by
+  `Sandbox.RemoveTree`. `mesh node status` prints `validation cache: 75%
+  hits (30/40), 1.2 GiB of 20.0 GiB` or `validation cache: no lookups
+  yet`. `internal/node/serveddiff_e2e_test.go`'s
+  `TestServedDiffValidationsShareOneCacheAndLeaveNoResidueE2E` (`go test
+  ./internal/node -run 'ServedDiff|SharedCache'`) runs a request and
+  three candidates on one base: all green, hits rising, GitHub asked
+  only for each diff's new blobs, a 32 KiB cap held by eviction, and
+  nothing left in TMPDIR or the work root but an empty `.scratch`. An
+  evaluation's validation still runs on its own checkout. Green and
   red are both finished on the attested sha (the attestation is the
   verdict); an environment failure (ADR-030), a classified fetch failure,
   a required service down or any error is failed with `validate.Reason`,
