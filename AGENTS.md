@@ -962,6 +962,43 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `RunState.Held`; `Stopped` removes it. `mesh node status` prints them,
   while a node runs here, as a **Held goals** table — org, goal, kind,
   since, until, why — or `Held goals: none.` with nothing held.
+- **A broken runtime stops claiming** (`internal/node/runtime_broken.go`,
+  `docs/adr/adr-034-a-node-whose-runtime-is-broken-stops-claiming.md`,
+  goal `a-runtime-that-cannot-start-a-session-stops-claiming`, item 3):
+  a session's `RuntimeBroken` hook (the sandbox section, above)
+  and a failed probe both land on `Loop.NoteRuntimeBroken(err)`, which
+  latches `RuntimeState{Status: runtime_broken, Reason, Since}` — the
+  reason podman's own words, scrubbed, one line, truncated
+  (`runtimeWords`) — logging the first note `runtime broken: <words>;
+  claiming nothing until a probe passes (every 5m0s)` and keeping
+  `Since` on a later one. While latched, `Tick` starts nothing new of
+  any kind — items, evaluations, plans, rebases, research, main
+  validations — as a drain does for new starts, while the heartbeat,
+  self-update, adoption and sessions already running go on.
+  `Loop.RuntimeProbe` (`Sandbox.Probe` with a sandbox, nil without one)
+  runs every `RuntimeProbeEvery` (5 minutes, the first tick included so
+  a node started on a broken podman never claims), bounded by
+  `RuntimeProbeTimeout` (a minute): a failing probe sets the latch even
+  before any session has tried, and a passing one clears it, drops
+  every `runtime_broken` hold (`Declines.ForgetPrefix`) so the released
+  work is claimed again the same tick, and logs `runtime healed: broken
+  since <t> (<words>); claiming again, <n> runtime_broken hold(s)
+  lifted`. The heartbeat sends `status: runtime_broken` with podman's
+  words in `reason` only when `gateway.Client.TakesNodeStatus` says the
+  platform's `NodeStatus` enum lists it (kept `ScalingProbeEvery`);
+  without that answer the words ride `reason` alone as `runtime_broken:
+  <words>` and `status` stays online. The holding pass lists every
+  served org's ready items as `Unclaimed` with that same reason and
+  opens its summary `runtime_broken: <words>; nothing claimed until a
+  probe passes; …` (`runtimeHolding`). `Loop.RuntimeChanged` is told the
+  state every tick; `mesh node start` wires it to `RunState.WriteRuntime`,
+  which leaves `~/.mesh/node.runtime` (JSON `status`, `reason`, `since`)
+  beside `node.standing`, removed on healthy/healed and by `Stopped`.
+  `mesh node status` reads it back (`RunState.Runtime`) and, while a
+  node runs here and the latch is set, prints one line `runtime_broken
+  since <RFC3339>: <reason>; the node claims nothing until the runtime
+  heals` (item 4) — nothing when the runtime reads healthy or no node
+  runs here.
 - **The rebase** (`internal/node/rebase.go`, runsheet ADR 008): an item
   whose pull request conflicts in a way the integrator could not
   resolve itself carries `rebase_state: requested`. Every tick the loop
@@ -1653,7 +1690,33 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   running container mounts) and logs `sandbox: swept N homes, M pods, K
   containers at start (L homes in use)` (ADR-007's amendment
   2026-10-10). Channel-mode sessions and Codex are not in
-  the pod yet.
+  the pod yet. **A runtime that cannot start a pod at all is told apart
+  from the agent's own failure inside one that started fine**
+  (ADR-030's amendment,
+  `docs/adr/adr-034-a-node-whose-runtime-is-broken-stops-claiming.md`,
+  goal `a-runtime-that-cannot-start-a-session-stops-claiming`, item 1):
+  `Podman.CreatePod` (the pod and its network-rules init container),
+  `RunAgent`'s container create and `StartAgent` wrap podman's own
+  refusal — never the agent's non-zero exit, whose stderr is read for
+  runtime words only when podman itself is the one that failed (its own
+  exit 125, or no `*exec.ExitError` at all) — as a `*sandbox.RuntimeError`
+  (`runtime.go`: `Op`, podman's words, `Unwrap`; `validate.IsRuntimeBroken`
+  matches phrases like `error opening storage`, `cannot set up namespace`).
+  `(*Sandbox).Probe(ctx) error` is the cheapest check that the runtime can
+  start a pod at all: its version, then a throwaway `mesh.probe` pod
+  created and removed at once; a runtime that cannot answers the same
+  `*RuntimeError`. `Fake` gains `CreatePodErr` (honoured by `Probe`
+  alongside `VersionErr`) so `internal/node` can break and heal a runtime
+  in a test. A session whose pod cannot start this way is never failed
+  or left evaluating (item 2): `RuntimeErrorOf`/`RuntimeReason`
+  (`internal/node/runtime_release.go`) turn it into each session kind's
+  own release — a build or rebase `ReleaseOnRuntime` (`ReleaseWorkItem`,
+  attempts unchanged), an evaluation `EvaluateWorkItemNoVerdict`, a plan
+  `ReleasePlan` with no try counted, a main validation failed back to
+  `requested` — each holding the item or goal off this node for
+  `WorkspaceReleaseHold` and telling the session's `RuntimeBroken
+  func(error)` hook, which `mesh node start` wires to the loop (**A
+  broken runtime stops claiming**, below).
 - **Sidecars** (`internal/sandbox/sidecars.go`, `internal/node/services.go`,
   mesh-specs ADR 007 Services): build, evaluate and rebase call
   `OpenSessionPod` before the agent — `Resolve` the checkout, then
