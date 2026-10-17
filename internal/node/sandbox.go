@@ -165,11 +165,19 @@ func OpenSandbox(ctx context.Context, c SandboxConfig, rt sandbox.Runtime, versi
 // and the HOME of every found sandboxed session, which adoption reads,
 // validates in and removes at its end (mesh-cli ADR 009). It logs one
 // line of what it did. No sandbox sweeps nothing.
+//
+// Run again on the quartermaster's cadence (ScratchCheck, ADR-034) it
+// also keeps every session this process has open (sandbox.Sandbox.Live):
+// a validation between two steps or a session between Open and its
+// agent's first container has a pod with only its infra running, which
+// is exactly what the sweep would otherwise remove — and did, on the
+// dl360 on 2026-10-17, 184 validations in five hours dying as "step
+// exited 137" or "no pod with ID".
 func SweepSandbox(ctx context.Context, sb *sandbox.Sandbox, found []FoundSession, logf func(string, ...any)) sandbox.SweepResult {
 	if sb == nil || sb.Runtime == nil {
 		return sandbox.SweepResult{}
 	}
-	var keep sandbox.Keep
+	keep := sb.Live()
 	for _, s := range found {
 		if s.Sandboxed() {
 			keep.Pods = append(keep.Pods, s.State.Pod)

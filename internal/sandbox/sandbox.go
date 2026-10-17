@@ -214,6 +214,58 @@ type Sandbox struct {
 	// Logf is where the sandbox says what it fell back on (nil is the
 	// standard logger).
 	Logf func(format string, args ...any)
+	// open is the sessions this process has open, shared with every
+	// WithStores copy (openSet).
+	open *openSet
+}
+
+// openSet is the sessions of this node process between Open and Close:
+// what a sweep run while the node runs (the quartermaster's, ADR-034)
+// must keep whatever state their containers are in — a validation
+// between two steps, a session between Open and its agent's first
+// container, each a pod with only its infra running — which the
+// start-up sweep, run before any session of this process, never meets.
+type openSet struct {
+	mu sync.Mutex
+	m  map[*Session]struct{}
+}
+
+var openInit sync.Mutex
+
+// openSessions is sb's open set, made on first use under openInit so a
+// Sandbox and the WithStores copies made of it afterwards share one.
+func (sb *Sandbox) openSessions() *openSet {
+	openInit.Lock()
+	defer openInit.Unlock()
+	if sb.open == nil {
+		sb.open = &openSet{m: map[*Session]struct{}{}}
+	}
+	return sb.open
+}
+
+// Live is what a sweep run while this node process runs keeps: the pods
+// still standing and the HOME of every session Open made that Close has
+// not ended (openSet). It is the age guard ADR-034 owed, on the exact
+// sessions rather than an age.
+func (sb *Sandbox) Live() Keep {
+	var keep Keep
+	if sb == nil {
+		return keep
+	}
+	set := sb.openSessions()
+	set.mu.Lock()
+	sessions := make([]*Session, 0, len(set.m))
+	for s := range set.m {
+		sessions = append(sessions, s)
+	}
+	set.mu.Unlock()
+	for _, s := range sessions {
+		for _, p := range s.Pods() {
+			keep.Pods = append(keep.Pods, p.Name)
+		}
+		keep.Homes = append(keep.Homes, s.Home)
+	}
+	return keep
 }
 
 func (sb *Sandbox) logf(format string, args ...any) {
@@ -343,7 +395,12 @@ func (s *Sandbox) Open(label, kind string, git GitIdentity) (*Session, error) {
 	if len(name) > 40 {
 		name = name[:40]
 	}
-	return &Session{sb: s, Home: home, Label: label, Kind: kind, hooks: git.HooksDir, image: s.Config.Image, name: "mesh-" + name + "-" + hex.EncodeToString(rnd[:])}, nil
+	sess := &Session{sb: s, Home: home, Label: label, Kind: kind, hooks: git.HooksDir, image: s.Config.Image, name: "mesh-" + name + "-" + hex.EncodeToString(rnd[:])}
+	set := s.openSessions()
+	set.mu.Lock()
+	set.m[sess] = struct{}{}
+	set.mu.Unlock()
+	return sess, nil
 }
 
 // gitConfigValue quotes v for a .gitconfig line: `Mesh builder (mini)`
@@ -775,6 +832,7 @@ func (sb *Sandbox) WithStores(st Stores) *Sandbox {
 	if sb == nil {
 		return nil
 	}
+	sb.openSessions()
 	c := *sb
 	c.Config.Stores = st
 	return &c
@@ -881,12 +939,17 @@ func (s *Session) remove(ctx context.Context, pod Pod) {
 // anonymous volumes with it — and the session's HOME, and returns every
 // removal that failed, joined.
 //
-// A Detached session's Close removes nothing: its agent runs on.
+// A Detached session's Close removes nothing: its agent runs on. Either
+// way the session leaves the sandbox's open set (Sandbox.Live).
 func (s *Session) Close() error {
 	s.mu.Lock()
 	pods := append([]Pod(nil), s.pods...)
 	detached := s.detached
 	s.mu.Unlock()
+	set := s.sb.openSessions()
+	set.mu.Lock()
+	delete(set.m, s)
+	set.mu.Unlock()
 	if detached {
 		return nil
 	}

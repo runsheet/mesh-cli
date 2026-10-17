@@ -293,16 +293,19 @@ func TestAdoptedSandboxedSessionNoLongerOursIsStoppedAndRemoved(t *testing.T) {
 // agent's container and its HOME — the session ended while no node ran,
 // and its adopter still reads and validates it — and sweeps the rest.
 func TestStartUpSweepKeepsAFoundSandboxedSession(t *testing.T) {
+	tmp := t.TempDir()
 	rt := &sandbox.Fake{}
-	sb := &sandbox.Sandbox{Runtime: rt, TempDir: t.TempDir()}
+	sb := &sandbox.Sandbox{Runtime: rt, TempDir: tmp}
 	kept, err := sb.Open("ship-it/1", "build", sandbox.GitIdentity{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	stale, err := sb.Open("ship-it/2", "build", sandbox.GitIdentity{})
-	if err != nil {
+	// the process before this one left both; this one has none open yet
+	kept.Detach()
+	if err := kept.Close(); err != nil {
 		t.Fatal(err)
 	}
+	stale := leftHome(t, tmp)
 	rt.Running = []sandbox.Container{
 		{Name: "mesh-kept-0-agent", Pod: "mesh-kept-0"},
 		{Name: "mesh-stale-0-agent", Pod: "mesh-stale-0"},
@@ -319,7 +322,7 @@ func TestStartUpSweepKeepsAFoundSandboxedSession(t *testing.T) {
 	if _, err := os.Stat(kept.Home); err != nil {
 		t.Fatalf("the found session's HOME went: %v", err)
 	}
-	if _, err := os.Stat(stale.Home); !os.IsNotExist(err) {
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Fatalf("the stale HOME is left: %v", err)
 	}
 	if want := "sandbox: swept 1 homes, 1 pods, 1 containers at start (1 homes in use)"; !slices.Contains(lines, want) {

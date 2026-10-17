@@ -969,7 +969,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `latchkey-*`, `go-build*`, `mesh-*` dirs under /tmp of the node's uid
   past `ScratchMinAge`, 6h, reaped — never a symlink, another uid's, an
   `InUse` path or `mesh-home-*`, left to `SweepSandbox` run each time
-  keeping found sessions; warn past 20G left), `dead_checkout`
+  keeping found sessions and every session this process has open —
+  `sandbox.Sandbox.Live`, the pods and HOME of each `Open` not yet
+  `Close`d, so a validation between two steps (its pod with only the
+  infra running) is never swept, as 184 were on the dl360 on 2026-10-17;
+  warn past 20G left), `dead_checkout`
   (`DeadCheckoutCheck`: an item worktree whose item is merged, done,
   already_done, cancelled, superseded or unknown, idle `DeadCheckoutIdle`
   (1h) and not `Loop.LiveCheckout`, removed by `Git.RemoveWorkspace`,
