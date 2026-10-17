@@ -52,8 +52,8 @@ func newVersionCheck(running, commit func() string, desired func(context.Context
 // VersionCheck is the quartermaster Check for version drift and a
 // stuck self-update, wired to l: the running version and commit it
 // reports itself as, l.desiredVersion (unchanged) and the last
-// self-update failure (l.failed, l.UpdateError). Not yet wired into the
-// Loop or the heartbeat — that is item 5 of the same goal.
+// self-update failure (l.failed, l.UpdateError); node start puts it in
+// the Loop's Quartermaster.
 func VersionCheck(l *Loop) Check {
 	return newVersionCheck(
 		func() string { return l.Version },

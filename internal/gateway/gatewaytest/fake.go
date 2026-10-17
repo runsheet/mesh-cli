@@ -1266,7 +1266,7 @@ func (f *Fake) repoFullName(repoID string) string {
 }
 
 // heartbeatInputType is HeartbeatNodeInput as introspection answers it:
-// every field a heartbeat may carry, `commit` among them, less
+// every field a heartbeat may carry, `commit` and `findings` among them, less
 // UnknownFields — `scaling`
 // without `accounts` when that is unknown, as the platform before
 // adr-005's per-account slots, and without `host` when
@@ -1292,7 +1292,7 @@ func (f *Fake) heartbeatInputType() map[string]any {
 		return map[string]any{"name": name}
 	}
 	var fields []any
-	for _, name := range []string{"aggregateId", "namespace", "version", "running", "draining", "updateError", "limits", "scaling", "runtimes", "adapters", "holding", "commit", "adopted", "resumed"} {
+	for _, name := range []string{"aggregateId", "namespace", "version", "running", "draining", "updateError", "limits", "scaling", "runtimes", "adapters", "holding", "commit", "adopted", "resumed", "findings"} {
 		if f.UnknownFields[name] {
 			continue
 		}

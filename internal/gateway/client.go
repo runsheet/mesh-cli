@@ -138,6 +138,9 @@ type Client struct {
 	// commitSchema is whether the gateway's heartbeat input was last
 	// found to take `commit` (see takesCommit).
 	commitSchema commitProbe
+	// findingsSchema is whether the gateway's heartbeat input was last
+	// found to take `findings` (see TakesHeartbeatFindings).
+	findingsSchema commitProbe
 	// ownerSchema is which owner field the gateway's RegisterNodeInput
 	// was last found to have (see OwnerField).
 	ownerSchema ownerProbe
@@ -2231,6 +2234,27 @@ type HeartbeatExtras struct {
 	// ADR 013, trd §1 Node). It is sent only when set and the gateway's
 	// schema takes it (HeartbeatNode).
 	Commit string
+	// Findings are the quartermaster's latest findings on the node's
+	// own fitness — disk, scratch, dead checkouts, version (goal
+	// the-quartermaster-keeps-the-nodes-fit). None sends no key; set,
+	// they are sent only when the gateway's HeartbeatNodeInput has
+	// `findings` (TakesHeartbeatFindings).
+	Findings []Finding
+}
+
+// Finding is one of the heartbeat's `findings`: what a quartermaster
+// check found about the node's own fitness, the shape node.Finding
+// keeps in ~/.mesh/node.findings.
+type Finding struct {
+	// Kind is disk, scratch, dead_checkout or version.
+	Kind string `json:"kind"`
+	// Severity is ok, warn or critical.
+	Severity  string    `json:"severity"`
+	Subject   string    `json:"subject"`
+	Detail    string    `json:"detail"`
+	Bytes     int64     `json:"bytes"`
+	Reclaimed int64     `json:"reclaimed"`
+	At        time.Time `json:"at"`
 }
 
 // Holding is the heartbeat's `holding`: the node's account-by-account
@@ -2555,6 +2579,9 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 		if x.Commit != "" && c.takesCommit(ctx) {
 			in["commit"] = x.Commit
 		}
+		if len(x.Findings) > 0 && c.TakesHeartbeatFindings(ctx) {
+			in["findings"] = x.Findings
+		}
 	}
 	// A node can be newer than the platform it reports to: a field the
 	// gateway does not know yet makes GraphQL refuse the whole heartbeat,
@@ -2591,7 +2618,12 @@ type commitProbe struct {
 // as takesScaling is: a platform older than the field would refuse the
 // whole heartbeat. A failed probe is a no, kept as long.
 func (c *Client) takesCommit(ctx context.Context) bool {
-	p := &c.commitSchema
+	return c.heartbeatInputHas(ctx, &c.commitSchema, "commit")
+}
+
+// heartbeatInputHas says whether HeartbeatNodeInput has field, the
+// answer kept in p for ScalingProbeEvery; a failed probe is a no.
+func (c *Client) heartbeatInputHas(ctx context.Context, p *commitProbe, field string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := c.now()
@@ -2611,11 +2643,19 @@ func (c *Client) takesCommit(ctx context.Context) bool {
 		return false
 	}
 	for _, f := range out.Type.InputFields {
-		if f.Name == "commit" {
+		if f.Name == field {
 			p.takes = true
 		}
 	}
 	return p.takes
+}
+
+// TakesHeartbeatFindings says whether the gateway's HeartbeatNodeInput
+// has a `findings` field — asked by introspection and kept for
+// ScalingProbeEvery, as takesCommit is: a platform older than the field
+// would refuse the whole heartbeat. A failed probe is a no, kept as long.
+func (c *Client) TakesHeartbeatFindings(ctx context.Context) bool {
+	return c.heartbeatInputHas(ctx, &c.findingsSchema, "findings")
 }
 
 // scalingProbe is the cached answer: whether heartbeatNode's input has
