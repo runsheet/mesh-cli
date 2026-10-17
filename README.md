@@ -2091,6 +2091,34 @@ $PATH`), and the step's command — ``command not found: <tool> (in
 a build's `failWorkItem` and a merge batch candidate's or main
 validation's failure alike (ADR-030's amendment 2026-10-16).
 
+### Reporting errors to Tripline
+
+A node can send its failures to Tripline, a Sentry-protocol ingest
+(`internal/tripline`, ADR-034). Give it a DSN in node.yaml, or in
+`MESH_TRIPLINE_DSN`, which wins and is never saved:
+
+```yaml
+tripline:
+  dsn: https://<key>@tripline.example/<project>
+  enabled: true   # left out, a dsn is on; false turns it off
+```
+
+`mesh node start` logs `tripline reporting on (<host>)` or `tripline
+reporting off`, and `mesh node status` prints `reporting: on (tripline
+<host>)` or why it is off (`no tripline dsn`, `disabled in node.yaml`,
+`bad tripline dsn`) — the host only, never the key.
+
+Four classes are sent, each where node.log already names it:
+`infrastructure` (an infrastructure or workspace release),
+`harness_unavailable` (an agent CLI out of credit or rate-limited),
+`sandbox_broken` and `session_failed` (a build's `session ended without
+success`). Each event is tagged `node`, `item`, `seq`, `goal`, `repo`,
+`role` and `class` and fingerprinted on the class and the message with
+ids, paths, shas and numbers taken out, so the same failure on three
+items is one issue counted three times. Every event passes a scrubber
+first: tokens, keys, URL credentials, the node's bearer and home paths
+never leave the machine.
+
 ### Tool results
 
 One `go test ./...` log or file dump can put 100 KB into a session's

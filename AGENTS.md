@@ -999,6 +999,37 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   since <RFC3339>: <reason>; the node claims nothing until the runtime
   heals` (item 4) — nothing when the runtime reads healthy or no node
   runs here.
+- **A node reports its errors to Tripline** (`internal/tripline/`,
+  `docs/adr/adr-034-a-node-reports-its-errors-to-tripline.md`): node.yaml's
+  `tripline: {dsn, enabled}` (`Config.Tripline`, `tripline.Config`;
+  `MESH_TRIPLINE_DSN` read into `FromEnv`, in force over `dsn`
+  (`DSNInForce`), never saved; `On` is a dsn and enabled not false) makes
+  `tripline.New(cfg, slug, version)` a `Reporter` on its own sentry-go
+  Hub, every event through `NewScrubber`'s BeforeSend (`Scrub`: the
+  harness's and tools' redaction, `Options.Secrets` — the bearer
+  `mesh node start` adds — URL userinfo, query tokens, nested maps,
+  frame vars, fingerprint and tags; `TestScrubberAdversarial`).
+  `Report(class, err, Fields)` sends one event of a closed `Class` —
+  `infrastructure`, `harness_unavailable`, `sandbox_broken`,
+  `session_failed` — tagged node, item, seq, goal, repo, role and class,
+  fingerprinted `[class, Normalise(msg, …)]` so alike failures on
+  different items are one issue; nil or disabled sends nothing.
+  `mesh node start` logs `tripline reporting on (<host>)` or `off`
+  (`node.ReportingStartLine`), sets `Loop.Tripline` and from it the
+  Runner's, Evaluator's and Rebaser's, and `Flush`es on the way out; the
+  node's `reportFailure` (`internal/node/tripline.go`) is called in each
+  `releaseInfrastructure` and `Runner.releaseWorkspace` (infrastructure),
+  on a `harness.AsUnavailable` session error in the Runner and the
+  Evaluator, on the Evaluator's `sandbox broken`, and on the Runner's
+  `session ended without success`. `mesh node status` prints
+  `reportingStatusLine` = `node.ReportingStatusLine`: `reporting: on
+  (tripline <host>)` (`Reporter.Endpoint`, never the key), else `off (no
+  tripline dsn)`, `off (disabled in node.yaml)` or `off (bad tripline
+  dsn)`. `internal/tripline/triplinetest` is the fake ingest
+  (`NewServer`, `DSN`, `Events` with each `Payload`, `Issues` grouped by
+  fingerprint, `Wait`); `tripline_e2e_test.go`'s
+  `TestNodeReportsInfrastructureToTripline` (`-tags e2e`) runs three alike
+  infrastructure releases through the Loop into one Issue, Count 3.
 - **The rebase** (`internal/node/rebase.go`, runsheet ADR 008): an item
   whose pull request conflicts in a way the integrator could not
   resolve itself carries `rebase_state: requested`. Every tick the loop

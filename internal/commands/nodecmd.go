@@ -991,11 +991,17 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 	scopes, owned := reg.Scopes, reg.Owned
 
 	// the node's failure classes go to Tripline when node.yaml (or
-	// MESH_TRIPLINE_DSN) names a dsn; the bearer is one more literal the
-	// scrubber never sends (ADR-034)
+	// MESH_TRIPLINE_DSN) names a dsn; ~/.mesh/token's secrets and the
+	// bearer are literals the scrubber never sends (ADR-034)
 	trip := cfg.Tripline
+	trip.Secrets = append([]string(nil), trip.Secrets...)
+	if home, err := os.UserHomeDir(); err == nil {
+		if b, err := os.ReadFile(filepath.Join(home, ".mesh", "token")); err == nil {
+			trip.Secrets = append(trip.Secrets, tripline.TokenFileSecrets(b)...)
+		}
+	}
 	if bearer, err := gw.Bearer(ctx); err == nil && bearer != "" {
-		trip.Secrets = append(append([]string(nil), trip.Secrets...), bearer)
+		trip.Secrets = append(trip.Secrets, bearer)
 	}
 	reporter, err := tripline.New(trip, cfg.Slug, version.Resolved())
 	if err != nil {
