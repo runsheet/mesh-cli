@@ -35,6 +35,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/selfupdate"
 	"projectmesh.io/mesh-cli/internal/sessionunit"
+	"projectmesh.io/mesh-cli/internal/tripline"
 	"projectmesh.io/mesh-cli/internal/version"
 )
 
@@ -387,6 +388,7 @@ var nodeStatusCmd = &cobra.Command{
 		local, draining := localNodeState(state)
 		fmt.Println(local)
 		fmt.Println(takesStatusLine(cfg))
+		fmt.Println(reportingStatusLine(cfg))
 		fmt.Println(hostConfigLine(cfg.Host))
 		if line, ok := attestationsStatusLine(state, time.Now()); ok {
 			fmt.Println(line)
@@ -592,6 +594,26 @@ func localNodeState(state node.RunState) (string, bool) {
 // node.yaml names none, "Takes: evaluate (at most 2)" for a cap.
 func takesStatusLine(cfg *node.Config) string {
 	return "Takes: " + cfg.Takes.String()
+}
+
+// reportingStatusLine is `mesh node status`'s line saying whether this
+// node reports its failures to Tripline: "reporting: on (tripline
+// <host>)" with a DSN in force and enabled, else "reporting: off (no
+// tripline dsn)" or "reporting: off (disabled in node.yaml)" — never the
+// DSN's key. The host comes from tripline.Reporter.Endpoint, the one
+// place a DSN is turned into a host.
+func reportingStatusLine(cfg *node.Config) string {
+	if cfg.Tripline.DSNInForce() == "" {
+		return "reporting: off (no tripline dsn)"
+	}
+	if !cfg.Tripline.On() {
+		return "reporting: off (disabled in node.yaml)"
+	}
+	r, err := tripline.New(cfg.Tripline, cfg.Slug, version.Resolved())
+	if err != nil {
+		return "reporting: off (disabled in node.yaml)"
+	}
+	return "reporting: on (tripline " + r.Endpoint() + ")"
 }
 
 // hostConfigLine is `mesh node status`'s `host:` line: the thresholds
