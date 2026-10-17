@@ -62,8 +62,8 @@ func TestPersonalServerOverStdio(t *testing.T) {
 	}
 
 	init := call(1, "initialize", map[string]any{"protocolVersion": "2025-06-18"})
-	if info := init["serverInfo"].(map[string]any); info["name"] != "mesh" {
-		t.Errorf("serverInfo %v", info)
+	if info := init["serverInfo"].(map[string]any); info["name"] != "runsheet" {
+		t.Errorf("serverInfo %v, want name runsheet", info)
 	}
 	if _, ok := init["capabilities"].(map[string]any)["experimental"]; ok {
 		t.Errorf("mesh mcp advertises the channel capability: %v", init["capabilities"])

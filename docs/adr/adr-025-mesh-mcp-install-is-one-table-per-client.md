@@ -323,6 +323,27 @@ install and never writes.
    `internal/commands/mcpcmd.go` are package variables, as
    `mcpExecutable` is, so the tests answer with fakes.
 
+## The entry is named runsheet
+
+Amended 2026-10-17, goal `the-node-calls-the-context-server-runsheet`.
+`ServerName` (`internal/mcpinstall/clients.go`) is `"runsheet"`, not
+`"mesh"`: the entry every client's `MCPKeys`/`TOMLTable` names, and the
+name `claude mcp add`/`codex mcp login` print. An install replaces an
+old entry it finds — `"mesh"`, `"mesh-context"` or `"prologue"`
+(`LegacyNames`), or any other name whose command or url
+`IsRunsheetEntry` says is runsheet's own (a renamed binary, a stale
+`--remote` URL) — in the same write as the new `runsheet` one
+(`removeOthers`, `plan.go`), so a client never lists both; a legacy
+name that points elsewhere (a person's own tool happens to be called
+`mesh`) is left and named on `Change.Kept`. `mesh mcp doctor` reports a
+`runsheet` entry's duplicates the same way (`Report.Duplicates`).
+`channel.ServerName` — the unrelated
+`--dangerously-load-development-channels server:mesh` flag Claude
+Code's channel capability takes — is untouched, a literal `"mesh"` of
+its own, not derived from `meshmcp.ServerName`; see ADR-023's amendment
+of the same date for the MCP server's own identity in its initialize
+response.
+
 ## Consequences
 
 - A client's file format or path changing is one row and one date
