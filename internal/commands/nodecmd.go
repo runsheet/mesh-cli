@@ -1156,6 +1156,16 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 	sessionTokens = &node.TokenFiles{Token: gw.Bearer, Logf: logger.Printf}
 	loop.NoCredential = &node.NoCredentials{Log: logger, Now: loop.Now}
 	accounts := &node.Credentials{GW: gw, Limits: loop.Limits, Thresholds: loop.Thresholds, Known: known, NoCredential: loop.NoCredential, Log: logger}
+	// the quartermaster keeps the node fit from every tick, poll and
+	// channel mode alike: disk, /tmp scratch, dead checkouts, version
+	// (goal the-quartermaster-keeps-the-nodes-fit); what it finds is
+	// left in node.findings for `mesh node status` and rides the heartbeat
+	loop.Quartermaster = nodeQuartermaster(gw, loop, workRoot, "", sessionSandbox, logger.Printf)
+	loop.Findings = func(f []node.Finding) {
+		if err := state.WriteFindings(f); err != nil {
+			logger.Printf("findings state: %v", err)
+		}
+	}
 	switch nodeModeFlag {
 	case "poll":
 		return runPollMode(ctx, cfg, scopes, gw, loop, workRoot, fallback, accounts, logger)
@@ -1808,6 +1818,33 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 		return nil
 	}
 	return endRun(err, logger)
+}
+
+// nodeQuartermaster is node start's quartermaster: the disk check over
+// the work root, /tmp and home; the scratch check over tempDir ("" is
+// os.TempDir()), with the sandbox's own home sweep when there is a
+// sandbox, keeping the sessions found under the work root; the
+// dead-checkout check over the work root, a checkout a running or
+// adopted session uses kept (Loop.LiveCheckout); and the version check.
+func nodeQuartermaster(gw node.Gateway, loop *node.Loop, workRoot, tempDir string, sb *sandbox.Sandbox, logf func(string, ...any)) *node.Quartermaster {
+	sessions := func() []node.FoundSession {
+		var ids []string
+		for _, sc := range loop.CurrentScopes() {
+			ids = append(ids, sc.NodeID)
+		}
+		found, err := node.FindSessionsIn(workRoot, ids, sb)
+		if err != nil {
+			logf("quartermaster: sessions: %v", err)
+		}
+		return found
+	}
+	scratch := &node.ScratchCheck{TempDir: tempDir, Sandbox: sb, Sessions: sessions, Logf: logf}
+	return &node.Quartermaster{Checks: []node.Check{
+		node.NewDiskCheck(workRoot).Check,
+		scratch.Check,
+		node.DeadCheckoutCheck(gw, &node.Git{Log: sessionsOut}, workRoot, loop.LiveCheckout),
+		node.VersionCheck(loop),
+	}}
 }
 
 // meshContextMCP is the runsheet MCP server a session is started

@@ -109,6 +109,16 @@ type Loop struct {
 	// in node.standing, for `mesh node status`, goal
 	// every-subscription-lands-full-at-its-reset, item 6).
 	Standing func([]AccountStanding)
+	// Quartermaster runs the node's own fitness checks from every tick,
+	// when due (goal the-quartermaster-keeps-the-nodes-fit): each non-ok
+	// finding and each reclaim logged, the findings told to Findings and
+	// carried by every heartbeat after. Nil runs none.
+	Quartermaster *Quartermaster
+	// Findings is told the quartermaster's findings each time its checks
+	// run (optional: `mesh node start` leaves them in node.findings by
+	// RunState.WriteFindings, for `mesh node status`).
+	Findings      func([]Finding)
+	quartermaster quartermasterState
 	// Attestations counts the node's recorded and refused attestations
 	// over the trailing hour (the validators' ValidationNotices.Counts);
 	// the health line carries them. Nil counts none.
@@ -1141,7 +1151,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	// the heartbeat goes out before this tick's pass, so its holding is
 	// the last pass's decision (nil before the first; a draining node,
 	// which makes no pass, keeps sending its last one unchanged)
-	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(l.Known.Accounts(l.now()), l.now(), l.Thresholds()), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Reason: l.Condition(), Adopted: l.Adopted(), Resumed: l.Resumed(), Holding: l.Holding(), Commit: l.Commit}
+	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(l.Known.Accounts(l.now()), l.now(), l.Thresholds()), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Reason: l.Condition(), Adopted: l.Adopted(), Resumed: l.Resumed(), Holding: l.Holding(), Commit: l.Commit, Findings: l.heartbeatFindings(ctx)}
 	scaling, ranged := l.Scaling()
 	extras.Scaling = l.heartbeatScaling(scaling, ranged)
 	if l.Scaled != nil {
@@ -1189,6 +1199,9 @@ func (l *Loop) Tick(ctx context.Context) {
 		}
 	}
 	l.selfUpdate(ctx)
+	// the quartermaster after the heartbeat, so its checks never hold
+	// one up: what they find rides the next
+	l.runQuartermaster(ctx)
 	p := l.pacing()
 	if !l.Draining() {
 		// every start below first picks its account (accountFor): one
