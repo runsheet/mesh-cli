@@ -893,6 +893,9 @@ func (c *Codex) readStreamWatch(stdout io.Reader, job Job, onProgress func(Progr
 					onProgress(Progress{Text: t, SessionID: sessionID})
 				}
 			}
+			if call := ev.WorkCall(); onProgress != nil && call != nil {
+				onProgress(Progress{WorkCall: call})
+			}
 		case "turn.completed":
 			if onProgress != nil && ev.Usage != nil {
 				if p, ok := price(job.Model); ok {

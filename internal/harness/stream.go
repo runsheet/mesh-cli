@@ -155,6 +155,24 @@ func (r *Result) keepWorkCall(tool string, input json.RawMessage) {
 	r.WorkCalls[tool] = args
 }
 
+// WorkCalls are the mesh-work tool calls an assistant event carries, in
+// its content's order, each input as the stream had it.
+func (ev Event) WorkCalls() []WorkCall {
+	if ev.Type != "assistant" || ev.Message == nil {
+		return nil
+	}
+	var calls []WorkCall
+	for _, c := range ev.Message.Content {
+		if c.Type != "tool_use" || MCPServer(c.Name) == "" {
+			continue
+		}
+		if tool := mcpToolName(c.Name); tools.IsWorkTool(tool) {
+			calls = append(calls, WorkCall{Tool: tool, Input: c.Input})
+		}
+	}
+	return calls
+}
+
 // now is the parser's clock, for Result.Tools' wall time: Claude Code's
 // stream events carry no timestamps, so tests override it.
 var now = time.Now

@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/tools"
 )
 
 // CodexEvent is one line of `codex exec --json` (codex-cli 0.157.0,
@@ -108,6 +110,19 @@ func (p CodexPrice) Cost(u CodexUsage) float64 {
 		float64(u.CachedInputTokens)*p.CachedInput +
 		float64(u.CacheWriteInputTokens)*p.CacheWrite +
 		float64(u.OutputTokens)*p.Output) / 1e6
+}
+
+// WorkCall is the mesh-work tool call a completed mcp_tool_call item
+// carries, its arguments as the stream had them; nil for any other
+// event or tool.
+func (ev CodexEvent) WorkCall() *WorkCall {
+	if ev.Type != "item.completed" || ev.Item == nil || ev.Item.Type != "mcp_tool_call" || ev.Item.Server == "" {
+		return nil
+	}
+	if !tools.IsWorkTool(ev.Item.ToolName) {
+		return nil
+	}
+	return &WorkCall{Tool: ev.Item.ToolName, Input: ev.Item.Arguments}
 }
 
 // ParseCodexStream reads `codex exec --json` lines, calling onEvent for

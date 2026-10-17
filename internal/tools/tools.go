@@ -101,13 +101,16 @@ func IsBuiltin(name string) bool {
 
 // workTools are the hosted mesh-work tools a session ends by calling
 // (mesh-cli ADR-023, sessions finish by tool call): served on the same
-// /mcp as the built-in, so named mcp__runsheet__<tool>.
+// /mcp as the built-in, so named mcp__runsheet__<tool> — and the ones
+// it reports along the way, mesh_progress and mesh_ask, each reaching
+// the node on Progress as it is made.
 var workTools = map[string]bool{
 	"mesh_finish":   true,
 	"mesh_fail":     true,
 	"mesh_verdict":  true,
 	"mesh_plan":     true,
 	"mesh_progress": true,
+	"mesh_ask":      true,
 }
 
 // IsWorkTool says whether name, a tool's own name without its
