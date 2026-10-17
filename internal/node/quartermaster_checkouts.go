@@ -272,11 +272,11 @@ func dirBytes(dir string) int64 {
 	return n
 }
 
-// pruneGoneWorktrees counts each shared clone's prunable worktrees —
-// listed by `git worktree list --porcelain`, their directory gone — and
-// forgets each one's own registration under the repo's lock — no blanket
-// `git worktree prune`; it returns the count and a note per clone it could
-// not list or prune.
+// pruneGoneWorktrees forgets each shared clone's registrations whose
+// directory is gone and that are neither locked (lockWorktree) nor live
+// on this node (WorkspaceLive) — never a blanket `git worktree prune`
+// (ADR-028, What RemoveWorkspace removes) — under the repo's lock; it
+// returns the count and a note per clone it could not clean.
 func pruneGoneWorktrees(ctx context.Context, git *Git, root string) (int, []string) {
 	reposRoot := git.ReposRoot
 	if reposRoot == "" {
@@ -286,27 +286,43 @@ func pruneGoneWorktrees(ctx context.Context, git *Git, root string) (int, []stri
 	var n int
 	var notes []string
 	for _, clone := range sharedClones(reposRoot) {
-		out, err := git.run(ctx, clone, "git", "worktree", "list", "--porcelain")
-		if err != nil {
-			notes = append(notes, fmt.Sprintf("worktree list %s: %v", clone, err))
+		admins := goneRegistrations(clone)
+		if len(admins) == 0 {
 			continue
 		}
-		prunable := 0
-		for _, line := range strings.Split(out, "\n") {
-			if line == "prunable" || strings.HasPrefix(line, "prunable ") {
-				prunable++
-			}
-		}
-		if prunable == 0 {
-			continue
-		}
-		if err := git.forgetRegistrations(ctx, lockRoot, clone, goneRegistrations(clone)); err != nil {
+		if err := git.forgetRegistrations(ctx, lockRoot, clone, admins); err != nil {
 			notes = append(notes, fmt.Sprintf("worktree prune %s: %v", clone, err))
 			continue
 		}
-		n += prunable
+		n += len(admins)
 	}
 	return n, notes
+}
+
+// goneRegistrations is clone's .git/worktrees/<n> whose worktree
+// directory is gone, unlocked and not live on this node.
+func goneRegistrations(clone string) []string {
+	worktrees := filepath.Join(clone, ".git", "worktrees")
+	regs, err := os.ReadDir(worktrees)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, r := range regs {
+		admin := filepath.Join(worktrees, r.Name())
+		wt, ok := registeredDir(admin)
+		if !ok {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(wt, ".git")); err == nil || WorkspaceLive(wt) {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(admin, "locked")); err == nil {
+			continue
+		}
+		out = append(out, admin)
+	}
+	return out
 }
 
 // sharedClones is every clone under reposRoot — <owner>/<name>, or one
@@ -335,24 +351,4 @@ func sharedClones(reposRoot string) []string {
 		}
 	}
 	return out
-}
-
-// goneRegistrations are clone's .git/worktrees/<n> whose registered
-// directory is gone and that are not locked — what git lists prunable.
-func goneRegistrations(clone string) []string {
-	admins, _ := filepath.Glob(filepath.Join(clone, ".git", "worktrees", "*"))
-	var gone []string
-	for _, admin := range admins {
-		if _, err := os.Stat(filepath.Join(admin, "locked")); err == nil {
-			continue
-		}
-		dir, ok := registeredDir(admin)
-		if !ok {
-			continue
-		}
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			gone = append(gone, admin)
-		}
-	}
-	return gone
 }
