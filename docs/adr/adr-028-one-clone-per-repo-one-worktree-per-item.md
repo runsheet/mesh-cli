@@ -279,3 +279,12 @@ own `<seq>-eval` checkout are as above. mesh-specs ADR 017's §2 ("the
 locked fetch … before a new worktree, a rework or an evaluation") needs
 the same narrowing on its side; that is recorded as a note for
 runsheet/mesh-specs, not edited here.
+
+## Amendment 2026-10-17: one clone per repo per org
+
+On a node serving two or more orgs, "one clone per repo" becomes one
+clone per repo **per org**: each org's clones live under its own
+`~/.mesh/orgs/<org>/repos`, its worktrees under `~/.mesh/orgs/<org>/work`,
+and a worktree of one org is never added from another org's clone
+(`docs/adr/adr-034-each-org-has-its-own-roots.md`). A node serving one org
+keeps the paths above unchanged.

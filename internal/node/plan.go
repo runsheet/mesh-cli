@@ -28,6 +28,9 @@ type Planner struct {
 	Harness  harness.Harness
 	WS       Workspacer
 	Cfg      *Config
+	// Roots, when set, put the session's checkouts under its org's work
+	// root (ADR-034). Nil keeps WorkRoot for every org.
+	Roots *OrgRootSet
 	WorkRoot string
 	// MCP is the built-in MCP server the session gets (runsheet);
 	// the tools attached for the planner role are rendered beside it
@@ -457,7 +460,11 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	if err != nil {
 		return err
 	}
-	dir := PlanDir(p.WorkRoot, goal.Slug)
+	root, err := workRootOfScope(p.Roots, scope, p.WorkRoot)
+	if err != nil {
+		return err
+	}
+	dir := PlanDir(root, goal.Slug)
 	names := make([]string, 0, len(repos))
 	for name := range repos {
 		names = append(names, name)

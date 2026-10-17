@@ -38,6 +38,9 @@ type Director struct {
 	Harness  harness.Harness
 	WS       Workspacer
 	Cfg      *Config
+	// Roots, when set, put the session's checkouts under its org's work
+	// root (ADR-034). Nil keeps WorkRoot for every org.
+	Roots *OrgRootSet
 	WorkRoot string
 	// MCP is the built-in MCP server the session gets (runsheet);
 	// the tools attached for the director role are rendered beside it
@@ -153,7 +156,11 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	if err != nil {
 		return fmt.Errorf("repos: %w", err)
 	}
-	dir := ResearchDir(d.WorkRoot, project.Slug, direction.Slug)
+	root, err := workRootOfScope(d.Roots, scope, d.WorkRoot)
+	if err != nil {
+		return err
+	}
+	dir := ResearchDir(root, project.Slug, direction.Slug)
 	byName := map[string]gateway.Repo{}
 	names := make([]string, 0, len(all))
 	for _, r := range all {

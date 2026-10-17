@@ -89,9 +89,13 @@ var ErrNoCandidateWorktrees = errors.New("the node's workspace makes no candidat
 func (r *Runner) validateCandidate(ctx context.Context, batch gateway.MainValidationBatch, cred *ItemCred) (validate.Attestation, error) {
 	label := fmt.Sprintf("batch-%d", batch.Number)
 	prefix := candidatePrefix(batch)
+	root, err := workRootFor(r.Roots, r.Scopes, batch.OrgID, r.WorkRoot)
+	if err != nil {
+		return validate.Attestation{}, fmt.Errorf("%s: %w", prefix, err)
+	}
 	t := validationTarget{
 		item:      gateway.WorkItem{OrgID: batch.OrgID, RepoID: batch.RepoID},
-		dir:       CandidateDir(r.WorkRoot, batch),
+		dir:       CandidateDir(root, batch),
 		base:      batch.DefaultBranch,
 		prefix:    prefix,
 		label:     label,
@@ -130,9 +134,13 @@ func MainRequestDir(root string, req gateway.MainValidationRequest) string {
 func (r *Runner) validateMainRequest(ctx context.Context, req gateway.MainValidationRequest, tok *gateway.GitHubToken) (validate.Attestation, error) {
 	label := fmt.Sprintf("main-%d", req.Seq)
 	prefix := mainRequestLabel(req)
+	root, err := workRootFor(r.Roots, r.Scopes, req.OrgID, r.WorkRoot)
+	if err != nil {
+		return validate.Attestation{}, fmt.Errorf("%s: %w", prefix, err)
+	}
 	t := validationTarget{
 		item:     gateway.WorkItem{ID: req.WorkItemID, GoalID: req.GoalID, Seq: int(req.Seq), OrgID: req.OrgID, RepoID: req.RepoID},
-		dir:      MainRequestDir(r.WorkRoot, req),
+		dir:      MainRequestDir(root, req),
 		base:     req.DefaultBranch,
 		diffFrom: req.SHA + "^1",
 		prefix:   prefix,

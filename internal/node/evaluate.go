@@ -36,6 +36,10 @@ type Evaluator struct {
 	WS       Workspacer
 	Cfg      *Config
 	Scopes   Scopes
+	// Roots, when set, are each served org's own roots (ADR-034): the
+	// item's checkout, clone and scratch go under its org's, WorkRoot
+	// unused for them. Nil keeps WorkRoot for every org.
+	Roots *OrgRootSet
 	WorkRoot string
 	// MCP are the MCP servers the session gets (runsheet).
 	MCP map[string]any
@@ -243,7 +247,11 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	}
 	// a checkout of its own, never the build's: its Authorize must not
 	// rewrite the credential helper the build's push reads
-	spec := EvalWorkspaceSpec(e.WorkRoot, res.Goal.Slug, item.Seq, res.Repo.FullName(), branch, res.BaseRef())
+	root, err := workRootFor(e.Roots, e.Scopes, item.OrgID, e.WorkRoot)
+	if err != nil {
+		return fmt.Errorf("workspace: %w", err)
+	}
+	spec := EvalWorkspaceSpec(root, res.Goal.Slug, item.Seq, res.Repo.FullName(), branch, res.BaseRef())
 	// live on this node while this runs: no cleanup touches it (HoldWorkspace)
 	defer HoldWorkspace(spec.Dir())()
 	// the item's own GitHub token, as its builder had

@@ -69,6 +69,10 @@ type Runner struct {
 	WS       Workspacer
 	Cfg      *Config
 	Scopes   Scopes
+	// Roots, when set, are each served org's own roots (ADR-034): the
+	// item's checkout, clone and scratch go under its org's, WorkRoot
+	// unused for them. Nil keeps WorkRoot for every org.
+	Roots *OrgRootSet
 	WorkRoot string
 	// BuildCache is a host validation's GOCACHE; "" is BuildCacheDir().
 	BuildCache string
@@ -350,7 +354,10 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	ctx = WithLockHolder(ctx, label)
 	r.logf("item %s: %q on %s from %s", label, item.Title, res.Repo.FullName(), res.BaseRef())
 
-	spec := WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()}
+	spec, err := orgSpec(r.Roots, r.Scopes, item.OrgID, WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()})
+	if err != nil {
+		return r.fail(ctx, item, fmt.Errorf("workspace: %w", err))
+	}
 	// live on this node while this runs: no cleanup touches it (HoldWorkspace)
 	defer HoldWorkspace(spec.Dir())()
 	// the item's own GitHub token, on the checkout before it is cloned
@@ -1049,7 +1056,10 @@ func (r *Runner) AdoptItem(ctx context.Context, item gateway.WorkItem, s FoundSe
 	}
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
 	ctx = WithLockHolder(ctx, label)
-	spec := WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()}
+	spec, err := orgSpec(r.Roots, r.Scopes, item.OrgID, WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()})
+	if err != nil {
+		return r.fail(ctx, item, fmt.Errorf("workspace: %w", err))
+	}
 	// live on this node while this runs: no cleanup touches it (HoldWorkspace)
 	defer HoldWorkspace(spec.Dir())()
 	// the item's token on the checkout again: the session's pushes, and
