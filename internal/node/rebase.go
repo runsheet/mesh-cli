@@ -146,6 +146,12 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	if err != nil {
 		return fail(fmt.Errorf("workspace: %w", err))
 	}
+	// a node serving several orgs runs no rebase on the host (ADR-034,
+	// Refusals): handed back to its builder with the kinded reason
+	if err := HostFallback(r.Sandbox, r.Scopes, item.OrgID, spec.Dir()); err != nil {
+		noteHostFallback(err, r.logf)
+		return fail(fmt.Errorf("%s%w", SandboxRequiredPrefix, err))
+	}
 	// the rebase's own fresh worktree at origin/<branch>, never the
 	// item's build checkout: that one may be gone, swept, or pointing at
 	// a pruned worktree registration (ADR-028, A rebase gets its own

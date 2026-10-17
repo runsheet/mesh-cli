@@ -211,6 +211,10 @@ type Sandbox struct {
 	Config  Config
 	// TempDir is where temporary HOMEs are made ("" is os.TempDir).
 	TempDir string
+	// Org, set (WithOrg), confines its sessions to one org's tree on a
+	// node serving several: every mount must resolve inside it
+	// (CheckedMounts, mesh-cli ADR-034 Refusals).
+	Org OrgRoot
 	// Logf is where the sandbox says what it fell back on (nil is the
 	// standard logger).
 	Logf func(format string, args ...any)
@@ -319,6 +323,9 @@ type Session struct {
 	detached bool
 	// execs counts the commands Exec ran, naming each its own container.
 	execs int
+	// org is the org root every mount must resolve inside (the
+	// Sandbox's Org when it was opened); zero confines nothing.
+	org OrgRoot
 }
 
 // GitIdentity is a session's commit identity: the agent its .gitconfig
@@ -360,6 +367,9 @@ func (s *Sandbox) Open(label, kind string, git GitIdentity) (*Session, error) {
 			return nil, fmt.Errorf("sandbox: package store: %w", err)
 		}
 	}
+	if err := s.ensureHomes(); err != nil {
+		return nil, fmt.Errorf("sandbox: home: %w", err)
+	}
 	home, err := os.MkdirTemp(s.TempDir, HomePrefix)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: home: %w", err)
@@ -395,7 +405,7 @@ func (s *Sandbox) Open(label, kind string, git GitIdentity) (*Session, error) {
 	if len(name) > 40 {
 		name = name[:40]
 	}
-	sess := &Session{sb: s, Home: home, Label: label, Kind: kind, hooks: git.HooksDir, image: s.Config.Image, name: "mesh-" + name + "-" + hex.EncodeToString(rnd[:])}
+	sess := &Session{sb: s, Home: home, Label: label, Kind: kind, hooks: git.HooksDir, image: s.Config.Image, org: s.Org, name: "mesh-" + name + "-" + hex.EncodeToString(rnd[:])}
 	set := s.openSessions()
 	set.mu.Lock()
 	set.m[sess] = struct{}{}
@@ -541,26 +551,39 @@ func Allowed(name string) bool {
 // its work tree, another item's worktree — is ever mounted. The node's
 // package store and cache are mounted read-write, each at its own path
 // (Stores, ADR 017 §3). podman applies them shallowest target first
-// (agentArgs), so the deeper mount wins.
+// (agentArgs), so the deeper mount wins. A session confined to an org
+// runs on CheckedMounts, which refuses any of these outside its root.
 func (s *Session) Mounts(workspace string) []Mount {
-	m := []Mount{
-		{Source: workspace, Target: workspace},
-		{Source: s.Home, Target: s.Home},
+	named := s.namedMounts(workspace)
+	m := make([]Mount, len(named))
+	for i, n := range named {
+		m[i] = n.Mount
+	}
+	return m
+}
+
+// namedMounts are Mounts, each with what it is.
+func (s *Session) namedMounts(workspace string) []namedMount {
+	m := []namedMount{
+		{Mount{Source: workspace, Target: workspace}, "workspace"},
+		{Mount{Source: s.Home, Target: s.Home}, "home"},
 	}
 	// A workspace whose common dir cannot be read is mounted as a full
 	// clone would be: logged, and today's list, rather than no session.
 	if common, err := GitCommonDir(workspace); err != nil {
 		s.sb.logf("sandbox: %v; mounting the workspace alone", err)
 	} else if common != "" {
-		m = append(m, Mount{Source: common, Target: common})
-		m = append(m, s.worktreeMounts(workspace, common)...)
+		m = append(m, namedMount{Mount{Source: common, Target: common}, "git common dir"})
+		for _, w := range s.worktreeMounts(workspace, common) {
+			m = append(m, namedMount{w, "git dir"})
+		}
 	}
 	for _, d := range s.sb.Config.Stores.dirs() {
-		m = append(m, Mount{Source: d, Target: d})
+		m = append(m, namedMount{Mount{Source: d, Target: d}, "package store"})
 	}
 	// the checkout's hooks, which its core.hooksPath names (ADR-024)
 	if s.hooks != "" {
-		m = append(m, Mount{Source: s.hooks, Target: s.hooks, ReadOnly: true})
+		m = append(m, namedMount{Mount{Source: s.hooks, Target: s.hooks, ReadOnly: true}, "hooks"})
 	}
 	return m
 }
@@ -611,6 +634,12 @@ var pidsExhausted = regexp.MustCompile(`(?i)fork: (retry: )?resource temporarily
 // a *LimitError; any other non-zero exit an *ExitError.
 func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 	cfg := s.sb.Config
+	// every mount is checked before a pod is made: a refused one starts
+	// nothing (CheckedMounts)
+	mounts, err := s.CheckedMounts(spec.Workspace)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	started := s.started
 	s.started = nil
@@ -619,14 +648,13 @@ func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 	if started != nil {
 		pod = *started
 	} else {
-		var err error
 		if pod, err = s.createPod(ctx); err != nil {
 			return err
 		}
 	}
 	defer s.remove(ctx, pod)
 
-	mounts, env := s.Mounts(spec.Workspace), s.Env(spec.Env)
+	env := s.Env(spec.Env)
 	if c := spec.Cache; c != nil {
 		if err := c.ensure(); err != nil {
 			return err
@@ -671,6 +699,12 @@ func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 // *LimitError; any other non-zero exit an *ExitError.
 func (s *Session) Exec(ctx context.Context, spec RunSpec) error {
 	cfg := s.sb.Config
+	// a mount outside the session's org root refuses the exec before any
+	// pod is made (CheckedMounts, mesh-cli ADR-034 Refusals)
+	mounts, err := s.CheckedMounts(spec.Workspace)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	started := s.started
 	s.execs++
@@ -698,7 +732,7 @@ func (s *Session) Exec(ctx context.Context, spec RunSpec) error {
 		Name:           ExecName(pod, n),
 		Image:          cfg.Image,
 		Workdir:        spec.Workspace,
-		Mounts:         s.Mounts(spec.Workspace),
+		Mounts:         mounts,
 		Env:            s.Env(spec.Env),
 		Command:        spec.Command,
 		Limits:         cfg.Limits,
@@ -761,6 +795,20 @@ type DetachedAgent struct {
 // pod.
 func (s *Session) StartDetached(ctx context.Context, spec DetachedSpec) (DetachedAgent, error) {
 	cfg := s.sb.Config
+	// every mount, the streams' directories (StartAgentArgs) among them,
+	// is checked before a pod is made: a refused one starts nothing
+	mounts, err := s.CheckedMounts(spec.Workspace)
+	if err != nil {
+		return DetachedAgent{}, err
+	}
+	for _, f := range []string{spec.StdinFile, spec.StdoutFile, spec.StderrFile} {
+		if f == "" {
+			continue
+		}
+		if err := s.org.Check("stream dir", filepath.Dir(f)); err != nil {
+			return DetachedAgent{}, err
+		}
+	}
 	s.mu.Lock()
 	started := s.started
 	s.started = nil
@@ -779,7 +827,7 @@ func (s *Session) StartDetached(ctx context.Context, spec DetachedSpec) (Detache
 		Name:           name,
 		Image:          cfg.Image,
 		Workdir:        spec.Workspace,
-		Mounts:         s.Mounts(spec.Workspace),
+		Mounts:         mounts,
 		Env:            s.Env(spec.Env),
 		Command:        spec.Command,
 		Limits:         cfg.Limits,

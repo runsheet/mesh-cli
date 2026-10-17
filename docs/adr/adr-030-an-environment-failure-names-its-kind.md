@@ -1,6 +1,6 @@
 ---
 title: "ADR-030: An environment failure names its kind"
-summary: A validation that fails on the node rather than the code carries one of a closed set of environment kinds — step_timeout (a step's exit 124), tool_missing (exit 127), credential_refused (git or gh refused by GitHub on the item's token), image_pull_refused (the registry refusing the sandbox image's pull), runtime_broken (podman itself unable to start a pod: its rootless storage corrupted or locked, its user namespace refused, or no runtime there at all) — on the attestation's command as environmentKind and at the head of every failWorkItem, releaseWorkItem and updateError reason as `<kind>: `, so the platform parks the item instead of re-planning it; any other non-zero exit carries none. A tool_missing reason names the missing tool and the step's command (amendment 2026-10-16).
+summary: A validation that fails on the node rather than the code carries one of a closed set of environment kinds — step_timeout (a step's exit 124), tool_missing (exit 127), credential_refused (git or gh refused by GitHub on the item's token), image_pull_refused (the registry refusing the sandbox image's pull), runtime_broken (podman itself unable to start a pod: its rootless storage corrupted or locked, its user namespace refused, or no runtime there at all), sandbox_required (a node serving several orgs with no sandbox, amendment 2026-10-17) — on the attestation's command as environmentKind and at the head of every failWorkItem, releaseWorkItem and updateError reason as `<kind>: `, so the platform parks the item instead of re-planning it; any other non-zero exit carries none. A tool_missing reason names the missing tool and the step's command (amendment 2026-10-16).
 status: accepted
 ---
 
@@ -270,3 +270,16 @@ hook once), `TestRuntimeReleaseOfAnEvaluation` (one
 `TestRuntimeReleaseOfAnEvaluationWithoutNoVerdict`,
 `TestRuntimeReleaseOfAPlan` (`releasePlan` with the reason, no try, the
 hook once) and `TestRuntimeReleaseOfARebase`.
+
+## Amendment 2026-10-17: `sandbox_required` — a multi-org node with no sandbox
+
+`validate.EnvironmentKind` gains a sixth member, `sandbox_required`: a
+node serving two or more orgs with no sandbox to run a session in
+(`sandbox: off`, or no runtime) hands the build back rather than run it
+on the host, where it could read every org's files — `releaseWorkItem`'s
+reason `sandbox_required: <the refusal>`, attempts unchanged, never the
+item's failure; a rebase's `failWorkItemRebase` the same reason. The
+node's condition, as `runtime_broken` is. mesh-cli ADR-034's Refusals
+(`docs/adr/adr-034-each-org-has-its-own-roots.md`) is the decision;
+`HostFallbackError.EnvironmentKind()` carries the kind.
+
