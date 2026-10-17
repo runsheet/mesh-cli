@@ -301,6 +301,8 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	r.logf("item %s: %q on %s from %s", label, item.Title, res.Repo.FullName(), res.BaseRef())
 
 	spec := WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()}
+	// live on this node while this runs: no cleanup touches it (HoldWorkspace)
+	defer HoldWorkspace(spec.Dir())()
 	// the item's own GitHub token, on the checkout before it is cloned
 	cred, err := NewItemCred(ctx, r.GW, r.WS, r.Scopes, item, spec, r.Fallback, r.logf)
 	if we := WorkspaceErrorOf(err); we != nil {
@@ -989,6 +991,8 @@ func (r *Runner) AdoptItem(ctx context.Context, item gateway.WorkItem, s FoundSe
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
 	ctx = WithLockHolder(ctx, label)
 	spec := WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()}
+	// live on this node while this runs: no cleanup touches it (HoldWorkspace)
+	defer HoldWorkspace(spec.Dir())()
 	// the item's token on the checkout again: the session's pushes, and
 	// the node's, need a live one
 	cred, err := NewItemCred(ctx, r.GW, r.WS, r.Scopes, item, spec, r.Fallback, r.logf)

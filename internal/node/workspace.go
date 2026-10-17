@@ -187,6 +187,9 @@ func (g *Git) Authorize(ctx context.Context, spec WorkspaceSpec, tok *gateway.Gi
 			return err
 		}
 	} else if isWorktree(dir) {
+		if err := g.lockWorktree(ctx, dir, spec); err != nil {
+			return err
+		}
 		// a worktree's origin is its shared clone's: one .git/config
 		// every item of the repo reads and writes, so it is changed only
 		// under the repo's lock, and only when it differs (sharedOrigin)
@@ -321,6 +324,10 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 		}
 	} else if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--prune", "origin"); err != nil {
 		return "", err
+	} else if err := g.lockWorktree(ctx, dir, spec); err != nil {
+		// a worktree reused — a rework, an adopted item — is locked as a
+		// new one is: its item is live again
+		return "", err
 	}
 	base := spec.BaseRef
 	if base == "" {
@@ -434,8 +441,13 @@ func (g *Git) syncSharedClone(ctx context.Context, root, key, repo, clone string
 // continued as Prepare continues a checkout's: origin/<branch> when it was pushed, else a
 // local branch an interrupted attempt left in the clone, else a new one
 // from origin/<base>. A registration whose directory is gone (a sweep
-// interrupted, a directory removed by hand) is pruned first, so git does
-// not refuse the path or the branch.
+// interrupted, a directory removed by hand) that names dir, or holds the
+// branch and is neither locked nor live, is forgotten first
+// (forgetStaleRegistrations), so git does not refuse the path or the
+// branch — never a blanket `git worktree prune`, which drops every
+// registration whose directory it cannot see. The worktree added is
+// locked (lockWorktree), so no prune, inside a pod or out, takes it
+// while its item is live.
 func (g *Git) addWorktree(ctx context.Context, root, key, clone string, spec WorkspaceSpec) (string, error) {
 	dir := spec.Dir()
 	if err := g.syncSharedClone(ctx, root, key, spec.Repo, clone); err != nil {
@@ -469,7 +481,16 @@ func (g *Git) addWorktree(ctx context.Context, root, key, clone string, spec Wor
 			return "", err
 		}
 	}
-	if _, err := g.run(ctx, clone, "git", "worktree", "prune"); err != nil {
+	// and gc's own prune of worktrees off for good: a `git gc` in a pod,
+	// which sees no other item's worktree, must not drop them
+	if out, err := g.run(ctx, clone, "git", "config", "--local", "--get", "gc.worktreePruneExpire"); err != nil || strings.TrimSpace(out) != "never" {
+		if _, err := g.withStaleLockRetry(clone, func() (string, error) {
+			return g.run(ctx, clone, "git", "config", "--local", "gc.worktreePruneExpire", "never")
+		}); err != nil {
+			return "", err
+		}
+	}
+	if err := forgetStaleRegistrations(clone, dir, spec.Branch); err != nil {
 		return "", err
 	}
 	args := []string{"worktree", "add", "--quiet", "--no-track", "-B", spec.Branch, dir, "origin/" + base}
@@ -481,7 +502,88 @@ func (g *Git) addWorktree(ctx context.Context, root, key, clone string, spec Wor
 	if _, err := g.run(ctx, clone, "git", args...); err != nil {
 		return "", err
 	}
+	if err := g.lockWorktree(ctx, dir, spec); err != nil {
+		return "", err
+	}
 	return dir, nil
+}
+
+// lockWorktree locks the worktree at dir with `git worktree lock
+// --reason 'mesh: item <goal>/<seq> live'`, unless it is locked already:
+// a locked worktree's registration is never pruned, by the node, by a
+// session's `git worktree prune` in a pod that mounts only its own
+// worktree beside the shared clone's git dir, or by `git gc`. Only
+// RemoveWorkspace, for a finished item, unlocks it. A full clone has
+// nothing to lock.
+func (g *Git) lockWorktree(ctx context.Context, dir string, spec WorkspaceSpec) error {
+	admin := worktreeAdmin(dir)
+	if admin == "" {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(admin, "locked")); err == nil {
+		return nil
+	}
+	reason := fmt.Sprintf("mesh: item %s/%d live", spec.GoalSlug, spec.Seq)
+	if _, err := g.run(ctx, dir, "git", "worktree", "lock", "--reason", reason, dir); err != nil {
+		// locked between the stat and the lock: what was wanted
+		if _, serr := os.Stat(filepath.Join(admin, "locked")); serr == nil {
+			return nil
+		}
+		return fmt.Errorf("lock worktree %s: %w", dir, err)
+	}
+	return nil
+}
+
+// forgetStaleRegistrations removes from clone's .git/worktrees the admin
+// dir of each registration whose worktree directory is gone and that
+// either names dir — the checkout about to be added there, locked or
+// not — or has branch checked out and is neither locked nor live on this
+// node: what would make `git worktree add` refuse the path or the branch,
+// and nothing else.
+func forgetStaleRegistrations(clone, dir, branch string) error {
+	worktrees := filepath.Join(clone, ".git", "worktrees")
+	regs, err := os.ReadDir(worktrees)
+	if err != nil {
+		return nil
+	}
+	want := liveKey(dir)
+	for _, r := range regs {
+		admin := filepath.Join(worktrees, r.Name())
+		wt, ok := registeredDir(admin)
+		if !ok {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(wt, ".git")); err == nil {
+			continue
+		}
+		named := liveKey(wt) == want
+		if !named {
+			if branch == "" || WorkspaceLive(wt) {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(admin, "locked")); err == nil {
+				continue
+			}
+			head, err := os.ReadFile(filepath.Join(admin, "HEAD"))
+			if err != nil || strings.TrimSpace(string(head)) != "ref: refs/heads/"+branch {
+				continue
+			}
+		}
+		if err := os.RemoveAll(admin); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// registeredDir is the worktree directory admin (a .git/worktrees/<n>)
+// registers, from its gitdir file's `<dir>/.git`.
+func registeredDir(admin string) (string, bool) {
+	b, err := os.ReadFile(filepath.Join(admin, "gitdir"))
+	if err != nil {
+		return "", false
+	}
+	return filepath.Dir(filepath.Clean(strings.TrimSpace(string(b)))), true
 }
 
 // reposRootFor is the repos root dir's shared clone lives under:
@@ -496,14 +598,18 @@ func (g *Git) reposRootFor(dir string) string {
 }
 
 // RemoveWorkspace removes a finished item's checkout at dir, for the
-// sweep (mesh ADR 017): a worktree — its `.git` a file — by `git
-// worktree remove --force` and `git worktree prune` in its shared clone,
-// under the repo's lock; a full clone from before the shared clone by
-// os.RemoveAll. A directory already gone, or left half-removed by a sweep
-// interrupted after the rm, is removed and its registration pruned from
-// whichever shared clone still names it, so its branch can be checked
-// out again. Nothing under the repos root is ever removed but through
-// git's worktree metadata: a shared clone itself is refused.
+// sweep (mesh ADR 017): a worktree — its `.git` a file — unlocked,
+// removed by `git worktree remove --force` and its own admin dir gone
+// from its shared clone, under the repo's lock; a full clone from before
+// the shared clone by os.RemoveAll. A directory already gone, or left
+// half-removed by a sweep interrupted after the rm, is removed and its
+// own registration forgotten by whichever shared clone still names it,
+// so its branch can be checked out again. No other worktree's
+// registration is touched — there is no blanket `git worktree prune` —
+// and a dir held live on this node (HoldWorkspace: its item claimed,
+// running, evaluating or rebasing here) is refused outright. Nothing
+// under the repos root is ever removed but through git's worktree
+// metadata: a shared clone itself is refused.
 func (g *Git) RemoveWorkspace(ctx context.Context, dir string) error {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
@@ -512,6 +618,9 @@ func (g *Git) RemoveWorkspace(ctx context.Context, dir string) error {
 	reposRoot, _ := filepath.Abs(g.reposRootFor(dir))
 	if rel, err := filepath.Rel(reposRoot, dir); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("remove workspace %s: under the repos root %s; a shared clone is never removed", dir, reposRoot)
+	}
+	if WorkspaceLive(dir) {
+		return fmt.Errorf("remove workspace %s: its item is live on this node; left alone", dir)
 	}
 	root := g.lockRoot("", dir)
 	fi, err := os.Stat(filepath.Join(dir, ".git"))
@@ -527,54 +636,69 @@ func (g *Git) RemoveWorkspace(ctx context.Context, dir string) error {
 	case !os.IsNotExist(err):
 		return err
 	}
-	// gone, or half-removed: whatever is left goes, then every shared
-	// clone still naming dir is pruned
+	// gone, or half-removed: whatever is left goes, then each shared
+	// clone still naming dir forgets that one registration
 	if err := os.RemoveAll(dir); err != nil {
 		return err
 	}
-	for _, clone := range clonesNaming(reposRoot, dir) {
-		if err := g.pruneWorktrees(ctx, root, clone); err != nil {
+	for clone, admins := range registrationsNaming(reposRoot, dir) {
+		if err := g.forgetRegistrations(ctx, root, clone, admins); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// removeWorktree runs `git worktree remove --force dir` and `git worktree
-// prune` in clone under its repo's lock.
+// removeWorktree unlocks the worktree at dir, runs `git worktree remove
+// --force dir` and removes that worktree's own admin dir, if git left
+// it, in clone under its repo's lock. Only dir's registration is
+// touched: no prune, so a live item's worktree a pod cannot see keeps
+// its .git/worktrees/<n>.
 func (g *Git) removeWorktree(ctx context.Context, root, clone, dir string) error {
+	admin := worktreeAdmin(dir)
 	unlock, err := lockRepo(ctx, root, g.repoKeyOf(ctx, clone))
 	if err != nil {
 		return err
 	}
 	defer unlock()
+	if admin != "" {
+		if _, err := os.Stat(filepath.Join(admin, "locked")); err == nil {
+			_, _ = g.run(ctx, clone, "git", "worktree", "unlock", dir)
+		}
+	}
 	if _, err := g.run(ctx, clone, "git", "worktree", "remove", "--force", dir); err != nil {
-		// git refused (a locked or damaged worktree): the files go and
-		// the prune drops the registration
+		// git refused (a damaged worktree): the files go, and its own
+		// registration below
 		if rmErr := os.RemoveAll(dir); rmErr != nil {
 			return err
 		}
 	}
-	_, err = g.run(ctx, clone, "git", "worktree", "prune")
-	return err
+	if admin != "" {
+		return os.RemoveAll(admin)
+	}
+	return nil
 }
 
-// pruneWorktrees runs `git worktree prune` in clone under its repo's
-// lock.
-func (g *Git) pruneWorktrees(ctx context.Context, root, clone string) error {
+// forgetRegistrations removes admins — clone's .git/worktrees/<n> of a
+// worktree already gone — under clone's repo lock.
+func (g *Git) forgetRegistrations(ctx context.Context, root, clone string, admins []string) error {
 	unlock, err := lockRepo(ctx, root, g.repoKeyOf(ctx, clone))
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	_, err = g.run(ctx, clone, "git", "worktree", "prune")
-	return err
+	for _, a := range admins {
+		if err := os.RemoveAll(a); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// worktreeClone is the clone the worktree at dir belongs to, from its
-// `.git` file's `gitdir: <clone>/.git/worktrees/<name>`, or "" when the
-// file says otherwise or that clone is gone.
-func worktreeClone(dir string) string {
+// worktreeAdmin is the admin dir — <clone>/.git/worktrees/<n> — the
+// worktree at dir's `.git` file names, or "" when dir is no worktree or
+// that admin dir is not under a .git/worktrees.
+func worktreeAdmin(dir string) string {
 	b, err := os.ReadFile(filepath.Join(dir, ".git"))
 	if err != nil {
 		return ""
@@ -587,21 +711,32 @@ func worktreeClone(dir string) string {
 	if !filepath.IsAbs(gitdir) {
 		gitdir = filepath.Join(dir, gitdir)
 	}
-	worktrees := filepath.Dir(filepath.Clean(gitdir))
-	if filepath.Base(worktrees) != "worktrees" {
+	gitdir = filepath.Clean(gitdir)
+	if filepath.Base(filepath.Dir(gitdir)) != "worktrees" {
 		return ""
 	}
-	common := filepath.Dir(worktrees)
+	return gitdir
+}
+
+// worktreeClone is the clone the worktree at dir belongs to, from its
+// `.git` file's `gitdir: <clone>/.git/worktrees/<name>`, or "" when the
+// file says otherwise or that clone is gone.
+func worktreeClone(dir string) string {
+	admin := worktreeAdmin(dir)
+	if admin == "" {
+		return ""
+	}
+	common := filepath.Dir(filepath.Dir(admin))
 	if fi, err := os.Stat(common); err != nil || !fi.IsDir() {
 		return ""
 	}
 	return filepath.Dir(common)
 }
 
-// clonesNaming is every shared clone under reposRoot — <owner>/<name>,
-// or one directory for a non-GitHub remote — with a worktree registered
-// at dir.
-func clonesNaming(reposRoot, dir string) []string {
+// registrationsNaming is, per shared clone under reposRoot —
+// <owner>/<name>, or one directory for a non-GitHub remote — the admin
+// dirs of its worktrees registered at dir.
+func registrationsNaming(reposRoot, dir string) map[string][]string {
 	var candidates []string
 	tops, _ := os.ReadDir(reposRoot)
 	for _, top := range tops {
@@ -621,24 +756,20 @@ func clonesNaming(reposRoot, dir string) []string {
 	if parent, err := filepath.EvalSymlinks(filepath.Dir(dir)); err == nil {
 		names[filepath.Join(parent, filepath.Base(dir))] = true
 	}
-	var clones []string
+	regsOf := map[string][]string{}
 	for _, c := range candidates {
 		regs, err := os.ReadDir(filepath.Join(c, ".git", "worktrees"))
 		if err != nil {
 			continue
 		}
 		for _, r := range regs {
-			b, err := os.ReadFile(filepath.Join(c, ".git", "worktrees", r.Name(), "gitdir"))
-			if err != nil {
-				continue
-			}
-			if names[filepath.Dir(filepath.Clean(strings.TrimSpace(string(b))))] {
-				clones = append(clones, c)
-				break
+			admin := filepath.Join(c, ".git", "worktrees", r.Name())
+			if wt, ok := registeredDir(admin); ok && names[wt] {
+				regsOf[c] = append(regsOf[c], admin)
 			}
 		}
 	}
-	return clones
+	return regsOf
 }
 
 // CheckoutBase leaves dir on origin/<base>, detached, with the base's
