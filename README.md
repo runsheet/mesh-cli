@@ -2333,6 +2333,12 @@ services:
   `postgis`) with `-c fsync=off -c synchronous_commit=off -c
   full_page_writes=off`, MySQL/MariaDB with
   `--innodb-flush-log-at-trx-commit=0 --sync-binlog=0 --skip-log-bin`.
+- **A writable PGDATA**: a Postgres (`postgres`, `postgis`) service with
+  no `PGDATA` or `POSTGRES_INITDB_ARGS` of its own, from either source,
+  gets `PGDATA=/tmp/pgdata` and `POSTGRES_INITDB_ARGS=--no-sync` — under
+  keep-id the image's `/var/lib/postgresql/data` belongs to the pod's
+  user and the entrypoint cannot `chmod` it; a service that sets either
+  variable keeps its own value.
 - **Registries**: an image's registry (a bare `postgres:16` is
   `docker.io`) must match the allow-list — by default `docker.io`,
   `ghcr.io`, `*.pkg.dev`, `quay.io`. A disallowed image is returned as a
