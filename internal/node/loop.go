@@ -17,6 +17,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
+	"projectmesh.io/mesh-cli/internal/tripline"
 	"projectmesh.io/mesh-cli/internal/validate"
 )
 
@@ -209,6 +210,9 @@ type Loop struct {
 	// while the runtimes are unchanged. The build, evaluate, plan and
 	// research sessions record into the same one; nil declines nothing.
 	Declines *Declines
+	// Tripline reports the node's failure classes to Tripline (ADR-034,
+	// a node reports its errors to Tripline); nil reports nothing.
+	Tripline *tripline.Reporter
 	// Sandbox is the heartbeat's `sandbox` — the mode, runtime and image
 	// sessions run in (OpenSandbox, ADR 007); nil sends none.
 	Sandbox *gateway.SandboxInfo
