@@ -157,8 +157,16 @@ the sandbox sweep on its cadence does what the second did.
   session between `Sandbox.Open` and its agent's first container has a
   pod with no running container and no `state.json` yet; a sweep that
   lands in that window can remove its pod and HOME, and that session
-  then fails as a pod that went away does. An age guard on the sweep is
-  owed if it is seen.
+  then fails as a pod that went away does. *Seen 2026-10-17, the first
+  day the cadence ran on the dl360: a sandboxed validation runs each
+  step in its own container of one pod, so between steps the pod stands
+  with only its infra, and the sweep removed 184 of them in five hours
+  ("validation step … exited 137", "podman run: no pod with ID").* The
+  guard is not an age: the sandbox keeps the set of sessions this process
+  has open (`Sandbox.Open` to `Session.Close`, `sandbox.Sandbox.Live`),
+  and `SweepSandbox` keeps their pods and HOMEs whatever state their
+  containers are in — the start-up sweep, run before any session of this
+  process, is unchanged.
 - A dead checkout is removed on the platform's word; an outage keeps
   everything (the check warns), never removes.
 - `go test -tags e2e ./internal/node/ -run Quartermaster`

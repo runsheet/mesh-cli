@@ -47,7 +47,7 @@ type ScratchCheck struct {
 	// Sandbox and Sessions, when Sandbox is not nil, run the sandbox's
 	// own home sweep on every run — not only at node start — keeping
 	// every session Sessions returns, as node.SweepSandbox does at
-	// start.
+	// start, and every session this process has open (Sandbox.Live).
 	Sandbox  *sandbox.Sandbox
 	Sessions func() []FoundSession
 	Logf     func(string, ...any)
