@@ -1004,9 +1004,18 @@ one worktree only. Each worktree's credential helper is its own
 (`git config --worktree`); the shared clone's config holds no token. A
 rework reuses its worktree; an evaluation's `<seq>-eval`, the goal doc's
 `<goal>/0` and plan and research checkouts stay clones of their own; a
-full clone left by an older node is used as it is until swept. The sweep
-removes a finished item's worktree with `git worktree remove --force`
-and `git worktree prune`, never the shared clone. Every session installs
+full clone left by an older node is used as it is until swept. Each
+worktree is locked (`git worktree lock`) while its item is live and the
+node never runs a blanket `git worktree prune`: the sweep removes only a
+finished item's worktree, with `git worktree remove --force` and its own
+`.git/worktrees/<n>`, refuses one whose item is live on the node, and
+never touches the shared clone. A workspace whose `.git/worktrees/<n>`
+has gone anyway is rebuilt for its branch at its recorded head, its
+files kept, and the step that found it — a `git remote set-url`, a
+prepare, the validation — runs once more, logged `workspace <dir>:
+worktree admin <path> gone; rebuilt for <branch> at <sha>`, nothing
+failed or released. A `.git/config.lock` older than five minutes that
+no git process holds is cleared before a config write. Every session installs
 against one pnpm store and one npm cache per node, `~/.mesh/store/pnpm`
 and `~/.mesh/store/npm` (ADR-028,
 `docs/adr/adr-028-one-clone-per-repo-one-worktree-per-item.md`, after

@@ -1,5 +1,5 @@
 ---
-summary: A node keeps one clone per repo at ~/.mesh/repos/<owner>/<name>, cloned and fetched under the per-repo lock, and makes each new item's ~/.mesh/work/<goal>/<seq> a git worktree of it on its own per-worktree token; evaluation, goal-doc, plan and research checkouts stay clones of their own; sessions install against one pnpm store and one npm cache per node under ~/.mesh/store; RemoveWorkspace removes a worktree and prunes, never the clone; a full clone from before is used until swept.
+summary: A node keeps one clone per repo at ~/.mesh/repos/<owner>/<name>, cloned and fetched under the per-repo lock, and makes each new item's ~/.mesh/work/<goal>/<seq> a git worktree of it on its own per-worktree token; evaluation, goal-doc, plan and research checkouts stay clones of their own; sessions install against one pnpm store and one npm cache per node under ~/.mesh/store; every worktree is locked while its item is live and nothing runs a blanket `git worktree prune`, RemoveWorkspace refusing a live dir and removing only a finished worktree and its own registration, never the clone; a worktree whose .git/worktrees/<n> is gone is rebuilt for its branch at its recorded head and the step retried, never failed or released; a full clone from before is used until swept.
 status: accepted
 ---
 
@@ -52,14 +52,22 @@ before any worktree is touched.
 
 A new item's checkout — a spec with a repo, a branch other than its
 base, a seq and no `Path` (`Git.sharedClone`) — is made by
-`addWorktree`: the locked sync, `git worktree prune` (a registration
-whose directory is gone never blocks the path or branch), then `git
+`addWorktree`: the locked sync, then — under the lock again —
+`forgetStaleRegistrations` (a registration whose directory is gone and
+that names this path, or holds the branch and is neither locked nor
+live, is forgotten alone, so it never blocks the add), then `git
 worktree add` on the item's branch — from `origin/<branch>` when an
 earlier attempt pushed it, the local branch an interrupted attempt left,
 else a new branch from `origin/<base>`. The node log shows `git worktree
 add`, not `gh repo clone`, for every item of a repo after its first. The
 objects and refs are shared; the files, index and HEAD are the item's
-own, and git refuses a branch checked out in two worktrees.
+own, and git refuses a branch checked out in two worktrees. The
+worktree added is locked, `git worktree lock --reason 'mesh: item
+<goal>/<seq> live'` (`lockWorktree`), and Prepare and Authorize lock one
+they reuse; the shared clone carries `gc.worktreePruneExpire=never`, set
+once under the repo lock after a read, so neither a prune nor a `git gc`
+— on the host or in a pod that sees no other item's worktree — drops a
+live item's registration (below, What RemoveWorkspace removes).
 
 A rework of the same item reuses its worktree: Prepare finds `.git`
 there and fetches and checks out in place, keeping a local branch that
@@ -81,8 +89,14 @@ and `extensions.worktreeConfig`, written once per clone under the
 repo's lock after a read, and each branch's tracking; the agent's
 identity and hooks go in `config.worktree` as the helper does, the
 token on a command's `GIT_CONFIG_*` environment, a stale `config.lock`
-is removed after a minute, and a wait on the repo lock names its
-holder ([ADR-030, a session never writes the shared clone's
+is removed after a minute — and a `config.lock` older than five
+minutes that no git process holds (`PreclearGitLockAge`,
+`gitLockHolder` scanning `/proc` for a git whose cwd or `GIT_DIR` is
+under the worktree or the clone's git dir) is removed *before* the
+write, every `git remote set-url` going through `withStaleLockRetry`,
+which calls `preclearStaleLock` first, the lock found through `git
+rev-parse --git-common-dir` so a worktree's is its clone's — and a wait
+on the repo lock names its holder ([ADR-030, a session never writes the shared clone's
 config](adr-030-a-session-never-writes-the-shared-clones-config.md)). The sandbox
 mounts the clone's whole `.git` (below; `.git/worktrees` read-only but
 the session's own entry, ADR-034), so a session could read a
@@ -148,14 +162,73 @@ first's 27 MB under `du -s`, pnpm reporting reused 2, downloaded 0).
 
 ### What RemoveWorkspace removes
 
-`Git.RemoveWorkspace(ctx, dir)` is the sweep's remover: a worktree
-(its `.git` a file) by `git worktree remove --force` and `git worktree
-prune` in its shared clone, under the repo's lock; a full clone by
-`os.RemoveAll`; a directory already gone, or half-removed by an
-interrupted sweep, removed and pruned from whichever clone under the
-repos root still registers it, so its branch prepares again. It never
-removes the shared clone — a path under the repos root is refused — nor
-the package store or cache.
+**Amended 2026-10-17, goal `a-workspace-whose-worktree-is-gone-is-rebuilt`
+item 2:** the node runs no blanket `git worktree prune` anywhere. A
+prune drops every registration whose directory it cannot see, and on
+dl360 on 2026-10-16 admin dirs went from under live and resumed
+sessions — `worktrees/313` during a `git remote set-url`, `worktrees/14`
+during validation's `rev-parse`.
+
+`Git.RemoveWorkspace(ctx, dir)` is the sweep's remover. It refuses a dir
+held live on this node — `HoldWorkspace`/`WorkspaceLive`
+(`internal/node/liveworkspaces.go`), held by the Runner, the Evaluator
+and the Rebaser while they work an item: claimed, running, evaluating or
+rebasing here — and a path under the repos root. A worktree (its `.git`
+a file) is unlocked, removed by `git worktree remove --force` and its
+own `.git/worktrees/<n>` removed if git left it, in its shared clone
+under the repo's lock (`removeWorktree`) — no other registration is
+touched. A full clone goes by `os.RemoveAll`; a directory already gone,
+or half-removed by an interrupted sweep, is removed and its own
+registration forgotten by whichever clone under the repos root still
+names it (`registrationsNaming`, `forgetRegistrations`), so its branch
+prepares again. The quartermaster's dead-checkout check
+(`pruneGoneWorktrees`) forgets only registrations whose directory is
+gone and that are neither locked nor live. Every live worktree is
+locked (above), so a bare prune or `git gc` a session runs in its pod
+leaves it too (`TestWorkspaceCleanupNeverRemovesALiveWorktree`; ADR-034
+for the pod's mounts). It never removes the shared clone nor the
+package store or cache.
+
+### Rebuilding a worktree whose admin dir is gone
+
+Amended 2026-10-17, goal `a-workspace-whose-worktree-is-gone-is-rebuilt`
+item 3. A worktree whose `.git` file names a `.git/worktrees/<n>` that no
+longer exists, while its shared clone does (`worktreeAdminGone`), fails
+every git command with `fatal: not a git repository:
+…/.git/worktrees/<n>` — before this, the item's failure, and on
+grapevine eight narrow re-plans of an item whose code was fine.
+
+`Git.RebuildWorktree(ctx, spec)` recreates it under the repo's lock:
+
+1. the head is the branch's as recorded — the shared clone's
+   `refs/heads/<branch>`, which outlives the admin dir, else
+   `origin/<branch>`, else `spec.Head`; none is an error;
+2. `git worktree add --no-checkout` of that branch at a temporary path
+   whose base name is the lost admin dir's, so git registers it under the
+   same `.git/worktrees/<n>` and the `.git` file reads as it did;
+3. that `.git` file is moved over the stale one, `git worktree repair`
+   points the admin dir at the workspace, and a mixed `git reset`
+   rebuilds the index — the working tree's files, committed or not, are
+   left as they were;
+4. the worktree is locked as `addWorktree` locks one.
+
+It logs `workspace <dir>: worktree admin <path> gone; rebuilt for
+<branch> at <sha>`. A checkout that is no worktree of the shared clone —
+an evaluation's `<seq>-eval`, a plan's — is removed whole, for the
+Prepare after it to clone again.
+
+`Prepare` and `Authorize` check before any git command, so the
+`git remote set-url` of an Authorize runs on the rebuilt worktree.
+`PrepareWithRetry` and a build's validation run (`validator.run`, its
+changed paths, its head and the attestation's `git rev-parse
+<sha>^{tree}`) go through `rebuildAndRetry`: an error matching `not a git
+repository: .*/\.git/worktrees/` (`IsWorktreeAdminGone`) is one rebuild
+and one retry of the step. The worktree's `config.worktree` went with
+its admin dir, so the retry first writes the item token's helper again
+(`ItemCred.Reauthorize`); the agent's identity and hooks come back with
+the next `Identify`. Nothing is sent to `FailWorkItem` or
+`ReleaseOnWorkspace` (ADR-024) for it; a rebuild that itself fails is
+the step's error as before (`TestWorkspaceWithMissingWorktreeAdminIsRebuilt`).
 
 ### Upgrading from per-item clones
 
@@ -177,5 +250,9 @@ item takes the worktree path.
   failed.
 - Whatever a finished worktree held unpushed goes with `--force`, as a
   whole clone's did before.
+- A sandboxed session's pod mounts its worktree's admin dir by path; a
+  rebuild keeps the path but not the directory, so a pod running across
+  a rebuild sees the old one gone until its next session. The rebuild
+  restores the host's view, and the build's steps after it.
 - In a pod the package store saves downloads, not disk, until a mount
   layout lets pnpm hardlink without exposing other items.

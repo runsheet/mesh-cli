@@ -74,3 +74,8 @@ Until that lands, the node has to avoid calling it one.
   becomes the item's failure.
 - A release the platform refuses still fails the item, so a platform
   without the release behaves as it did before this ADR.
+- Amended 2026-10-17 (goal `a-workspace-whose-worktree-is-gone-is-rebuilt`):
+  a worktree whose `.git/worktrees/<n>` is gone is neither failed nor
+  released. The node rebuilds it for its branch at its recorded head and
+  retries the step once (ADR-028, Rebuilding a worktree whose admin dir
+  is gone). Only a rebuild that fails is a workspace failure here.

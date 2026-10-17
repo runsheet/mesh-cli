@@ -251,16 +251,44 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   under the repo lock (`sharedOrigin`, `syncSharedClone`,
   `addWorktree`), a git lock older than a minute is removed — `removed
   stale git lock <path> (age <d>)` — and the write retried once
-  (`ClearStaleGitLock`, `withStaleLockRetry`), and a wait on the repo
+  (`ClearStaleGitLock`, `withStaleLockRetry`), and a `config.lock`
+  older than five minutes no git process holds is cleared before the
+  write (`preclearStaleLock` at the top of `withStaleLockRetry`,
+  `PreclearGitLockAge`, `gitLockHolder` scanning `/proc`,
+  `commonDirConfigLock`; `TestStaleConfigLockIsCleared`), and a wait on the repo
   lock logs `repo lock <key>: waiting on <goal>/<seq> (pid <n>, held
   <d>)` (`WithLockHolder`, `SetRepoLockLogf`);
   `TestConcurrentSessionsOnOneRepoE2E` (`-tags e2e`) starts two sessions
   of one repo at once twenty times over, a rework reusing its worktree and keeping unpushed commits,
-  a full clone from before the layout used in place until swept, and
-  `Git.RemoveWorkspace` the sweep's remover — a worktree by `git
-  worktree remove --force` + `git worktree prune` under the repo's
+  a full clone from before the layout used in place until swept; every
+  worktree locked while its item is live (`lockWorktree`, `git worktree
+  lock --reason 'mesh: item <goal>/<seq> live'`, by `addWorktree` and on
+  reuse by Prepare and Authorize; the clone's `gc.worktreePruneExpire`
+  `never`) and no blanket `git worktree prune` anywhere
+  (`forgetStaleRegistrations`, the quartermaster's
+  `pruneGoneWorktrees`, forget only a gone, unlocked, not-live
+  registration), and `Git.RemoveWorkspace` the sweep's remover —
+  refusing a dir held live on this node (`HoldWorkspace`/
+  `WorkspaceLive`, `liveworkspaces.go`, held by the Runner, Evaluator
+  and Rebaser), a worktree unlocked and removed by `git worktree remove
+  --force` with only its own `.git/worktrees/<n>` under the repo's
   lock, a full clone by RemoveAll, a path under the repos root refused,
-  never the shared clone — its evaluation's
+  never the shared clone (`TestWorkspaceCleanupNeverRemovesALiveWorktree`)
+  — and a worktree whose `.git` names a `.git/worktrees/<n>` that is
+  gone (`worktreeAdminGone`) rebuilt, never failed or released:
+  `Git.RebuildWorktree` under the repo lock adds a `--no-checkout`
+  worktree of the branch at its recorded head (the clone's
+  `refs/heads/<branch>`, else `origin/<branch>`, else
+  `WorkspaceSpec.Head`) under the lost admin's name, moves its `.git`
+  in, `git worktree repair`, a mixed `git reset` (the files left) and
+  the lock, logged `workspace <dir>: worktree admin <path> gone;
+  rebuilt for <branch> at <sha>` (an own-clone checkout, `-eval`,
+  removed for Prepare to clone again); Prepare and Authorize check
+  first, and `PrepareWithRetry` and the validation run
+  (`rebuildAndRetry` on `IsWorktreeAdminGone`) rebuild once, re-write
+  the token's helper (`ItemCred.Reauthorize`) and retry once
+  (`TestWorkspaceWithMissingWorktreeAdminIsRebuilt`; ADR-028's
+  amendments 2026-10-17) — its evaluation's
   at `<goal>/<seq>-eval` (`EvalWorkspaceSpec`, the same Root, ADR-027),
   a clone of its own, as are the goal doc's `<goal>/0` on the base and
   plan and research checkouts (`Git.sharedClone` returns ""), so an
