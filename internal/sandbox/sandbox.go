@@ -365,10 +365,18 @@ func Allowed(name string) bool {
 // directory of a workspace that is a worktree read-write (mesh-specs ADR
 // 017, so its `.git` file resolves in the pod and its commits land in the
 // clone's object store), and the checkout's hooks directory, when it has
-// one, read-only. A full clone mounts no common dir; nothing else of the
-// clone — its parent, its work tree, another item's worktree — is ever
-// mounted. The node's package store and cache are mounted read-write,
-// each at its own path (Stores, ADR 017 §3).
+// one, read-only. Under that common dir, `<common>/worktrees` is mounted
+// again read-only and the workspace's own admin entry,
+// `<common>/worktrees/<id>` (GitDir), read-write over it — the only
+// writable path under `.git/worktrees`, which its commits need (HEAD,
+// index, logs). Every other item's work tree is absent in the pod, so
+// its entry's gitdir pointer dangles there and a `git worktree prune`
+// would delete the live entry on the host; read-only, it cannot. A full
+// clone mounts no common dir; nothing else of the clone — its parent,
+// its work tree, another item's worktree — is ever mounted. The node's
+// package store and cache are mounted read-write, each at its own path
+// (Stores, ADR 017 §3). podman applies them shallowest target first
+// (agentArgs), so the deeper mount wins.
 func (s *Session) Mounts(workspace string) []Mount {
 	m := []Mount{
 		{Source: workspace, Target: workspace},
@@ -380,6 +388,7 @@ func (s *Session) Mounts(workspace string) []Mount {
 		s.sb.logf("sandbox: %v; mounting the workspace alone", err)
 	} else if common != "" {
 		m = append(m, Mount{Source: common, Target: common})
+		m = append(m, s.worktreeMounts(workspace, common)...)
 	}
 	for _, d := range s.sb.Config.Stores.dirs() {
 		m = append(m, Mount{Source: d, Target: d})
@@ -389,6 +398,27 @@ func (s *Session) Mounts(workspace string) []Mount {
 		m = append(m, Mount{Source: s.hooks, Target: s.hooks, ReadOnly: true})
 	}
 	return m
+}
+
+// worktreeMounts are the mounts over a worktree's common dir:
+// `<common>/worktrees` read-only and the workspace's own admin entry
+// read-write. An own entry that cannot be read, or is not under
+// `<common>/worktrees`, leaves the whole of `.git/worktrees` read-only
+// — logged; the session's commits then fail rather than a sibling's
+// entry being pruned.
+func (s *Session) worktreeMounts(workspace, common string) []Mount {
+	wts := filepath.Join(common, "worktrees")
+	m := []Mount{{Source: wts, Target: wts, ReadOnly: true}}
+	own, err := GitDir(workspace)
+	if err != nil {
+		s.sb.logf("sandbox: %v; .git/worktrees mounted read-only whole", err)
+		return m
+	}
+	if filepath.Dir(own) != wts {
+		s.sb.logf("sandbox: git dir of %s is %s, not under %s; .git/worktrees mounted read-only whole", workspace, own, wts)
+		return m
+	}
+	return append(m, Mount{Source: own, Target: own})
 }
 
 // RunSpec is what runs in a session's pod.
