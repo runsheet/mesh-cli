@@ -620,6 +620,22 @@ func (w *gitWS) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error)
 	return dir, nil
 }
 
+// AddRebaseWorktree clones origin at dir on the branch, from origin's
+// when it has one, else from its default head: a real checkout to rebase
+// in, as Prepare's.
+func (w *gitWS) AddRebaseWorktree(ctx context.Context, repo, dir, branch string) error {
+	if err := w.fakeWS.AddRebaseWorktree(ctx, repo, dir, branch); err != nil {
+		return err
+	}
+	gitRun(w.t, dir, "clone", "--quiet", w.origin, ".")
+	if gitRun(w.t, dir, "ls-remote", "--heads", "origin", branch) != "" {
+		gitRun(w.t, dir, "checkout", "--quiet", "-b", branch, "origin/"+branch)
+	} else {
+		gitRun(w.t, dir, "checkout", "--quiet", "-b", branch)
+	}
+	return nil
+}
+
 func (w *gitWS) ChangedPaths(ctx context.Context, dir, base string) ([]string, error) {
 	return (&Git{}).ChangedPaths(ctx, dir, base)
 }

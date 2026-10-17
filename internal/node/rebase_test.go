@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -83,16 +84,22 @@ func TestRebaseClaimedOnceAndFinishedWithPushedHead(t *testing.T) {
 		t.Fatalf("jobs: %+v", h.jobs)
 	}
 	p := h.jobs[0].Prompt
-	for _, want := range []string{"git rebase origin/main", "git push --force-with-lease origin mesh/ship-it-1", "func Run(ctx context.Context) {}", "The files: main.go.", harness.RebasedLine, harness.RebaseFailedLine} {
+	for _, want := range []string{"git rebase origin/main", "git push --force-with-lease=mesh/ship-it-1:origin/mesh/ship-it-1 origin HEAD:refs/heads/mesh/ship-it-1", "func Run(ctx context.Context) {}", "The files: main.go.", harness.RebasedLine, harness.RebaseFailedLine} {
 		if !strings.Contains(p, want) {
 			t.Fatalf("prompt lacks %q:\n%s", want, p)
 		}
 	}
-	if len(ws.prepared) != 1 || ws.prepared[0].Branch != "mesh/ship-it-1" || ws.prepared[0].BaseRef != "main" || ws.prepared[0].Dir() != (WorkspaceSpec{Root: ws.root, GoalSlug: "ship-it", Seq: 1}).Dir() {
-		t.Fatalf("prepared: %+v", ws.prepared)
+	// the rebase's own fresh worktree, never the item's checkout: made,
+	// then authorized, then read back, then removed
+	rdir := filepath.Join(ws.root, "ship-it", "1-rebase")
+	if len(ws.prepared) != 0 || len(ws.rebaseDirs) != 1 || ws.rebaseDirs[0] != rdir || h.jobs[0].Workspace != rdir {
+		t.Fatalf("prepared %+v, rebase worktrees %v, session in %s", ws.prepared, ws.rebaseDirs, h.jobs[0].Workspace)
 	}
-	if ev := ws.Events(); strings.Join(ev, ",") != "authorize ghs_item1,prepare,pushed-head mesh/ship-it-1" {
+	if ev := ws.Events(); strings.Join(ev, ",") != "rebase-worktree mesh/ship-it-1,authorize ghs_item1,pushed-head mesh/ship-it-1,remove 1-rebase" {
 		t.Fatalf("workspace events: %v", ev)
+	}
+	if !strings.Contains(strings.Join(ws.authorized, "\n"), rdir) {
+		t.Fatalf("authorized: %v", ws.authorized)
 	}
 	if len(ws.pushed) != 0 {
 		t.Fatal("the session pushes, not the node")

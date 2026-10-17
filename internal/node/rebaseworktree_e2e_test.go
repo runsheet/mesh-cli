@@ -147,3 +147,145 @@ func TestRebaseWorktreeReplacesStaleDirE2E(t *testing.T) {
 		t.Fatalf("the item's worktree HEAD %s, want %s", head, built)
 	}
 }
+
+// buildAndPush prepares the item's worktree, commits a file in it and
+// pushes the branch, as a build does; it returns the checkout and the
+// pushed head.
+func buildAndPush(t *testing.T, g *Git, spec WorkspaceSpec) (string, string) {
+	t.Helper()
+	ctx := context.Background()
+	dir, err := g.Prepare(ctx, spec)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "item"), []byte("built\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	testGit(t, dir, "add", "item")
+	testGit(t, dir, "commit", "-q", "-m", "build")
+	built, err := g.Push(ctx, dir, spec.Branch)
+	if err != nil {
+		t.Fatalf("push the build: %v", err)
+	}
+	return dir, built
+}
+
+// rebasePushes checks rdir is a clean checkout at built, commits in it
+// and pushes HEAD to the branch, then reads the origin's branch back as
+// that commit.
+func rebasePushes(t *testing.T, origin, rdir, branch, built string) string {
+	t.Helper()
+	if head := testGit(t, rdir, "rev-parse", "HEAD"); head != built {
+		t.Fatalf("rebase worktree HEAD %s, want origin/%s %s", head, branch, built)
+	}
+	if st := testGit(t, rdir, "status", "--porcelain"); st != "" {
+		t.Fatalf("rebase worktree not clean:\n%s", st)
+	}
+	if err := os.WriteFile(filepath.Join(rdir, "rebased"), []byte("rebased\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	testGit(t, rdir, "add", "rebased")
+	testGit(t, rdir, "commit", "-q", "-m", "rebase")
+	head := testGit(t, rdir, "rev-parse", "HEAD")
+	testGit(t, rdir, "push", "-q", "origin", "HEAD:refs/heads/"+branch)
+	out, err := exec.Command("git", "--git-dir", origin, "rev-parse", "refs/heads/"+branch).Output()
+	if err != nil {
+		t.Fatalf("read the origin's %s: %v", branch, err)
+	}
+	if got := strings.TrimSpace(string(out)); got != head {
+		t.Fatalf("the origin's %s is %s, want the rebase commit %s", branch, got, head)
+	}
+	return head
+}
+
+// The 2026-10-17 06:32Z failure on PR #4236: the item's checkout is
+// there, but its `.git` file names a `.git/worktrees/<n>` that is gone,
+// so any git run inside it is `fatal: not a git repository`.
+// AddRebaseWorktree runs nothing there and still makes a working
+// checkout at origin/<branch>, whose commit pushes to the branch.
+func TestRebaseWorktreeDanglingGitFileE2E(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	work, repos := filepath.Join(root, "work"), filepath.Join(root, "repos")
+	g, cmds := recordingGit(repos)
+	ctx := context.Background()
+
+	spec := WorkspaceSpec{Root: work, GoalSlug: "g", Seq: 1, Repo: origin, Branch: BranchName("g", 1), BaseRef: "main"}
+	dir, built := buildAndPush(t, g, spec)
+
+	admin := worktreeAdmin(dir)
+	if admin == "" {
+		t.Fatalf("%s names no worktree admin", dir)
+	}
+	if err := os.RemoveAll(admin); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, gone := worktreeAdminGone(dir); !gone {
+		t.Fatalf("%s: admin %s removed but not read as gone", dir, admin)
+	}
+	if out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").CombinedOutput(); err == nil {
+		t.Fatalf("git still works in the dead checkout: %s", out)
+	}
+
+	rdir := filepath.Join(work, "g", "1-rebase")
+	before := len(cmds())
+	if err := g.AddRebaseWorktree(ctx, origin, rdir, spec.Branch); err != nil {
+		t.Fatalf("AddRebaseWorktree with a dangling .git file at the item's checkout: %v\n%s", err, strings.Join(cmds(), "\n"))
+	}
+	for _, c := range cmds()[before:] {
+		if strings.Contains(c+" ", " "+dir+" ") || strings.Contains(c, dir+string(filepath.Separator)) {
+			t.Fatalf("AddRebaseWorktree ran in the dead checkout: %s", c)
+		}
+	}
+	head := rebasePushes(t, origin, rdir, spec.Branch, built)
+
+	// the dead checkout is left as it was: its .git file still there
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+		t.Fatalf("the item's .git file: %v", err)
+	}
+	t.Logf("rebase worktree %s pushed %s to %s past a dangling %s", rdir, head, spec.Branch, admin)
+}
+
+// The item's live worktree still has the branch checked out: git refuses
+// a second checkout of it, so the rebase worktree is detached at
+// origin/<branch>, its commit pushes to the branch, and the live
+// worktree keeps its branch, head and files.
+func TestRebaseWorktreeBranchHeldE2E(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	work, repos := filepath.Join(root, "work"), filepath.Join(root, "repos")
+	g, cmds := recordingGit(repos)
+	ctx := context.Background()
+
+	spec := WorkspaceSpec{Root: work, GoalSlug: "g", Seq: 1, Repo: origin, Branch: BranchName("g", 1), BaseRef: "main"}
+	dir, built := buildAndPush(t, g, spec)
+	if b := testGit(t, dir, "symbolic-ref", "--short", "HEAD"); b != spec.Branch {
+		t.Fatalf("the item's worktree is on %q, want %s", b, spec.Branch)
+	}
+	// an uncommitted edit in the live worktree must survive
+	if err := os.WriteFile(filepath.Join(dir, "wip"), []byte("wip\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rdir := filepath.Join(work, "g", "1-rebase")
+	if err := g.AddRebaseWorktree(ctx, origin, rdir, spec.Branch); err != nil {
+		t.Fatalf("AddRebaseWorktree with the branch held by the live worktree: %v\n%s", err, strings.Join(cmds(), "\n"))
+	}
+	if out, err := exec.Command("git", "-C", rdir, "symbolic-ref", "-q", "HEAD").CombinedOutput(); err == nil {
+		t.Fatalf("rebase worktree is on a branch, want detached: %s", out)
+	}
+	head := rebasePushes(t, origin, rdir, spec.Branch, built)
+
+	// the live worktree is undisturbed
+	if b := testGit(t, dir, "symbolic-ref", "--short", "HEAD"); b != spec.Branch {
+		t.Fatalf("the live worktree moved to %q, want %s", b, spec.Branch)
+	}
+	if h := testGit(t, dir, "rev-parse", "HEAD"); h != built {
+		t.Fatalf("the live worktree's HEAD %s, want %s", h, built)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "wip")); err != nil || string(b) != "wip\n" {
+		t.Fatalf("the live worktree's wip %q, %v", b, err)
+	}
+	if _, _, gone := worktreeAdminGone(dir); gone {
+		t.Fatalf("the live worktree's admin went")
+	}
+	t.Logf("rebase worktree %s pushed %s to %s while %s held it", rdir, head, spec.Branch, dir)
+}
