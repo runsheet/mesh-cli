@@ -98,7 +98,7 @@ func (c *Codex) runSandboxed(ctx context.Context, job Job, onProgress func(Progr
 // issued credential's auth.json) copied in and written back when Codex
 // refreshed it, else Account's plan login copied likewise or its API key
 // in the env only — and config.toml renders the job's MCP servers, the
-// mesh-context relay as RelayScript in the HOME on a token file in the
+// runsheet relay as RelayScript in the HOME on a token file in the
 // CODEX_HOME. The HOME is the session's: Close removes it, so the home
 // is never owned here.
 func (c *Codex) prepareSandboxHome(job Job, sess *sandbox.Session) (*codexHome, []string, error) {
@@ -144,11 +144,11 @@ func (c *Codex) prepareSandboxHome(job Job, sess *sandbox.Session) (*codexHome, 
 		// HOME, on a token file in the CODEX_HOME the node keeps fresh
 		script, err := sess.WriteFile(relayScriptName, RelayScript())
 		if err != nil {
-			return fail(fmt.Errorf("mesh-context relay: %w", err))
+			return fail(fmt.Errorf("runsheet relay: %w", err))
 		}
 		var path string
 		if job, path, h.releaseToken, err = placeMeshContext(job, c.Tokens, dir, true, script); err != nil {
-			return fail(fmt.Errorf("mesh-context token: %w", err))
+			return fail(fmt.Errorf("runsheet token: %w", err))
 		}
 		h.tokenFile = path
 	}

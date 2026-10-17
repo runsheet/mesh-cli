@@ -449,3 +449,24 @@ amendment of the same date, Sandboxed sessions):
 - An attached run (`Session.Run`) remains for every session that is not
   `Outlive` — validation steps, channel mode — and those still end with
   the node.
+
+## Amendment 2026-10-16: a postgres service gets a writable PGDATA
+
+Goal `the-sandbox-gives-postgres-a-data-directory-it-can-write`. Under
+keep-id (the 2026-10-10 amendment above) the image's
+`/var/lib/postgresql/data` belongs to the pod's user, not the uid
+postgres's entrypoint runs as inside, and the entrypoint's `chmod` of it
+fails: `initdb: could not change permissions of directory
+"/var/lib/postgresql/data": Operation not permitted`. Every evaluation
+of foghorn, purser and loom's "pull requests are judged by the node"
+items ended not evaluated this way on 2026-10-16.
+
+`internal/sandbox/services.go`'s `finish` now gives every resolved
+`postgres` or `postgis` service, from either source —
+`.mesh/services.yml` or a workflow's `services:` — `PGDATA=/tmp/pgdata`
+and `POSTGRES_INITDB_ARGS=--no-sync` (`postgresDefaults`,
+`PostgresDefaultPGDATA`, `PostgresDefaultInitdbArgs`) unless the
+repository already set that variable itself, in which case its own
+value is kept. `/tmp` is writable by the pod's user under keep-id, and
+`--no-sync` keeps the default's `initdb` as cheap as the tuning already
+turns the running server's durability off.

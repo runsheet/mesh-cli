@@ -128,7 +128,7 @@ func TestArgsAskMCPFuncEachTime(t *testing.T) {
 	n := 0
 	s := &Session{Cfg: &node.Config{Slug: "mini"}, MCPFunc: func() map[string]any {
 		n++
-		return map[string]any{"mesh-context": map[string]any{"type": "http", "url": "https://api.test/mcp",
+		return map[string]any{"runsheet": map[string]any{"type": "http", "url": "https://api.test/mcp",
 			"headers": map[string]string{"Authorization": fmt.Sprintf("Bearer access-%d", n)}}}
 	}}
 	first := strings.Join(s.Args("/w"), " ")
@@ -303,7 +303,7 @@ exit 0
 `
 
 // The channel session runs for hours across the node bearer's rotations:
-// its mesh-context is the relay on a token file of the process's own,
+// its runsheet is the relay on a token file of the process's own,
 // kept by the node (mesh-cli ADR-029) — the bearer in the file and never
 // on the command line — and the file goes when the process does.
 func TestSessionMeshContextRelaysOnAKeptTokenFile(t *testing.T) {
@@ -357,7 +357,7 @@ func TestSessionMeshContextRelaysOnAKeptTokenFile(t *testing.T) {
 	srv := m.MCPServers[harness.BuiltinMCP]
 	if srv.Type != "stdio" || srv.Command != "/opt/mesh" || len(srv.Args) != 5 || srv.Args[0] != harness.RelayCommand ||
 		srv.Args[2] != "https://api.test/mcp" || filepath.Base(srv.Args[4]) != harness.TokenFileName {
-		t.Fatalf("mesh-context = %+v", srv)
+		t.Fatalf("runsheet = %+v", srv)
 	}
 	path := srv.Args[4]
 	if b, err := os.ReadFile(path); err != nil || strings.TrimSpace(string(b)) != bearer {

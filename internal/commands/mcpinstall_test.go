@@ -11,6 +11,7 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
+	"projectmesh.io/mesh-cli/internal/auth"
 	"projectmesh.io/mesh-cli/internal/mcpinstall"
 	"projectmesh.io/mesh-cli/internal/meshmcp"
 )
@@ -29,6 +30,9 @@ func installHome(t *testing.T, dirs ...string) string {
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("CODEX_HOME", "")
 	t.Setenv("PATH", t.TempDir())
+	// doctor names a signed-in person with no projects unless a test
+	// fakes another identity
+	fakeIdentity(t, &auth.Credential{Console: "rs_test"}, &fakeIdentityGW{email: "someone@example.com"})
 	for _, d := range dirs {
 		if err := os.MkdirAll(filepath.Join(home, d), 0o755); err != nil {
 			t.Fatal(err)

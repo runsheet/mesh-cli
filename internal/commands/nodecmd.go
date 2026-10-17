@@ -29,6 +29,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/auth"
 	"projectmesh.io/mesh-cli/internal/channel"
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/gitdata"
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/latchkey"
 	"projectmesh.io/mesh-cli/internal/node"
@@ -1150,7 +1151,7 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 	// unclaimed and says why (adr-005's amendment 2026-10)
 	// a session waiting on a repo lock names its holder in node.log
 	node.SetRepoLockLogf(logger.Printf)
-	// every session's mesh-context relays on a token file kept fresh
+	// every session's runsheet relays on a token file kept fresh
 	// from the node's rotating bearer (ADR-029)
 	sessionTokens = &node.TokenFiles{Token: gw.Bearer, Logf: logger.Printf}
 	loop.NoCredential = &node.NoCredentials{Log: logger, Now: loop.Now}
@@ -1634,6 +1635,13 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	node.SweepSandbox(ctx, sessionSandbox, found, logger.Printf)
 	loop.Evaluate = evaluateWith(gw, cfg, observed(loop, logger), second, loop, workRoot, fallback, accounts, logger)
 	mainRunner := &node.Runner{GW: gw, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, BatchFallback: &node.TokenFallback{}, Sandbox: sessionSandbox, Notices: validationNotices, Log: logger}
+	// a pushed commit is validated from GitHub's served diff through the
+	// node's shared cache, else from a worktree of the shared clone
+	if cache, err := node.NewServedDiffCache(cfg, logger.Printf); err != nil {
+		logger.Printf("served diff: %v; main validations take worktrees", err)
+	} else {
+		mainRunner.ServedDiff(&gitdata.Client{}, cache)
+	}
 	loop.ValidateBatch = mainRunner.ValidateCandidate
 	loop.ValidateMain = mainRunner.ValidateMainRequest
 	loop.Plan = planWith(gw, cfg, observed(loop, logger), loop, workRoot, accounts, logger)
@@ -1802,13 +1810,13 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	return endRun(err, logger)
 }
 
-// meshContextMCP is the mesh-context MCP server a session is started
+// meshContextMCP is the runsheet MCP server a session is started
 // with: this binary's `mesh mcp-relay` to the gateway's /mcp, on a token
 // file the harness places in the session's own directory and
 // sessionTokens keeps fresh from the credential's bearer for as long as
 // the session runs, so a rotation never cuts a session off its tools
 // (mesh-cli ADR-029). Nil when there is no usable bearer — the session
-// then runs without mesh-context.
+// then runs without runsheet.
 func meshContextMCP(ctx context.Context, gw *gateway.Client) map[string]any {
 	if _, err := gw.Bearer(ctx); err != nil {
 		return nil
@@ -1816,7 +1824,7 @@ func meshContextMCP(ctx context.Context, gw *gateway.Client) map[string]any {
 	return node.MeshContextMCP(meshBinary(), gw.BaseURL)
 }
 
-// sessionTokens keeps every session's mesh-context token file fresh on
+// sessionTokens keeps every session's runsheet token file fresh on
 // the node's bearer (node.TokenFiles, ADR-029): set by `mesh node start`
 // once the platform client is made; nil writes none.
 var sessionTokens *node.TokenFiles

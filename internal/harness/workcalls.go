@@ -139,7 +139,7 @@ func callList(v any) []map[string]any {
 // and the node pushes the head before it hands the finish in.
 const NodeWorkMCP = "mesh-node"
 
-// HostedFinishTools are the hosted mesh-context tools a build session
+// HostedFinishTools are the hosted runsheet tools a build session
 // is not allowed (--disallowedTools): each records the finish or the
 // failure on the platform before the node has pushed.
 var HostedFinishTools = []string{
@@ -203,7 +203,7 @@ func WorkToolReply(name string) (string, bool) {
 }
 
 // nodeFinishes says whether a session finishes on the node's own tools:
-// a build given the hosted mesh-context server.
+// a build given the hosted runsheet server.
 func nodeFinishes(job Job) bool {
 	_, ok := job.MCPServers[BuiltinMCP]
 	return job.Kind == KindBuild && ok

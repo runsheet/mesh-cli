@@ -41,9 +41,9 @@ type PromptInput struct {
 	// budget on when it was handed back (Result.SpentOn, ADR 012
 	// Hand-back), recorded by the node; empty when none was.
 	LastSession string
-	// Project is the mesh-context project (org/slug) the goal belongs to.
+	// Project is the runsheet project (org/slug) the goal belongs to.
 	Project string
-	// MeshContext says the session has the built-in mesh-context server
+	// MeshContext says the session has the built-in runsheet server
 	// (tools.Builtin) and its mesh_* tools for context on demand.
 	MeshContext bool
 	// Services is what the session's pod runs beside it
@@ -92,7 +92,7 @@ func servicesSection(b *strings.Builder, services string) {
 }
 
 // contextRule is the line every prompt carries when the session has
-// mesh-context's tools: the context directory holds only this
+// runsheet's tools: the context directory holds only this
 // session's repos' instructions and its own goal — everything else is
 // fetched on demand, search before you read.
 func contextRule(contextDir, project string) string {
@@ -100,7 +100,7 @@ func contextRule(contextDir, project string) string {
 	if contextDir != "" {
 		where = "`" + contextDir + "/INDEX.md`"
 	}
-	return fmt.Sprintf("%s says what is on disk — just this session's repos' instructions and its own goal — and how to find the rest: search before you read, with the mesh-context server's tools: `mesh_search` (query → slug, title, kind, summary); read a document only when the work touches it, with `mesh_document` (project %q, the document's slug — never a context file's name: a file name is not a slug, `instructions-acme-widgets-agents.md` is slug `agents`). Reach another project with `mesh_projects` and `mesh_documents`, live state with `mesh_items`. The ADRs and the TRD are binding and are searched before any design decision. A build fetches two or three documents, not forty.", where, project)
+	return fmt.Sprintf("%s says what is on disk — just this session's repos' instructions and its own goal — and how to find the rest: search before you read, with the runsheet server's tools: `mesh_search` (query → slug, title, kind, summary); read a document only when the work touches it, with `mesh_document` (project %q, the document's slug — never a context file's name: a file name is not a slug, `instructions-acme-widgets-agents.md` is slug `agents`). Reach another project with `mesh_projects` and `mesh_documents`, live state with `mesh_items`. The ADRs and the TRD are binding and are searched before any design decision. A build fetches two or three documents, not forty.", where, project)
 }
 
 // BuildPrompt renders the session's whole prompt for a build job: the item
@@ -182,7 +182,7 @@ func finishByToolCall(b *strings.Builder, in PromptInput) {
 		item = fmt.Sprintf("<the id of item %d of %s>", in.Seq, in.GoalSlug)
 	}
 	b.WriteString("\n# Finish by tool call\n\n")
-	fmt.Fprintf(b, "End the session by calling the %s server's `mesh_finish` tool (the node's own; the mesh-context server's is not yours to call), once, as your last action: `mesh_finish(item_id=%q, branch=%q, head_sha=<the commit your branch ends on, `git rev-parse HEAD`>)` when you built it, or `mesh_finish(item_id=%q, outcome=\"already_done\", evidence=<the merged PRs or commits and why>)` when main already holds it. ", NodeWorkMCP, item, in.Branch, item)
+	fmt.Fprintf(b, "End the session by calling the %s server's `mesh_finish` tool (the node's own; the runsheet server's is not yours to call), once, as your last action: `mesh_finish(item_id=%q, branch=%q, head_sha=<the commit your branch ends on, `git rev-parse HEAD`>)` when you built it, or `mesh_finish(item_id=%q, outcome=\"already_done\", evidence=<the merged PRs or commits and why>)` when main already holds it. ", NodeWorkMCP, item, in.Branch, item)
 	b.WriteString("When the work cannot be done, call `mesh_fail(item_id, error=<why>)` instead. The call is the finish: the node pushes the branch and hands it in. ")
 	fmt.Fprintf(b, "If the tool is not there or the call errors, finish in your final message instead — an already-done item with its `%s` line, as above — and the node reads that.\n", AlreadyDoneLine)
 }
@@ -251,7 +251,7 @@ type EvaluateInput struct {
 	ContextDir   string
 	ContextFiles []string
 	Project      string
-	// MeshContext says the session has the built-in mesh-context server
+	// MeshContext says the session has the built-in runsheet server
 	// (tools.Builtin) and its mesh_* tools for context on demand.
 	MeshContext bool
 	// Services as on PromptInput.
@@ -529,7 +529,7 @@ func verdictByToolCall(b *strings.Builder, in EvaluateInput) {
 		item = fmt.Sprintf("<the id of item %d of %s>", in.Seq, in.GoalSlug)
 	}
 	b.WriteString("\n# Finish by tool call\n\n")
-	fmt.Fprintf(b, "End the session by calling the mesh-context server's `mesh_verdict` tool, once, as your last action: `mesh_verdict(item_id=%q, passed=<true or false>, notes=<your review>, failed_clauses=[{\"clause\": <the clause, as the acceptance words it>, \"satisfy\": <what would satisfy it>}], readings=[{\"clause\": <a host clause>, \"reading\": <what you measured, when, under what load>}])` — `failed_clauses` one entry per failed clause when you fail it, else empty; `readings` one per host clause (rule 6). The call is the verdict. ", item)
+	fmt.Fprintf(b, "End the session by calling the runsheet server's `mesh_verdict` tool, once, as your last action: `mesh_verdict(item_id=%q, passed=<true or false>, notes=<your review>, failed_clauses=[{\"clause\": <the clause, as the acceptance words it>, \"satisfy\": <what would satisfy it>}], readings=[{\"clause\": <a host clause>, \"reading\": <what you measured, when, under what load>}])` — `failed_clauses` one entry per failed clause when you fail it, else empty; `readings` one per host clause (rule 6). The call is the verdict. ", item)
 	fmt.Fprintf(b, "Write the review and its lines in your final message as well: if the tool is not there or the call errors, the node reads the `%s` or `%s` line, the `%s` lines and the `%s` lines from it.\n", VerdictPass, VerdictFail, ClauseFailed, ClauseReading)
 }
 
@@ -668,7 +668,7 @@ func ParseVerdict(text string) (passed bool, notes string, ok bool) {
 // PlanInput is what a planner prompt is made of: the goal, its project's
 // context and repos, and the budget the graph has to fit.
 // ToolHint is one tool a research or plan session is served beside
-// mesh-context (goal the-director-and-the-planner-get-their-tools): the
+// runsheet (goal the-director-and-the-planner-get-their-tools): the
 // prompt names it and says when to reach for it. A known search tool
 // (brave, perplexity, by name prefix) gets its use written for it by
 // the prompt itself, whatever Use holds; any other tool is named with
@@ -697,10 +697,10 @@ type PlanInput struct {
 	ContextFiles []string
 	// Blocked: on a re-plan, what went wrong the last time.
 	Blocked string
-	// MeshContext says the session has the built-in mesh-context server
+	// MeshContext says the session has the built-in runsheet server
 	// (tools.Builtin) and its mesh_* tools for context on demand.
 	MeshContext bool
-	// Tools are the tools this session is served beside mesh-context
+	// Tools are the tools this session is served beside runsheet
 	// (internal/node's SelectTools, by role planner): the prompt names
 	// each and says when to search. Empty when none is attached.
 	Tools []ToolHint
@@ -1011,7 +1011,7 @@ func toolsSection(hints []ToolHint, use func(ToolHint) string) string {
 	}
 	var b strings.Builder
 	b.WriteString("# Your tools\n\n")
-	b.WriteString("Beside mesh-context, this session is served:\n\n")
+	b.WriteString("Beside runsheet, this session is served:\n\n")
 	for _, t := range hints {
 		fmt.Fprintf(&b, "- `%s`: %s\n", t.Name, use(t))
 	}
@@ -1198,7 +1198,7 @@ func planByToolCall(b *strings.Builder, in PlanInput) {
 		goal = fmt.Sprintf("<the id of goal %s>", in.GoalSlug)
 	}
 	b.WriteString("\n# Finish by tool call\n\n")
-	fmt.Fprintf(b, "End the session by calling the mesh-context server's `mesh_plan` tool, once, as your last action: `mesh_plan(goal_id=%q, items=<the graph's items>, questions=<its questions>)`, each item the same object as in the JSON block above (seq, title, brief, acceptance, depends_on, repo, base_ref, model, model_reason, and atomic or precondition when it has one), and `checkpoints` or `split` beside them when rule 3 asks for them. The call is the plan. ", goal)
+	fmt.Fprintf(b, "End the session by calling the runsheet server's `mesh_plan` tool, once, as your last action: `mesh_plan(goal_id=%q, items=<the graph's items>, questions=<its questions>)`, each item the same object as in the JSON block above (seq, title, brief, acceptance, depends_on, repo, base_ref, model, model_reason, and atomic or precondition when it has one), and `checkpoints` or `split` beside them when rule 3 asks for them. The call is the plan. ", goal)
 	b.WriteString("Write the ```json fenced block in your final message as well: if the tool is not there or the call errors, the node reads the graph from it.\n")
 }
 
@@ -1438,10 +1438,10 @@ type ResearchInput struct {
 	Repos        map[string]string
 	ContextDir   string
 	ContextFiles []string
-	// MeshContext says the session has the built-in mesh-context server
+	// MeshContext says the session has the built-in runsheet server
 	// (tools.Builtin) and its mesh_* tools for context on demand.
 	MeshContext bool
-	// Tools are the tools this session is served beside mesh-context
+	// Tools are the tools this session is served beside runsheet
 	// (internal/node's SelectTools, by role director): the prompt names
 	// each and says when to search. Empty when none is attached.
 	Tools []ToolHint
@@ -1656,7 +1656,7 @@ func researchGoalRules(b *strings.Builder, in ResearchInput) {
 // strategy bet with evidence, scopes it to a goal or an initiative,
 // sizes and risks it, and names the signal it should move — not a bare
 // goal proposal. The platform hands the direction's earlier pitches'
-// feedback back through mesh-context's mesh_projects read, so the session
+// feedback back through runsheet's mesh_projects read, so the session
 // answers it before pitching again, never re-pitches a declined idea,
 // and grounds its bet and its estimate in what the project already
 // knows.
@@ -1829,7 +1829,7 @@ type RebaseInput struct {
 	ContextDir   string
 	ContextFiles []string
 	Project      string
-	// MeshContext says the session has the built-in mesh-context server
+	// MeshContext says the session has the built-in runsheet server
 	// (tools.Builtin) and its mesh_* tools for context on demand.
 	MeshContext bool
 	// Services as on PromptInput.

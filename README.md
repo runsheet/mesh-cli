@@ -23,21 +23,21 @@ mesh mcp install --client cursor
 With no `--client` it installs into every client it finds on the
 machine (config dir present, or its binary on `PATH`); `--client all`
 is every client regardless. Each writes two things from one source
-(`skills/mesh/SKILL.md`, embedded): the `mesh` server entry
+(`skills/mesh/SKILL.md`, embedded): the `runsheet` server entry
 (`<this binary> mcp` over stdio) in the client's own config file and
 format, and the same instructions rendered for how that client reads
 them —
 
-- **claude**: `~/.claude.json`'s `mcpServers.mesh` (or
+- **claude**: `~/.claude.json`'s `mcpServers.runsheet` (or
   `$CLAUDE_CONFIG_DIR/.claude.json`), and the skill itself at
   `$CLAUDE_CONFIG_DIR/skills/mesh/SKILL.md`, or
   `~/.claude/skills/mesh/SKILL.md` when that is unset.
-- **codex**: `[mcp_servers.mesh]` in `$CODEX_HOME/config.toml` (or
+- **codex**: `[mcp_servers.runsheet]` in `$CODEX_HOME/config.toml` (or
   `~/.codex/config.toml`), a custom prompt at
   `$CODEX_HOME/prompts/mesh.md` (`/prompts:mesh <form> $ARGUMENTS`),
   and a `mesh`-marked section spliced into `$CODEX_HOME/AGENTS.md` —
   the rest of that file, yours, is untouched.
-- **cursor**: `~/.cursor/mcp.json`'s `mcpServers.mesh`, a user skill at
+- **cursor**: `~/.cursor/mcp.json`'s `mcpServers.runsheet`, a user skill at
   `~/.cursor/skills/mesh/SKILL.md` and a command at
   `~/.cursor/commands/mesh.md`, both keeping the `/mesh` form Claude
   Code uses. Nothing is written under the directory you run it from.
@@ -49,23 +49,47 @@ writes nothing. It refuses to overwrite a whole instruction file that
 differs from the one mesh-cli ships unless you pass `--force`
 (docs/adr/adr-025-mesh-mcp-install-is-one-table-per-client.md).
 
-`mesh mcp doctor` checks it afterwards, reading only: for each client it
-finds, a line saying whether mesh is configured and what it points at,
-then one line per instruction file, `current`, `stale` or `missing` —
+Runsheet's server is one entry per client, named `runsheet`. An earlier
+install kept it under a legacy name — `mesh`, `mesh-context` or
+`prologue` — and an install now removes every other entry of the
+client's servers map that is runsheet's (it runs a `mesh` binary's
+`mcp` or `mcp-relay`, or its URL is `/mcp` on `api.runsheet.dev` or the
+configured gateway), saying `<client>: removed mesh from <path>`. A
+legacy name pointing at something else is not runsheet's and is kept:
+`<client>: kept mesh (not runsheet's)`.
+
+`mesh mcp doctor` checks it afterwards, reading only. It opens with who
+the runsheet server acts as and what it reaches — the person, by the
+identity rule of runsheet ADR 056 and Latchkey ADR 013: an `rs_*`
+token's user, or a machine credential's operator via the machine — and
+the projects of the person's orgs; then, for each client it finds, a
+line saying whether runsheet is configured and what it points at, and
+one line per instruction file, `current`, `stale` or `missing` —
 
 ```text
+identity: you@example.com (person, via machine 4f1c…)
+projects: runsheet/mesh, runsheet/runsheet
 codex: configured /usr/local/bin/mesh (/home/you/.codex/config.toml)
   /home/you/.codex/prompts/mesh.md: current
   /home/you/.codex/AGENTS.md: stale
-cursor: missing in /home/you/.cursor/mcp.json
+cursor: duplicate runsheet entries: runsheet, mesh (/home/you/.cursor/mcp.json); run mesh mcp install
 ```
+
+With no credential the first line is `identity: not signed in; run
+mesh auth login`; a gateway that cannot answer is `identity: <email>
+(projects unavailable: <err>)` and the client lines still follow. A
+client whose runsheet entry sits beside a legacy one is `duplicate`;
+one with only a legacy entry is `legacy`; with neither it is `missing
+in <path>`.
 
 A whole file is current when it is byte-for-byte what this binary
 renders; the AGENTS.md section when the text between its markers is —
-what you wrote outside them never counts. `--json` prints the same as a
-list of reports (`client`, `status`, `command`, `url`, `path`, `error`,
-`instructions`). It exits 1 when any client found is not configured and
-current — an entry missing or unparseable, an instruction stale or
+what you wrote outside them never counts. `--json` prints the same as
+`{"identity": {"person", "via", "projects", "error"}, "clients": [...]}`,
+each client a report (`client`, `status`, `command`, `url`, `path`,
+`error`, `duplicates`, `instructions`). It exits 1 when no credential
+loads, or when any client found is not configured and current — an
+entry missing, unparseable, duplicate or legacy, an instruction stale or
 missing — so `mesh mcp install` again is the fix; 0 otherwise.
 
 With no local binary to run, `mesh mcp install --remote` writes each
@@ -1578,6 +1602,33 @@ When the platform stalls an item first (its 45-minute heartbeat
 window) while the host is overloaded, the node's `claim lost (…)` line
 names the overload too.
 
+### A node low on disk claims nothing
+
+`disk:` in `~/.mesh/node.yaml` sets the free space under which this
+node claims nothing (ADR-035):
+
+```yaml
+disk:
+  free_min_gb: 10           # default, GiB; free space under it claims nothing
+  path: /home/chris/.mesh/work  # default: the work root
+```
+
+Each left out, or `free_min_gb` 0, takes its default; a negative floor
+is refused at start naming `disk.free_min_gb`. Read again every tick,
+a change logged once — `disk: free_min_gb 10 → 20`. Every tick, before
+any claim, the node reads the path's free space; under the floor it
+claims nothing of **any** kind — builds, evaluations, rebases, plans,
+research, merge batch candidates and main validations — while what
+already runs runs on. It says so once as it crosses, at its first tick
+when it starts under the floor:
+
+```
+disk_low: /home/chris/.mesh/work 3.0GiB free < floor 10.0GiB; claiming nothing
+disk ok: /home/chris/.mesh/work 40.0GiB free >= floor 10.0GiB; claiming again
+```
+
+Free space and the next tick claims again; no restart is needed.
+
 ### Capacity counts live sessions
 
 The capacity check counts the build sessions **alive on the host** —
@@ -1950,11 +2001,19 @@ the platform half is runsheet goal
 The kind rides the attestation's command as `environmentKind`
 (`specs/contracts/recordValidationAttestation.json`) and opens every
 reason the node sends with it — `failWorkItem`'s
-(`tool_missing: validation failed: step check exited 127`),
+(``tool_missing: validation failed: step check exited 127: command not
+found: tsc (in `npm run check`)``),
 `releaseWorkItem`'s (`credential_refused: github credential: …`) and a
 self-update's `updateError`. node.log's `validation step <name> exited
 <code> in <ms>ms` ends ` (<kind>)`. Any other non-zero exit is a code
 failure and carries no kind.
+
+A `tool_missing` reason names the missing tool, read from the shell's
+own "not found" (sh, bash, or Go's `executable file not found in
+$PATH`), and the step's command — ``command not found: <tool> (in
+`<command>`)``, or the command alone when the output names no tool — on
+a build's `failWorkItem` and a merge batch candidate's or main
+validation's failure alike (ADR-030's amendment 2026-10-16).
 
 ### Tool results
 
@@ -2333,6 +2392,12 @@ services:
   `postgis`) with `-c fsync=off -c synchronous_commit=off -c
   full_page_writes=off`, MySQL/MariaDB with
   `--innodb-flush-log-at-trx-commit=0 --sync-binlog=0 --skip-log-bin`.
+- **A writable PGDATA**: a Postgres (`postgres`, `postgis`) service with
+  no `PGDATA` or `POSTGRES_INITDB_ARGS` of its own, from either source,
+  gets `PGDATA=/tmp/pgdata` and `POSTGRES_INITDB_ARGS=--no-sync` — under
+  keep-id the image's `/var/lib/postgresql/data` belongs to the pod's
+  user and the entrypoint cannot `chmod` it; a service that sets either
+  variable keeps its own value.
 - **Registries**: an image's registry (a bare `postgres:16` is
   `docker.io`) must match the allow-list — by default `docker.io`,
   `ghcr.io`, `*.pkg.dev`, `quay.io`. A disallowed image is returned as a

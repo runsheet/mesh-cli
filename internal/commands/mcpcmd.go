@@ -8,11 +8,16 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"projectmesh.io/mesh-cli/internal/auth"
+	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/latchkey"
 	"projectmesh.io/mesh-cli/internal/mcpinstall"
 	"projectmesh.io/mesh-cli/internal/meshmcp"
 	"projectmesh.io/mesh-cli/internal/node"
@@ -210,17 +215,165 @@ var mcpInstallCmd = &cobra.Command{
 
 var mcpDoctorJSON bool
 
-// mcpDoctorCmd is `mesh mcp doctor`: for each client of the install
-// table found on this machine (mcpinstall.Detected), whether its MCP
-// file holds mesh's entry and the binary or URL it points at, and each
-// instruction file current, stale or missing — read only, an
-// unparseable file reported and left alone (ADR-025, Doctor). --json
-// prints the []mcpinstall.Report. It exits 1 when any client found is
-// not Healthy: its entry missing or unparseable, or an instruction
-// stale or missing.
+// mcpLoadCredential is the credential `mesh mcp doctor` names the
+// identity of — MESH_TOKEN, else ~/.mesh/token; tests load a fake.
+var mcpLoadCredential = auth.LoadCredential
+
+// identityGateway is what `mesh mcp doctor` asks the gateway: who the
+// bearer is, and the person's orgs and their projects.
+type identityGateway interface {
+	Me(ctx context.Context) (*gateway.Person, error)
+	MyOrgs(ctx context.Context) ([]gateway.Org, error)
+	Projects(ctx context.Context, orgID string) ([]gateway.Project, error)
+}
+
+// mcpIdentityGateway is the gateway client on cred; tests answer
+// without the network.
+var mcpIdentityGateway = func(cred *auth.Credential) identityGateway {
+	return gateway.NewWithSource(gatewayURL(), auth.NewSource(cred, refreshMachine))
+}
+
+// mcpIdentity is who the runsheet server acts as and what it reaches,
+// by the identity rule of runsheet ADR 056 and Latchkey ADR 013: a
+// person's MCP resolves to the person and their orgs; a machine's
+// subject is the machine with its operator beside it, so the person is
+// the operator, Via the machine. A session token is never a person and
+// is never what ~/.mesh/token holds.
+type mcpIdentity struct {
+	// Person is the person's email (else their id); "" not signed in.
+	Person string `json:"person"`
+	// Via is `machine <id>` for a Latchkey machine credential.
+	Via string `json:"via,omitempty"`
+	// Projects are the person's orgs' projects, `<org>/<slug>`, sorted.
+	Projects []string `json:"projects"`
+	// Error is why the identity or its projects could not be read:
+	// `not signed in; run mesh auth login`, or the gateway's error.
+	Error string `json:"error,omitempty"`
+	// signedIn is false when no credential loads; doctor exits 1.
+	signedIn bool
+}
+
+// notSignedIn is the identity line's reason with no credential.
+const notSignedIn = "not signed in; run mesh auth login"
+
+// doctorIdentity loads the credential and asks the gateway who it is:
+// a console token's user, a machine credential's operator (the token
+// file's userEmail, else the gateway's me, else its operator id), then
+// each of the person's orgs' projects. A gateway error is kept on
+// Error, never fatal.
+func doctorIdentity(ctx context.Context) mcpIdentity {
+	cred, err := mcpLoadCredential()
+	if err != nil || cred == nil {
+		return mcpIdentity{Projects: []string{}, Error: notSignedIn}
+	}
+	id := mcpIdentity{Projects: []string{}, signedIn: true}
+	if cred.IsMachine() {
+		m := cred.Machine
+		id.Person = strings.TrimSpace(m.UserEmail)
+		machine := nodeCredentialID(cred)
+		if machine == "" {
+			machine = "unnamed"
+		}
+		id.Via = "machine " + machine
+	}
+	gw := mcpIdentityGateway(cred)
+	if id.Person == "" {
+		me, err := gw.Me(ctx)
+		switch {
+		case err != nil:
+			id.Error = err.Error()
+		case me != nil && strings.TrimSpace(me.Email) != "":
+			id.Person = strings.TrimSpace(me.Email)
+		case me != nil:
+			id.Person = strings.TrimSpace(me.ID)
+		}
+	}
+	if id.Person == "" && cred.IsMachine() {
+		id.Person = operatorID(cred)
+	}
+	if id.Person == "" {
+		id.Person = "unknown"
+	}
+	if id.Error != "" {
+		return id
+	}
+	orgs, err := gw.MyOrgs(ctx)
+	if err != nil {
+		id.Error = err.Error()
+		return id
+	}
+	for _, o := range orgs {
+		ps, err := gw.Projects(ctx, o.ID)
+		if err != nil {
+			id.Error = err.Error()
+			id.Projects = []string{}
+			return id
+		}
+		name := o.Name()
+		if name == "" {
+			name = o.Slug
+		}
+		for _, p := range ps {
+			id.Projects = append(id.Projects, name+"/"+p.Slug)
+		}
+	}
+	sort.Strings(id.Projects)
+	return id
+}
+
+// operatorID is a machine credential's operator: the token file's
+// userId, else the access token's operator.sub, else "".
+func operatorID(cred *auth.Credential) string {
+	if id := strings.TrimSpace(cred.Machine.UserID); id != "" {
+		return id
+	}
+	if claims, err := latchkey.ParseClaims(cred.Machine.AccessToken); err == nil {
+		return strings.TrimSpace(claims.Operator.Sub)
+	}
+	return ""
+}
+
+// identityLines are doctor's first lines: `identity: <email> (person)`
+// or `identity: <email> (person, via machine <id>)` and `projects:
+// <org>/<slug>, …` (or `none`); `identity: not signed in; run mesh auth
+// login`; or, the gateway failing, `identity: <email> (projects
+// unavailable: <err>)`.
+func identityLines(id mcpIdentity) []string {
+	switch {
+	case !id.signedIn:
+		return []string{"identity: " + notSignedIn}
+	case id.Error != "":
+		return []string{fmt.Sprintf("identity: %s (projects unavailable: %s)", id.Person, id.Error)}
+	}
+	kind := "person"
+	if id.Via != "" {
+		kind += ", via " + id.Via
+	}
+	projects := "none"
+	if len(id.Projects) > 0 {
+		projects = strings.Join(id.Projects, ", ")
+	}
+	return []string{
+		fmt.Sprintf("identity: %s (%s)", id.Person, kind),
+		"projects: " + projects,
+	}
+}
+
+// mcpDoctorCmd is `mesh mcp doctor`: first who the runsheet server
+// will act as and what it reaches (doctorIdentity: the person, the
+// machine it is via, the person's projects; runsheet ADR 056, Latchkey
+// ADR 013), then for each client of the install table found on this
+// machine (mcpinstall.Detected), whether its MCP file holds runsheet's
+// entry and the binary or URL it points at, and each instruction file
+// current, stale or missing — read only, an unparseable file reported
+// and left alone (ADR-025, Doctor). --json prints `{"identity":
+// {person, via, projects, error}, "clients": [...mcpinstall.Report]}`.
+// It exits 1 when no credential loads, or when any client found is not
+// Healthy: its entry missing, unparseable, duplicate or legacy, or an
+// instruction stale or missing. A gateway error is printed, not fatal.
 var mcpDoctorCmd = &cobra.Command{
 	Use:   "doctor",
-	Short: "Say, per client found, whether mesh is configured, what it points at and whether its instructions are current",
+	Short: "Say who runsheet acts as and, per client found, whether it is configured, what it points at and whether its instructions are current",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := cmd.OutOrStdout()
@@ -228,17 +381,30 @@ var mcpDoctorCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		ctx := cmd.Context()
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		id := doctorIdentity(ctx)
 		reports := mcpinstall.Doctor(mcpinstall.Clients(meshmcp.Skill), home)
+		if reports == nil {
+			reports = []mcpinstall.Report{}
+		}
 		if mcpDoctorJSON {
-			if reports == nil {
-				reports = []mcpinstall.Report{}
-			}
 			enc := json.NewEncoder(out)
 			enc.SetIndent("", "  ")
-			if err := enc.Encode(reports); err != nil {
+			if err := enc.Encode(struct {
+				Identity mcpIdentity         `json:"identity"`
+				Clients  []mcpinstall.Report `json:"clients"`
+			}{id, reports}); err != nil {
 				return err
 			}
 		} else {
+			for _, l := range identityLines(id) {
+				fmt.Fprintln(out, l)
+			}
 			if len(reports) == 0 {
 				fmt.Fprintln(out, "no client found")
 			}
@@ -255,17 +421,26 @@ var mcpDoctorCmd = &cobra.Command{
 				unhealthy = append(unhealthy, r.Client)
 			}
 		}
+		var problems []string
+		if !id.signedIn {
+			problems = append(problems, notSignedIn)
+		}
 		if len(unhealthy) > 0 {
+			problems = append(problems, fmt.Sprintf("not configured and current: %s; run mesh mcp install", strings.Join(unhealthy, ", ")))
+		}
+		if len(problems) > 0 {
 			cmd.SilenceUsage = true
-			return fmt.Errorf("not configured and current: %s; run mesh mcp install", strings.Join(unhealthy, ", "))
+			return errors.New(strings.Join(problems, "; "))
 		}
 		return nil
 	},
 }
 
 // doctorLine is one client's line: `<client>: configured <binary or
-// url> (<path>)`, `<client>: missing in <path>`, or `<client>:
-// unparseable <path> (<err>); left alone`.
+// url> (<path>)`, `<client>: duplicate runsheet entries: runsheet, mesh
+// (<path>); run mesh mcp install`, `<client>: legacy entry mesh
+// (<path>); run mesh mcp install`, `<client>: missing in <path>`, or
+// `<client>: unparseable <path> (<err>); left alone`.
 func doctorLine(r mcpinstall.Report) string {
 	switch r.Status {
 	case mcpinstall.Configured:
@@ -277,6 +452,13 @@ func doctorLine(r mcpinstall.Report) string {
 			target = "(no command or url)"
 		}
 		return fmt.Sprintf("%s: configured %s (%s)", r.Client, target, r.Path)
+	case mcpinstall.Duplicate:
+		names := append([]string{mcpinstall.ServerName}, r.Duplicates...)
+		return fmt.Sprintf("%s: duplicate runsheet entries: %s (%s); run mesh mcp install",
+			r.Client, strings.Join(names, ", "), r.Path)
+	case mcpinstall.Legacy:
+		return fmt.Sprintf("%s: legacy entry %s (%s); run mesh mcp install",
+			r.Client, strings.Join(r.Duplicates, ", "), r.Path)
 	case mcpinstall.Unparseable:
 		return fmt.Sprintf("%s: unparseable %s (%s); left alone", r.Client, r.Path, r.Error)
 	default:

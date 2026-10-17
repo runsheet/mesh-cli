@@ -39,7 +39,7 @@ type Rebaser struct {
 	WorkRoot string
 	// BuildCache is a host validation's GOCACHE; "" is BuildCacheDir().
 	BuildCache string
-	// MCP are the MCP servers the session gets (mesh-context).
+	// MCP are the MCP servers the session gets (runsheet).
 	MCP map[string]any
 	// MaxBudgetUSD caps the session (5 by default).
 	MaxBudgetUSD float64

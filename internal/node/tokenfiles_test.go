@@ -270,7 +270,7 @@ func (c *rpcClient) tool(id int, name string, args map[string]any) string {
 }
 
 // The goal's proof (mesh-cli ADR-029): a session started 50 minutes
-// before the node's token rotates — its mesh-context the relay
+// before the node's token rotates — its runsheet the relay
 // MeshContextMCP renders, placed on a token file in its session dir as
 // the harness places it and kept by TokenFiles — still calls
 // mesh_progress and mesh_finish successfully after the rotation, when
@@ -298,7 +298,7 @@ func TestSessionStarted50MinutesBeforeRotationFinishesAfterIt(t *testing.T) {
 	srv := servers[harness.BuiltinMCP].(map[string]any)
 	args := srv["args"].([]string)
 	if srv["type"] != "stdio" || len(args) != 5 || args[0] != harness.RelayCommand || args[2] != f.URL()+"/mcp" || args[4] != path {
-		t.Fatalf("mesh-context = %v", srv)
+		t.Fatalf("runsheet = %v", srv)
 	}
 	for _, a := range args {
 		if strings.Contains(a, "rs_old") {

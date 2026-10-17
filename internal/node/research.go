@@ -20,7 +20,7 @@ import (
 
 // Director is the session that acts on one direction of a project
 // (runsheet trd §6c): the project's repos checked out read-only, its
-// context from mesh-context, the words of the direction and the goals the
+// context from runsheet, the words of the direction and the goals the
 // project has already had; a fresh `claude -p` that reads and then
 // writes what it came to as JSON, handed in against the direction with
 // RecordDirectionResearch, the session's cost with it. A propose-mode
@@ -39,7 +39,7 @@ type Director struct {
 	WS       Workspacer
 	Cfg      *Config
 	WorkRoot string
-	// MCP is the built-in MCP server the session gets (mesh-context);
+	// MCP is the built-in MCP server the session gets (runsheet);
 	// the tools attached for the director role are rendered beside it
 	// (SelectTools, trd §3 Tools).
 	MCP map[string]any
@@ -138,7 +138,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	}
 	acct.SetLabel("project "+project.Slug, string(harness.KindResearch))
 	defer unlessDetached(ctx, acct.Cleanup)
-	// the tools attached for the director role, beside mesh-context: a
+	// the tools attached for the director role, beside runsheet: a
 	// required one this node cannot start hands in an empty research
 	// before anything is fetched, and the loop leaves the direction to a
 	// node that can

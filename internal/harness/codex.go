@@ -58,8 +58,8 @@ type Codex struct {
 	// Codex's sandbox (SandboxProbe); nil is this executable's
 	// `mesh sandbox-probe`, which binds a loopback socket.
 	Probe []string
-	// Tokens keeps the session's mesh-context token file, in its
-	// CODEX_HOME, fresh when the job's mesh-context is the relay
+	// Tokens keeps the session's runsheet token file, in its
+	// CODEX_HOME, fresh when the job's runsheet is the relay
 	// (MeshContextRelay, mesh-cli ADR-029).
 	Tokens TokenKeeper
 	// Sandbox, when set, runs every session in its own pod (ADR 007), as
@@ -401,7 +401,7 @@ func codexOwnServers(job Job) map[string]any {
 }
 
 // codexConfig is the session's config.toml and the environment it
-// needs: the job's own servers (the built-in mesh-context) by
+// needs: the job's own servers (the built-in runsheet) by
 // CodexMCPConfig, then its console tools (job.Tools) by the Codex
 // renderer, tools.CodexConfig — bearer_token_env_var and
 // env_http_headers naming MESH_TOOL_* variables, never Claude Code's
@@ -511,7 +511,7 @@ type codexHome struct {
 	// the job named.
 	login string
 	orig  []byte
-	// tokenFile is the mesh-context relay's token file in dir, and
+	// tokenFile is the runsheet relay's token file in dir, and
 	// releaseToken stops keeping it (placeMeshContext); close removes it.
 	tokenFile    string
 	releaseToken func(remove bool)
@@ -640,12 +640,12 @@ func jobCodexHome(env []string) string {
 // close writes a refreshed plan login back to its home, and removes the
 // directory the harness made — never one the job named (owned false):
 // its own AccountSession removes that.
-// placeToken puts the job's mesh-context relay on a token file in the
+// placeToken puts the job's runsheet relay on a token file in the
 // home, kept by keeper, and returns the job as config.toml renders it.
 func (h *codexHome) placeToken(job Job, keeper TokenKeeper) (Job, error) {
 	job, path, release, err := placeMeshContext(job, keeper, h.dir, false, "")
 	if err != nil {
-		return job, fmt.Errorf("mesh-context token: %w", err)
+		return job, fmt.Errorf("runsheet token: %w", err)
 	}
 	h.tokenFile, h.releaseToken = path, release
 	return job, nil
@@ -940,7 +940,7 @@ func codexEnd(ctx context.Context, res Result, failure string, waitErr error, er
 
 // BuiltinMCP is the MCP server the node attaches to every session
 // itself: the platform's context server (tools.Builtin).
-const BuiltinMCP = "mesh-context"
+const BuiltinMCP = tools.Builtin
 
 // PreflightTimeout caps each step of a Codex preflight.
 const PreflightTimeout = 10 * time.Second

@@ -178,7 +178,7 @@ func TestUsageReadingPairsLegacyByCost(t *testing.T) {
 // the console (ADR-006's amendment 2026-10-03). A tool served and never
 // called adds nothing to either.
 func TestUsageReadingCountsToolCallsPerKind(t *testing.T) {
-	const log = `mesh node: 2026/10/03 02:00:00 project runsheet/scout: usage research {"sessionId":"r1","inputTokens":10000,"cacheReadTokens":5000,"listCostCents":30,"tools":[{"tool":"brave","calls":3,"errors":1,"ms":1500},{"tool":"mesh-context","calls":4,"errors":0,"ms":200},{"tool":"perplexity","calls":0,"errors":0,"ms":0}]}
+	const log = `mesh node: 2026/10/03 02:00:00 project runsheet/scout: usage research {"sessionId":"r1","inputTokens":10000,"cacheReadTokens":5000,"listCostCents":30,"tools":[{"tool":"brave","calls":3,"errors":1,"ms":1500},{"tool":"runsheet","calls":4,"errors":0,"ms":200},{"tool":"perplexity","calls":0,"errors":0,"ms":0}]}
 mesh node: 2026/10/03 03:00:00 project runsheet/scout: usage research {"sessionId":"r2","inputTokens":20000,"cacheReadTokens":5000,"listCostCents":40,"tools":[{"tool":"brave","calls":2,"errors":0,"ms":900},{"tool":"perplexity","calls":1,"errors":0,"ms":700},{"tool":"mesh-context","calls":2,"errors":0,"ms":100}]}
 `
 	u, err := ReadUsage(strings.NewReader(log), UsageQuery{From: day("2026-10-03"), To: day("2026-10-04")})

@@ -19,7 +19,7 @@ import (
 
 // Planner is the session that compiles a goal into its graph (mesh-specs
 // prd, the planner; trd §5 phase 2): the project's repos checked out
-// read-only, its context from mesh-context, the statement and the acceptance; a
+// read-only, its context from runsheet, the statement and the acceptance; a
 // fresh `claude -p` that reads and then writes the items as JSON; the
 // graph handed in with PlanGoal, the session's cost with it. A goal
 // whose plan cannot be read three times is left in planning and said so.
@@ -29,7 +29,7 @@ type Planner struct {
 	WS       Workspacer
 	Cfg      *Config
 	WorkRoot string
-	// MCP is the built-in MCP server the session gets (mesh-context);
+	// MCP is the built-in MCP server the session gets (runsheet);
 	// the tools attached for the planner role are rendered beside it
 	// (SelectTools, trd §3 Tools).
 	MCP map[string]any
@@ -818,7 +818,7 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 		return nil, nil, nil, nil, nil, nil, nil, 0, nil, err
 	}
 	defer unlessDetached(ctx, acct.Cleanup)
-	// the tools attached for the planner role, beside mesh-context: a
+	// the tools attached for the planner role, beside runsheet: a
 	// required one this node cannot start starts no session, and the
 	// goal's plan is left for a node that can — chosen before the prompt
 	// is rendered, so it can name them (ToolHint, the-director-and-the-

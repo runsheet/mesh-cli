@@ -16,7 +16,7 @@ import (
 )
 
 // codexSecret is the test's credential: an auth.json token, a tool's
-// secret and the mesh-context bearer all carry it, and it must be in no
+// secret and the runsheet bearer all carry it, and it must be in no
 // argument and no log line.
 const codexSecret = "sk-codex-test-secret-0123456789"
 
@@ -200,7 +200,7 @@ func TestCodexRunsInTheSandbox(t *testing.T) {
 		t.Fatalf("auth.json in CODEX_HOME = %q", files["auth.json"])
 	}
 	cfg := string(files["config.toml"])
-	if !strings.Contains(cfg, "[mcp_servers.mesh-context]") || !strings.Contains(cfg, filepath.Join(home, relayScriptName)) ||
+	if !strings.Contains(cfg, "[mcp_servers.runsheet]") || !strings.Contains(cfg, filepath.Join(home, relayScriptName)) ||
 		!strings.Contains(cfg, filepath.Join(codexHome, TokenFileName)) || strings.Contains(cfg, bearerPrefix) {
 		t.Fatalf("config.toml = %s", cfg)
 	}
