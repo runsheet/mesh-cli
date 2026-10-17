@@ -14,7 +14,7 @@ import (
 // the goal's evidence named after dl360's disk filled on 2026-10-15 and
 // the merge queue deadlocked.
 type Finding struct {
-	// Kind is disk, scratch, dead_checkout or version.
+	// Kind is disk, scratch, dead_checkout, version or kept_sessions.
 	Kind string `json:"kind"`
 	// Severity is ok, warn or critical.
 	Severity  string    `json:"severity"`

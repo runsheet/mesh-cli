@@ -1,6 +1,45 @@
 package node
 
-import "context"
+import (
+	"context"
+	"errors"
+	"fmt"
+	"path/filepath"
+	"strings"
+)
+
+// RebaseSuffix ends a rebase checkout's directory: <root>/<goal>/<seq>-rebase.
+const RebaseSuffix = "-rebase"
+
+// RebaseWorkspaceSpec is a rebase's own checkout of the item item names:
+// a fresh detached worktree at <root>/<goal>/<seq>-rebase beside the
+// build's <root>/<goal>/<seq> (ADR-028, A rebase gets its own worktree),
+// so a build checkout deleted, swept or left pointing at a pruned
+// worktree registration is never read, written or authorized by the
+// rebase. Root and Repos stay the item's, so the repo lock and the
+// shared clone are the build's.
+func RebaseWorkspaceSpec(item WorkspaceSpec) WorkspaceSpec {
+	s := item
+	s.Path = filepath.Join(item.Root, item.GoalSlug, fmt.Sprintf("%d%s", item.Seq, RebaseSuffix))
+	return s
+}
+
+// isRebaseDir is whether dir is a rebase checkout (RebaseWorkspaceSpec):
+// an adopted session an older node ran in the item's own checkout is
+// not, and that checkout is never removed after it.
+func isRebaseDir(dir string) bool {
+	return strings.HasSuffix(filepath.Clean(dir), RebaseSuffix)
+}
+
+// rebaseWorktrees makes and removes a rebase's checkout (*Git).
+type rebaseWorktrees interface {
+	AddRebaseWorktree(ctx context.Context, repo, dir, branch string) error
+	RemoveWorkspace(ctx context.Context, dir string) error
+}
+
+// ErrNoRebaseWorktrees is a Rebaser whose Workspacer cannot make a
+// rebase's worktree.
+var ErrNoRebaseWorktrees = errors.New("the node's workspace makes no rebase worktrees")
 
 // AddRebaseWorktree checks branch out at dir as a fresh detached worktree
 // of the repo's shared clone at origin/<branch>, as AddCandidateWorktree

@@ -15,9 +15,10 @@ func TestRebasePromptContract(t *testing.T) {
 	for _, want := range []string{
 		"REBASED: <sha>\n   RESOLVED: <file>, <file>",
 		"REBASE FAILED: <why>",
-		"git push --force-with-lease origin mesh/ship-it-2",
+		"git push --force-with-lease=mesh/ship-it-2:origin/mesh/ship-it-2 origin HEAD:refs/heads/mesh/ship-it-2",
+		"a fresh checkout of acme/widgets made for this rebase alone",
 		"git rebase origin/main",
-		"git checkout -B mesh/ship-it-2 origin/mesh/ship-it-2",
+		"git checkout --detach origin/mesh/ship-it-2",
 		"never drop either side's change",
 		"go test ./... passes",
 		"<<<<<<< main.go",
