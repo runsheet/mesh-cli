@@ -615,3 +615,20 @@ the session's pod before it; a failure evaluating on Claude),
 run by `scripts/e2e-sandbox.sh` (docs/e2e-sandbox.md, *The Codex
 case*), whose path runs over the fake runtime in every `go test` as
 `TestCodexEvaluationInAPodOverTheFake`.
+
+## Amendment 2026-10-17: the start-up sweep covers a host session's scratch
+
+[ADR-036](adr-036-a-host-sessions-scratch-dies-with-the-session.md)
+(goal a-host-sessions-scratch-dies-with-the-session). The sweep above,
+`sandbox.Sweep`, still runs on a sandboxed node alone. Beside it, on
+every node, sandboxed or not, `mesh node start` now runs the scratch
+sweep (`node.SweepScratch`), right after `SweepSandbox` and with the
+same found sessions. That sweep removes every dir under the scratch root
+`<work root>/.scratch` and the node's own `mesh-session-`, `mesh-gh-`,
+`mesh-claude-` and `mesh-node-*` dirs under `/tmp`. It keeps what a
+found session names, a path held live, another user's dir and a symlink,
+and it logs `scratch: swept <n> dirs, <bytes> bytes at start (<k> kept)`.
+`mesh-home-*` stays this sweep's on a sandboxed node, because only it
+knows which HOME a running container mounts. The scratch sweep takes
+`mesh-home-*` on a host node, where no container mounts one. A pod's own
+TMPDIR is unchanged: a sandboxed session gets no host scratch.
