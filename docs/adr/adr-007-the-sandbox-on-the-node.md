@@ -450,6 +450,49 @@ amendment of the same date, Sandboxed sessions):
   `Outlive` — validation steps, channel mode — and those still end with
   the node.
 
+## Amendment 2026-10-15: a broken runtime is typed, and the sandbox can probe for it
+
+Goal `a-runtime-that-cannot-start-a-session-stops-claiming`, item 1. A
+root `podman` run on grapevine (2026-10-15/16, memory
+`root-podman-poisons-rootless-storage-2026-10-16`) poisoned the node
+user's rootless storage, and every session's pod failed the same way
+every other failure does: reported as a code failure, retried and
+re-planned. `*sandbox.RuntimeError` (`Op`, podman's own words, `Unwrap`,
+and `EnvironmentKind()` always `validate.RuntimeBroken`,
+[ADR-030](adr-030-an-environment-failure-names-its-kind.md)'s amendment)
+names the container runtime itself failing to do what a pod needs,
+never the agent's own command failing inside one that started fine:
+`Podman.CreatePod` — the pod and the network-rules init container
+("Where it plugs in" and "Network enforcement" above) — `RunAgent`'s
+container create and `StartAgent` wrap a failure there in it when
+podman's own output is its words for a broken runtime
+(`validate.IsRuntimeBroken`), and `RunAgent` wraps a podman that did
+not run at all (no `*exec.ExitError`) the same way rather than
+returning it bare.
+
+`(*Sandbox).Probe(ctx) error` is the cheapest check that the runtime
+can start a pod for a session to run in: `Runtime.Version`, then a
+throwaway pod — labelled `mesh.probe` (`ProbeLabel`), the node image's,
+no network rules of its own session's — created and removed at once. A
+healthy runtime answers nil; one that cannot — the same storage,
+namespace or absent-runtime failures — answers the same
+`*RuntimeError`. `Fake` gains `CreatePodErr` (honoured by `Probe`
+alongside the existing `VersionErr`, and passed through unwrapped when
+it is already a `*RuntimeError`), so `internal/node` can break and heal
+a runtime in a test without a real podman. Probing before a claim,
+holding on it and reporting it on the heartbeat are later items of the
+same goal; this amendment is the typed failure and the probe alone.
+
+### Tests
+
+`internal/sandbox/podman_test.go` and `internal/sandbox/sandbox_test.go`
+prove the wrapping (a storage or namespace refusal on `CreatePod`,
+`RunAgent` and `StartAgent` is a `*RuntimeError`; an ordinary nft
+failure or agent exit is not) and `Probe` on the `Fake`, healthy and
+broken (`TestProbeOnAHealthyRuntime`, `TestProbeOnABrokenRuntime`), and
+that a `*RuntimeError`'s reason for the platform opens `runtime_broken: `
+(`TestRuntimeErrorReasonOpensWithItsKind`).
+
 ## Amendment 2026-10-16: a postgres service gets a writable PGDATA
 
 Goal `the-sandbox-gives-postgres-a-data-directory-it-can-write`. Under
