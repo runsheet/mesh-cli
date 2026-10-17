@@ -1734,3 +1734,232 @@ func TestASecondSessionLeavesTheSharedConfigAlone(t *testing.T) {
 		t.Fatalf("a push of a tracking branch rewrote the shared config:\nbefore\n%s\nafter\n%s", pushed, again)
 	}
 }
+
+// staleLog collects a Git's Logf lines.
+type staleLog struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *staleLog) logf(format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, fmt.Sprintf(format, args...))
+}
+
+func (l *staleLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Join(l.lines, "\n")
+}
+
+// madeAgain checks the checkout at dir is a live worktree again: its
+// .git names a gitdir that exists, git answers there, and it is on
+// branch at head.
+func madeAgain(t *testing.T, dir, branch, head string) {
+	t.Helper()
+	gitdir := gitFileTarget(dir)
+	if gitdir == "" {
+		t.Fatalf("%s/.git is no gitdir file", dir)
+	}
+	if _, err := os.Stat(gitdir); err != nil {
+		t.Fatalf("%s/.git names %s: %v", dir, gitdir, err)
+	}
+	if !isWorktree(dir) {
+		t.Fatalf("%s is not a worktree after it was made again", dir)
+	}
+	gitOut(t, dir, "status")
+	if got := gitOut(t, dir, "branch", "--show-current"); got != branch {
+		t.Fatalf("branch %q, want %s", got, branch)
+	}
+	if got := gitOut(t, dir, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("head %s, want %s", got, head)
+	}
+}
+
+// pushFrom commits in dir and pushes its branch to origin, returning
+// the pushed sha.
+func pushFrom(t *testing.T, dir, branch string) string {
+	t.Helper()
+	cmd := exec.Command("git", "commit", "-q", "--allow-empty", "-m", "the build")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("commit: %v: %s", err, out)
+	}
+	gitOut(t, dir, "push", "-q", "origin", "HEAD:refs/heads/"+branch)
+	return gitOut(t, dir, "rev-parse", "HEAD")
+}
+
+// A worktree whose registration is gone — its .git/worktrees/<n>
+// deleted, or its whole shared clone — is made again by the next
+// Prepare, continuing the branch's pushed commit, never fetched into.
+func TestPrepareMakesAStaleWorktreeAgain(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name   string
+		break_ func(t *testing.T, dir string)
+	}{
+		{"registration deleted", func(t *testing.T, dir string) {
+			if err := os.RemoveAll(worktreeAdmin(dir)); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"shared clone deleted", func(t *testing.T, dir string) {
+			if err := os.RemoveAll(worktreeClone(dir)); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, origin := lockTestOrigin(t)
+			var log staleLog
+			g := &Git{ReposRoot: filepath.Join(root, "repos"), Logf: log.logf}
+			spec := WorkspaceSpec{Root: filepath.Join(root, "work"), GoalSlug: "g", Seq: 1, Repo: origin, Branch: "mesh/g-1", BaseRef: "main"}
+			dir, err := g.Prepare(ctx, spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pushed := pushFrom(t, dir, spec.Branch)
+			gitdir := worktreeAdmin(dir)
+			tc.break_(t, dir)
+			if isWorktree(dir) {
+				t.Fatalf("isWorktree(%s) is true with its registration gone", dir)
+			}
+			if _, stale := staleWorktree(dir); !stale {
+				t.Fatalf("staleWorktree(%s) is false with its registration gone", dir)
+			}
+			if got, err := g.Prepare(ctx, spec); err != nil || got != dir {
+				t.Fatalf("prepare again: %q, %v\n%s", got, err, log.String())
+			}
+			madeAgain(t, dir, spec.Branch, pushed)
+			line := fmt.Sprintf("workspace %s: worktree %s is gone; made again", dir, gitdir)
+			if !strings.Contains(log.String(), line) {
+				t.Fatalf("log lacks %q:\n%s", line, log.String())
+			}
+		})
+	}
+}
+
+// A checkout that is no worktree spec — an evaluation's, a plan's —
+// with a stale .git file is cloned again as a checkout of its own.
+func TestPrepareClonesAStaleNonWorktreeCheckoutAgain(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	var log staleLog
+	g := &Git{ReposRoot: filepath.Join(root, "repos"), Logf: log.logf}
+	spec := WorkspaceSpec{Path: filepath.Join(root, "work", "g", "1-eval"), Repo: origin, Branch: "main", BaseRef: "main"}
+	dir := spec.Dir()
+	gone := filepath.Join(root, "repos", "gone", ".git", "worktrees", "1-eval")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: "+gone+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if isWorktree(dir) {
+		t.Fatalf("isWorktree(%s) is true for a stale .git file", dir)
+	}
+	if _, err := g.Prepare(context.Background(), spec); err != nil {
+		t.Fatalf("prepare: %v\n%s", err, log.String())
+	}
+	if fi, err := os.Stat(filepath.Join(dir, ".git")); err != nil || !fi.IsDir() {
+		t.Fatalf("%s is not a clone of its own: %v", dir, err)
+	}
+	gitOut(t, dir, "status")
+	line := fmt.Sprintf("workspace %s: worktree %s is gone; made again", dir, gone)
+	if !strings.Contains(log.String(), line) {
+		t.Fatalf("log lacks %q:\n%s", line, log.String())
+	}
+}
+
+// isWorktree is true for a live worktree and false for a stale .git
+// file — one naming a gitdir that is gone — and for a full clone.
+func TestIsWorktreeIsFalseForAStaleGitFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: "+filepath.Join(dir, "nowhere", ".git", "worktrees", "x")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if isWorktree(dir) {
+		t.Fatal("isWorktree is true for a .git file naming a gone gitdir")
+	}
+	if gitdir, stale := staleWorktree(dir); !stale || gitdir != filepath.Join(dir, "nowhere", ".git", "worktrees", "x") {
+		t.Fatalf("staleWorktree = %q, %v", gitdir, stale)
+	}
+	full := t.TempDir()
+	if err := os.Mkdir(filepath.Join(full, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if isWorktree(full) {
+		t.Fatal("isWorktree is true for a full clone")
+	}
+	if _, stale := staleWorktree(full); stale {
+		t.Fatal("staleWorktree is true for a full clone")
+	}
+}
+
+// The token path: a worktree Authorized and Prepared on the item's
+// token, its registration then gone, is made again by Authorize and
+// Prepared after it — on its branch at the commit it pushed, answering
+// with its token.
+func TestAuthorizeThenPrepareMakesAStaleWorktreeAgain(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	for _, clonegone := range []bool{false, true} {
+		t.Run(fmt.Sprintf("clone gone %v", clonegone), func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(root, "gitconfig"))
+			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+			for _, kv := range []string{"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t", "GIT_TERMINAL_PROMPT=0"} {
+				k, v, _ := strings.Cut(kv, "=")
+				t.Setenv(k, v)
+			}
+			srvRoot := filepath.Join(root, "srv")
+			bare := filepath.Join(srvRoot, "acme/widgets.git")
+			seed := filepath.Join(root, "seed")
+			gitOut(t, root, "init", "--quiet", "--bare", "-b", "main", bare)
+			gitOut(t, root, "init", "--quiet", "-b", "main", seed)
+			gitOut(t, seed, "commit", "--quiet", "--allow-empty", "-m", "main")
+			gitOut(t, seed, "push", "--quiet", bare, "HEAD:main")
+			srv := gatewaytest.GitHub(t, srvRoot, map[string]string{"ghs_item": "acme/widgets"})
+			tok := &gateway.GitHubToken{Token: "ghs_item", ExpiresAt: time.Now().Add(time.Hour), Repository: "acme/widgets"}
+			var log staleLog
+			g := &Git{GitHubURL: srv.URL, ReposRoot: filepath.Join(root, "repos"), Logf: log.logf}
+			spec := WorkspaceSpec{Root: filepath.Join(root, "work"), GoalSlug: "g", Seq: 2, Repo: "acme/widgets", Branch: BranchName("g", 2), BaseRef: "main"}
+			ctx := context.Background()
+			if err := g.Authorize(ctx, spec, tok); err != nil {
+				t.Fatalf("authorize: %v", err)
+			}
+			dir, err := g.Prepare(ctx, spec)
+			if err != nil {
+				t.Fatalf("prepare: %v", err)
+			}
+			pushed := pushFrom(t, dir, spec.Branch)
+			gitdir := worktreeAdmin(dir)
+			if clonegone {
+				err = os.RemoveAll(worktreeClone(dir))
+			} else {
+				err = os.RemoveAll(gitdir)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if isWorktree(dir) {
+				t.Fatalf("isWorktree(%s) is true with its registration gone", dir)
+			}
+			if err := g.Authorize(ctx, spec, tok); err != nil {
+				t.Fatalf("authorize again: %v\n%s", err, log.String())
+			}
+			if got, err := g.Prepare(ctx, spec); err != nil || got != dir {
+				t.Fatalf("prepare again: %q, %v\n%s", got, err, log.String())
+			}
+			madeAgain(t, dir, spec.Branch, pushed)
+			line := fmt.Sprintf("workspace %s: worktree %s is gone; made again", dir, gitdir)
+			if !strings.Contains(log.String(), line) {
+				t.Fatalf("log lacks %q:\n%s", line, log.String())
+			}
+			// the made-again worktree answers on the item's token
+			gitOut(t, dir, "fetch", "-q", "origin", spec.Branch)
+		})
+	}
+}
