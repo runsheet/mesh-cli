@@ -139,3 +139,57 @@ func TestWorkspaceCleanupNeverRemovesALiveWorktree(t *testing.T) {
 		t.Fatalf("the finished worktree is still registered:\n%s", list)
 	}
 }
+
+// Prepare locks each worktree it makes (lockWorktree, from addWorktree and
+// from Prepare's reuse branch) before its directory is ever moved: a bare
+// `git worktree prune` run in the shared clone, as a session's pod runs it,
+// with one item's directory out of its view, leaves that registration in
+// place, and the worktree works again once the directory is back.
+func TestPreparedWorktreeSurvivesAPruneWithItsDirOutOfView(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	work, repos := filepath.Join(root, "work"), filepath.Join(root, "repos")
+	g, _ := recordingGit(repos)
+	clone := SharedClonePath(repos, origin)
+	ctx := context.Background()
+
+	prepare := func(seq int) string {
+		t.Helper()
+		spec := WorkspaceSpec{Root: work, GoalSlug: "g", Seq: seq, Repo: origin, Branch: BranchName("g", seq), BaseRef: "main"}
+		dir, err := g.Prepare(ctx, spec)
+		if err != nil {
+			t.Fatalf("prepare seq %d: %v", seq, err)
+		}
+		if !isWorktree(dir) {
+			t.Fatalf("seq %d at %s is not a worktree of the shared clone", seq, dir)
+		}
+		return dir
+	}
+	dir1 := prepare(1)
+	admin1 := worktreeAdmin(dir1)
+	if admin1 == "" {
+		t.Fatalf("seq 1: no admin dir named by %s/.git", dir1)
+	}
+	prepare(2)
+
+	hidden := filepath.Join(root, "hidden")
+	if err := os.MkdirAll(hidden, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	aside := filepath.Join(hidden, "1")
+	if err := os.Rename(dir1, aside); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", clone, "worktree", "prune", "--verbose").CombinedOutput(); err != nil {
+		t.Fatalf("prune: %v: %s", err, out)
+	}
+	if err := os.Rename(aside, dir1); err != nil {
+		t.Fatal(err)
+	}
+
+	if fi, err := os.Stat(admin1); err != nil || !fi.IsDir() {
+		t.Fatalf("admin dir %s gone: %v", admin1, err)
+	}
+	if out, err := exec.Command("git", "-C", dir1, "status").CombinedOutput(); err != nil {
+		t.Fatalf("git status in %s: %v: %s", dir1, err, out)
+	}
+}
