@@ -562,12 +562,18 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	// that built the item when this node kept it, else a fresh session
 	// told the same failure, saying why
 	turn, retrying := retryAfterEvaluation(item, latest)
-	freshPrompt, notResumed, freshWhy := job.Prompt, "", ""
+	// a fresh session — one that cannot resume, or whose resume the agent
+	// refuses — is told the item's record and branch state besides
+	// (freshRetryPrompt); a resumed one has them in its transcript
+	buildPrompt, notResumed, freshWhy := job.Prompt, "", ""
+	freshPrompt := func() string {
+		fc := r.freshContextFor(ctx, item, label, dir, spec.BaseRef, defaultBranchOf(res))
+		return freshRetryPrompt(buildPrompt, fc, turn)
+	}
 	if retrying {
 		turn.Branch = spec.Branch
 		turn.HeadSHA, _ = gitHead(ctx, dir)
 		turn.ChangedPaths = r.retryChangedPaths(ctx, label, dir, spec.BaseRef, defaultBranchOf(res))
-		freshPrompt = freshRetryPrompt(job.Prompt, turn)
 		rec, why := r.resumable(item.OrgID, item.ID, label, dir, acct, pod)
 		if why == "" {
 			job.Resume = rec.SessionID
@@ -575,7 +581,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 			r.logf("item %s: resuming session %s with the failure", label, rec.SessionID)
 		} else {
 			notResumed, freshWhy = notResumedLine(label, why), why
-			job.Prompt = freshPrompt
+			job.Prompt = freshPrompt()
 		}
 	}
 
@@ -610,7 +616,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 			b.report(ctx, line)
 			endRetry()
 			endRetry = r.noteRetry(item.ID, "", true)
-			job.Resume, job.Prompt = "", freshPrompt
+			job.Resume, job.Prompt = "", freshPrompt()
 			res, err = b.recordedRun(job, notResumedUnknownAgent, func() (harness.Result, error) { return r.Harness.Run(sctx, job, onProgress) })
 		}
 		return res, err

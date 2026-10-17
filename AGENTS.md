@@ -178,7 +178,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `mesh_fail(item_id, error)` — on `runsheet` (BuildPrompt's
   `# Finish by tool call`): the harness keeps each mesh-work tool's input
   (`tools.IsWorkTool`: mesh_finish, mesh_fail, mesh_verdict, mesh_plan,
-  mesh_progress) on `Result.WorkCalls` by tool name, from Claude's
+  mesh_progress, mesh_ask; each call also reaches the node as it is made
+  on `harness.Progress.WorkCall`, input byte-equal) on `Result.WorkCalls` by tool name, from Claude's
   `tool_use` and Codex's `mcp_tool_call` alike, and `Runner.afterBuild`
   takes a `mesh_finish` call as the finish whatever the final message
   says (`finishCallOf`; the node still pushes and hands in the head it
@@ -535,7 +536,23 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   Each retry turn is `Loop.NoteRetryTurn`'d: the heartbeat's `resumed
   [{itemId, kind, sessionId, fresh}]` (`takesResumed`) and one session
   in `Loop.Running`, each item once. `internal/node/resume_e2e_test.go`
-  runs it end to end.
+  runs it end to end. Beside `record.json` each item keeps
+  `record.jsonl` (`ResumeStore.AppendRecord`, `recordwrite.go`'s
+  `recorder`): `{at, kind, text}` lines — `note` (every `mesh_progress`),
+  `question`/`answer`, `check` (a failed step, exit and last 20 lines),
+  `handback`, `turn` (start, end, a hand-back or ask with no `state:`
+  note) — appended, never rewritten, no secret; `ItemRecord` reads it
+  under `RecordBudget` (6,000), oldest whole entries dropped, the first
+  turn kept, `Runner.itemRecord` falling back to the platform's
+  `MeshActivityIndex` rows (`ItemActivity`). A fresh fallback's prompt
+  (`freshRetryPrompt`, both the not-resumable and unknown-session paths)
+  puts `recordSections(freshContext)` — `# What earlier sessions did`
+  (`<at> <kind>: <text>`, the dropped count), `# What the branch holds`
+  (`BranchState`: commits and diff stat past base, the default branch
+  when it is gone) and one continue line — between the brief and the
+  failure; a resumed turn gets neither; logged `item <label>: fresh
+  session with the item's record (N entries, M commits)` or `fresh
+  session with no record (<why>)` (ADR-030's amendment 2026-10).
 - **A death names itself** (`internal/crash/`): `defer crash.Guard()`
   at the top of `mesh node start` and of every goroutine the node
   starts turns a panic into one node.log line, `mesh node: fatal:
