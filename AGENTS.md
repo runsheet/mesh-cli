@@ -368,17 +368,37 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   files and binaries (`Detect`) — `Plan` upserting each file
   (`Change`, never clobbering; an `*UnparseableError` printed `<path>:
   cannot parse (<err>); left alone`, exit 1) and `Apply` writing it
-  (ADR-025, mesh mcp install is one table per client); `--remote
+  (ADR-025, mesh mcp install is one table per client); the entry is
+  `runsheet` (`ServerName`: `mcpServers.runsheet`,
+  `[mcp_servers.runsheet]`), and after the upsert every other entry of
+  the servers map that `IsRunsheetEntry` — a mesh binary's `mcp`/
+  `mcp-relay`, or `/mcp` on `api.runsheet.dev` or the configured
+  gateway (`HostOf`) — is removed byte for byte (`RemoveJSON`,
+  `RemoveTOMLTable`, its own trailing comments through EOF), printed
+  `<client>: removed <name> from <path>`, and a `LegacyNames` entry
+  (`mesh`, `mesh-context`, `prologue`) pointing elsewhere kept,
+  `<client>: kept <name> (not runsheet's)` (ADR-025, Legacy entries); `--remote
   [--url]` writes `RemoteEntry` for the gateway's `/mcp`
   (`node.MeshMCPURL`) instead, `DiscoverAuth` asked once — OAuth, the
   URL alone, when the issuer's metadata has a `registration_endpoint`,
   else a bearer naming `$MESH_TOKEN` (`BearerEnvVar`), never a token in
   a file (ADR-025, Remote). `mesh mcp doctor [--json]`
+  first names who runsheet acts as, by runsheet ADR 056 and Latchkey
+  ADR 013 (`doctorIdentity`: `auth.LoadCredential`, an `rs_*` token's
+  user by `gateway.Client.Me`, a machine's operator — its `userEmail`,
+  else `me` — `identity: <email> (person, via machine <id>)`, then
+  `projects: <org>/<slug>, …` from `MyOrgs`/`Projects`; none is
+  `identity: not signed in; run mesh auth login`, exit 1; a gateway
+  error `identity: <email> (projects unavailable: <err>)`, not fatal;
+  `mcpLoadCredential`/`mcpIdentityGateway` the tests' fakes), then
   (`mcpinstall.Doctor`, `Report`) reads the same table: per client
-  found its entry `configured`/`missing`/`unparseable` with the binary
-  or URL, and each instruction file `current`/`stale`/`missing` — a
-  marked section judged only between its markers — exiting 1 unless
-  every report is `Healthy` (ADR-025, Doctor).
+  found its entry `configured`/`missing`/`unparseable`/`duplicate`
+  (runsheet's beside a legacy one, `Report.Duplicates`)/`legacy` (a
+  legacy name alone) with the binary or URL, and each instruction file
+  `current`/`stale`/`missing` — a marked section judged only between
+  its markers — exiting 1 unless signed in and every report is
+  `Healthy`; `--json` is `{"identity": {person, via, projects, error},
+  "clients": [...]}` (ADR-025, Doctor).
   **A draining node claims nothing** (`Loop.Drain`): see the drain
   below. **A node low on disk claims nothing** (ADR-035,
   `docs/adr/adr-035-a-node-low-on-disk-claims-nothing.md`,
