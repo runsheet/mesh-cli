@@ -268,7 +268,7 @@ func (vr validator) start(ctx context.Context, t validationTarget) (*buildValida
 			removeScratch()
 			return nil, fmt.Errorf("package store: %w", err)
 		}
-		s, err := osb.Open(t.label, "validate", git)
+		s, err := confineTo(osb, t.dir).Open(t.label, "validate", git)
 		if err != nil {
 			removeScratch()
 			return nil, err

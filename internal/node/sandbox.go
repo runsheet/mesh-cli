@@ -4,13 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/sandbox"
+	"projectmesh.io/mesh-cli/internal/validate"
 )
 
 // Sandbox modes of node.yaml's `sandbox:`.
@@ -255,4 +258,141 @@ func RegistryBrokerOf(p RegistryTokens) sandbox.RegistryBroker {
 // released with and what the node's heartbeat says of it.
 func LimitReason(label string, le *sandbox.LimitError) string {
 	return fmt.Sprintf("sandbox limit: item %s killed by its %s limit (%s); released for a node with more room", label, le.Limit, le.Value)
+}
+
+// SandboxRequiredPrefix opens the reason a session a multi-org node
+// would have run on the host is handed back with
+// (validate.SandboxRequired, ADR-030).
+const SandboxRequiredPrefix = string(validate.SandboxRequired) + ": "
+
+// ErrHostServesSeveralOrgs is what every HostFallbackError Is.
+var ErrHostServesSeveralOrgs = errors.New("a node serving several orgs runs no session on the host")
+
+// HostFallbackError is a session refused because the node serves two or
+// more orgs and has no sandbox to run it in (`sandbox: off`, or a mode
+// left out on a machine whose runtime does not answer): on the host a
+// session runs as the node user and can read every org's checkouts,
+// clones, kept sessions, stores and MCP data (mesh-cli ADR-034,
+// Refusals). Org is the session's org, Orgs every one the node serves,
+// Path the checkout the session would have run in.
+type HostFallbackError struct {
+	Org  string
+	Orgs []string
+	Path string
+}
+
+func (e *HostFallbackError) Error() string {
+	return fmt.Sprintf("sandbox: off on a node serving %d orgs (%s); a session of org %s in %s on the host could read the others' files: refused",
+		len(e.Orgs), strings.Join(e.Orgs, ", "), e.Org, e.Path)
+}
+
+// Is makes it ErrHostServesSeveralOrgs.
+func (e *HostFallbackError) Is(target error) bool { return target == ErrHostServesSeveralOrgs }
+
+// EnvironmentKind is validate.SandboxRequired: the node's condition,
+// never the item's.
+func (e *HostFallbackError) EnvironmentKind() validate.EnvironmentKind {
+	return validate.SandboxRequired
+}
+
+// HostFallback refuses a session of org (an org id) in dir on a node
+// with no sandbox (sb nil) that serves two or more orgs, naming the org,
+// the dir and the orgs served; a sandboxed node, or one serving one
+// org, is nil.
+func HostFallback(sb *sandbox.Sandbox, scopes Scopes, orgID, dir string) error {
+	if sb != nil || len(scopes.Names()) < 2 {
+		return nil
+	}
+	org := scopes.NameOf(orgID)
+	if org == "" {
+		org = orgID
+	}
+	return &HostFallbackError{Org: org, Orgs: scopes.Names(), Path: dir}
+}
+
+// HostFallbackReason is the reason a refused session is handed back
+// with: `sandbox_required: <the refusal>`.
+func HostFallbackReason(err error) string {
+	return truncate(validate.WithKind(validate.SandboxRequired, err.Error()), 2000)
+}
+
+// hostFallbackSaid says the refusal in node.log once per run; each
+// item's release line still names it.
+var hostFallbackSaid sync.Once
+
+// noteHostFallback logs the refusal once per run.
+func noteHostFallback(err error, logf func(string, ...any)) {
+	hostFallbackSaid.Do(func() {
+		logf("%v; every session is handed back until the sandbox is on (set `sandbox: on` and install podman, or serve one org)", err)
+	})
+}
+
+// orgRootOf is the org root a session working in dir is confined to:
+// the org's own tree, <meshDir>/orgs/<org>, when dir is under its work
+// root (OrgRoots.Work), else the zero OrgRoot — today's single-org paths,
+// confined by nothing.
+func orgRootOf(dir string) sandbox.OrgRoot {
+	dir = filepath.Clean(dir)
+	for p := dir; ; {
+		parent := filepath.Dir(p)
+		if parent == p {
+			return sandbox.OrgRoot{}
+		}
+		if filepath.Base(parent) == OrgsDirName && ValidateOrgName(filepath.Base(p)) == nil {
+			work := filepath.Join(p, "work")
+			if dir == work || strings.HasPrefix(dir, work+string(filepath.Separator)) {
+				return sandbox.OrgRoot{Org: filepath.Base(p), Path: p}
+			}
+		}
+		p = parent
+	}
+}
+
+// confineTo is sb with its sessions confined to the org whose work root
+// holds dir (orgRootOf, Sandbox.WithOrg); a dir under today's single
+// work root, or a nil sb, is sb.
+func confineTo(sb *sandbox.Sandbox, dir string) *sandbox.Sandbox {
+	return sb.WithOrg(orgRootOf(dir))
+}
+
+// ReleaseOnHostFallback hands back an item a multi-org node with no
+// sandbox will not run (HostFallback): ReleaseWorkItem, attempts
+// unchanged, with `sandbox_required: <the refusal>` as the reason — the
+// node's condition, never the item's failure (ADR-024, ADR-030). The
+// refusal is said once per run in node.log (noteHostFallback), each
+// item's release in one short line. A refused release fails the item
+// with the same reason, as ReleaseOnWorkspace does; a cancelled ctx
+// sends nothing. It answers the error the session ends with.
+func ReleaseOnHostFallback(ctx context.Context, gw Gateway, itemID, nodeID, label string, cause error, logf func(string, ...any)) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	noteHostFallback(cause, logf)
+	reason := HostFallbackReason(cause)
+	wrapped := fmt.Errorf("%s%w", SandboxRequiredPrefix, cause)
+	err := gw.ReleaseWorkItem(ctx, itemID, nodeID, reason)
+	if err == nil {
+		logf("item %s: released, no attempt charged (%s)", label, validate.SandboxRequired)
+		return wrapped
+	}
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+		return wrapped
+	}
+	logf("item %s: %s release refused (%v); failed instead", label, validate.SandboxRequired, err)
+	if err := gw.FailWorkItem(ctx, itemID, reason); err != nil && !errors.Is(err, context.Canceled) {
+		logf("item %s: fail: %v", label, err)
+	}
+	return wrapped
+}
+
+// releaseHostFallback is ReleaseOnHostFallback for the Runner's item,
+// then the hold that keeps this node off it for WorkspaceReleaseHold,
+// so a refused item does not spin between claim and release.
+func (r *Runner) releaseHostFallback(ctx context.Context, item gateway.WorkItem, label string, cause error) error {
+	sc, _ := r.Scopes.ByOrg(item.OrgID)
+	err := ReleaseOnHostFallback(ctx, r.GW, item.ID, sc.NodeID, label, cause, r.logf)
+	if ctx.Err() == nil {
+		r.Declines.HoldFor(item.ID, HostFallbackReason(cause), time.Now(), WorkspaceReleaseHold)
+	}
+	return err
 }
