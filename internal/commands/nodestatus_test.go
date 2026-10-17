@@ -435,3 +435,21 @@ func TestNodeStatusShowsRuntimeBroken(t *testing.T) {
 		t.Fatal("localRuntime after the node stopped")
 	}
 }
+
+// `mesh node status`'s cache line reads the size, cap and scratch size
+// the node's last CacheTrim left in node.cachesize, and says the size is
+// unknown before any reading.
+func TestNodeStatusShowsCacheSize(t *testing.T) {
+	state := node.RunState{Dir: t.TempDir()}
+	if got, want := cacheSizeStatusLine(state), "cache: size unknown (no reading yet)"; got != want {
+		t.Fatalf("no reading: %q, want %q", got, want)
+	}
+	at := time.Date(2026, 10, 17, 18, 0, 0, 0, time.UTC)
+	if err := state.WriteCacheSize(node.CacheReading{Root: "/home/u/.cache/mesh/cache", Bytes: 4509715660, Cap: 20 << 30, ScratchRoot: "/home/u/.mesh/work/.scratch", ScratchBytes: 1 << 30, At: at}); err != nil {
+		t.Fatal(err)
+	}
+	want := "cache: 4.2 GiB of 20.0 GiB (/home/u/.cache/mesh/cache); scratch 1.0 GiB (/home/u/.mesh/work/.scratch); measured 2026-10-17T18:00:00Z"
+	if got := cacheSizeStatusLine(state); got != want {
+		t.Fatalf("cache line:\n got %q\nwant %q", got, want)
+	}
+}

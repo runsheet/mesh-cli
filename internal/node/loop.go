@@ -115,6 +115,10 @@ type Loop struct {
 	// finding and each reclaim logged, the findings told to Findings and
 	// carried by every heartbeat after. Nil runs none.
 	Quartermaster *Quartermaster
+	// CacheTrim measures the shared cache and trims it under its cap at
+	// the first tick and at most once an hour after (cachetrim.go); nil
+	// trims nothing.
+	CacheTrim *CacheTrim
 	// Findings is told the quartermaster's findings each time its checks
 	// run (optional: `mesh node start` leaves them in node.findings by
 	// RunState.WriteFindings, for `mesh node status`).
@@ -1226,6 +1230,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	// the quartermaster after the heartbeat, so its checks never hold
 	// one up: what they find rides the next
 	l.runQuartermaster(ctx)
+	l.CacheTrim.RunIfDue(ctx, l.now())
 	p := l.pacing()
 	if !l.Draining() {
 		// every start below first picks its account (accountFor): one
