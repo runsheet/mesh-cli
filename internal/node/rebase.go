@@ -14,6 +14,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/crash"
 	"projectmesh.io/mesh-cli/internal/tools"
+	"projectmesh.io/mesh-cli/internal/tripline"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
@@ -86,6 +87,9 @@ type Rebaser struct {
 	// Declines keeps the node off an item it released as an
 	// infrastructure hold, shared with the loop (nil: no hold).
 	Declines *Declines
+	// Tripline reports the node's failure classes to Tripline (ADR-034,
+	// a node reports its errors to Tripline); nil reports nothing.
+	Tripline *tripline.Reporter
 	// RuntimeBroken is told the error when a session's pod could not
 	// start on a broken container runtime (a *sandbox.RuntimeError) and
 	// its work was handed back runtime_broken; nil tells no one.
@@ -368,6 +372,7 @@ func (rb *rebaseRun) releaseInfrastructure(ctx context.Context, we *WorkspaceErr
 		rb.r.logf("item %s: the rebase claim is left to lapse on the platform's timer", rb.label)
 	}, rb.r.logf)
 	if ctx.Err() == nil {
+		reportFailure(rb.r.Tripline, tripline.Infrastructure, err, rb.item, rb.label, we.Repo, gateway.RoleBuilder)
 		holdInfrastructure(rb.r.Declines, rb.item.ID, rb.label, we, rb.r.logf)
 	}
 	return err

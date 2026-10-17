@@ -31,6 +31,9 @@ type Event struct {
 	Fingerprint    []string
 	Tags           map[string]string
 	Level          string
+	// Payload is the event item's JSON as it arrived, every field the
+	// fake does not read included: what a secret check reads.
+	Payload []byte
 }
 
 // Issue is a group of events sharing a fingerprint, as Tripline groups

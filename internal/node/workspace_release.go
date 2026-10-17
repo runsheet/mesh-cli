@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/tripline"
 )
 
 // WorkspaceReleaseHold is how long a node keeps off an item it released
@@ -52,6 +53,9 @@ func ReleaseOnWorkspace(ctx context.Context, gw Gateway, itemID, nodeID, label s
 // WorkspaceReleaseHold.
 func (r *Runner) releaseWorkspace(ctx context.Context, item, label string, nodeID string, cause error) error {
 	err := ReleaseOnWorkspace(ctx, r.GW, item, nodeID, label, cause, r.logf)
+	if ctx.Err() == nil {
+		reportFailure(r.Tripline, tripline.Infrastructure, err, gateway.WorkItem{ID: item}, label, "", gateway.RoleBuilder)
+	}
 	if ctx.Err() != nil {
 		return err
 	}
@@ -122,6 +126,7 @@ func (r *Runner) releaseInfrastructure(ctx context.Context, item gateway.WorkIte
 	sc, _ := r.Scopes.ByOrg(item.OrgID)
 	err := ReleaseOnInfrastructure(ctx, r.GW, item.ID, sc.NodeID, label, we, nil, r.logf)
 	if ctx.Err() == nil {
+		reportFailure(r.Tripline, tripline.Infrastructure, err, item, label, we.Repo, gateway.RoleBuilder)
 		holdInfrastructure(r.Declines, item.ID, label, we, r.logf)
 	}
 	return err

@@ -102,6 +102,7 @@ func parseEventPayload(payload []byte) (Event, error) {
 		Fingerprint:    raw.Fingerprint,
 		Tags:           raw.Tags,
 		Level:          raw.Level,
+		Payload:        append([]byte(nil), payload...),
 	}, nil
 }
 
@@ -129,8 +130,8 @@ func parseMessage(raw json.RawMessage) string {
 }
 
 // parseException reads the Sentry "exception" interface, `{"values":
-// [{"type", "value"}, ...]}`, and returns the first value's type and
-// value.
+// [{"type", "value"}, ...]}` or the bare list sentry-go sends, and
+// returns the first value's type and value.
 func parseException(raw json.RawMessage) (excType, excValue string) {
 	if len(raw) == 0 {
 		return "", ""
@@ -143,6 +144,13 @@ func parseException(raw json.RawMessage) (excType, excValue string) {
 	}
 	if err := json.Unmarshal(raw, &wrapped); err == nil && len(wrapped.Values) > 0 {
 		return wrapped.Values[0].Type, wrapped.Values[0].Value
+	}
+	var list []struct {
+		Type  string `json:"type"`
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &list); err == nil && len(list) > 0 {
+		return list[0].Type, list[0].Value
 	}
 	return "", ""
 }
