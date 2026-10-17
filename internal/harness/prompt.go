@@ -168,6 +168,7 @@ func BuildPrompt(in PromptInput) string {
 	b.WriteString("5. Do not push, open pull requests, or touch anything outside this workspace. The node pushes the branch when you are done.\n")
 	b.WriteString("6. Design keeps pace with code: if your change alters an aggregate, a policy, a process, or a public contract (a gateway field, an API, a console route), amend the ADR or TRD section that describes it on this branch; a decision no ADR covers gets a new ADR at the next free number in this repo. A new document carries frontmatter with a one-line `summary:`.\n")
 	b.WriteString("7. End with a short summary of what you did and how the acceptance was checked.\n")
+	b.WriteString("8. Before you stop — finished, handed back, or stuck — leave a mesh_progress note that opens `state:` and names what is done, what is next and what is open. Nothing is refused for its absence, but it is what the next session reads if this one cannot go on.\n")
 	finishByToolCall(&b, in)
 	return b.String()
 }
