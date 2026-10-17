@@ -549,7 +549,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		turn.HeadSHA, _ = gitHead(ctx, dir)
 		turn.ChangedPaths = r.retryChangedPaths(ctx, label, dir, spec.BaseRef, defaultBranchOf(res))
 		freshPrompt = freshRetryPrompt(job.Prompt, turn)
-		rec, why := r.resumable(item.ID, label, dir, acct, pod)
+		rec, why := r.resumable(item.OrgID, item.ID, label, dir, acct, pod)
 		if why == "" {
 			job.Resume = rec.SessionID
 			job.Prompt = harness.RetryTurnPrompt(turn)

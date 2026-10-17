@@ -316,3 +316,53 @@ func TestRetryValidatesTheResumedTurnsHead(t *testing.T) {
 		t.Fatalf("finish = %v, want head %s", finish, head)
 	}
 }
+
+// (e) With Roots laid out for several orgs, the runner resolves each
+// item's resume store through its own org: a record Kept for an item
+// of org A is found by org A's store, and org B's store — the one the
+// runner resolves for an item of org B with the same item id — reports
+// it not found (ADR-034, a node serving several orgs keeps one
+// ResumeStore per org).
+func TestRunnerResumesStoreIsPerOrg(t *testing.T) {
+	mesh := filepath.Join(t.TempDir(), ".mesh")
+	set, err := NewOrgRootSet(mesh, []string{"acme", "grapevine"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{Roots: set, Scopes: Scopes{{ID: "org-a", Login: "acme"}, {ID: "org-b", Login: "grapevine"}}}
+
+	storeA := r.resumes("org-a")
+	if storeA == nil {
+		t.Fatal("org A: no resume store resolved")
+	}
+	rootsA, err := set.For("acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storeA.Dir != rootsA.Resumes {
+		t.Fatalf("org A's store dir = %s, want %s", storeA.Dir, rootsA.Resumes)
+	}
+	if err := storeA.Keep("item-1", ResumeRecord{SessionID: "s-1", Adapter: "claude-code", Worktree: "/w"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := storeA.Lookup("item-1"); !ok {
+		t.Fatal("org A's store does not find its own record")
+	}
+
+	storeB := r.resumes("org-b")
+	if storeB == nil {
+		t.Fatal("org B: no resume store resolved")
+	}
+	if storeB.Dir == storeA.Dir {
+		t.Fatalf("org A and org B resolved the same store dir %s", storeA.Dir)
+	}
+	if _, ok := storeB.Lookup("item-1"); ok {
+		t.Fatal("org B's store found org A's record")
+	}
+
+	// an org the node does not serve looks up and keeps nothing, never
+	// another org's roots in its place
+	if r.resumes("org-unknown") != nil {
+		t.Fatal("an unserved org resolved a resume store")
+	}
+}
