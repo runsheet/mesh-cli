@@ -1995,6 +1995,25 @@ heartbeat's holding summary opens with `takes <list>; ` and carries the
 same kinds as `holding.kinds` once the platform's schema reads it, so
 the console can say a kind no online node takes is why a goal waits.
 
+### A failed check resumes its session
+
+A failing validation step, or a retry claimed after a failed
+evaluation, resumes the build session that made the item — same
+adapter, credential and worktree, its transcript kept under
+`~/.mesh/resume/<item>/` for seven days — with one message naming what
+failed (ADR-030). Beside the resume record the node keeps
+`record.jsonl`: one line per note, question, answer, failed check,
+hand-back and turn, appended as it happens, never rewritten, and never
+holding a token or env value. When the session cannot be resumed, the
+fresh one gets the brief, then `# What earlier sessions did` — the
+record, oldest first — and `# What the branch holds` — the commits and
+diff stat past base — then the failure. The record is given whole up to
+`RecordBudget` (6,000 characters); past it the oldest whole entries are
+dropped, the first turn entry kept, never an entry shortened. With no
+local record (another node built it) it is read from the platform's
+activity rows. node.log says `fresh session with the item's record (N
+entries, M commits)` or `fresh session with no record (<why>)`.
+
 ### Attestations: the head it pushed
 
 After the last push of a build, a rework or a rebase — the push on the
