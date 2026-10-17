@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -99,4 +100,41 @@ func runQuartermasterCheck(ctx context.Context, check Check, i int, now time.Tim
 		return nil
 	}
 	return check(ctx, now)
+}
+
+// FindingsLines is `mesh node status`'s findings block: a `findings:`
+// header, then one line per finding sorted critical first, then warn,
+// then ok, and by kind within a severity — `  <kind> <severity>
+// <subject>: <detail>` — or `findings: none` with none (goal
+// the-quartermaster-keeps-the-nodes-fit).
+func FindingsLines(findings []Finding) []string {
+	if len(findings) == 0 {
+		return []string{"findings: none"}
+	}
+	sorted := append([]Finding(nil), findings...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		si, sj := findingSeverityRank(sorted[i].Severity), findingSeverityRank(sorted[j].Severity)
+		if si != sj {
+			return si < sj
+		}
+		return sorted[i].Kind < sorted[j].Kind
+	})
+	out := []string{"findings:"}
+	for _, f := range sorted {
+		out = append(out, fmt.Sprintf("  %s %s %s: %s", f.Kind, f.Severity, f.Subject, f.Detail))
+	}
+	return out
+}
+
+// findingSeverityRank orders a Finding's severity critical first, then
+// warn, then ok (and anything else).
+func findingSeverityRank(severity string) int {
+	switch severity {
+	case "critical":
+		return 0
+	case "warn":
+		return 1
+	default:
+		return 2
+	}
 }

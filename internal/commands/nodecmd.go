@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -720,42 +719,9 @@ func localFindings(state node.RunState) ([]node.Finding, bool) {
 	return findings, true
 }
 
-// findingsLines is `mesh node status`'s findings block: a `findings:`
-// header, then one line per finding sorted critical first, then warn,
-// then ok, and by kind within a severity — `  <kind> <severity>
-// <subject>: <detail>` — or `findings: none` with none (goal
-// the-quartermaster-keeps-the-nodes-fit).
-func findingsLines(findings []node.Finding) []string {
-	if len(findings) == 0 {
-		return []string{"findings: none"}
-	}
-	sorted := append([]node.Finding(nil), findings...)
-	sort.SliceStable(sorted, func(i, j int) bool {
-		si, sj := findingSeverityRank(sorted[i].Severity), findingSeverityRank(sorted[j].Severity)
-		if si != sj {
-			return si < sj
-		}
-		return sorted[i].Kind < sorted[j].Kind
-	})
-	out := []string{"findings:"}
-	for _, f := range sorted {
-		out = append(out, fmt.Sprintf("  %s %s %s: %s", f.Kind, f.Severity, f.Subject, f.Detail))
-	}
-	return out
-}
-
-// findingSeverityRank orders a Finding's severity critical first, then
-// warn, then ok (and anything else).
-func findingSeverityRank(severity string) int {
-	switch severity {
-	case "critical":
-		return 0
-	case "warn":
-		return 1
-	default:
-		return 2
-	}
-}
+// findingsLines is `mesh node status`'s findings block,
+// node.FindingsLines.
+func findingsLines(findings []node.Finding) []string { return node.FindingsLines(findings) }
 
 // standingPct is a clock-standing fraction as a whole percent.
 func standingPct(f float64) string { return fmt.Sprintf("%.0f%%", f*100) }

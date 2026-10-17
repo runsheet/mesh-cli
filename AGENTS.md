@@ -877,6 +877,39 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   released: <reason>`; a silent build on a host not overloaded runs on.
   A claim lost while the host is overloaded names it in `afterLost`'s
   line, `claim lost (item is ready; host overloaded: …)`.
+- **The quartermaster keeps the node fit** (`internal/node/quartermaster*.go`,
+  ADR-034, `docs/adr/adr-034-the-quartermaster-keeps-the-node-fit.md`):
+  `Loop.Quartermaster` (`Quartermaster{Checks, Every}`) runs from `Tick`
+  after the heartbeat, its checks only once per `Every`
+  (`DefaultQuartermasterEvery`, 10m; `RunIfDue`), each `Check` yielding
+  `Finding{Kind, Severity ok|warn|critical, Subject, Detail, Bytes,
+  Reclaimed, At}`, a panicking check one `critical` `quartermaster`
+  finding. node start's four (`nodeQuartermaster`, nodecmd.go): `disk`
+  (`DiskCheck` over the work root, /tmp and home, by device; warn <15%
+  free, critical <5%), `scratch` (`ScratchCheck`: `runsheet-*`,
+  `latchkey-*`, `go-build*`, `mesh-*` dirs under /tmp of the node's uid
+  past `ScratchMinAge`, 6h, reaped — never a symlink, another uid's, an
+  `InUse` path or `mesh-home-*`, left to `SweepSandbox` run each time
+  keeping found sessions; warn past 20G left), `dead_checkout`
+  (`DeadCheckoutCheck`: an item worktree whose item is merged, done,
+  already_done, cancelled, superseded or unknown, idle `DeadCheckoutIdle`
+  (1h) and not `Loop.LiveCheckout`, removed by `Git.RemoveWorkspace`,
+  gone worktrees pruned; a platform that cannot answer removes nothing,
+  warn) and `version` (`VersionCheck`: warn when the desired version has
+  differed an hour or a dev build runs where a release is desired,
+  critical when the same one has failed to update for two). Each run's
+  findings go to `Loop.Findings` → `RunState.WriteFindings` →
+  `~/.mesh/node.findings`, printed by `mesh node status` as `findings:`
+  and `  <kind> <severity> <subject>: <detail>` lines, critical first
+  (`node.FindingsLines`), or `findings: none`; each non-ok one is logged
+  `quartermaster: <kind> <severity> <subject>: <detail>` once per change
+  and each reclaim `quartermaster: reclaimed <bytes> (<kind>)`; the
+  heartbeat's `findings` (`gateway.Finding`) only when
+  `TakesHeartbeatFindings` (introspected, kept `ScalingProbeEvery`),
+  else said once, `platform has no heartbeat findings; kept on the
+  node`. It replaces the dl360's `/etc/cron.d/mesh-tmp-clean` and
+  `/etc/cron.hourly/mesh-home-sweep`. `quartermaster_e2e_test.go`
+  (`-tags e2e`) runs a node full of leftovers end to end.
 - **Held goals are a record** (`internal/node/held.go`, goal
   a-refused-plan-is-released-not-replanned): `HeldGoal{GoalID, Slug,
   Org, Kind, Reason, Since, Until}` is a goal this node holds off

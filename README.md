@@ -874,7 +874,17 @@ line naming the credential this machine runs on — the machine, its org
 and operator, and when its access token is next refreshed, or the rs_*
 console token it is still on — and a line for the node process on this
 machine: running (its pid), draining, or none (see Drain below). While
-a node runs here it also prints a **Held goals** section — a table of
+a node runs here it prints the **quartermaster**'s findings — `findings:`
+then one line per finding, `  <kind> <severity> <subject>: <detail>`,
+critical first (`disk critical /home/mesh/.mesh/work: 4% free (…)`,
+`scratch ok /tmp: reaped 3 dirs, 12.0K; 0 in use kept`, `dead_checkout
+ok …: 1 dead found, 1 removed, …`, `version warn v1.0.0: … desired
+v1.1.0, differing for 1h1m0s`), or `findings: none` — read from
+`~/.mesh/node.findings`, which the node rewrites every ten minutes as it
+checks its disk, reaps stale `/tmp` scratch and dead checkouts, and
+compares its version with the desired one
+([ADR-034](docs/adr/adr-034-the-quartermaster-keeps-the-node-fit.md)).
+It also prints a **Held goals** section — a table of
 org, goal, kind (`plan` or `item`), since, until and why for every goal
 the node holds off claiming for (a plan claim released by a repeating
 refusal, or an item claim refused for budget, pause or approval), or
