@@ -24,13 +24,13 @@ import (
 // graph handed in with PlanGoal, the session's cost with it. A goal
 // whose plan cannot be read three times is left in planning and said so.
 type Planner struct {
-	GW       Gateway
-	Harness  harness.Harness
-	WS       Workspacer
-	Cfg      *Config
+	GW      Gateway
+	Harness harness.Harness
+	WS      Workspacer
+	Cfg     *Config
 	// Roots, when set, put the session's checkouts under its org's work
 	// root (ADR-034). Nil keeps WorkRoot for every org.
-	Roots *OrgRootSet
+	Roots    *OrgRootSet
 	WorkRoot string
 	// MCP is the built-in MCP server the session gets (runsheet);
 	// the tools attached for the planner role are rendered beside it

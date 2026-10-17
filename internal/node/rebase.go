@@ -31,15 +31,15 @@ import (
 // hands the item to its builder. Every way out ends the claim: a claim
 // left held waits out the platform's 15-minute stall timer.
 type Rebaser struct {
-	GW       Gateway
-	Harness  harness.Harness
-	WS       Workspacer
-	Cfg      *Config
-	Scopes   Scopes
+	GW      Gateway
+	Harness harness.Harness
+	WS      Workspacer
+	Cfg     *Config
+	Scopes  Scopes
 	// Roots, when set, are each served org's own roots (ADR-034): the
 	// item's checkout, clone and scratch go under its org's, WorkRoot
 	// unused for them. Nil keeps WorkRoot for every org.
-	Roots *OrgRootSet
+	Roots    *OrgRootSet
 	WorkRoot string
 	// BuildCache is a host validation's GOCACHE; "" is BuildCacheDir().
 	BuildCache string

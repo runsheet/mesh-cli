@@ -34,13 +34,13 @@ import (
 // the claim on every tick and is told to wait, the way the loop asks
 // for work items. So a refusal here is the normal answer, not an error.
 type Director struct {
-	GW       Gateway
-	Harness  harness.Harness
-	WS       Workspacer
-	Cfg      *Config
+	GW      Gateway
+	Harness harness.Harness
+	WS      Workspacer
+	Cfg     *Config
 	// Roots, when set, put the session's checkouts under its org's work
 	// root (ADR-034). Nil keeps WorkRoot for every org.
-	Roots *OrgRootSet
+	Roots    *OrgRootSet
 	WorkRoot string
 	// MCP is the built-in MCP server the session gets (runsheet);
 	// the tools attached for the director role are rendered beside it

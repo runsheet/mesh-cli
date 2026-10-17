@@ -64,15 +64,15 @@ func Resolve(ctx context.Context, gw Gateway, item gateway.WorkItem) (*Resolved,
 
 // Runner runs one claimed item to its end (poll mode: `claude -p`).
 type Runner struct {
-	GW       Gateway
-	Harness  harness.Harness
-	WS       Workspacer
-	Cfg      *Config
-	Scopes   Scopes
+	GW      Gateway
+	Harness harness.Harness
+	WS      Workspacer
+	Cfg     *Config
+	Scopes  Scopes
 	// Roots, when set, are each served org's own roots (ADR-034): the
 	// item's checkout, clone and scratch go under its org's, WorkRoot
 	// unused for them. Nil keeps WorkRoot for every org.
-	Roots *OrgRootSet
+	Roots    *OrgRootSet
 	WorkRoot string
 	// BuildCache is a host validation's GOCACHE; "" is BuildCacheDir().
 	BuildCache string

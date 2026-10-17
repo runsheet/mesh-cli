@@ -31,15 +31,15 @@ import (
 // the same EvaluateWorkItem confirms it (the platform marks it merged,
 // with no pull request) or readies it again.
 type Evaluator struct {
-	GW       Gateway
-	Harness  harness.Harness
-	WS       Workspacer
-	Cfg      *Config
-	Scopes   Scopes
+	GW      Gateway
+	Harness harness.Harness
+	WS      Workspacer
+	Cfg     *Config
+	Scopes  Scopes
 	// Roots, when set, are each served org's own roots (ADR-034): the
 	// item's checkout, clone and scratch go under its org's, WorkRoot
 	// unused for them. Nil keeps WorkRoot for every org.
-	Roots *OrgRootSet
+	Roots    *OrgRootSet
 	WorkRoot string
 	// MCP are the MCP servers the session gets (runsheet).
 	MCP map[string]any
