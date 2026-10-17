@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -210,8 +211,25 @@ func TestServerWithFakeSession(t *testing.T) {
 	toServerW.Close()
 }
 
+// sockPath is a unix socket path in a dir of the test's own: t.TempDir
+// when its path is short enough, else a dir under /tmp removed at
+// cleanup. A validation's TMPDIR is a scratch deep under the work root,
+// and a socket path past sun_path's 108 bytes cannot be bound.
+func sockPath(t *testing.T) string {
+	t.Helper()
+	if sock := filepath.Join(t.TempDir(), "node.sock"); len(sock) < 100 {
+		return sock
+	}
+	dir, err := os.MkdirTemp("/tmp", "channel-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return filepath.Join(dir, "node.sock")
+}
+
 func TestHubQueuesUntilConnected(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "node.sock")
+	sock := sockPath(t)
 	var mu sync.Mutex
 	var done []string
 	hub := &Hub{OnDone: func(id, outcome string) { mu.Lock(); done = append(done, id+":"+outcome); mu.Unlock() }}
