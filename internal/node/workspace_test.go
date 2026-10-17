@@ -1253,6 +1253,49 @@ func TestWorktreesCarryTheirOwnTokenAndTheSharedCloneNone(t *testing.T) {
 	}
 }
 
+// A prepared worktree lists as locked in the shared clone's own
+// `git worktree list --porcelain`, not just at its admin dir's `locked`
+// file: the stanza naming its dir carries a `locked` line with Prepare's
+// reason (mesh ADR 017).
+func TestPreparedWorktreeListsAsLocked(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	work, repos := filepath.Join(root, "work"), filepath.Join(root, "repos")
+	g, _ := recordingGit(repos)
+	clone := SharedClonePath(repos, origin)
+	spec := WorkspaceSpec{Root: work, GoalSlug: "g", Seq: 1, Repo: origin, Branch: BranchName("g", 1), BaseRef: "main"}
+	dir, err := g.Prepare(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if !isWorktree(dir) {
+		t.Fatalf("%s is not a worktree of the shared clone", dir)
+	}
+
+	out := gitOut(t, clone, "worktree", "list", "--porcelain")
+	stanzas := strings.Split(out, "\n\n")
+	var stanza string
+	for _, s := range stanzas {
+		if strings.HasPrefix(s, "worktree "+dir) {
+			stanza = s
+			break
+		}
+	}
+	if stanza == "" {
+		t.Fatalf("no stanza for %s in porcelain output:\n%s", dir, out)
+	}
+	want := "locked mesh: item g/1 live"
+	found := false
+	for _, line := range strings.Split(stanza, "\n") {
+		if line == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("stanza for %s has no %q line:\n%s", dir, want, stanza)
+	}
+}
+
 // Two items of one repo authorizing at once never race for the shared
 // clone's .git/config: a worktree's origin is read without a lock, and
 // changed only under the repo's lock by one writer (2026-10-12, every

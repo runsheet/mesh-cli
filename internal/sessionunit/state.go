@@ -43,7 +43,8 @@ type State struct {
 	Label   string `json:"label,omitempty"`
 	Model   string `json:"model,omitempty"`
 	Account string `json:"account,omitempty"`
-	// Harness is the agent ("claude-code").
+	// Harness is the agent: "claude-code", or "codex" for a Codex
+	// session, whose adopter is the Codex harness.
 	Harness string `json:"harness,omitempty"`
 	// Runner is the Unit's Name; PID and Unit where the session runs.
 	// A sandboxed session's is SandboxRunner: no pid, its Unit the
@@ -71,6 +72,12 @@ type State struct {
 	// relay reads per request (mesh-cli ADR-029): the path a later node
 	// keeps fresh when it adopts the session. A path only.
 	TokenFile string `json:"tokenFile,omitempty"`
+	// LoginFile is the auth.json a sandboxed Codex session's login was
+	// copied from, and LoginCache where a login it refreshed is kept for
+	// the next session on its credential: the node that ends the session
+	// writes a refreshed one back to both. Paths only, never the login.
+	LoginFile  string `json:"loginFile,omitempty"`
+	LoginCache string `json:"loginCache,omitempty"`
 	// SessionID is the agent's own session id once it said it.
 	SessionID string `json:"sessionId,omitempty"`
 	// Offset is the byte offset in output.jsonl up to which the node has

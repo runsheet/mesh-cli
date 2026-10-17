@@ -69,10 +69,20 @@ type Codex struct {
 	// allow-listed variables by name. Nil is `sandbox: off`: codex on
 	// the host, Binary.
 	Sandbox *sandbox.Sandbox
+	// PodProbe is the command the preflight's sandbox probe runs inside
+	// Codex's sandbox in the pod; nil is PodProbeLoopback, node binding
+	// a loopback socket (the image has no mesh).
+	PodProbe []string
 	// SandboxBinary is the agent's executable in the pod: empty is
 	// `codex` on the node image's PATH; else a path inside the pod, such
 	// as one in the workspace (an e2e's stub agent).
 	SandboxBinary string
+	// DetachSandboxed runs a sandboxed Outlive job's codex detached in
+	// its pod (runDetached), as ClaudeCode.DetachSandboxed does: the
+	// node's restart leaves it running and the next process adopts it
+	// (Attach, mesh-cli ADR-009). Codex on the host never outlives the
+	// node.
+	DetachSandboxed bool
 }
 
 // CodexProvider is an OpenAI-compatible endpoint a Codex session talks
@@ -659,7 +669,8 @@ func (h *codexHome) release(remove bool) {
 }
 
 func (h *codexHome) close() error {
-	// a Codex session ends with the node: its token file goes with it
+	// the session has ended: its token file goes with it (a detached
+	// one's is released, kept, by runDetached instead)
 	h.release(true)
 	if h.owned {
 		defer os.RemoveAll(h.dir)
@@ -858,6 +869,12 @@ func (k *keptCodex) stdout(raw *capBuffer) io.Writer {
 // readStream parses a session's stream, passing what it says on, and
 // returns the turn.failed message, if any.
 func (c *Codex) readStream(stdout io.Reader, job Job, onProgress func(Progress)) (Result, string) {
+	return c.readStreamWatch(stdout, job, onProgress, nil)
+}
+
+// readStreamWatch is readStream with after, when set, called after
+// every event: a detached session's follower saves its offset there.
+func (c *Codex) readStreamWatch(stdout io.Reader, job Job, onProgress func(Progress), after func(CodexEvent)) (Result, string) {
 	var sessionID, failure string
 	price := c.Account.Provider.Price
 	res := parseCodexStream(stdout, job.Model, price, func(ev CodexEvent) {
@@ -883,6 +900,9 @@ func (c *Codex) readStream(stdout io.Reader, job Job, onProgress func(Progress))
 			if ev.Error != nil {
 				failure = ev.Error.Message
 			}
+		}
+		if after != nil {
+			after(ev)
 		}
 	})
 	return res, failure
@@ -1026,7 +1046,15 @@ func (c *Codex) probeCommand() []string {
 // `unreachable: <error>`, a header variable missing or empty,
 // `sandbox: …` — and never carries a secret. It costs nothing and is no
 // tool call of the session's.
+//
+// With a Sandbox, or on a job carrying its Session, every step runs in
+// the session's pod instead (preflightSandboxed): the image's codex, the
+// CODEX_HOME inside the session's HOME, the env the session gets.
 func (c *Codex) Preflight(ctx context.Context, job Job) error {
+	if c.Sandbox != nil || job.Session != nil {
+		// the image's codex in the session's pod: no host binary looked up
+		return c.preflightSandboxed(ctx, job)
+	}
 	bin := c.Binary
 	if bin == "" {
 		bin = "codex"
@@ -1128,6 +1156,14 @@ func (c *Codex) preflightContext(ctx context.Context, bin string, job Job, s *co
 		}
 		return nil
 	}
+	return c.preflightHTTP(ctx, job, s, url)
+}
+
+// preflightHTTP is the preflight's (2) for an http built-in: an MCP
+// client's opening to url with the header values the rendered config
+// and the session's environment give Codex.
+func (c *Codex) preflightHTTP(ctx context.Context, job Job, s *codexSession, url string) error {
+	redact := func(msg string) string { return Redact(msg, s.secrets...) }
 	_, _, vars, err := codexMCP(codexOwnServers(job), job.Env)
 	if err != nil {
 		return err
