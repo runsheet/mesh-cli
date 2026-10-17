@@ -22,6 +22,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 )
 
 // ScratchDirName is the scratch root's name under the work root. It is a
@@ -125,4 +128,37 @@ func scratchEnv(env []string, scratch, cache string) []string {
 		}
 	}
 	return out
+}
+
+// sessionScratch gives a host agent session — a build, evaluation, plan,
+// research or rebase — a scratch dir of its own under root, its org's
+// scratch root (scratchRootFor, ScratchRoot of its org's work root),
+// <root>/<kind>-<subject>-<rand>, and puts it on the job as
+// TMPDIR and GOTMPDIR with GOCACHE the node's one build cache (cache, ""
+// BuildCacheDir()), so what the agent's own `go test`, mktemp and
+// go-build leave dies with the session instead of staying in /tmp. The
+// dir rides SessionMeta.TempDirs (sessionTempDirs reads TMPDIR off the
+// job), so the node that ends a detached session removes it too
+// (harness.RemoveSession); the caller removes it when it handles the end
+// itself (unlessDetached). A sandboxed session (sb set) gets none: its
+// pod has its own TMPDIR, and "" is returned.
+func sessionScratch(sb *sandbox.Sandbox, root, cache string, kind harness.Kind, subject string, job *harness.Job) (string, error) {
+	if sb != nil {
+		return "", nil
+	}
+	if cache == "" {
+		var err error
+		if cache, err = BuildCacheDir(); err != nil {
+			return "", fmt.Errorf("build cache: %w", err)
+		}
+	}
+	if err := os.MkdirAll(cache, 0o700); err != nil {
+		return "", fmt.Errorf("build cache: %w", err)
+	}
+	dir, err := MakeScratch(root, string(kind), subject)
+	if err != nil {
+		return "", err
+	}
+	job.Env = scratchEnv(job.Env, dir, cache)
+	return dir, nil
 }
