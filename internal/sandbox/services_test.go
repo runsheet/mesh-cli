@@ -192,6 +192,40 @@ jobs:
 	}
 }
 
+func TestWorkflowPostgresServiceDefaultsPGDATA(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, ".github/workflows/test.yml", `
+jobs:
+  test:
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+    steps: [{run: "go test ./..."}]
+`)
+	got, err := Resolve(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Source != SourceWorkflow {
+		t.Errorf("source = %q, want %q", got.Source, SourceWorkflow)
+	}
+	if len(got.Services) != 1 {
+		t.Fatalf("services = %+v, want one", got.Services)
+	}
+	s := got.Services[0]
+	if s.Env["PGDATA"] != PostgresDefaultPGDATA {
+		t.Errorf("PGDATA = %q, want %q", s.Env["PGDATA"], PostgresDefaultPGDATA)
+	}
+	if s.Env["POSTGRES_INITDB_ARGS"] != PostgresDefaultInitdbArgs {
+		t.Errorf("POSTGRES_INITDB_ARGS = %q, want %q", s.Env["POSTGRES_INITDB_ARGS"], PostgresDefaultInitdbArgs)
+	}
+	if s.Env["POSTGRES_PASSWORD"] != "postgres" {
+		t.Errorf("POSTGRES_PASSWORD = %q, want kept", s.Env["POSTGRES_PASSWORD"])
+	}
+}
+
 func TestPostgresServiceDefaultsPGDATA(t *testing.T) {
 	images := []string{
 		"postgres:17-alpine",

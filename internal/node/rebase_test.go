@@ -79,7 +79,7 @@ func TestRebaseClaimedOnceAndFinishedWithPushedHead(t *testing.T) {
 	if len(claims) != 1 || claims[0].Input["aggregateId"] != item1 || claims[0].Input["nodeId"] != cfg.NodeID {
 		t.Fatalf("claims: %+v", claims)
 	}
-	if len(h.jobs) != 1 || h.jobs[0].Kind != harness.KindRebase || h.jobs[0].MaxBudgetUSD != 4 || h.jobs[0].MCPServers["mesh-context"] == nil {
+	if len(h.jobs) != 1 || h.jobs[0].Kind != harness.KindRebase || h.jobs[0].MaxBudgetUSD != 4 || h.jobs[0].MCPServers["runsheet"] == nil {
 		t.Fatalf("jobs: %+v", h.jobs)
 	}
 	p := h.jobs[0].Prompt

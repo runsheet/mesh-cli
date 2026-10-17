@@ -97,7 +97,7 @@ func evaluationJob(t *testing.T, gateway string) harness.Job {
 	return job
 }
 
-// Codex: the rendered config.toml names mesh-context at the gateway's
+// Codex: the rendered config.toml names runsheet at the gateway's
 // /mcp, its Authorization from MESH_CODEX_MCP_0_TOKEN, approved; that
 // variable holds the node's token in the session's environment; and
 // the preflight passes against the fake, which was sent exactly the
@@ -110,7 +110,7 @@ func TestEvaluationOnCodexReachesTheContextTool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "[mcp_servers.mesh-context]\n" +
+	want := "[mcp_servers.runsheet]\n" +
 		"url = \"" + g.URL + "/mcp\"\n" +
 		"env_http_headers = { \"Authorization\" = \"MESH_CODEX_MCP_0_TOKEN\" }\n" +
 		"default_tools_approval_mode = \"approve\"\n"
@@ -138,7 +138,7 @@ func TestEvaluationOnCodexReachesTheContextTool(t *testing.T) {
 	if err := c.Preflight(context.Background(), job); err != nil {
 		t.Fatalf("preflight: %v", err)
 	}
-	if got := strings.TrimSpace(read(t, filepath.Join(out, "args"))); got != "mcp get mesh-context" {
+	if got := strings.TrimSpace(read(t, filepath.Join(out, "args"))); got != "mcp get runsheet" {
 		t.Fatalf("args %q", got)
 	}
 	if got := read(t, filepath.Join(out, "config.toml")); !strings.Contains(got, want) {
@@ -158,7 +158,7 @@ func TestEvaluationOnCodexReachesTheContextTool(t *testing.T) {
 	}
 }
 
-// Claude: the mcp.json names mesh-context at the gateway's /mcp with
+// Claude: the mcp.json names runsheet at the gateway's /mcp with
 // the node's bearer, --allowedTools lets its tools run (inline, and as
 // the sandbox's file), and a tools/list POST to the rendered url on the
 // rendered header is answered.
@@ -170,17 +170,17 @@ func TestEvaluationOnClaudeReachesTheContextTool(t *testing.T) {
 	if len(args) != 4 || args[0] != "--mcp-config" || args[2] != "--allowedTools" {
 		t.Fatalf("args %q", args)
 	}
-	want := `{"mcpServers":{"mesh-context":{"headers":{"Authorization":"Bearer rs_node"},"type":"http","url":"` + g.URL + `/mcp"}}}`
+	want := `{"mcpServers":{"runsheet":{"headers":{"Authorization":"Bearer rs_node"},"type":"http","url":"` + g.URL + `/mcp"}}}`
 	if args[1] != want {
 		t.Fatalf("mcp.json:\n%s\nwant:\n%s", args[1], want)
 	}
-	if args[3] != "mcp__mesh-context__*" {
+	if args[3] != "mcp__runsheet__*" {
 		t.Fatalf("--allowedTools %q", args[3])
 	}
 
 	c := &harness.ClaudeCode{}
 	sargs := strings.Join(c.SandboxArgs(job, "/home/session/mcp.json"), " ")
-	if !strings.Contains(sargs, "--mcp-config /home/session/mcp.json --allowedTools mcp__mesh-context__*") {
+	if !strings.Contains(sargs, "--mcp-config /home/session/mcp.json --allowedTools mcp__runsheet__*") {
 		t.Fatalf("sandbox args %q", sargs)
 	}
 	if strings.Contains(sargs, "rs_node") {
@@ -197,7 +197,7 @@ func TestEvaluationOnClaudeReachesTheContextTool(t *testing.T) {
 	if err := json.Unmarshal([]byte(args[1]), &cfg); err != nil {
 		t.Fatal(err)
 	}
-	srv := cfg.MCPServers["mesh-context"]
+	srv := cfg.MCPServers["runsheet"]
 	req, _ := http.NewRequest(http.MethodPost, srv.URL, bytes.NewBufferString(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`))
 	for k, v := range srv.Headers {
 		req.Header.Set(k, v)

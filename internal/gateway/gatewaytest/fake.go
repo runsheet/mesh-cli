@@ -1,7 +1,7 @@
 // Package gatewaytest is an httptest stand-in for the platform gateway:
 // enough GraphQL to run the node's loop and the goal commands against —
 // index lists with EQ wheres, gets by id, and the slice-6 commands with
-// the aggregates' refusals — plus mesh-context's document endpoints
+// the aggregates' refusals — plus the context server's document endpoints
 // under /mesh/v1.
 package gatewaytest
 
@@ -2393,7 +2393,7 @@ func camel(s string) string {
 	return strings.Join(parts, "")
 }
 
-// mesh serves mesh-context's document endpoints under /mesh/v1, the
+// mesh serves the context server's document endpoints under /mesh/v1, the
 // only path the gateway serves.
 func (f *Fake) mesh(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()

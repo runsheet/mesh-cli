@@ -502,7 +502,7 @@ func TestLoopServesEveryOrgOfItsOwner(t *testing.T) {
 	}
 }
 
-// A poll-mode build takes its mesh-context bearer per item: the node's
+// A poll-mode build takes its runsheet bearer per item: the node's
 // machine access token expires within the hour, so the map captured when
 // the node started would hand a long-running node's later sessions a
 // dead token (latchkey adr-machine-identity, rollout phase 2).
@@ -536,15 +536,15 @@ func TestRunnerAsksForItsMCPServersPerItem(t *testing.T) {
 	}
 	assertNoGoalDoc(t, ws)
 	for i, want := range []string{"Bearer machine-token-1", "Bearer machine-token-2"} {
-		srv, _ := h.jobs[i].MCPServers["mesh-context"].(map[string]any)
+		srv, _ := h.jobs[i].MCPServers["runsheet"].(map[string]any)
 		headers, _ := srv["headers"].(map[string]string)
 		if headers["Authorization"] != want {
 			t.Fatalf("job %d Authorization = %q, want %q (MCP must not be the map from node start)", i, headers["Authorization"], want)
 		}
 	}
-	// the prompt promises mesh-context because MCPFunc gave a server
+	// the prompt promises runsheet because MCPFunc gave a server
 	if !strings.Contains(h.jobs[0].Prompt, "mesh_document") {
-		t.Fatal("a session with mesh-context must be told about it")
+		t.Fatal("a session with runsheet must be told about it")
 	}
 }
 

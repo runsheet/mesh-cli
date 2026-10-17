@@ -380,7 +380,28 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   marked section judged only between its markers — exiting 1 unless
   every report is `Healthy` (ADR-025, Doctor).
   **A draining node claims nothing** (`Loop.Drain`): see the drain
-  below. **Capacity counts the live sessions** (ADR-029,
+  below. **A node low on disk claims nothing** (ADR-035,
+  `docs/adr/adr-035-a-node-low-on-disk-claims-nothing.md`,
+  `internal/node/diskfloor.go`): node.yaml's `disk: {free_min_gb,
+  path}` (`DiskConfig`, `free_min_gb` default 10 GiB
+  (`DefaultDiskFreeMinGB`), `path` default the loop's `WorkRoot`; a
+  negative floor refused at load naming `disk.free_min_gb`; re-read
+  each tick, `Loop.DiskThresholds`, logged `disk: free_min_gb <old> →
+  <new>` and `disk: path <old> → <new>`) is read every tick, after
+  `hostBackoff` and before any claim (`Loop.diskFloor`), through the
+  quartermaster's `StatfsFunc` (`Loop.Statfs`, the real statfs when
+  nil, injectable); free space under `FloorBytes()` skips every claim
+  path — `evaluateHeld`, `rebaseRequested`, `planRequested`,
+  `researchDue`, `validateBatches` and `claimReady` — running sessions
+  untouched, logged once on entering, `disk_low: <path> <free> free <
+  floor <floor>; claiming nothing` (at the first tick when the node
+  starts under it), and once on leaving, `disk ok: <path> <free> free
+  >= floor <floor>; claiming again`; a failed read keeps the last
+  judgement, `disk: cannot read <path>: <err>; keeping the last
+  judgement` once per error; while low `Loop.DiskFindings()` is one
+  critical `disk_low` Finding (subject the path, bytes the free space)
+  for the quartermaster's report once its loop wiring folds it in;
+  `disklow_e2e_test.go`'s `TestDiskLowE2E` runs it on `Loop.Run`. **Capacity counts the live sessions** (ADR-029,
   `internal/node/liveproc.go`): `Loop.Live` (`LiveProbe{Systemctl,
   Root, Find, SweepEvery}`) counts the build sessions alive on the host
   each tick — active `mesh-session-build-*` scopes, else
@@ -1238,7 +1259,15 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   reason as `<kind>: ` (`validate.WithKind`/`Reason`/`KindOfReason`) —
   `Runner.fail`'s `failWorkItem`, `ReleaseOnCredential`'s
   `releaseWorkItem`, a refused pull's `updateError`; node.log's step
-  line ends ` (<kind>)`. Any other non-zero exit carries none; the
+  line ends ` (<kind>)`. A `tool_missing` reason names the missing
+  tool and the command (ADR-030's amendment 2026-10-16):
+  `validationFailure.Error()` renders ``validation failed: step <name>
+  exited 127: command not found: <tool> (in `<command>`)``, the tool
+  read from the step's output by `validate.MissingTool` (sh's, bash's
+  and Go exec's "not found"), else the command alone, on a build's
+  `failWorkItem` and a batch candidate's or main validation's failure
+  alike (`toolmissing_e2e_test.go`'s `TestToolMissingE2E`). Any other
+  non-zero exit carries none; the
   platform half, runsheet goal
   an-item-that-fails-on-its-environment-is-parked-not-replanned, parks
   on it. **A merged dependency's gone branch fails nothing**
@@ -1344,8 +1373,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   found wins — `.mesh/services.yml`, else the `services:` of its
   workflows' test jobs (merged by name, not required), else none — into
   one `Service` shape with a parsed `HealthCheck`, test tuning for
-  Postgres and MySQL/MariaDB, and a disallowed registry returned
-  `Refused` with a note. Pure parsing; the fixtures are under
+  Postgres and MySQL/MariaDB, a postgres or postgis service's own
+  `PGDATA`/`POSTGRES_INITDB_ARGS` defaulted to a path writable under
+  keep-id when it sets neither (`postgresDefaults`, docs/adr/adr-007's
+  2026-10-16 amendment), and a disallowed registry returned `Refused`
+  with a note. Pure parsing; the fixtures are under
   `internal/sandbox/testdata/` (their `.mesh/` needs `git add -f`).
 - **A session commits as its agent** (`internal/node/identity.go`,
   docs/adr/adr-024): `AgentIdentity(role, slug)` is `Mesh <role>
