@@ -918,6 +918,44 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   released: <reason>`; a silent build on a host not overloaded runs on.
   A claim lost while the host is overloaded names it in `afterLost`'s
   line, `claim lost (item is ready; host overloaded: …)`.
+- **A host session's scratch dies with the session** (ADR-036,
+  `docs/adr/adr-036-a-host-sessions-scratch-dies-with-the-session.md`,
+  `internal/node/scratch.go`, `scratchsweep.go`, `cachetrim.go`): no
+  unsandboxed session or validation writes into the node process's
+  /tmp. Each host validation gets `MakeScratch(ScratchRoot(workRoot),
+  "validate", <item|batch>)`, `<work root>/.scratch/validate-<subject>-<rand>`,
+  set once by `hostValidationEnv`/`scratchEnv` as TMPDIR and GOTMPDIR
+  and removed by `buildValidation.close` (`RemoveScratch`, which chmods
+  read-only module dirs and retries). Each host build, evaluation, plan,
+  rebase and research session gets `sessionScratch`,
+  `<scratch root>/<kind>-<subject>-<rand>` under its org's root
+  (`scratchRootFor`), carried into `SessionMeta.TempDirs`
+  (`sessionTempDirs`), so `harness.RemoveSession` removes it on every
+  end, adopted or given up included. A no-workspace Claude Code session's
+  `mesh-session-*` dir goes under the job's TMPDIR, else
+  `ClaudeCode.ScratchRoot`. Every one shares GOCACHE
+  `BuildCacheDir()` = `<user cache dir>/mesh/cache/go` under the cache
+  root, held under node.yaml's **`validation_cache_max_bytes`** (default
+  20 GiB). `Loop.CacheTrim` (`CacheTrim.RunIfDue`, first tick then
+  hourly) trims an over-cap root below 80% of the cap
+  (`SharedCache.Trim`: LRU entries, then `go clean -cache`), logged
+  `cache: trimmed X to Y`, and leaves the reading at
+  `~/.mesh/node.cachesize` (`RunState.WriteCacheSize`). `mesh node
+  status` prints it as `cache: <size> of <cap> (<root>); scratch <size>
+  (<root>); measured <RFC3339>`, or `cache: size unknown (no reading
+  yet)` (`cacheSizeStatusLine`). A sandboxed session gets none of it; its
+  pod has its own TMPDIR. At start, after `SweepSandbox`, `SweepScratch`
+  (`ScratchSweep`) removes every dir under the scratch root and every
+  `HostScratchPrefixes` dir (`mesh-session-`, `mesh-gh-`, `mesh-claude-`,
+  `mesh-node-pull-/image-/push-`, plus `mesh-home-` on a host node)
+  under `os.TempDir()` that the node's uid owns. It keeps what a found
+  session names (dir, workspace, HOME, TempDirs, token file's dir), what
+  `WorkspaceLive` holds, the process's own HOME (`internal/commands`'
+  `TestMain` gives the package's tests a TMPDIR of their own), and symlinks, and logs `scratch: swept N dirs, M
+  bytes at start (K kept)`. `scripts/host-tmp-reading.sh [--baseline
+  FILE] <user>...` takes the /tmp reading by prefix.
+  `host_scratch_e2e_test.go`'s `TestHostScratchE2E` (`go test
+  ./internal/node -run HostScratch`) runs it end to end.
 - **The quartermaster keeps the node fit** (`internal/node/quartermaster*.go`,
   ADR-034, `docs/adr/adr-034-the-quartermaster-keeps-the-node-fit.md`):
   `Loop.Quartermaster` (`Quartermaster{Checks, Every}`) runs from `Tick`

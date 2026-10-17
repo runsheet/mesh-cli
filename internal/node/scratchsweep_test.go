@@ -131,3 +131,20 @@ func TestStartUpScratchSweepReadOnlyTree(t *testing.T) {
 		t.Errorf("Run = %+v, %v; dir left %v", res, err, lstatOK(dir))
 	}
 }
+
+// The process's own HOME is never swept, though it is a mesh-home-* dir
+// under the swept /tmp (a pod's HOME mounted at its host path): a test or
+// session running `mesh node start` there keeps its HOME.
+func TestStartUpScratchSweepKeepsTheProcessHome(t *testing.T) {
+	tmp := t.TempDir()
+	home := scratchDir(t, filepath.Join(tmp, "mesh-home-42"), 4)
+	stale := scratchDir(t, filepath.Join(tmp, "mesh-home-43"), 4)
+	t.Setenv("HOME", home)
+	res, err := ScratchSweep{TempDir: tmp, Owned: func(os.FileInfo) bool { return true }}.Run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !lstatOK(home) || lstatOK(stale) || res.Dirs != 1 || res.Kept != 1 {
+		t.Fatalf("home kept %v, stale kept %v, %+v", lstatOK(home), lstatOK(stale), res)
+	}
+}

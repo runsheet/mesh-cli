@@ -285,3 +285,24 @@ next rotation, so:
 - Stopping a node no longer fails a claimed rebase; the next node
   finishes it.
 - Test fakes record each call's time (`gatewaytest.Call.At`).
+
+## Amendment 2026-10-17: a host session's temp dirs include its scratch
+
+[ADR-036](adr-036-a-host-sessions-scratch-dies-with-the-session.md)
+(goal a-host-sessions-scratch-dies-with-the-session). A host build,
+evaluation, plan, rebase or research session now runs with a scratch dir
+of its own under `<work root>/.scratch`
+(`sessionScratch`, `<kind>-<subject>-<rand>`) as TMPDIR and GOTMPDIR,
+with GOCACHE the node's shared build cache. `sessionTempDirs` puts that
+dir in `SessionMeta.TempDirs`, so `state.json` names it beside the
+session's other temp dirs. The node that handles the session's end —
+the one that started it, the one that adopted it after a detach, or the
+one that gave up on it — removes it with `harness.RemoveSession`, and
+`removeTree` copes with a read-only Go module tree. A scratch whose
+session died with a killed node (a validation, a Codex session, or a
+session whose `state.json` is gone) is named by no found session, so the
+start-up scratch sweep (ADR-036, ADR-007's amendment 2026-10-17)
+removes it. A detached
+session's scratch outlives the node with the session, and the sweep
+keeps it because the found session names it.
+`host_scratch_e2e_test.go` proves both paths.

@@ -916,6 +916,11 @@ blob lookup the node's served-diff validations made (counts persisted
 in `~/.mesh/node.cache`), the cache root's size on disk and node.yaml's
 `validation_cache_max_bytes` — or `validation cache: no lookups yet`
 (Main validations from the served diff, below).
+Beside it is the cache's size line, from the node's hourly cache trim
+(`~/.mesh/node.cachesize`): `cache: 4.2 GiB of 20.0 GiB
+(/home/u/.cache/mesh/cache); scratch 1.0 GiB (/home/u/.mesh/work/.scratch);
+measured 2026-10-17T18:00:00Z`, or `cache: size unknown (no reading
+yet)` before the first trim (A host session's scratch, below).
 
 ### Start
 
@@ -2045,6 +2050,40 @@ worktree (`served diff: no minted token`) until the platform mints one
 for it. An evaluation still runs on the item's own checkout (ADR-027).
 `mesh node status` prints the hit rate (above).
 [ADR-034](docs/adr/adr-034-a-node-validates-from-a-served-diff-with-a-shared-cache.md)
+has the detail.
+
+### A host session's scratch
+
+An unsandboxed session or validation never writes into the node's own
+`/tmp`. Each host build, evaluation, plan, rebase and research session,
+and each host validation, runs with a scratch dir of its own under
+`~/.mesh/work/.scratch` as its TMPDIR and GOTMPDIR, so whatever its
+`go test`, `mktemp` and go-build leave goes with it. They all share one
+Go build cache, `~/.cache/mesh/cache/go`, as GOCACHE. The scratch is
+removed when the session or validation ends, by whichever node handles
+the end, adopting or giving up included.
+
+The cache root, the Go build cache included, is held under node.yaml's
+`validation_cache_max_bytes` (default 20 GiB):
+
+```yaml
+validation_cache_max_bytes: 21474836480   # 20 GiB, the default
+```
+
+At the first tick and hourly after, a root over the cap is trimmed below
+80% of it, logged `cache: trimmed <before> to <after>`, and the size
+lands in `mesh node status`'s `cache:` line (above).
+
+A node killed mid-session leaves that session's scratch behind. At the
+next `mesh node start` the scratch sweep removes every dir under the
+scratch root and the node's own `mesh-session-*`, `mesh-gh-*`,
+`mesh-claude-*`, `mesh-node-*` (and, on a host node, `mesh-home-*`) dirs
+under `/tmp`. It keeps whatever an adopted session still names, another
+user's dirs and symlinks, and logs `scratch: swept N dirs, M bytes at
+start (K kept)`. `scripts/host-tmp-reading.sh [--baseline FILE]
+<user>...` reads what the node users hold under `/tmp` by prefix, to
+compare an hour apart.
+[ADR-036](docs/adr/adr-036-a-host-sessions-scratch-dies-with-the-session.md)
 has the detail.
 
 ### Credentials on fetch, push and pull
