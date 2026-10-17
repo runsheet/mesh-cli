@@ -140,6 +140,12 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	if err != nil {
 		return fail(fmt.Errorf("workspace: %w", err))
 	}
+	// a node serving several orgs runs no rebase on the host (ADR-034,
+	// Refusals): handed back to its builder with the kinded reason
+	if err := HostFallback(r.Sandbox, r.Scopes, item.OrgID, spec.Dir()); err != nil {
+		noteHostFallback(err, r.logf)
+		return fail(fmt.Errorf("%s%w", SandboxRequiredPrefix, err))
+	}
 	// live on this node while this runs: no cleanup touches it (HoldWorkspace)
 	defer HoldWorkspace(spec.Dir())()
 	// the item's own GitHub token: the push is the session's whole point
