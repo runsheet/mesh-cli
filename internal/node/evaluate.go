@@ -74,7 +74,10 @@ type Evaluator struct {
 	Codex harness.Harness
 	// CodexPreflight checks, before any Codex session starts, that the
 	// session's job reaches the built-in context server (the Codex
-	// harness's Preflight; nil: no check). A failure moves an unpinned
+	// harness's Preflight; nil: no check). On a sandboxed node the job
+	// carries the evaluation's pod (job.Session), opened before it, so
+	// the preflight runs in the pod the session then runs in, with its
+	// HOME and env (ADR 007, ADR 011). A failure moves an unpinned
 	// evaluation to Claude, keeps a pinned one waiting in evaluating, and
 	// makes a Codex second opinion unavailable.
 	CodexPreflight func(ctx context.Context, job harness.Job) error
@@ -348,11 +351,36 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	}
 	// whichever account the session ends on (a failed preflight swaps it)
 	defer unlessDetached(ctx, func() { acct.Cleanup() })
+	runtimes := e.runtimes()
+	// the checkout's services, started in the session's pod before the
+	// evaluator — and before a Codex preflight, which runs in this pod
+	// so it proves what the session will see (ADR 007, ADR 011); the pod
+	// and its sidecars go on every way out. An item
+	// in evaluating can be neither released nor reported on: a required
+	// service that does not come up leaves it unevaluated, and the loop
+	// does not try again while that holds; a missing optional one is in
+	// the verdict's notes.
+	pod, err := openOrgSessionPod(ctx, e.Sandbox, e.Roots, e.Scopes, item.OrgID, dir, job.Label, harness.KindEvaluate, sandbox.GitIdentity{}, e.logf)
+	defer pod.Close() // nothing, once the harness detached the session (Session.Detach)
+	if re := RuntimeErrorOf(err); re != nil {
+		return e.runtimeNoVerdict(ctx, evalRun{item: item, res: res, label: label, model: model, fam: fam, dir: dir, acct: acct}, re, harness.Result{})
+	}
+	if err != nil {
+		return fmt.Errorf("services: %w", err)
+	}
+	if _, failed := pod.RequiredFailure(); failed {
+		reason := pod.ReleaseReason()
+		e.Declines.Record(item.ID, pod.Declined(), runtimes, time.Now())
+		e.logf("item %s: not evaluated, %s", label, reason)
+		return fmt.Errorf("not evaluated, %s", reason)
+	}
+	if note := pod.MissingNote(); note != "" {
+		e.logf("item %s: %s", label, note)
+	}
 	base := job
 	base.Env = slices.Clone(job.Env)
 	var second harness.Job
 	var st SessionTools
-	runtimes := e.runtimes()
 	preflight := ""
 	for {
 		job = base
@@ -383,7 +411,9 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		// a Codex session that cannot reach the context server would judge
 		// blind: it does not start, and a tool failure never becomes a
 		// verdict (ADR 011, the preflight)
-		why := e.preflight(ctx, job, acct)
+		pf := job
+		pod.Apply(&pf)
+		why := e.preflight(ctx, pf, acct)
 		if why == "" {
 			e.Waits.Forget(preflightKey(item.ID))
 			break
@@ -410,29 +440,6 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		e.logf("item %s: evaluate with tools %s", label, st.Names())
 	}
 	if note := st.OmittedNote(); note != "" {
-		e.logf("item %s: %s", label, note)
-	}
-	// the checkout's services, started in the session's pod before the
-	// evaluator; the pod and its sidecars go on every way out. An item
-	// in evaluating can be neither released nor reported on: a required
-	// service that does not come up leaves it unevaluated, and the loop
-	// does not try again while that holds; a missing optional one is in
-	// the verdict's notes.
-	pod, err := openOrgSessionPod(ctx, e.Sandbox, e.Roots, e.Scopes, item.OrgID, dir, job.Label, harness.KindEvaluate, sandbox.GitIdentity{}, e.logf)
-	defer pod.Close() // nothing, once the harness detached the session (Session.Detach)
-	if re := RuntimeErrorOf(err); re != nil {
-		return e.runtimeNoVerdict(ctx, evalRun{item: item, res: res, label: label, model: model, fam: fam, dir: dir, acct: acct}, re, harness.Result{})
-	}
-	if err != nil {
-		return fmt.Errorf("services: %w", err)
-	}
-	if _, failed := pod.RequiredFailure(); failed {
-		reason := pod.ReleaseReason()
-		e.Declines.Record(item.ID, pod.Declined(), runtimes, time.Now())
-		e.logf("item %s: not evaluated, %s", label, reason)
-		return fmt.Errorf("not evaluated, %s", reason)
-	}
-	if note := pod.MissingNote(); note != "" {
 		e.logf("item %s: %s", label, note)
 	}
 	pod.Apply(&job)

@@ -5,6 +5,7 @@ go 1.26.2
 require (
 	github.com/Masterminds/sprig/v3 v3.3.0
 	github.com/creack/pty v1.1.24
+	github.com/getsentry/sentry-go v0.50.0
 	github.com/google/uuid v1.6.0
 	github.com/pelletier/go-toml/v2 v2.2.4
 	github.com/sigstore/protobuf-specs v0.5.1

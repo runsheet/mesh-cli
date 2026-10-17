@@ -265,6 +265,8 @@ type Session struct {
 	// detached is a session whose agent outlives the node process: Close
 	// leaves its pods and HOME to whoever Reattaches it.
 	detached bool
+	// execs counts the commands Exec ran, naming each its own container.
+	execs int
 }
 
 // GitIdentity is a session's commit identity: the agent its .gitconfig
@@ -602,6 +604,63 @@ func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 	}
 	return classify(exit, time.Since(start), spec.Timeout, cfg.Limits, tail.String())
 }
+
+// Exec runs a short command — a preflight's step — in the session's pod
+// beside where its agent will run: the pod Start made with its services,
+// else one made now and kept for the next Run or StartDetached, with the
+// same mounts, environment (Session.Env of spec.Env) and limits as the
+// agent, in a container of its own (ExecName). The pod is never removed
+// here. A cancelled ctx returns ctx.Err(); a kill by a limit a
+// *LimitError; any other non-zero exit an *ExitError.
+func (s *Session) Exec(ctx context.Context, spec RunSpec) error {
+	cfg := s.sb.Config
+	s.mu.Lock()
+	started := s.started
+	s.execs++
+	n := s.execs
+	s.mu.Unlock()
+	var pod Pod
+	if started != nil {
+		pod = *started
+	} else {
+		var err error
+		if pod, err = s.createPod(ctx); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		s.started = &pod
+		s.mu.Unlock()
+	}
+	tail := &tailBuffer{max: 8 << 10}
+	stderr := io.Writer(tail)
+	if spec.Stderr != nil {
+		stderr = io.MultiWriter(spec.Stderr, tail)
+	}
+	start := time.Now()
+	exit, err := s.sb.Runtime.RunAgent(ctx, pod, AgentSpec{
+		Name:           ExecName(pod, n),
+		Image:          cfg.Image,
+		Workdir:        spec.Workspace,
+		Mounts:         s.Mounts(spec.Workspace),
+		Env:            s.Env(spec.Env),
+		Command:        spec.Command,
+		Limits:         cfg.Limits,
+		TimeoutSeconds: runtimeTimeout(spec.Timeout),
+		Stdin:          spec.Stdin,
+		Stdout:         spec.Stdout,
+		Stderr:         stderr,
+	})
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err != nil {
+		return fmt.Errorf("sandbox: exec: %w", err)
+	}
+	return classify(exit, time.Since(start), spec.Timeout, cfg.Limits, tail.String())
+}
+
+// ExecName is the container name of the session's nth Exec in a pod.
+func ExecName(pod Pod, n int) string { return fmt.Sprintf("%s-exec-%d", pod.Name, n) }
 
 // AgentName is the name of the agent's container in a pod.
 func AgentName(pod Pod) string { return pod.Name + "-agent" }

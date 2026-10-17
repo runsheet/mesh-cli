@@ -37,7 +37,7 @@ func (c *Codex) runSandboxed(ctx context.Context, job Job, onProgress func(Progr
 		}
 		defer sess.CloseAndLog()
 	}
-	home, env, err := c.prepareSandboxHome(job, sess)
+	home, env, _, err := c.prepareSandboxHome(job, sess)
 	if errors.Is(err, ErrNoIssuedCredential) {
 		return Result{}, fmt.Errorf("harness codex: %w", err)
 	}
@@ -107,7 +107,8 @@ func (c *Codex) runSandboxed(ctx context.Context, job Job, onProgress func(Progr
 // prepareSandboxHome makes the session's CODEX_HOME at
 // sess.CodexHome(), inside the pod's HOME, and returns it with the pod
 // session's env: job.Env with CODEX_HOME naming that directory (which
-// Session.Env passes by name), and the home's own variables. The login
+// Session.Env passes by name), and the home's own variables; and the job
+// as config.toml renders it (its runsheet relay placed in the pod). The login
 // is placed as prepareHome places it — a job's own CODEX_HOME (an
 // issued credential's auth.json) copied in and written back when Codex
 // refreshed it, else Account's plan login copied likewise or its API key
@@ -115,15 +116,15 @@ func (c *Codex) runSandboxed(ctx context.Context, job Job, onProgress func(Progr
 // runsheet relay as RelayScript in the HOME on a token file in the
 // CODEX_HOME. The HOME is the session's: Close removes it, so the home
 // is never owned here.
-func (c *Codex) prepareSandboxHome(job Job, sess *sandbox.Session) (*codexHome, []string, error) {
+func (c *Codex) prepareSandboxHome(job Job, sess *sandbox.Session) (*codexHome, []string, Job, error) {
 	dir := sess.CodexHome()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, nil, err
+		return nil, nil, job, err
 	}
 	h := &codexHome{dir: dir}
-	fail := func(err error) (*codexHome, []string, error) {
+	fail := func(err error) (*codexHome, []string, Job, error) {
 		h.release(true)
-		return nil, nil, err
+		return nil, nil, job, err
 	}
 	prov := c.Account.Provider
 	placed := jobCodexHome(job.Env)
@@ -187,7 +188,7 @@ func (c *Codex) prepareSandboxHome(job Job, sess *sandbox.Session) (*codexHome, 
 		}
 	}
 	env = append(env, "CODEX_HOME="+dir)
-	return h, append(env, h.env...), nil
+	return h, append(env, h.env...), job, nil
 }
 
 // copyLogin copies from's auth.json into the home, remembering it so

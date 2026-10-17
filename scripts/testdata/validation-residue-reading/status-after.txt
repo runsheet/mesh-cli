@@ -1,0 +1,3 @@
+node: running (pid 1234)
+capacity: 4 (fixed)
+validation cache: 80% hits (48/60), 1.2 GiB of 20.0 GiB
