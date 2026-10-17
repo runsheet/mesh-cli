@@ -171,6 +171,11 @@ type Config struct {
 	// out, or a field left zero, takes its default, read again every
 	// tick like the claim limits.
 	Host HostConfig `yaml:"host,omitempty"`
+	// Disk is node.yaml's `disk:` block (DiskConfig): the free space
+	// under which the node claims nothing (diskfloor.go) — left out, or
+	// a field left zero, takes its default, read again every tick like
+	// `host:`.
+	Disk DiskConfig `yaml:"disk,omitempty"`
 	// Takes is node.yaml's `takes:` block (Takes): which kinds of
 	// session this node claims, and each kind's own cap — read again
 	// every tick like the claim limits. Left out, every kind (Takes.Takes
@@ -521,6 +526,41 @@ func (h HostConfig) Validate() error {
 	}
 	if h.StarveAfter < 0 {
 		return errors.New("host.starve_after: cannot be negative")
+	}
+	return nil
+}
+
+// DefaultDiskFreeMinGB is disk.free_min_gb's default: under 10 GiB free
+// on the work root the node claims nothing (the disk hour, 2026-10-15).
+const DefaultDiskFreeMinGB = 10.0
+
+// DiskConfig is node.yaml's `disk:` block: the free space, in GiB, on
+// Path (the work root when left out) under which the node claims nothing
+// new (diskfloor.go). A field left out, or zero, takes its default
+// (Effective).
+type DiskConfig struct {
+	FreeMinGB float64 `yaml:"free_min_gb,omitempty"`
+	Path      string  `yaml:"path,omitempty"`
+}
+
+// Effective is d with FreeMinGB at its default when zero; Path stays as
+// given, "" being the work root.
+func (d DiskConfig) Effective() DiskConfig {
+	if d.FreeMinGB == 0 {
+		d.FreeMinGB = DefaultDiskFreeMinGB
+	}
+	return d
+}
+
+// FloorBytes is FreeMinGB in bytes.
+func (d DiskConfig) FloorBytes() uint64 {
+	return uint64(d.FreeMinGB * (1 << 30))
+}
+
+// Validate refuses a negative floor, naming the key.
+func (d DiskConfig) Validate() error {
+	if d.FreeMinGB < 0 {
+		return errors.New("disk.free_min_gb: cannot be negative")
 	}
 	return nil
 }
@@ -1137,6 +1177,8 @@ type Reloaded struct {
 	// Host is node.yaml's `host:` block, defaults filled; nil keeps the
 	// loop's.
 	Host *HostConfig
+	// Disk is node.yaml's `disk:` block; nil keeps the loop's.
+	Disk *DiskConfig
 	// Takes is node.yaml's `takes:` block; nil keeps the loop's.
 	Takes *Takes
 }
@@ -1248,12 +1290,13 @@ func joinReasons(errs []error) error {
 // capacity, the limits, the accounts and budgets, the context budget,
 // the claim limits and the orgs restriction.
 func reloadedFrom(c *Config) Reloaded {
-	limits, budget, claim, host, takes := c.Limits, c.Context, c.Claim, c.Host, c.Takes
+	limits, budget, claim, host, disk, takes := c.Limits, c.Context, c.Claim, c.Host, c.Disk, c.Takes
 	return Reloaded{Capacity: c.Capacity, Limits: &limits, Context: &budget, Claim: &claim,
 		Spending: &Spending{ProjectBudgets: c.ProjectBudgets, Budgets: c.Budgets},
 		Orgs:     c.Orgs, OrgsRead: true,
 		Shares: c.Shares, SharesRead: true,
 		Host:  &host,
+		Disk:  &disk,
 		Takes: &takes}
 }
 
@@ -1342,6 +1385,9 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if err := ValidateShares(c.Shares); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if err := c.Disk.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if err := c.Host.Validate(); err != nil {

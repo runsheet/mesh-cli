@@ -16,6 +16,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/tools"
 	"projectmesh.io/mesh-cli/internal/version"
 )
 
@@ -609,7 +610,7 @@ func TestNoVerdictLineOnAnOlderPlatformRecordsNothing(t *testing.T) {
 func TestBlindFirstAttemptThenPassRecordsPassed(t *testing.T) {
 	f, ev, claude, codex, _, _ := familyFixture(t, "high", "sonnet", "Holds.\nVERDICT: PASS", "A clause does not hold.\nVERDICT: FAIL")
 	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
-	codex.tools = noContext(0, "prologue: not found")
+	codex.tools = noContext(0, "runsheet: not found")
 	codex.firstOnly = true
 	claude.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 2}}
 	in := evaluateItem1(t, f, ev)
@@ -621,8 +622,8 @@ func TestBlindFirstAttemptThenPassRecordsPassed(t *testing.T) {
 	}
 	notes, _ := in["notes"].(string)
 	for _, want := range []string{
-		"Codex (first attempt, gpt-6-luna): no verdict — mesh-context: prologue: not found\n\nHolds.",
-		"Codex second opinion unavailable: it saw no context on the first attempt (mesh-context: prologue: not found)",
+		"Codex (first attempt, gpt-6-luna): no verdict — mesh-context: runsheet: not found\n\nHolds.",
+		"Codex second opinion unavailable: it saw no context on the first attempt (mesh-context: runsheet: not found)",
 	} {
 		if !strings.Contains(notes, want) {
 			t.Fatalf("notes lack %q:\n%s", want, notes)
@@ -686,7 +687,7 @@ func TestSomeContextIsAVerdict(t *testing.T) {
 }
 
 // An evaluation an older node started names the built-in by its old
-// name, prologue; adopted, its broken context is still no verdict
+// name (tools.BuiltinAlias); adopted, its broken context is still no verdict
 // (tools.IsBuiltin, an alias read until 2026-10-28).
 func TestNoContextUnderTheOldNameIsNotAVerdict(t *testing.T) {
 	f, ev, _, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "VERDICT: PASS")
@@ -701,7 +702,7 @@ func TestNoContextUnderTheOldNameIsNotAVerdict(t *testing.T) {
 	}
 	// adopted: no account and no second job, as AdoptEvaluation runs it
 	run := evalRun{item: *item, res: res, label: "ship-it/1", model: "sonnet", fam: family{model: "sonnet", claude: "sonnet"}, dir: t.TempDir(), adopted: true}
-	result := harness.Result{Text: "VERDICT: PASS", Tools: map[string]*harness.ToolStat{"prologue": {Calls: 2, Errors: 2, FirstError: "Auth required"}}}
+	result := harness.Result{Text: "VERDICT: PASS", Tools: map[string]*harness.ToolStat{tools.BuiltinAlias(): {Calls: 2, Errors: 2, FirstError: "Auth required"}}}
 	if err := ev.afterEvaluate(context.Background(), run, result, nil); err != nil {
 		t.Fatalf("afterEvaluate = %v", err)
 	}
@@ -709,23 +710,23 @@ func TestNoContextUnderTheOldNameIsNotAVerdict(t *testing.T) {
 	if codex.runs() != 0 || len(calls) != 1 || !sentNoVerdict(calls[0].Input) {
 		t.Fatalf("codex runs %d, verdicts %+v", codex.runs(), calls)
 	}
-	if !strings.Contains(logs.String(), "saw no context (prologue: Auth required); not a verdict") {
+	if !strings.Contains(logs.String(), "saw no context ("+tools.BuiltinAlias()+": Auth required); not a verdict") {
 		t.Fatalf("node.log:\n%s", logs.String())
 	}
 }
 
-// A session this node started was rendered mesh-context, so a prologue
-// in its result is an ordinary console tool, not the built-in's old
+// A session this node started was rendered mesh-context, so the alias
+// (tools.BuiltinAlias) in its result is an ordinary console tool, not the built-in's old
 // name: every call of it failing while mesh-context works leaves the
 // verdict standing (the alias, read until 2026-10-28, is for adopted
 // sessions only).
-func TestAConsoleToolNamedPrologueFailingIsNotNoContext(t *testing.T) {
+func TestAConsoleToolNamedAsTheAliasFailingIsNotNoContext(t *testing.T) {
 	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "VERDICT: FAIL")
 	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
 	ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
 	claude.tools = map[string]*harness.ToolStat{
-		"mesh-context": {Calls: 3},
-		"prologue":     {Calls: 2, Errors: 2, FirstError: "upstream down"},
+		"mesh-context":       {Calls: 3},
+		tools.BuiltinAlias(): {Calls: 2, Errors: 2, FirstError: "upstream down"},
 	}
 	in := evaluateItem1(t, f, ev)
 	if codex.runs() != 0 || len(claude.jobs) != 1 || in["passed"] != true {

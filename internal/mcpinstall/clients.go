@@ -3,6 +3,7 @@ package mcpinstall
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,7 +59,7 @@ type Client struct {
 	MCPConfig string
 	MCPFile   func(home string) string
 	Format    Format
-	// MCPKeys is the JSON path of mesh's entry; TOMLTable its table.
+	// MCPKeys is the JSON path of runsheet's entry; TOMLTable its table.
 	MCPKeys   []string
 	TOMLTable string
 	// Instructions are the client's instruction files.
@@ -75,8 +76,68 @@ type Client struct {
 	EnvRef     func(name string) string
 }
 
-// ServerName is the name mesh's entry is kept under in every client.
-const ServerName = "mesh"
+// ServerName is the name runsheet's entry is kept under in every
+// client: one server, named for the platform, whichever binary or URL
+// it points at. The channel server node sessions load keeps its own
+// name (meshmcp.ServerName).
+const ServerName = "runsheet"
+
+// LegacyNames are the names an earlier install, or a hand-written
+// entry, kept runsheet's server under. An install removes each that
+// IsRunsheetEntry and keeps, reporting it, one that points elsewhere.
+var LegacyNames = []string{"mesh", "mesh-context", "prologue"}
+
+// RunsheetHost is the hosted gateway's host; its /mcp is runsheet's.
+const RunsheetHost = "api.runsheet.dev"
+
+// IsRunsheetEntry says a client's server entry is runsheet's: it runs a
+// mesh binary's `mcp` or `mcp-relay` — its command's base name `mesh`
+// or `mesh-*`, its args opening `mcp` or `mcp-relay` — or its url is
+// /mcp on RunsheetHost or one of hosts (the configured gateway's).
+func IsRunsheetEntry(entry any, hosts ...string) bool {
+	m, ok := entry.(map[string]any)
+	if !ok {
+		return false
+	}
+	if cmd, _ := m["command"].(string); cmd != "" {
+		base := filepath.Base(strings.ReplaceAll(cmd, `\`, "/"))
+		base = strings.TrimSuffix(base, ".exe")
+		if base != "mesh" && !strings.HasPrefix(base, "mesh-") {
+			return false
+		}
+		args, _ := m["args"].([]any)
+		if len(args) == 0 {
+			return false
+		}
+		first, _ := args[0].(string)
+		return first == "mcp" || first == "mcp-relay"
+	}
+	raw, _ := m["url"].(string)
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" || !strings.HasSuffix(strings.TrimRight(u.Path, "/"), "/mcp") {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == RunsheetHost {
+		return true
+	}
+	for _, h := range hosts {
+		if h != "" && strings.EqualFold(h, host) {
+			return true
+		}
+	}
+	return false
+}
+
+// HostOf is rawURL's host name, "" when it has none: what an install
+// passes IsRunsheetEntry for the configured gateway's MeshMCPURL.
+func HostOf(rawURL string) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
+}
 
 // Detect says the client is on this machine: its config dir exists or
 // one of its binaries is on PATH.

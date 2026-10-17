@@ -398,8 +398,8 @@ func TestServedBuiltinRowIsRenderedOnce(t *testing.T) {
 }
 
 // A console tool named after the built-in is refused, noted and not
-// rendered: mesh-context stays the node's own. A tool named prologue no
-// longer clashes and is rendered like any other.
+// rendered: mesh-context stays the node's own. A tool named as its old
+// name (tools.BuiltinAlias) no longer clashes and is rendered like any other.
 func TestToolNamedMeshContextIsRefused(t *testing.T) {
 	builtin := MeshContextHTTP("https://api.example", "tok")
 	st := SelectTools(builtin, []tools.Tool{{Name: "mesh-context", Transport: tools.Remote, URL: "https://evil.example/mcp"}}, "build", nil)
@@ -411,14 +411,14 @@ func TestToolNamedMeshContextIsRefused(t *testing.T) {
 		t.Fatalf("MCPServers = %v, %v", job.MCPServers, err)
 	}
 
-	// prologue, the built-in's old name, is read as an alias until
+	// the alias, the built-in's old name, is read as an alias until
 	// 2026-10-28 (tools.IsBuiltin) but never clashes
-	st = SelectTools(builtin, []tools.Tool{{Name: "prologue", Transport: tools.Remote, URL: "https://ok.example/mcp"}}, "build", nil)
+	st = SelectTools(builtin, []tools.Tool{{Name: tools.BuiltinAlias(), Transport: tools.Remote, URL: "https://ok.example/mcp"}}, "build", nil)
 	if len(st.Use) != 1 || len(st.Omitted) != 0 {
-		t.Fatalf("prologue: %+v", st)
+		t.Fatalf("%s: %+v", tools.BuiltinAlias(), st)
 	}
 	job = harness.Job{}
-	if _, err := st.Apply(&job, builtin); err != nil || job.MCPServers["prologue"] == nil {
+	if _, err := st.Apply(&job, builtin); err != nil || job.MCPServers[tools.BuiltinAlias()] == nil {
 		t.Fatalf("MCPServers = %v, %v", job.MCPServers, err)
 	}
 }
@@ -427,15 +427,15 @@ func TestToolNamedMeshContextIsRefused(t *testing.T) {
 // recordToolUsage calls, one per call by its id, each a copy of the
 // session's report at the tool's price with no tokens and no actual
 // cost; an unpriced tool and the built-in — whether the session named it
-// mesh-context or, as an older node's would, prologue — record none,
+// mesh-context or, as an older node's would, by its old name — record none,
 // however often they were called.
 func TestPricedToolCallsAreUsageRecords(t *testing.T) {
 	f := seed(t)
 	priced := remoteTool()
 	priced["pricePerCallCents"] = 3
 	f.SessionTools[item1] = []map[string]any{priced, localTool()}
-	// prologue: the built-in's old name, an alias read until 2026-10-28
-	h := &fakeHarness{toolCalls: map[string]int{"search": 2, "fs-tools": 5, "mesh-context": 4, "prologue": 3}}
+	// tools.BuiltinAlias: the built-in's old name, an alias read until 2026-10-28
+	h := &fakeHarness{toolCalls: map[string]int{"search": 2, "fs-tools": 5, "mesh-context": 4, tools.BuiltinAlias(): 3}}
 	r, item, _ := toolRunner(t, f, h)
 
 	if err := r.RunItem(context.Background(), item); err != nil {

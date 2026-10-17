@@ -57,6 +57,9 @@ type Fake struct {
 	// Health answers a sidecar's health check: its command (nil for a
 	// TCP probe) or the port probed. Nil passes every check.
 	Health func(sidecar string, cmd []string, port int) error
+	// Image answers ImageExec: the image's stdout for cmd. Nil is an
+	// image that carries nothing, every command an error.
+	Image func(image string, cmd []string) (string, error)
 }
 
 func (f *Fake) call(name string) {
@@ -371,4 +374,13 @@ func (f *Fake) RemoveContainer(_ context.Context, name string) error {
 	}
 	f.Running = cs
 	return nil
+}
+
+// ImageExec implements Runtime.
+func (f *Fake) ImageExec(_ context.Context, image string, cmd []string) (string, error) {
+	f.call("image-exec " + image + " " + strings.Join(cmd, " "))
+	if f.Image == nil {
+		return "", fmt.Errorf("fake: %s: %s: not found", image, strings.Join(cmd, " "))
+	}
+	return f.Image(image, cmd)
 }

@@ -209,13 +209,44 @@ func build(name string, sp spec, from string, resolve func(string) (string, bool
 	return s
 }
 
-// finish sets the registry and refuses an image outside allowed.
+// finish sets the registry, refuses an image outside allowed, and gives a
+// postgres service a writable data directory under keep-id.
 func finish(s *Service, allowed []string) {
 	s.Registry = Registry(s.Image)
 	if !RegistryAllowed(s.Registry, allowed) {
 		s.Refused = true
 		s.Notes = append(s.Notes, fmt.Sprintf("image %s refused: registry %s is not allowed (allowed: %s)",
 			s.Image, s.Registry, strings.Join(allowed, ", ")))
+	}
+	postgresDefaults(s)
+}
+
+// postgresDefaults gives a postgres or postgis service PGDATA and
+// POSTGRES_INITDB_ARGS when it has not set them itself: under keep-id the
+// image's /var/lib/postgresql/data volume belongs to the pod's user and the
+// entrypoint's chmod of it fails ("could not change permissions of
+// directory \"/var/lib/postgresql/data\": Operation not permitted"), so the
+// server is told to initialize a data directory it can actually write.
+func postgresDefaults(s *Service) {
+	switch imageName(s.Image) {
+	case "postgres", "postgis":
+	default:
+		return
+	}
+	if s.Env == nil {
+		s.Env = map[string]string{}
+	}
+	var set []string
+	if _, ok := s.Env["PGDATA"]; !ok {
+		s.Env["PGDATA"] = PostgresDefaultPGDATA
+		set = append(set, "PGDATA")
+	}
+	if _, ok := s.Env["POSTGRES_INITDB_ARGS"]; !ok {
+		s.Env["POSTGRES_INITDB_ARGS"] = PostgresDefaultInitdbArgs
+		set = append(set, "POSTGRES_INITDB_ARGS")
+	}
+	if len(set) > 0 {
+		s.Notes = append(s.Notes, fmt.Sprintf("defaulted %s so the data directory is writable under keep-id", strings.Join(set, ", ")))
 	}
 }
 
@@ -249,6 +280,16 @@ func RegistryAllowed(host string, allowed []string) bool {
 var (
 	PostgresTuning = []string{"-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"}
 	MySQLTuning    = []string{"--innodb-flush-log-at-trx-commit=0", "--sync-binlog=0", "--skip-log-bin"}
+)
+
+// PostgresDefaultPGDATA and PostgresDefaultInitdbArgs are the data
+// directory and initdb arguments a postgres or postgis service gets when it
+// has not set them itself (postgresDefaults): under keep-id the image's
+// /var/lib/postgresql/data belongs to the pod's user, and the entrypoint
+// cannot chmod it.
+const (
+	PostgresDefaultPGDATA     = "/tmp/pgdata"
+	PostgresDefaultInitdbArgs = "--no-sync"
 )
 
 func tuning(image string) []string {

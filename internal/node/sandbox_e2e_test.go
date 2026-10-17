@@ -36,11 +36,15 @@ func TestE2EFixturesResolve(t *testing.T) {
 	}
 	want := []sandbox.Service{{
 		Name: "postgres", Image: "postgres:17-alpine", Registry: "docker.io",
-		Env:     map[string]string{"POSTGRES_PASSWORD": "mysecret"},
+		Env: map[string]string{
+			"POSTGRES_PASSWORD": "mysecret",
+			"PGDATA":            sandbox.PostgresDefaultPGDATA, "POSTGRES_INITDB_ARGS": sandbox.PostgresDefaultInitdbArgs,
+		},
 		Ports:   []string{"5432:5432"},
 		Command: sandbox.PostgresTuning, Tuned: true,
 		Health:   &sandbox.HealthCheck{Cmd: "pg_isready -U postgres", Interval: 5 * time.Second, Timeout: 5 * time.Second, Retries: 10},
 		Required: false, From: ".github/workflows/test.yml",
+		Notes: []string{"defaulted PGDATA, POSTGRES_INITDB_ARGS so the data directory is writable under keep-id"},
 	}}
 	if pg.Source != sandbox.SourceWorkflow || !reflect.DeepEqual(pg.Services, want) {
 		t.Errorf("runsheet-postgres: %s %+v\nwant %s %+v", pg.Source, pg.Services, sandbox.SourceWorkflow, want)
