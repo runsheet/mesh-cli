@@ -2,6 +2,7 @@ package harness
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,13 +136,19 @@ func readTokenFile(path string) (string, error) {
 // adopting node's bearer from now on. A state with none, or a harness
 // with no keeper, keeps nothing.
 func (c *ClaudeCode) keepAdopted(st sessionunit.State) func(bool) {
-	if st.TokenFile == "" || c.Tokens == nil {
+	return keepAdoptedToken(c.Tokens, c.Stderr, c.Name(), st)
+}
+
+// keepAdoptedToken is keepAdopted for any harness: tokens keeps the
+// state's token file, a failure said on stderr as name's.
+func keepAdoptedToken(tokens TokenKeeper, stderr io.Writer, name string, st sessionunit.State) func(bool) {
+	if st.TokenFile == "" || tokens == nil {
 		return func(bool) {}
 	}
-	release, err := c.Tokens.Keep(st.TokenFile)
+	release, err := tokens.Keep(st.TokenFile)
 	if err != nil {
-		if c.Stderr != nil {
-			fmt.Fprintf(c.Stderr, "harness claude-code: attach: runsheet token: %v\n", err)
+		if stderr != nil {
+			fmt.Fprintf(stderr, "harness %s: attach: runsheet token: %v\n", name, err)
 		}
 		return func(bool) {}
 	}

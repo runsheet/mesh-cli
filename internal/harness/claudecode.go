@@ -400,6 +400,30 @@ func RemoveSession(workdir string) error {
 // stops it. Every other end kills the unit once the output is
 // read, and res.Killed is what that kill (or the stop before it) found.
 func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, end *unitEnd, dir string, st *sessionunit.State, from int64, secrets []string, onProgress func(Progress), watch func(Event)) (res Result, detached bool, waitErr error, errBuf *bytes.Buffer, rawOut *capBuffer) {
+	var stderr io.Writer
+	if c.Stderr != nil {
+		stderr = &redactWriter{w: c.Stderr, secrets: secrets}
+	}
+	parse := func(r io.Reader, progress func(Progress), each func(sessionID string)) Result {
+		return parseClaude(r, progress, func(ev Event) {
+			if watch != nil {
+				watch(ev)
+			}
+			each(ev.SessionID)
+		})
+	}
+	return followUnit(ctx, parent, outlive, end, dir, st, from, stderr, onProgress, parse, c.ended)
+}
+
+// streamParser reads a session's stream to its end, passing progress
+// on and calling each after every event with the session id it named
+// ("" when none): Claude's parseClaude, Codex's parseCodexStream.
+type streamParser func(r io.Reader, progress func(Progress), each func(sessionID string)) Result
+
+// followUnit is follow for any agent's stream: stderr, when set, sees
+// the session's stderr as it is written, parse reads its output, and
+// endedWith puts the unit's kill report on the Result.
+func followUnit(ctx, parent context.Context, outlive bool, end *unitEnd, dir string, st *sessionunit.State, from int64, logErr io.Writer, onProgress func(Progress), parse streamParser, endedWith func(*unitEnd, Result) Result) (res Result, detached bool, waitErr error, errBuf *bytes.Buffer, rawOut *capBuffer) {
 	errBuf, rawOut = &bytes.Buffer{}, &capBuffer{max: 64 << 10}
 	readCtx, stopReading := context.WithCancel(context.Background())
 	defer stopReading()
@@ -423,8 +447,8 @@ func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, end *unit
 	alive := end.alive
 
 	var stderr io.Writer = errBuf
-	if c.Stderr != nil {
-		stderr = io.MultiWriter(&redactWriter{w: c.Stderr, secrets: secrets}, errBuf)
+	if logErr != nil {
+		stderr = io.MultiWriter(logErr, errBuf)
 	}
 	errDone := make(chan struct{})
 	if errFollow, err := sessionunit.Follow(readCtx, filepath.Join(dir, sessionunit.StderrFile), 0, alive); err == nil {
@@ -440,7 +464,7 @@ func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, end *unit
 	if err != nil {
 		end.kill()
 		<-errDone
-		return c.ended(end, Result{}), false, fmt.Errorf("output: %w", err), errBuf, rawOut
+		return endedWith(end, Result{}), false, fmt.Errorf("output: %w", err), errBuf, rawOut
 	}
 	defer out.Close()
 	progress := onProgress
@@ -453,17 +477,14 @@ func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, end *unit
 			}
 		}
 	}
-	res = parseClaude(io.TeeReader(out, rawOut), progress, func(ev Event) {
-		if watch != nil {
-			watch(ev)
-		}
+	res = parse(io.TeeReader(out, rawOut), progress, func(sessionID string) {
 		if out.Offset() <= st.Offset {
 			return
 		}
 		// the offset read and reported so far, after every event, so a
 		// node that adopts reports nothing twice
-		if ev.SessionID != "" && st.SessionID == "" {
-			st.SessionID = ev.SessionID
+		if sessionID != "" && st.SessionID == "" {
+			st.SessionID = sessionID
 		}
 		st.Offset = out.Offset()
 		_ = sessionunit.WriteState(dir, *st)
@@ -481,7 +502,7 @@ func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, end *unit
 		_ = sessionunit.WriteState(dir, *st)
 	}
 	end.kill()
-	return c.ended(end, res), false, waitErr, errBuf, rawOut
+	return endedWith(end, res), false, waitErr, errBuf, rawOut
 }
 
 // unitEnd is a session's unit killed once, whichever end comes first — a
@@ -632,7 +653,7 @@ func (job Job) state(runner string, h sessionunit.Handle, harness string) sessio
 		Attempt: job.Meta.Attempt, Kind: string(job.Kind), Label: job.Label, Model: job.Model, Account: acct,
 		Harness: harness, Runner: runner, PID: h.PID, Unit: h.UnitName, Workspace: job.Workspace,
 		StartedAt: time.Now().UTC(), TimeoutSeconds: int(job.Timeout / time.Second), MaxBudgetUSD: job.MaxBudgetUSD,
-		TempDirs: job.Meta.TempDirs, TokenFile: job.tokenFile,
+		TempDirs: job.Meta.TempDirs, TokenFile: job.tokenFile, LoginCache: job.Meta.LoginCache,
 	}
 }
 
