@@ -1,5 +1,5 @@
 ---
-summary: Before an evaluation starts the node chooses its family per session — Codex when an issued Codex account has headroom for the goal's priority (node.yaml's own-login candidate is gone, amendment 2026-10-02), else Claude; a full gpt-… id pins Codex and waits in evaluating without headroom, a claude-… id pins Claude; the urgent/high second opinion runs on the other family, labelled by family and model; the one usage report names adapter codex and the gpt-6 model of a Codex evaluation; before any Codex session starts the node preflights the built-in context server in the session's own home and env (`codex mcp get` and a tools/list handshake), and a failure moves an unpinned evaluation to Claude, keeps a pinned one waiting and makes a Codex second opinion unavailable. Amended: an unpinned Codex evaluation defaults to gpt-6-sol (opus tier) or gpt-6-luna (sonnet, haiku), astra only when pinned; and a tool failure is never a verdict — a session that saw no context is evaluated again on the other family, or the item waits in evaluating. Amended 2026-09-29: an evaluation that reached no verdict — no VERDICT line, or no context and no other family — is recorded with evaluateWorkItem's outcome no_verdict and its reason, never a fail (a gateway without the field: it waits in evaluating, said once per run); a family blind on the first attempt is not asked for the second opinion; and the preflight probes Codex's sandbox (`codex sandbox -c sandbox_mode="workspace-write" -- true`, the session's own policy), and a Codex session whose every command bubblewrap refused (`Result.SandboxBroken`) is never a verdict either — every `bwrap:` text in the record came from a Codex session. Amended 2026-09-29 again: a Codex evaluation's sandbox gets the network (`sandbox_workspace_write.network_access=true` on `codex exec` and on the probe), so its tests can bind loopback; the probe binds a socket (`mesh sandbox-probe`) instead of running `true`; and a session whose test commands that executed every one died on `socket: operation not permitted` (or `bind:`) is `SandboxBroken` too. The mini's `codex-bwrap` AppArmor profile makes bwrap start; it does not give the sandbox loopback.
+summary: Before an evaluation starts the node chooses its family per session — Codex when an issued Codex account has headroom for the goal's priority (node.yaml's own-login candidate is gone, amendment 2026-10-02), else Claude; a full gpt-… id pins Codex and waits in evaluating without headroom, a claude-… id pins Claude; the urgent/high second opinion runs on the other family, labelled by family and model; the one usage report names adapter codex and the gpt-6 model of a Codex evaluation; before any Codex session starts the node preflights the built-in context server in the session's own home and env (`codex mcp get` and a tools/list handshake), and a failure moves an unpinned evaluation to Claude, keeps a pinned one waiting and makes a Codex second opinion unavailable. Amended: an unpinned Codex evaluation defaults to gpt-6-sol (opus tier) or gpt-6-luna (sonnet, haiku), astra only when pinned; and a tool failure is never a verdict — a session that saw no context is evaluated again on the other family, or the item waits in evaluating. Amended 2026-09-29: an evaluation that reached no verdict — no VERDICT line, or no context and no other family — is recorded with evaluateWorkItem's outcome no_verdict and its reason, never a fail (a gateway without the field: it waits in evaluating, said once per run); a family blind on the first attempt is not asked for the second opinion; and the preflight probes Codex's sandbox (`codex sandbox -c sandbox_mode="workspace-write" -- true`, the session's own policy), and a Codex session whose every command bubblewrap refused (`Result.SandboxBroken`) is never a verdict either — every `bwrap:` text in the record came from a Codex session. Amended 2026-09-29 again: a Codex evaluation's sandbox gets the network (`sandbox_workspace_write.network_access=true` on `codex exec` and on the probe), so its tests can bind loopback; the probe binds a socket (`mesh sandbox-probe`) instead of running `true`; and a session whose test commands that executed every one died on `socket: operation not permitted` (or `bind:`) is `SandboxBroken` too. The mini's `codex-bwrap` AppArmor profile makes bwrap start; it does not give the sandbox loopback. A Codex session on a sandboxed node runs in its pod, outlives the node and is adopted by the next process (amendment 2026-10-17).
 status: accepted
 ---
 
@@ -42,8 +42,9 @@ codex under the evaluator's own rule (`withChooser`); node.yaml's by
 session's tools but runs on the harness's own login. None with
 headroom: the session runs on Claude exactly as before, and if the
 chosen issued credential is gone by the claim-time read, it falls back
-to Claude too. A Codex session is not `Outlive` (Codex still ends with
-the node, `adr-009`).
+to Claude too. A host Codex session is not `Outlive` and ends with the node
+(`adr-009`); a sandboxed one outlives it and is adopted (amendment
+2026-10-17 below).
 
 **A pin wins over the choice.** `EvaluatorPin` reads the item's
 `evaluateModel`, then its own or its agent's model (`ItemModel`,
@@ -295,8 +296,9 @@ could not run or reach its tools, and 10 more carry a `VERDICT: PASS`.
 
 ## Amendment 2026-09-29: a sandbox that will not start is never a verdict
 
-Goal `evaluation-reports-no-verdict` (item 3). Codex runs on the host,
-not in the node's pod (mesh-specs ADR 007), under `codex exec --sandbox
+Goal `evaluation-reports-no-verdict` (item 3). Codex ran on the host,
+not in the node's pod (mesh-specs ADR 007; on a sandboxed node it runs
+in its pod since the amendment of 2026-10-17, its probe there too), under `codex exec --sandbox
 workspace-write`, whose sandbox is Codex's bundled bubblewrap. On the
 mini (Ubuntu, `kernel.apparmor_restrict_unprivileged_userns = 1`) it
 fails to set up its network namespace — `bwrap: loopback: Failed
@@ -586,3 +588,40 @@ disagreement after a first PASS fails) is unchanged; only when the
 second opinion is asked is. A first attempt that reached no verdict —
 blind, or no `VERDICT:` line — is never a first FAIL: those paths are
 unchanged and ask no second opinion.
+
+## Amendment 2026-10-17: a sandboxed Codex session outlives the node and is adopted (goal codex-sessions-run-in-the-sandbox)
+
+The Decision said a Codex session is not `Outlive`: it ran attached on the
+host and ended with the node, so an upgrade mid-evaluation lost it and
+the next process evaluated the item again. Since this goal a Codex
+session on a node whose sandbox is on runs in its own pod from the node
+image (ADR-007's amendment of this date), and that pod is its unit as
+it is a sandboxed Claude session's (ADR-008, ADR-009, ADR-007's
+amendment 2026-10-13). **"A Codex session ends with the node" is
+retired for sandboxed sessions:**
+
+- A Codex evaluation on a sandboxed node is `Job.Outlive`, and
+  `Codex.DetachSandboxed` (set by `mesh node start` with a sandbox, as
+  `ClaudeCode.DetachSandboxed` is) runs it detached — `codex exec` by
+  `Session.StartDetached`, `podman run -d` named `sandbox.AgentName(pod)`,
+  its prompt in `<workdir>.session/.prompt`, its streams in
+  `output.jsonl` and `stderr.log` (`Codex.runDetached`,
+  `internal/harness/codexdetach.go`).
+- Its `state.json` names `harness: codex`, `runner: podman`, the pod,
+  container and HOME, the runsheet token file, and the login's
+  `loginFile` and `loginCache` (`SessionMeta.LoginCache`, the
+  credential's `CodexLoginCache`) — paths only, never a secret.
+- A restart (`Loop.Restart`, a self-update, `mesh node upgrade`)
+  detaches it: the pod, HOME, token file and login stay. The next
+  process's `FindSessionsIn` finds it, `SweepSandbox` keeps it, and
+  `Evaluator.AdoptEvaluation` routes it by the state's adapter to
+  `Codex.Attach`, which follows the container from the saved offset,
+  parses the Codex stream, writes a refreshed `auth.json` back to the
+  login cache and removes the pod and HOME; the verdict goes through
+  the same `afterEvaluate` as a live session's, recorded exactly once
+  (`TestCodexPodSessionAdopted`, which fails with the Codex branch of
+  `AdoptEvaluation` removed).
+- What still ends with the node: a host Codex session (sandbox off),
+  and the second opinion, whose job is copied before `Outlive` is set,
+  so it runs attached in the pod and a restart mid-second-opinion leaves
+  the first verdict to be evaluated again by the next process.

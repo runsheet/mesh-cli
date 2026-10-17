@@ -1,5 +1,5 @@
 ---
-summary: An item of an urgent or high goal whose Claude evaluation passes is evaluated again on Codex with the same prompt in the same workspace; both verdicts are recorded, labelled, in one EvaluateWorkItem, a Codex fail fails it, an unavailable or paced Codex keeps the first verdict with a line saying so, and the Codex account's limits (codex:<account>) never pace Claude. Builders on Codex come later, behind a per-project setting.
+summary: An item of an urgent or high goal whose Claude evaluation passes is evaluated again on Codex with the same prompt in the same workspace; both verdicts are recorded, labelled, in one EvaluateWorkItem, a Codex fail fails it, an unavailable or paced Codex keeps the first verdict with a line saying so, and the Codex account's limits (codex:<account>) never pace Claude. Builders on Codex come later, behind a per-project setting. A sandboxed Codex session runs in its pod, outlives the node and is adopted by the next process (amendment 2026-10-17).
 status: accepted
 ---
 
@@ -164,7 +164,7 @@ dashes (an evaluate job's `goalslug/seq evaluate` gives
 readably in the directory name; the unix time keeps two sessions of
 the same item apart. The directory lives outside
 `sessionunit.Dir(job.Workspace)` entirely — a Codex session never had
-one of those (it is not `Outlive`, adr-009) — so `harness.RemoveSession`
+one of those (it was not `Outlive`, adr-009; a sandboxed one is since the amendment of 2026-10-17 below) — so `harness.RemoveSession`
 on the job's own work dir never touches it: nothing more had to change
 there. `Result.KeptSessionDir` carries the path back to the node, empty
 when `WorkRoot` is unset (every existing Codex test): the session's
@@ -285,3 +285,40 @@ disagreement after a first PASS fails) is unchanged; only when the
 second opinion is asked is. A first attempt that reached no verdict —
 blind, or no `VERDICT:` line — is never a first FAIL: those paths are
 unchanged and ask no second opinion.
+
+## Amendment 2026-10-17: a sandboxed Codex session outlives the node and is adopted (goal codex-sessions-run-in-the-sandbox)
+
+The 2026-09-28 amendment *the stream is kept 24 hours* said a Codex session is not `Outlive`: it ran attached on the
+host and ended with the node, so an upgrade mid-evaluation lost it and
+the next process evaluated the item again. Since this goal a Codex
+session on a node whose sandbox is on runs in its own pod from the node
+image (ADR-007's amendment of this date), and that pod is its unit as
+it is a sandboxed Claude session's (ADR-008, ADR-009, ADR-007's
+amendment 2026-10-13). **"A Codex session ends with the node" is
+retired for sandboxed sessions:**
+
+- A Codex evaluation on a sandboxed node is `Job.Outlive`, and
+  `Codex.DetachSandboxed` (set by `mesh node start` with a sandbox, as
+  `ClaudeCode.DetachSandboxed` is) runs it detached — `codex exec` by
+  `Session.StartDetached`, `podman run -d` named `sandbox.AgentName(pod)`,
+  its prompt in `<workdir>.session/.prompt`, its streams in
+  `output.jsonl` and `stderr.log` (`Codex.runDetached`,
+  `internal/harness/codexdetach.go`).
+- Its `state.json` names `harness: codex`, `runner: podman`, the pod,
+  container and HOME, the runsheet token file, and the login's
+  `loginFile` and `loginCache` (`SessionMeta.LoginCache`, the
+  credential's `CodexLoginCache`) — paths only, never a secret.
+- A restart (`Loop.Restart`, a self-update, `mesh node upgrade`)
+  detaches it: the pod, HOME, token file and login stay. The next
+  process's `FindSessionsIn` finds it, `SweepSandbox` keeps it, and
+  `Evaluator.AdoptEvaluation` routes it by the state's adapter to
+  `Codex.Attach`, which follows the container from the saved offset,
+  parses the Codex stream, writes a refreshed `auth.json` back to the
+  login cache and removes the pod and HOME; the verdict goes through
+  the same `afterEvaluate` as a live session's, recorded exactly once
+  (`TestCodexPodSessionAdopted`, which fails with the Codex branch of
+  `AdoptEvaluation` removed).
+- What still ends with the node: a host Codex session (sandbox off),
+  and the second opinion, whose job is copied before `Outlive` is set,
+  so it runs attached in the pod and a restart mid-second-opinion leaves
+  the first verdict to be evaluated again by the next process.
