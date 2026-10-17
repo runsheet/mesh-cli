@@ -47,6 +47,7 @@ func (f *Fake) mcp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.MCPHits++
+	f.MCPRequests = append(f.MCPRequests, MCPRequest{Method: req.Method, Session: r.Header.Get("Mcp-Session-Id"), Bearer: bearer, At: time.Now()})
 	if len(req.ID) == 0 {
 		// a notification: accepted, no reply
 		w.WriteHeader(http.StatusAccepted)
@@ -82,6 +83,28 @@ func (f *Fake) mcp(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "error": map[string]any{"code": -32601, "message": "method not found: " + req.Method}})
 	}
+}
+
+// MCPRequest is one /mcp request the fake took (Fake.MCPRequests).
+type MCPRequest struct {
+	Method  string
+	Session string
+	Bearer  string
+	At      time.Time
+}
+
+// MCPRequestsNamed returns the /mcp requests the fake took for method,
+// in order.
+func (f *Fake) MCPRequestsNamed(method string) []MCPRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []MCPRequest
+	for _, r := range f.MCPRequests {
+		if r.Method == method {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // SetToken rotates the bearer the fake takes, as the platform's
