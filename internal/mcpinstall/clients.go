@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"projectmesh.io/mesh-cli/internal/tools"
 )
 
 // Format is a client config file's format.
@@ -84,8 +86,9 @@ const ServerName = "runsheet"
 
 // LegacyNames are the names an earlier install, or a hand-written
 // entry, kept runsheet's server under. An install removes each that
-// IsRunsheetEntry and keeps, reporting it, one that points elsewhere.
-var LegacyNames = []string{"mesh", "mesh-context", "prologue"}
+// IsRunsheetEntry and keeps, reporting it, one that points elsewhere:
+// `mesh`, then the node's built-in's old names (tools.BuiltinAliases).
+var LegacyNames = append([]string{"mesh"}, tools.BuiltinAliases()...)
 
 // RunsheetHost is the hosted gateway's host; its /mcp is runsheet's.
 const RunsheetHost = "api.runsheet.dev"
