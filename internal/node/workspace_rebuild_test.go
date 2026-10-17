@@ -136,7 +136,7 @@ func (c *rebuildCase) rebuilt(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(worktreeAdmin(c.dir), "locked")); err != nil || !strings.Contains(string(b), "mesh: item g/3 live") {
 		t.Fatalf("the rebuilt worktree's lock: %q (%v)", b, err)
 	}
-	line := fmt.Sprintf("workspace %s: worktree admin %s gone; rebuilt for %s at %s", c.dir, c.admin, c.spec.Branch, c.head)
+	line := fmt.Sprintf("workspace %s: worktree %s is gone; made again for %s at %s", c.dir, c.admin, c.spec.Branch, c.head)
 	if !strings.Contains(c.logged(), line) {
 		t.Fatalf("log lacks %q:\n%s", line, c.logged())
 	}
