@@ -557,6 +557,16 @@ type cacheFile struct {
 	used time.Time
 }
 
+// Size is everything under Root — the tree cache and the Go build
+// cache beside it — in bytes, for `mesh node status`'s cache line; 0
+// and no error when Root does not exist yet.
+func (c *SharedCache) Size() (int64, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	total, _, err := c.scan()
+	return total, err
+}
+
 // Enforce holds the cache root under MaxBytes: least recently used
 // trees, commits and blobs first, then `go clean -cache` on go/ when
 // the rest is not enough. Still over after both is a finding, logged
@@ -599,7 +609,7 @@ func (c *SharedCache) Enforce(ctx context.Context) error {
 	if total > c.MaxBytes {
 		if !c.overCapSaid {
 			c.overCapSaid = true
-			c.logf("cache over cap: %s of %s", formatBytes(total), formatBytes(c.MaxBytes))
+			c.logf("cache over cap: %s of %s", FormatBytes(total), FormatBytes(c.MaxBytes))
 		}
 		return nil
 	}
@@ -650,9 +660,9 @@ func (c *SharedCache) cleanGo(ctx context.Context, dir string) error {
 	return nil
 }
 
-// formatBytes is n in the largest binary unit it reaches: 512 B, 3.2
+// FormatBytes is n in the largest binary unit it reaches: 512 B, 3.2
 // GiB.
-func formatBytes(n int64) string {
+func FormatBytes(n int64) string {
 	const unit = 1024
 	if n < unit {
 		return fmt.Sprintf("%d B", n)

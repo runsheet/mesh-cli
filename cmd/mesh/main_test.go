@@ -101,3 +101,63 @@ func TestNodeStatusShowsAttestationCounts(t *testing.T) {
 	}
 	t.Fatalf("no %q line:\n%s", want, out)
 }
+
+// `mesh node status` over a state dir holding the shared tree cache's
+// hit and miss counts (item 2, SharedCache) prints its hit rate, size
+// and cap; with none yet, it says so instead (item 5).
+func TestNodeStatusShowsCacheHitRate(t *testing.T) {
+	const (
+		org    = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+		user   = "ffffffff-1111-4111-8111-ffffffffffff"
+		nodeID = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
+	)
+	for _, tc := range []struct {
+		name   string
+		counts *node.CacheCounts
+		want   string
+	}{
+		{"hits and misses", &node.CacheCounts{BlobHits: 10, TreeHits: 20, BlobMisses: 5, TreeMisses: 5},
+			"validation cache: 75% hits (30/40), 0 B of 20.0 GiB"},
+		{"no lookups yet", nil, "validation cache: no lookups yet"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			f := gatewaytest.New("rs_test")
+			t.Cleanup(f.Close)
+			f.UserID = user
+			f.Orgs = []map[string]any{{"id": org, "tenantSlug": "runsheet"}}
+			f.Answer = &gateway.NodeAnswer{NodeID: nodeID, Owner: gateway.NodeOwner{Kind: "person", ID: user, Name: "Chris"},
+				Scopes: []gateway.ScopeAnswer{{OrgID: org, Login: "runsheet"}}}
+			gw := gateway.New(f.URL(), "rs_test")
+			if _, err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: nodeID, OrgID: org, OwnerID: user, Name: "mini", Slug: "runsheet-mini", Owner: "person", Capacity: 1, Version: "v1"}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.counts != nil {
+				state := node.RunState{Dir: filepath.Join(home, ".mesh")}
+				if err := state.WriteCacheCounts(*tc.counts); err != nil {
+					t.Fatal(err)
+				}
+			}
+			yaml := "slug: runsheet-mini\nname: mini\nowner_id: " + user + "\nnode_id: " + nodeID + "\ncontract: owner\nsandbox: off\n"
+			if err := os.MkdirAll(filepath.Join(home, ".mesh"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(home, ".mesh", "node.yaml"), []byte(yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(os.Args[0], "node", "status")
+			cmd.Env = append(os.Environ(), "MESH_TEST_MAIN=1", "HOME="+home, "XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
+				"PATH="+t.TempDir(), "MESH_GATEWAY="+f.URL(), "MESH_TOKEN=rs_test")
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("mesh node status: %v\n%s", err, out)
+			}
+			for _, line := range strings.Split(string(out), "\n") {
+				if line == tc.want {
+					return
+				}
+			}
+			t.Fatalf("no %q line:\n%s", tc.want, out)
+		})
+	}
+}
