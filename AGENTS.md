@@ -1434,7 +1434,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   image: mounts only the workspace and a temporary HOME (the MCP config
   file, `CLAUDE_CONFIG_DIR`, `GH_CONFIG_DIR`, `.gitconfig`) — and, for
   a worktree, its shared clone's git dir read-write at its own path
-  (`sandbox.GitCommonDir`, "" for a full clone), and the node's one
+  (`sandbox.GitCommonDir`, "" for a full clone) with its
+  `.git/worktrees` read-only over it and only the session's own entry
+  (`sandbox.GitDir`) read-write over that, so a `git worktree prune` in
+  the pod, where every sibling's work tree is absent, deletes no live
+  entry (`worktreeMounts`, deepest mount wins in `agentArgs`; ADR-034,
+  `docs/adr/adr-034-a-session-cannot-prune-the-shared-clones-worktrees.md`,
+  `TestPodCannotPruneWorktrees`; pruning stays the node's, on the host
+  under the repo lock), and the node's one
   pnpm store and npm cache, `~/.mesh/store/{pnpm,npm}` (`StoreRoot()`,
   `PackageStores`, `sandbox.Stores`: `npm_config_store_dir`,
   `pnpm_config_store_dir`, `PNPM_HOME`, `npm_config_cache` in
