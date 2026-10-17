@@ -34,7 +34,7 @@ func (c *ClaudeCode) runDetached(ctx context.Context, job Job, sess *sandbox.Ses
 		ctx, cancel = context.WithTimeout(ctx, job.Timeout)
 		defer cancel()
 	}
-	dir, files, err := openSessionDir(job)
+	dir, files, err := openSessionDir(job, c.ScratchRoot)
 	if err != nil {
 		return Result{}, fmt.Errorf("harness claude-code: session dir: %w", err)
 	}

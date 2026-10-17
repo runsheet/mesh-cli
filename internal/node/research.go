@@ -15,6 +15,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
 )
 
@@ -39,6 +40,11 @@ type Director struct {
 	WS       Workspacer
 	Cfg      *Config
 	WorkRoot string
+	// BuildCache is a host session's GOCACHE; "" is BuildCacheDir().
+	BuildCache string
+	// Sandbox is the node's sandbox, when its sessions run in pods: a
+	// host session (nil) gets a scratch of its own (sessionScratch).
+	Sandbox *sandbox.Sandbox
 	// MCP is the built-in MCP server the session gets (runsheet);
 	// the tools attached for the director role are rendered beside it
 	// (SelectTools, trd §3 Tools).
@@ -240,6 +246,13 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		defer unlessDetached(ctx, func() { os.RemoveAll(ghDir) })
 		job.Env = SessionEnv(toks[names[0]], ghDir)
 	}
+	// the session's own scratch as its TMPDIR, gone with the session
+	// (sessionScratch); a detached one's by the node that ends it
+	scratch, err := sessionScratch(d.Sandbox, d.WorkRoot, d.BuildCache, harness.KindResearch, direction.ID, &job)
+	if err != nil {
+		return fmt.Errorf("session scratch: %w", err)
+	}
+	defer unlessDetached(ctx, func() { RemoveScratch(scratch) })
 	acct.SetContextBytes(written.Bytes)
 	acct.Apply(&job)
 	if err := st.UseTools(&job, d.MCP, acct); err != nil {

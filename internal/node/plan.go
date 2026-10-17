@@ -14,6 +14,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
 )
 
@@ -29,6 +30,11 @@ type Planner struct {
 	WS       Workspacer
 	Cfg      *Config
 	WorkRoot string
+	// BuildCache is a host session's GOCACHE; "" is BuildCacheDir().
+	BuildCache string
+	// Sandbox is the node's sandbox, when its sessions run in pods: a
+	// host session (nil) gets a scratch of its own (sessionScratch).
+	Sandbox *sandbox.Sandbox
 	// MCP is the built-in MCP server the session gets (runsheet);
 	// the tools attached for the planner role are rendered beside it
 	// (SelectTools, trd §3 Tools).
@@ -856,6 +862,13 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 		defer unlessDetached(ctx, func() { os.RemoveAll(ghDir) })
 		job.Env = SessionEnv(tok, ghDir)
 	}
+	// the session's own scratch as its TMPDIR, gone with the session
+	// (sessionScratch); a detached one's by the node that ends it
+	scratch, err := sessionScratch(p.Sandbox, p.WorkRoot, p.BuildCache, harness.KindPlan, goal.ID, &job)
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, nil, 0, acct, err
+	}
+	defer unlessDetached(ctx, func() { RemoveScratch(scratch) })
 	acct.Apply(&job)
 	if err := st.UseTools(&job, p.MCP, acct); err != nil {
 		return nil, nil, nil, nil, nil, nil, nil, 0, acct, fmt.Errorf("tools: %w", err)

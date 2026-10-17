@@ -448,6 +448,13 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		defer unlessDetached(ctx, func() { os.RemoveAll(ghDir) })
 		job.Env = SessionEnv(tok, ghDir)
 	}
+	// the session's own scratch as its TMPDIR, gone with the session
+	// (sessionScratch); a detached one's by the node that ends it
+	scratch, err := sessionScratch(r.Sandbox, r.WorkRoot, r.BuildCache, harness.KindBuild, item.ID, &job)
+	if err != nil {
+		return r.fail(ctx, item, err)
+	}
+	defer unlessDetached(ctx, func() { RemoveScratch(scratch) })
 	ident.Apply(&job)
 	sc, _ := r.Scopes.ByOrg(item.OrgID)
 	acct, err := r.Credentials.Open(withSubject(ctx, sc, cmp.Or(res.Project.ID, item.ProjectID), res.Project.Slug), gateway.SessionRef{Kind: string(harness.KindBuild), ItemID: item.ID, GoalID: item.GoalID}, sc.NodeID, Adapter(r.Harness))

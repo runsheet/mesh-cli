@@ -37,6 +37,8 @@ type Evaluator struct {
 	Cfg      *Config
 	Scopes   Scopes
 	WorkRoot string
+	// BuildCache is a host session's GOCACHE; "" is BuildCacheDir().
+	BuildCache string
 	// MCP are the MCP servers the session gets (runsheet).
 	MCP map[string]any
 	// MaxBudgetUSD caps the review session (3 by default).
@@ -331,6 +333,13 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		defer unlessDetached(ctx, func() { os.RemoveAll(ghDir) })
 		job.Env = SessionEnv(tok, ghDir)
 	}
+	// the session's own scratch as its TMPDIR, gone with the session
+	// (sessionScratch); a detached one's by the node that ends it
+	scratch, err := sessionScratch(e.Sandbox, e.WorkRoot, e.BuildCache, harness.KindEvaluate, item.ID, &job)
+	if err != nil {
+		return err
+	}
+	defer unlessDetached(ctx, func() { RemoveScratch(scratch) })
 	sc, _ := e.Scopes.ByOrg(item.OrgID)
 	ref := gateway.SessionRef{Kind: string(harness.KindEvaluate), ItemID: item.ID, GoalID: item.GoalID}
 	ctx = withSubject(ctx, sc, cmp.Or(item.ProjectID, res.Project.ID), res.Project.Slug)

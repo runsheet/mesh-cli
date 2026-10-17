@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,6 +58,10 @@ type ClaudeCode struct {
 	// the job's runsheet is the relay (MeshContextRelay, mesh-cli
 	// ADR-029); an adopted session's too, from its state's TokenFile.
 	Tokens TokenKeeper
+	// ScratchRoot is where a job with no work dir gets its session
+	// directory when the job's own env names no TMPDIR: the node's
+	// scratch root (node.ScratchRoot), never /tmp; empty is os.TempDir().
+	ScratchRoot string
 }
 
 // Name implements Harness.
@@ -291,7 +296,7 @@ func (c *ClaudeCode) runHost(ctx context.Context, job Job, onProgress func(Progr
 	if unit == nil {
 		unit = sessionunit.Default()
 	}
-	dir, files, err := openSessionDir(job)
+	dir, files, err := openSessionDir(job, c.ScratchRoot)
 	if err != nil {
 		return Result{}, fmt.Errorf("harness claude-code: session dir: %w", err)
 	}
@@ -384,10 +389,27 @@ func RemoveSession(workdir string) error {
 	dir := sessionunit.Dir(workdir)
 	if st, err := sessionunit.ReadState(dir); err == nil {
 		for _, d := range st.TempDirs {
-			os.RemoveAll(d)
+			removeTree(d)
 		}
 	}
 	return os.RemoveAll(dir)
+}
+
+// removeTree removes dir and everything in it, a read-only tree too: a
+// session's scratch (its TMPDIR) may hold a Go module cache, whose dirs
+// are read-only, which RemoveAll alone cannot delete from — a failed
+// first pass makes every dir writable and tries again.
+func removeTree(dir string) {
+	if dir == "" || os.RemoveAll(dir) == nil {
+		return
+	}
+	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			_ = os.Chmod(path, 0o700)
+		}
+		return nil
+	})
+	_ = os.RemoveAll(dir)
 }
 
 // follow reads a running (or ended) session in dir to its end: stderr
@@ -558,15 +580,28 @@ func (f sessionFiles) close() {
 }
 
 // openSessionDir makes the job's session directory, `<workdir>.session`
-// (a temporary one for a job with no work dir), fresh: the output and
+// (a temporary one for a job with no work dir — under the job's own
+// TMPDIR, else scratchRoot, else os.TempDir() — removed when Run
+// returns), fresh: the output and
 // stderr files empty, and the prompt in a file unlinked at once, which
 // the session reads on stdin — never on a pipe the node's exit would
 // break, and never left on disk.
-func openSessionDir(job Job) (string, sessionFiles, error) {
+func openSessionDir(job Job, scratchRoot string) (string, sessionFiles, error) {
 	var f sessionFiles
 	var dir string
 	if job.Workspace == "" {
-		d, err := os.MkdirTemp("", "mesh-session-*")
+		root := scratchRoot
+		for _, kv := range job.Env {
+			if v, ok := strings.CutPrefix(kv, "TMPDIR="); ok && v != "" {
+				root = v
+			}
+		}
+		if root != "" {
+			if err := os.MkdirAll(root, 0o700); err != nil {
+				return "", f, err
+			}
+		}
+		d, err := os.MkdirTemp(root, "mesh-session-*")
 		if err != nil {
 			return "", f, err
 		}
