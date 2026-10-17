@@ -467,3 +467,21 @@ console tool named `runsheet` is a clash, one named `mesh-context` or
 declaration: tests and fixtures name the oldest alias through
 `tools.BuiltinAlias()` (`tools.BuiltinAliases()` lists both), and the
 gateway's `/prologue/v1` fallback is gone (the amendment above).
+
+## Amendment — 2026-10-17 (goal the-node-calls-the-context-server-runsheet, item 4)
+
+**Proven end to end.** `internal/node/runsheet_server_e2e_test.go`
+(`-tags e2e`, `go test -tags e2e -run RunsheetServer ./internal/node/`)
+runs a build through the Runner and the real Claude Code harness on the
+gatewaytest fake, the test binary standing in for `claude` and for
+`mesh mcp-relay`: the session's `--mcp-config` names `runsheet` and none
+of the old names, the relay it renders carries the session's
+`tools/list` to the fake's `/mcp` on the session's bearer
+(`gatewaytest.Fake.MCPRequests`, `MCPRequestsNamed`), and the session's
+`mcp__runsheet__mesh_finish` is the finish the node pushes and hands in.
+A second case adopts a session an older node left — its `state.json`
+naming `mesh-context.token`, its stream the `mesh-context` server and
+`mcp__mesh-context__mesh_finish` — and it finishes the same way.
+`mcpinstall.LegacyNames` now takes the old names from
+`tools.BuiltinAliases()`, so `grep -ri prologue internal cmd` prints the
+alias declaration alone.
