@@ -154,7 +154,7 @@ func TestServerWithFakeSession(t *testing.T) {
 	if _, ok := caps["experimental"].(map[string]any)["claude/channel"]; !ok {
 		t.Fatalf("initialize must declare claude/channel: %v", init)
 	}
-	if res["instructions"] != Instructions || res["serverInfo"].(map[string]any)["name"] != "mesh" {
+	if res["instructions"] != Instructions || res["serverInfo"].(map[string]any)["name"] != "runsheet" {
 		t.Fatalf("initialize: %v", init)
 	}
 	send(map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"})

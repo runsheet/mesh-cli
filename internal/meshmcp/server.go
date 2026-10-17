@@ -17,9 +17,16 @@ import (
 	"projectmesh.io/mesh-cli/internal/version"
 )
 
-// ServerName is the MCP server's name: `--dangerously-load-development-channels server:mesh`
-// for channel mode, `claude mcp add runsheet -- mesh mcp` for the personal one.
-const ServerName = "mesh"
+// ServerName is the MCP server's name, in its initialize response's
+// serverInfo.name: `--dangerously-load-development-channels
+// server:mesh` for channel mode (that flag's own name is unrelated and
+// unchanged), `claude mcp add runsheet -- mesh mcp` for the personal
+// one.
+//
+// Amended 2026-10-17 (ADR-023): renamed from "mesh" to "runsheet",
+// alongside mcpinstall.ServerName — the entry a client's config keeps
+// it under (ADR-025).
+const ServerName = "runsheet"
 
 // Tool is one MCP tool: its schema and its handler.
 type Tool struct {

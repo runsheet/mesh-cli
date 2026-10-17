@@ -63,6 +63,36 @@ func TestInstallPlanRemovesRunsheetEntriesUnderAnyName(t *testing.T) {
 	}
 }
 
+func TestInstallPlanRemovesRunsheetEntriesUnderAnyNameTOML(t *testing.T) {
+	home := t.TempDir()
+	cfg := filepath.Join(home, "config.toml")
+	in := "[mcp_servers.mesh]\ncommand = \"/x/mesh\"\nargs = [\"mcp\"]\n\n" +
+		"[mcp_servers.other]\ncommand = \"npx\"\nargs = [\"other-mcp\"]\n"
+	if err := os.WriteFile(cfg, []byte(in), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := Client{Name: "codex", ConfigDir: func(string) string { return home }, MCPConfig: "config.toml", Format: TOML,
+		TOMLTable: "mcp_servers." + ServerName}
+	changes, err := Plan(home, "/bin/mesh", []Client{c}, PlanOptions{})
+	if err != nil || len(changes) != 1 {
+		t.Fatalf("plan: %v %v", changes, err)
+	}
+	ch := changes[0]
+	if !reflect.DeepEqual(ch.Removed, []string{"mesh"}) || len(ch.Kept) != 0 {
+		t.Fatalf("removed %v kept %v", ch.Removed, ch.Kept)
+	}
+	after := string(ch.After)
+	if strings.Contains(after, "mcp_servers.mesh]") {
+		t.Fatalf("after still has mesh:\n%s", after)
+	}
+	if !strings.Contains(after, "[mcp_servers.runsheet]") {
+		t.Fatalf("after has no runsheet entry:\n%s", after)
+	}
+	if !strings.Contains(after, "[mcp_servers.other]") || !strings.Contains(after, `command = "npx"`) {
+		t.Fatalf("after dropped the untouched server:\n%s", after)
+	}
+}
+
 func TestInstallServerNameIsRunsheet(t *testing.T) {
 	for _, c := range Clients(func() []byte { return nil }) {
 		if c.Format == TOML && c.TOMLTable != "mcp_servers.runsheet" ||

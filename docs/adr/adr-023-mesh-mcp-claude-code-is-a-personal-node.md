@@ -253,10 +253,26 @@ both lines, the checkout location, the personal node, pairing and the
 `push refused` message with one example transcript line per `/mesh`
 form.
 
+## The server is named runsheet
+
+Amended 2026-10-17, goal `the-node-calls-the-context-server-runsheet`.
+`meshmcp.ServerName` (`internal/meshmcp/server.go`) is `"runsheet"`,
+not `"mesh"`: the `name` its `initialize` response's `serverInfo`
+carries, for `mesh mcp` and for channel mode alike, since both share
+the one `Server`. `internal/mcpinstall.ServerName` follows it for the
+entry a client's config keeps the server under (ADR-025's amendment of
+the same date) — the two are read independently, so a platform that
+renames one is not required to rename the other on the same day, but
+today they agree. `channel.ServerName`, the unrelated
+`--dangerously-load-development-channels server:mesh` flag, is not
+derived from `meshmcp.ServerName` and stays `"mesh"`: it names Claude
+Code's channel capability, a flag value, not the server's identity.
+
 ## Consequences
 
-- Channel mode is unchanged on the wire: its server still advertises
-  the channel capability and its tools are the same.
+- Channel mode is unchanged on the wire but for its `serverInfo.name`
+  (now `runsheet`, above): it still advertises the channel capability
+  and its tools are the same.
 - `mesh mcp` is the client half; mesh_join's checkout on the item
   token and pairing are later items of the goal, each amending this
   ADR (pairing: item 5, below).
