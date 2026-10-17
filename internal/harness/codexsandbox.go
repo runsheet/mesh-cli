@@ -22,7 +22,9 @@ import (
 // on the argv, and the log is redacted. A kill by the pod's limits is
 // returned as the *sandbox.LimitError it is. The job's own Session (its
 // services started by the node) is used and left open; without one the
-// harness opens and closes its own.
+// harness opens and closes its own. An Outlive job on a harness that
+// DetachSandboxed runs detached instead (runDetached), outliving the
+// node.
 func (c *Codex) runSandboxed(ctx context.Context, job Job, onProgress func(Progress)) (Result, error) {
 	sess := job.Session
 	if sess == nil {
@@ -42,12 +44,24 @@ func (c *Codex) runSandboxed(ctx context.Context, job Job, onProgress func(Progr
 	if err != nil {
 		return Result{}, fmt.Errorf("harness codex: %s", Redact(err.Error(), job.Secrets...))
 	}
+	// a detached session keeps its home's token file for the node that
+	// adopts it, and its login for that node to write back (Attach)
+	detached := false
 	defer func() {
+		if detached {
+			home.release(false)
+			return
+		}
 		if err := home.close(); err != nil && c.Stderr != nil {
 			fmt.Fprintf(c.Stderr, "harness codex: write back the refreshed login: %v\n", err)
 		}
 	}()
 	secrets := append(append([]string{}, job.Secrets...), home.secrets...)
+	if c.DetachSandboxed && job.Outlive && job.Workspace != "" {
+		res, err, left := c.runDetached(ctx, job, sess, home, env, secrets, onProgress)
+		detached = left
+		return res, err
+	}
 
 	kept := c.keepSession(job, secrets)
 	defer kept.close()
