@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/validate"
 )
 
 // Podman is the Runtime of ADR 007: rootless pods, one `podman` call per
@@ -176,16 +178,25 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// mountsHold says whether dir is a mount's target or inside one.
+// mountsHold says whether dir is writable in the pod: the deepest mount
+// whose target is dir or holds it is read-write.
 func mountsHold(mounts []Mount, dir string) bool {
 	dir = filepath.Clean(dir)
+	best, held := -1, false
 	for _, m := range mounts {
 		t := filepath.Clean(m.Target)
-		if !m.ReadOnly && (dir == t || strings.HasPrefix(dir, t+string(filepath.Separator))) {
-			return true
+		if dir == t || strings.HasPrefix(dir, t+string(filepath.Separator)) {
+			if d := mountDepth(m); d > best {
+				best, held = d, !m.ReadOnly
+			}
 		}
 	}
-	return false
+	return held
+}
+
+// mountDepth is how many path elements a mount's target has.
+func mountDepth(m Mount) int {
+	return strings.Count(filepath.Clean(m.Target), string(filepath.Separator))
 }
 
 // agentArgs are the agent's `podman run` flags up to its image: mode is
@@ -198,6 +209,11 @@ func agentArgs(mode string, pod Pod, spec AgentSpec, mounts []Mount) []string {
 	if spec.TimeoutSeconds > 0 {
 		args = append(args, "--timeout", strconv.Itoa(spec.TimeoutSeconds))
 	}
+	// A mount nested in another (a worktree's own entry inside the
+	// read-only .git/worktrees inside the common dir) must come after
+	// it so the deeper one wins: shallowest target first, else as given.
+	mounts = append([]Mount(nil), mounts...)
+	sort.SliceStable(mounts, func(i, j int) bool { return mountDepth(mounts[i]) < mountDepth(mounts[j]) })
 	for _, m := range mounts {
 		opt := "rw"
 		if m.ReadOnly {
@@ -378,6 +394,11 @@ func podmanEnv(environ, container []string) []string {
 // ImageUser (`podman image inspect --format {{.Config.User}}`) when the
 // spec names none; an inspect that fails falls back to DefaultImageUID
 // and the pod is made anyway.
+//
+// A failure of either call is the runtime's own, not the session's: a
+// `pod create` or the network-rules init container refused for the
+// rootless store or the user namespace (validate.IsRuntimeBroken) comes
+// back as a *RuntimeError.
 func (p *Podman) CreatePod(ctx context.Context, spec PodSpec) (Pod, error) {
 	if spec.UID == 0 && spec.GID == 0 {
 		uid, gid, err := ImageUser(ctx, p.runner, spec.Image)
@@ -387,30 +408,60 @@ func (p *Podman) CreatePod(ctx context.Context, spec PodSpec) (Pod, error) {
 		spec.UID, spec.GID = uid, gid
 	}
 	if _, err := p.output(ctx, PodCreateArgs(spec), nil); err != nil {
+		if validate.IsRuntimeBroken(err.Error()) {
+			return Pod{}, &RuntimeError{Op: "pod create", Err: err}
+		}
 		return Pod{}, err
 	}
 	pod := Pod{Name: spec.Name}
 	if _, err := p.output(ctx, NetworkInitArgs(pod, spec.Image), strings.NewReader(spec.Network.Ruleset())); err != nil {
 		_ = p.Remove(context.WithoutCancel(ctx), pod)
+		if validate.IsRuntimeBroken(err.Error()) {
+			return Pod{}, &RuntimeError{Op: "network rules", Err: err}
+		}
 		return Pod{}, fmt.Errorf("network rules: %w", err)
 	}
 	return pod, nil
 }
 
+// podmanExitFailedToRun is the exit podman itself ends with when it
+// never ran the agent's command at all — the same 125 validate's own
+// podmanExit names for a step.
+const podmanExitFailedToRun = 125
+
 // RunAgent implements Runtime. The container is left for Remove, so its
 // state can be read: an exit of 137 asks whether it was the OOM killer.
+//
+// The run's own stderr (its last 8KB, as sandbox.go's own tail) is kept
+// to classify a failure, but only when podman itself is the one that
+// failed: its own exit of 125, or no run at all (no *exec.ExitError).
+// Then, and only then, its words for a rootless store or user namespace
+// it could not open (validate.IsRuntimeBroken) make it the runtime's
+// own failure, a *RuntimeError, never the agent's. An agent command
+// that exits on its own — 125 among them, podman's or not — is read
+// from its exit code alone: its stderr is never searched for runtime
+// words, so an agent's own non-zero exit is never mistaken for the
+// runtime breaking under it.
 func (p *Podman) RunAgent(ctx context.Context, pod Pod, spec AgentSpec) (Exit, error) {
+	tail := &tailBuffer{max: 8 << 10}
+	stderr := io.Writer(tail)
+	if spec.Stderr != nil {
+		stderr = io.MultiWriter(spec.Stderr, tail)
+	}
 	// podman's own env keeps the node's XDG_* for its storage; the
 	// container's HOME and PATH are read from it by --env NAME
-	err := p.run(ctx, AgentRunArgs(pod, spec), AgentProcessEnv(os.Environ(), spec), spec.Stdin, spec.Stdout, spec.Stderr)
+	err := p.run(ctx, AgentRunArgs(pod, spec), AgentProcessEnv(os.Environ(), spec), spec.Stdin, spec.Stdout, stderr)
 	if err == nil {
 		return Exit{}, nil
 	}
 	var ee *exec.ExitError
 	if !errors.As(err, &ee) {
-		return Exit{}, err
+		return Exit{}, &RuntimeError{Op: "agent run", Err: err}
 	}
 	exit := Exit{Code: ee.ExitCode()}
+	if exit.Code == podmanExitFailedToRun && validate.IsRuntimeBroken(tail.String()) {
+		return Exit{}, &RuntimeError{Op: "agent run", Err: errors.New(strings.TrimSpace(tail.String()))}
+	}
 	if exit.Code == 137 {
 		if out, ierr := p.output(context.WithoutCancel(ctx), []string{"inspect", "--format", "{{.State.OOMKilled}}", spec.Name}, nil); ierr == nil {
 			exit.OOMKilled = out == "true"
@@ -423,10 +474,18 @@ func (p *Podman) RunAgent(ctx context.Context, pod Pod, spec AgentSpec) (Exit, e
 // podman's own env as RunAgent's — the node's XDG_* for its store,
 // the container's values for its `--env NAME`s. It returns once podman
 // has started the container.
+//
+// A refusal for the rootless store or the user namespace
+// (validate.IsRuntimeBroken) is the runtime's own failure, a
+// *RuntimeError, never the agent's.
 func (p *Podman) StartAgent(ctx context.Context, pod Pod, spec AgentSpec) error {
 	var errb bytes.Buffer
 	if err := p.run(ctx, StartAgentArgs(pod, spec), AgentProcessEnv(os.Environ(), spec), nil, io.Discard, &errb); err != nil {
-		if msg := strings.TrimSpace(errb.String()); msg != "" {
+		msg := strings.TrimSpace(errb.String())
+		if validate.IsRuntimeBroken(msg) {
+			return &RuntimeError{Op: "agent start", Err: errors.New(msg)}
+		}
+		if msg != "" {
 			return fmt.Errorf("podman run %s: %s", spec.Name, msg)
 		}
 		return fmt.Errorf("podman run %s: %w", spec.Name, err)
@@ -695,4 +754,15 @@ func (p *Podman) ListPods(ctx context.Context) ([]PodInfo, error) {
 func (p *Podman) RemoveContainer(ctx context.Context, name string) error {
 	_, err := p.output(ctx, RemoveContainerArgs(name), nil)
 	return err
+}
+
+// ImageExecArgs are ImageExec's arguments: a container removed at its
+// end, with no network and no mount, pulled when missing.
+func ImageExecArgs(image string, cmd []string) []string {
+	return append([]string{"run", "--rm", "--network", "none", image}, cmd...)
+}
+
+// ImageExec implements Runtime.
+func (p *Podman) ImageExec(ctx context.Context, image string, cmd []string) (string, error) {
+	return p.output(ctx, ImageExecArgs(image, cmd), nil)
 }

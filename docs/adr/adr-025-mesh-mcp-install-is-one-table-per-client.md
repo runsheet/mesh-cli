@@ -1,5 +1,5 @@
 ---
-summary: `mesh mcp install --client claude|codex|cursor|all [--dry-run]` writes each client's stdio MCP entry for `<this binary> mcp` and its instruction files from one table (`mcpinstall.Clients()`), one row per client taken from its documentation on a recorded date — an existing mesh entry updated in place, every other byte kept, an unparseable file reported and left alone, a dry run printing every diff and writing nothing; `mesh mcp doctor` reads the same table, each client's entry configured or missing and each instruction file current, stale or missing, exiting 1 unless all are configured and current.
+summary: `mesh mcp install --client claude|codex|cursor|all [--dry-run]` writes each client's stdio MCP entry for `<this binary> mcp` and its instruction files from one table (`mcpinstall.Clients()`), one row per client taken from its documentation on a recorded date — the one `runsheet` entry updated in place and every legacy entry of runsheet's (`mesh`, `mesh-context`, `prologue`) removed, every other byte kept, an unparseable file reported and left alone, a dry run printing every diff and writing nothing; `mesh mcp doctor` names the person identity runsheet acts as and its projects (runsheet ADR 056, Latchkey ADR 013), then reads the same table, each client's entry configured, missing, duplicate or legacy and each instruction file current, stale or missing, exiting 1 unless signed in and all are configured and current.
 status: accepted
 ---
 
@@ -11,6 +11,9 @@ status: accepted
 `adr-025-items-that-share-a-file-are-planned-in-a-line.md`; cite this
 one as "ADR-025, mesh mcp install". Amends ADR-023's Skill section,
 which wrote Claude Code's skill alone and printed `claude mcp add`.
+Amended 2026-10 by goal `runsheets-mcp-server-is-one-and-named-runsheet`:
+the entry is named `runsheet`, legacy entries are removed (Legacy
+entries, below) and the doctor names the identity (Doctor, 7–9).
 
 ## Context
 
@@ -44,8 +47,9 @@ that round-trips them through a map loses what it does not understand.
    `RemoteEntry` instead: see Remote below.
 3. **Never clobber.** `Plan(home, exe, clients, opts)` reads each file
    and upserts with item 1's `UpsertJSONFile`/`UpsertTOMLTableFile`:
-   an existing `mesh` entry's span replaced in place, every other byte
-   kept. A file its parser cannot read is an `*UnparseableError`,
+   an existing `runsheet` entry's span replaced in place, every other
+   byte kept, then every legacy entry of runsheet's removed (Legacy
+   entries, below). A file its parser cannot read is an `*UnparseableError`,
    printed `<path>: cannot parse (<err>); left alone`; a whole
    instruction file that differs from what mesh-cli ships is a
    `*DiffersError` unless `--force`. Either leaves that file out; the
@@ -109,9 +113,9 @@ that day.
 
 | Client | MCP config path | Format | Entry | Instruction files (kind, marker) | Detect | Documentation (fetched) |
 |---|---|---|---|---|---|---|
-| claude | `$CLAUDE_CONFIG_DIR/.claude.json`, else `~/.claude.json` (user scope) | JSON | `mcpServers.mesh` = `{"type":"stdio","command":"<exe>","args":["mcp"]}` | `$CLAUDE_CONFIG_DIR/skills/mesh/SKILL.md`, else `~/.claude/skills/mesh/SKILL.md` (whole) | `~/.claude` (or `$CLAUDE_CONFIG_DIR`) exists, or `claude` on PATH | https://code.claude.com/docs/en/mcp, https://code.claude.com/docs/en/skills (2026-10-05) |
-| codex | `$CODEX_HOME/config.toml`, else `~/.codex/config.toml` | TOML | `[mcp_servers.mesh]` `command = "<exe>"`, `args = ["mcp"]` | `$CODEX_HOME/prompts/mesh.md` (whole; invoked `/prompts:mesh <form> $ARGUMENTS`), `$CODEX_HOME/AGENTS.md` (marked section, marker `mesh`: `` <!-- mesh:begin (written by mesh mcp install; edits inside are overwritten) --> `` … `` <!-- mesh:end --> ``) | `$CODEX_HOME` (or `~/.codex`) exists, or `codex` on PATH | https://learn.chatgpt.com/docs/extend/mcp?surface=cli, https://learn.chatgpt.com/docs/custom-prompts, https://learn.chatgpt.com/docs/agent-configuration/agents-md (2026-10-05) |
-| cursor | `~/.cursor/mcp.json` | JSON | `mcpServers.mesh` = `{"type":"stdio","command":"<exe>","args":["mcp"]}` | `~/.cursor/skills/mesh/SKILL.md` (whole), `~/.cursor/commands/mesh.md` (whole) | `~/.cursor` exists, or `cursor`/`cursor-agent` on PATH | https://cursor.com/docs/context/mcp, https://cursor.com/docs/context/skills, https://cursor.com/docs/context/rules (2026-10-05) |
+| claude | `$CLAUDE_CONFIG_DIR/.claude.json`, else `~/.claude.json` (user scope) | JSON | `mcpServers.runsheet` = `{"type":"stdio","command":"<exe>","args":["mcp"]}` | `$CLAUDE_CONFIG_DIR/skills/mesh/SKILL.md`, else `~/.claude/skills/mesh/SKILL.md` (whole) | `~/.claude` (or `$CLAUDE_CONFIG_DIR`) exists, or `claude` on PATH | https://code.claude.com/docs/en/mcp, https://code.claude.com/docs/en/skills (2026-10-05) |
+| codex | `$CODEX_HOME/config.toml`, else `~/.codex/config.toml` | TOML | `[mcp_servers.runsheet]` `command = "<exe>"`, `args = ["mcp"]` | `$CODEX_HOME/prompts/mesh.md` (whole; invoked `/prompts:mesh <form> $ARGUMENTS`), `$CODEX_HOME/AGENTS.md` (marked section, marker `mesh`: `` <!-- mesh:begin (written by mesh mcp install; edits inside are overwritten) --> `` … `` <!-- mesh:end --> ``) | `$CODEX_HOME` (or `~/.codex`) exists, or `codex` on PATH | https://learn.chatgpt.com/docs/extend/mcp?surface=cli, https://learn.chatgpt.com/docs/custom-prompts, https://learn.chatgpt.com/docs/agent-configuration/agents-md (2026-10-05) |
+| cursor | `~/.cursor/mcp.json` | JSON | `mcpServers.runsheet` = `{"type":"stdio","command":"<exe>","args":["mcp"]}` | `~/.cursor/skills/mesh/SKILL.md` (whole), `~/.cursor/commands/mesh.md` (whole) | `~/.cursor` exists, or `cursor`/`cursor-agent` on PATH | https://cursor.com/docs/context/mcp, https://cursor.com/docs/context/skills, https://cursor.com/docs/context/rules (2026-10-05) |
 
 What the documentation said that shapes the rows:
 
@@ -180,18 +184,54 @@ install.
    it (e.g. an `rs_*` console token) where the client runs. An OAuth
    entry is the URL alone: Claude Code and Cursor discover the issuer
    from the URL themselves, and Codex's `auth` defaults to `oauth`, so
-   the install prints a `codex: sign in with … codex mcp login mesh` line.
+   the install prints a `codex: sign in with … codex mcp login runsheet` line.
 4. **The rows' remote shapes** (`RemoteEntry(client, url, auth)`; a
    JSON row's `RemoteType` and `EnvRef`, a TOML row's
-   `bearer_token_env_var`). An existing `mesh` entry — stdio or
+   `bearer_token_env_var`). An existing `runsheet` entry — stdio or
    remote — is replaced in place by the same upsert, so moving between
    the two is one re-run.
 
 | Client | Bearer entry | OAuth entry | Documentation (fetched) |
 |---|---|---|---|
-| claude | `mcpServers.mesh` = `{"type":"http","url":"<url>","headers":{"Authorization":"Bearer ${MESH_TOKEN}"}}` — `${VAR}` expanded in `url` and `headers`; credential variables such as `ANTHROPIC_API_KEY` read as empty there, `MESH_TOKEN` is not one | `{"type":"http","url":"<url>"}` — OAuth discovered from RFC 9728/8414 metadata | https://code.claude.com/docs/en/mcp (2026-10-05) |
-| codex | `[mcp_servers.mesh]` `url = "<url>"`, `bearer_token_env_var = "MESH_TOKEN"` | `url = "<url>"` alone (`auth` defaults to `oauth`; `codex mcp login mesh`) | https://learn.chatgpt.com/docs/extend/mcp?surface=cli (2026-10-05) |
-| cursor | `mcpServers.mesh` = `{"url":"<url>","headers":{"Authorization":"Bearer ${env:MESH_TOKEN}"}}` — remote entries carry no `type` in the docs; `${env:NAME}` interpolation | `{"url":"<url>"}` — `auth` (`CLIENT_ID`/`CLIENT_SECRET`) only for a static client, scopes discovered from `/.well-known/oauth-authorization-server` | https://cursor.com/docs/context/mcp (2026-10-05) |
+| claude | `mcpServers.runsheet` = `{"type":"http","url":"<url>","headers":{"Authorization":"Bearer ${MESH_TOKEN}"}}` — `${VAR}` expanded in `url` and `headers`; credential variables such as `ANTHROPIC_API_KEY` read as empty there, `MESH_TOKEN` is not one | `{"type":"http","url":"<url>"}` — OAuth discovered from RFC 9728/8414 metadata | https://code.claude.com/docs/en/mcp (2026-10-05) |
+| codex | `[mcp_servers.runsheet]` `url = "<url>"`, `bearer_token_env_var = "MESH_TOKEN"` | `url = "<url>"` alone (`auth` defaults to `oauth`; `codex mcp login runsheet`) | https://learn.chatgpt.com/docs/extend/mcp?surface=cli (2026-10-05) |
+| cursor | `mcpServers.runsheet` = `{"url":"<url>","headers":{"Authorization":"Bearer ${env:MESH_TOKEN}"}}` — remote entries carry no `type` in the docs; `${env:NAME}` interpolation | `{"url":"<url>"}` — `auth` (`CLIENT_ID`/`CLIENT_SECRET`) only for a static client, scopes discovered from `/.well-known/oauth-authorization-server` | https://cursor.com/docs/context/mcp (2026-10-05) |
+
+## Legacy entries
+
+2026-10, goal `runsheets-mcp-server-is-one-and-named-runsheet` (items
+1–3). Runsheet's MCP server is one server, so each client holds one
+entry for it, named `runsheet` (`mcpinstall.ServerName`) whichever
+binary or URL it points at. Installs before this one, and entries
+written by hand from older instructions, kept it under other names —
+`mcpServers.mesh` / `[mcp_servers.mesh]`, `mesh-context` (the name node
+sessions' built-in server carries), `prologue` (the hosted server's
+old name) — so a client ended up with two or three copies of the same
+tools.
+
+1. **The names.** `mcpinstall.LegacyNames` is `mesh`, `mesh-context`
+   and `prologue`. The channel server node sessions load keeps its own
+   name (`meshmcp.ServerName`); it is not a client entry.
+2. **What is runsheet's.** `IsRunsheetEntry(entry, hosts...)` judges an
+   entry by what it points at, never by its name: a `command` whose
+   base name is `mesh` or `mesh-*` with `args` opening `mcp` or
+   `mcp-relay`, or a `url` whose path ends `/mcp` on `api.runsheet.dev`
+   (`RunsheetHost`) or one of `hosts` — the configured gateway's
+   (`HostOf(node.MeshMCPURL(gateway))`) and, for `--remote`, the URL's.
+3. **Removal.** After the upsert, `Plan` removes every other entry of
+   the client's servers map that `IsRunsheetEntry` — a legacy name or
+   any other — with item 1's byte-preserving primitives: `RemoveJSON`
+   (the member with its comma and the whitespace it owned; the last
+   member leaves `{}`) and `RemoveTOMLTable` (every header at or under
+   the table, subtables included, and the table's own trailing comment
+   lines through EOF, keeping the comment lines directly above the next
+   header, which are the next table's). Each removal is re-parsed and
+   checked to be the input without the key. The install prints
+   `<client>: removed <name> from <path>` (`would remove` under
+   `--dry-run`), `Change.Removed`.
+4. **Kept.** A `LegacyNames` entry that is not runsheet's — a `mesh`
+   pointing at another tool — is the person's and is kept, printed
+   `<client>: kept <name> (not runsheet's)`, `Change.Kept`.
 
 ## Doctor
 
@@ -208,12 +248,18 @@ install and never writes.
    format at `MCPKeys` (JSON) or `TOMLTable` (TOML): an object there is
    `configured`, nothing there — or no file, or an empty one —
    `missing`, a file that does not parse `unparseable` with the
-   parser's error, left alone.
+   parser's error, left alone. Amended 2026-10: the whole servers map
+   is read, and every other entry that `IsRunsheetEntry` is a
+   `Report.Duplicates` name — `duplicate` when the `runsheet` entry is
+   there too, `legacy` when only a legacy name holds runsheet's
+   (Legacy entries, above).
 3. **Binary or URL.** A configured entry's `command` is the binary a
    stdio install points at, its `url` the server a `--remote` install
    points at; the line is `<client>: configured <binary or url>
-   (<path>)`, `<client>: missing in <path>`, or `<client>: unparseable
-   <path> (<err>); left alone`.
+   (<path>)`, `<client>: duplicate runsheet entries: runsheet, mesh
+   (<path>); run mesh mcp install`, `<client>: legacy entry mesh
+   (<path>); run mesh mcp install`, `<client>: missing in <path>`, or
+   `<client>: unparseable <path> (<err>); left alone`.
 4. **Instructions.** Each `InstructionFile` of the row with a `Body` is
    rendered and compared (`instructionReports`), one line `  <path>:
    <status>` under its client's: a `Whole` file is `current` when it
@@ -225,16 +271,57 @@ install and never writes.
    the file or the begin marker is absent. Text outside the markers is
    the person's and never affects the status. A whole file absent is
    `missing`.
-5. **`--json`** prints `[]mcpinstall.Report` — `client`, `status`,
-   `command`, `url`, `path`, `error`, and `instructions`, each
-   `{path, status}` — the same reports the lines are made from.
-6. **Exit codes.** 0 when every client found is `Report.Healthy`:
-   its entry `configured` and every instruction `current` (no client
-   found is 0). Otherwise 1, with `not configured and current: <clients>;
-   run mesh mcp install` on stderr — an entry `missing` or
-   `unparseable`, an instruction `stale` or `missing` alike, since each
+5. **`--json`** prints `{"identity": {...}, "clients": [...]}` (the
+   shape changed 2026-10, decision 9; before it the output was the
+   bare list): `clients` is `[]mcpinstall.Report` — `client`,
+   `status`, `command`, `url`, `path`, `error`, `duplicates`, and
+   `instructions`, each `{path, status}` — the same reports the lines
+   are made from, `[]` when none is found.
+6. **Exit codes.** 0 when signed in (decision 8) and every client
+   found is `Report.Healthy`: its entry `configured` and every
+   instruction `current` (no client found is 0). Otherwise 1, with
+   `not signed in; run mesh auth login` and/or `not configured and
+   current: <clients>; run mesh mcp install` on stderr — an entry
+   `missing`, `unparseable`, `duplicate` or `legacy`, an instruction
+   `stale` or `missing` alike, since each
    is one `mesh mcp install` away from right (an unparseable file is
    the exception: it needs the person first). `--json` exits the same.
+
+7. **The identity (2026-10).** Before the client lines the doctor
+   says who the runsheet server will act as and what it reaches, by
+   the identity rule of runsheet ADR 056 (`adr-056-session-id-token-attester`)
+   and Latchkey ADR 013 (`adr-013-session-id-tokens`): a person's MCP
+   resolves to the person and their orgs; a machine's subject is the
+   machine with its operator beside it; a session token (`role:
+   mesh_session`) is never a person and never resolved into the
+   operator's orgs — it is never what `~/.mesh/token` holds, so the
+   doctor never meets one. It loads the credential
+   (`auth.LoadCredential`: `MESH_TOKEN`, else `~/.mesh/token`): for an
+   `rs_*` console token the person is the token's user, the gateway's
+   `me` (`gateway.Client.Me`, a UserIndex's `email`); for a Latchkey
+   machine credential the person is its operator — the token file's
+   `userEmail`, else `me`, else the operator id — and the line names
+   the machine. Then the person's orgs (`MyOrgs`) and each org's
+   projects (`Projects`), sorted:
+
+   ```text
+   identity: <email> (person)
+   identity: <email> (person, via machine <machine id>)
+   projects: <org>/<slug>, …        (or `none`)
+   ```
+8. **Not signed in, or a gateway that cannot answer.** No credential
+   is `identity: not signed in; run mesh auth login`, the client lines
+   still printed, and exit 1. A gateway error — `me`, `myOrgs` or a
+   project read — is `identity: <email> (projects unavailable:
+   <err>)`, never fatal: the client lines follow and the exit code is
+   theirs.
+9. **`--json`'s identity** is `{"person", "via", "projects",
+   "error"}` — `person` "" when not signed in, `via` `machine <id>`
+   for a machine credential and absent otherwise, `projects` always a
+   list, `error` the not-signed-in reason or the gateway's error.
+   `mcpLoadCredential` and `mcpIdentityGateway` in
+   `internal/commands/mcpcmd.go` are package variables, as
+   `mcpExecutable` is, so the tests answer with fakes.
 
 ## Consequences
 

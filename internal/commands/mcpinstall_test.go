@@ -11,6 +11,7 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
+	"projectmesh.io/mesh-cli/internal/auth"
 	"projectmesh.io/mesh-cli/internal/mcpinstall"
 	"projectmesh.io/mesh-cli/internal/meshmcp"
 )
@@ -29,6 +30,9 @@ func installHome(t *testing.T, dirs ...string) string {
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("CODEX_HOME", "")
 	t.Setenv("PATH", t.TempDir())
+	// doctor names a signed-in person with no projects unless a test
+	// fakes another identity
+	fakeIdentity(t, &auth.Credential{Console: "rs_test"}, &fakeIdentityGW{email: "someone@example.com"})
 	for _, d := range dirs {
 		if err := os.MkdirAll(filepath.Join(home, d), 0o755); err != nil {
 			t.Fatal(err)
@@ -79,7 +83,7 @@ func read(t *testing.T, path string) []byte {
 	return b
 }
 
-// jsonEntry reads mcpServers.mesh back with encoding/json.
+// jsonEntry reads mcpServers.runsheet back with encoding/json.
 func jsonEntry(t *testing.T, path string) (string, []string) {
 	t.Helper()
 	var doc struct {
@@ -91,11 +95,11 @@ func jsonEntry(t *testing.T, path string) (string, []string) {
 	if err := json.Unmarshal(read(t, path), &doc); err != nil {
 		t.Fatalf("%s: %v", path, err)
 	}
-	e := doc.MCPServers["mesh"]
+	e := doc.MCPServers[mcpinstall.ServerName]
 	return e.Command, e.Args
 }
 
-// tomlEntry reads mcp_servers.mesh back with go-toml/v2.
+// tomlEntry reads mcp_servers.runsheet back with go-toml/v2.
 func tomlEntry(t *testing.T, path string) (string, []string) {
 	t.Helper()
 	var doc struct {
@@ -107,14 +111,14 @@ func tomlEntry(t *testing.T, path string) (string, []string) {
 	if err := toml.Unmarshal(read(t, path), &doc); err != nil {
 		t.Fatalf("%s: %v", path, err)
 	}
-	e := doc.MCPServers["mesh"]
+	e := doc.MCPServers[mcpinstall.ServerName]
 	return e.Command, e.Args
 }
 
 func wantEntry(t *testing.T, path, command string, args []string) {
 	t.Helper()
 	if command != testExe(t) || !reflect.DeepEqual(args, []string{"mcp"}) {
-		t.Fatalf("%s: mesh entry = %q %q, want %q [mcp]", path, command, args, testExe(t))
+		t.Fatalf("%s: runsheet entry = %q %q, want %q [mcp]", path, command, args, testExe(t))
 	}
 }
 
@@ -164,8 +168,8 @@ func TestMcpInstallCodexWritesItsTable(t *testing.T) {
 	home := installHome(t, ".codex")
 	mustInstall(t, false, "codex")
 	cfg := filepath.Join(home, ".codex", "config.toml")
-	if !bytes.Contains(read(t, cfg), []byte("[mcp_servers.mesh]\n")) {
-		t.Fatalf("no [mcp_servers.mesh] in:\n%s", read(t, cfg))
+	if !bytes.Contains(read(t, cfg), []byte("[mcp_servers.runsheet]\n")) {
+		t.Fatalf("no [mcp_servers.runsheet] in:\n%s", read(t, cfg))
 	}
 	c, a := tomlEntry(t, cfg)
 	wantEntry(t, cfg, c, a)
@@ -236,8 +240,8 @@ func cut(s []byte, i, j int) string { return string(s[:i]) + string(s[j:]) }
 
 func TestMcpInstallUpdatesAnExistingEntryAndNothingElse(t *testing.T) {
 	home := installHome(t)
-	jsonIn := "{\n  \"theme\": \"dark\",\n  \"mcpServers\": {\n    \"other\": {\"command\": \"other-server\", \"args\": [\"x\"]},\n    \"mesh\": {\"command\": \"/old/mesh\", \"args\": [\"mcp\"]}\n  },\n  \"tail\": 1\n}\n"
-	tomlIn := "model = \"gpt-6-sol\"\n\n[mcp_servers.other]\ncommand = \"other-server\"\n\n[mcp_servers.mesh]\ncommand = \"/old/mesh\"\nargs = [\"old\"]\n\n# the person's comment\n[profiles.fast]\nmodel = \"luna\"\n"
+	jsonIn := "{\n  \"theme\": \"dark\",\n  \"mcpServers\": {\n    \"other\": {\"command\": \"other-server\", \"args\": [\"x\"]},\n    \"runsheet\": {\"command\": \"/old/mesh\", \"args\": [\"mcp\"]}\n  },\n  \"tail\": 1\n}\n"
+	tomlIn := "model = \"gpt-6-sol\"\n\n[mcp_servers.other]\ncommand = \"other-server\"\n\n[mcp_servers.runsheet]\ncommand = \"/old/mesh\"\nargs = [\"old\"]\n\n# the person's comment\n[profiles.fast]\nmodel = \"luna\"\n"
 	files := map[string]string{
 		filepath.Join(home, ".claude.json"):          jsonIn,
 		filepath.Join(home, ".cursor", "mcp.json"):   jsonIn,
@@ -263,7 +267,7 @@ func TestMcpInstallUpdatesAnExistingEntryAndNothingElse(t *testing.T) {
 			c, a := tomlEntry(t, path)
 			wantEntry(t, path, c, a)
 			// the table's span: its header to the comment before the next
-			i = bytes.Index(in, []byte("[mcp_servers.mesh]"))
+			i = bytes.Index(in, []byte("[mcp_servers.runsheet]"))
 			inEnd = bytes.Index(in, []byte("\n# the person's"))
 			outEnd = bytes.Index(got, []byte("\n# the person's"))
 		} else {

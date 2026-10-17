@@ -67,7 +67,7 @@ type State struct {
 	// TempDirs are the session's temporary dirs outside its directory
 	// (its CLAUDE_CONFIG_DIR, GH_CONFIG_DIR), removed with it. Paths only.
 	TempDirs []string `json:"tempDirs,omitempty"`
-	// TokenFile is the session's mesh-context token file, the bearer its
+	// TokenFile is the session's runsheet token file, the bearer its
 	// relay reads per request (mesh-cli ADR-029): the path a later node
 	// keeps fresh when it adopts the session. A path only.
 	TokenFile string `json:"tokenFile,omitempty"`

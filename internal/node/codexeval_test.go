@@ -137,7 +137,7 @@ func TestCodexEvaluationReceivesResolvedTools(t *testing.T) {
 }
 
 // Evaluator.Evaluate on a Codex family hands the preflight the very job
-// it builds, and that job's servers carry the built-in, mesh-context, at
+// it builds, and that job's servers carry the built-in, runsheet, at
 // the gateway's /mcp on the node's token — what Codex.Preflight checks
 // before the session starts (goal evaluation-reports-no-verdict, item
 // 2: the evaluation path is covered).
@@ -165,18 +165,18 @@ func TestCodexEvaluationPreflightsMeshContext(t *testing.T) {
 		t.Fatalf("headers %v", srv["headers"])
 	}
 	if _, ok := codex.jobs[0].MCPServers[tools.Builtin]; !ok {
-		t.Fatal("the Codex session's job has no mesh-context")
+		t.Fatal("the Codex session's job has no runsheet")
 	}
 }
 
-// `prologue: not found` (goal evaluation-reports-no-verdict): the
+// `<alias>: not found` (goal evaluation-reports-no-verdict): the
 // context tool answered every call with an error of its own — a
 // mesh_document slug it does not have — so it was reached, and the
 // session's verdict stands; nothing runs on the other family.
 func TestAContextToolThatAnsweredIsAVerdict(t *testing.T) {
 	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "Missing the test.\nVERDICT: FAIL")
 	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
-	codex.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 2, Errors: 2, Answered: 2, FirstError: "not found"}}
+	codex.tools = map[string]*harness.ToolStat{"runsheet": {Calls: 2, Errors: 2, Answered: 2, FirstError: "not found"}}
 	in := evaluateItem1(t, f, ev)
 	if codex.runs() != 1 || len(claude.jobs) != 0 || in["passed"] != false {
 		t.Fatalf("runs claude %d codex %d, recorded %+v", len(claude.jobs), codex.runs(), in)
@@ -187,14 +187,14 @@ func TestAContextToolThatAnsweredIsAVerdict(t *testing.T) {
 	// one call the tool never answered among them is still an answer
 	f, ev, claude, codex, _, _ = familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "Missing the test.\nVERDICT: FAIL")
 	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
-	codex.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 2, Errors: 2, Answered: 1, FirstError: "timeout"}}
+	codex.tools = map[string]*harness.ToolStat{"runsheet": {Calls: 2, Errors: 2, Answered: 1, FirstError: "timeout"}}
 	if in := evaluateItem1(t, f, ev); len(claude.jobs) != 0 || in["passed"] != false {
 		t.Fatalf("runs claude %d, recorded %+v", len(claude.jobs), in)
 	}
 	// none answered: no context, as before
 	f, ev, claude, codex, _, _ = familyFixture(t, "normal", "sonnet", "Holds.\nVERDICT: PASS", "VERDICT: FAIL")
 	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
-	codex.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 2, Errors: 2, FirstError: "MCP tool call requires approval, but approval policy is never"}}
+	codex.tools = map[string]*harness.ToolStat{"runsheet": {Calls: 2, Errors: 2, FirstError: "MCP tool call requires approval, but approval policy is never"}}
 	if in := evaluateItem1(t, f, ev); len(claude.jobs) != 1 || in["passed"] != true {
 		t.Fatalf("runs claude %d, recorded %+v", len(claude.jobs), in)
 	}
@@ -203,19 +203,19 @@ func TestAContextToolThatAnsweredIsAVerdict(t *testing.T) {
 // The same, driven by the stream the mini recorded
 // (harness/testdata/codex_mcp_not_found.jsonl): its only context call
 // was answered `not found`. The mini's session named the built-in by its
-// old name, `prologue`; a live session names it `mesh-context`, so the
+// old name (tools.BuiltinAlias); a live session names it `runsheet`, so the
 // parsed stat is the built-in's here. The Codex verdict is recorded as
 // it stands — no `no verdict — ` head, nothing on Claude.
 func TestAContextToolThatAnsweredNotFoundKeepsItsVerdict(t *testing.T) {
-	stream, err := os.Open(filepath.Join("..", "harness", "testdata", "codex_mcp_not_found.jsonl"))
+	raw, err := os.ReadFile(filepath.Join("..", "harness", "testdata", "codex_mcp_not_found.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
-	parsed := harness.ParseCodexStream(stream, "gpt-6-luna", nil)
+	stream := strings.ReplaceAll(string(raw), "{{alias}}", tools.BuiltinAlias())
+	parsed := harness.ParseCodexStream(strings.NewReader(stream), "gpt-6-luna", nil)
 	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "Missing the test.\nVERDICT: FAIL")
 	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
-	codex.tools = map[string]*harness.ToolStat{tools.Builtin: parsed.Tools["prologue"]}
+	codex.tools = map[string]*harness.ToolStat{tools.Builtin: parsed.Tools[tools.BuiltinAlias()]}
 	in := evaluateItem1(t, f, ev)
 	if codex.runs() != 1 || len(claude.jobs) != 0 || in["passed"] != false {
 		t.Fatalf("runs claude %d codex %d, recorded %+v", len(claude.jobs), codex.runs(), in)
@@ -226,7 +226,7 @@ func TestAContextToolThatAnsweredNotFoundKeepsItsVerdict(t *testing.T) {
 }
 
 // The Claude evaluation job's rendered mcpServers — what `claude -p
-// --mcp-config` reads — carry mesh-context at the gateway's /mcp with
+// --mcp-config` reads — carry runsheet at the gateway's /mcp with
 // the node's bearer.
 func TestClaudeEvaluationRendersMeshContext(t *testing.T) {
 	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "Holds.\nVERDICT: PASS", "VERDICT: FAIL")
@@ -256,7 +256,7 @@ func TestClaudeEvaluationRendersMeshContext(t *testing.T) {
 }
 
 // The Codex evaluation job's rendered config.toml carries
-// [mcp_servers.mesh-context] at the gateway's /mcp, its Authorization
+// [mcp_servers.runsheet] at the gateway's /mcp, its Authorization
 // from a variable the session's env sets to the node's bearer.
 func TestCodexEvaluationRendersMeshContext(t *testing.T) {
 	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "Holds.\nVERDICT: PASS")
@@ -270,7 +270,7 @@ func TestCodexEvaluationRendersMeshContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "[mcp_servers.mesh-context]\n" +
+	want := "[mcp_servers.runsheet]\n" +
 		"url = \"" + strings.TrimRight(f.URL(), "/") + "/mcp\"\n" +
 		"env_http_headers = { \"Authorization\" = \"MESH_CODEX_MCP_0_TOKEN\" }\n"
 	if !strings.Contains(rendered, want) {

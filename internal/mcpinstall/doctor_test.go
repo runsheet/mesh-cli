@@ -34,7 +34,7 @@ func writeFile(t *testing.T, path, body string) {
 func TestDoctorReportsEachDetectedClient(t *testing.T) {
 	home := doctorHome(t, ".codex", ".cursor")
 	writeFile(t, filepath.Join(home, ".codex", "config.toml"),
-		"model = \"o3\"\n\n[mcp_servers.mesh]\ncommand = \"/bin/mesh\"\nargs = [\"mcp\"]\n")
+		"model = \"o3\"\n\n[mcp_servers.runsheet]\ncommand = \"/bin/mesh\"\nargs = [\"mcp\"]\n")
 	writeFile(t, filepath.Join(home, ".cursor", "mcp.json"),
 		`{"mcpServers": {"other": {"command": "x"}}}`)
 
@@ -54,7 +54,7 @@ func TestDoctorReportsEachDetectedClient(t *testing.T) {
 func TestDoctorReadsARemoteEntrysURL(t *testing.T) {
 	home := doctorHome(t, ".cursor")
 	writeFile(t, filepath.Join(home, ".cursor", "mcp.json"),
-		`{"mcpServers": {"mesh": {"url": "https://api.runsheet.dev/mcp"}}}`)
+		`{"mcpServers": {"runsheet": {"url": "https://api.runsheet.dev/mcp"}}}`)
 	got := Doctor(Clients(skillText), home)
 	if len(got) != 1 || got[0].Status != Configured || got[0].URL != "https://api.runsheet.dev/mcp" || got[0].Command != "" {
 		t.Fatalf("reports = %+v", got)
@@ -162,6 +162,47 @@ func TestDoctorInstructionStatuses(t *testing.T) {
 	}
 }
 
+func TestDoctorOnlyRunsheetIsConfigured(t *testing.T) {
+	home := doctorHome(t, ".cursor")
+	writeFile(t, filepath.Join(home, ".cursor", "mcp.json"),
+		`{"mcpServers": {"runsheet": {"command": "/bin/mesh", "args": ["mcp"]}}}`)
+	got := Doctor(Clients(skillText), home)
+	if len(got) != 1 || got[0].Status != Configured || len(got[0].Duplicates) != 0 {
+		t.Fatalf("reports = %+v, want configured with no duplicates", got)
+	}
+}
+
+func TestDoctorDuplicateNamesTheOtherRunsheetEntries(t *testing.T) {
+	home := doctorHome(t, ".cursor")
+	writeFile(t, filepath.Join(home, ".cursor", "mcp.json"),
+		`{"mcpServers": {"runsheet": {"command": "/bin/mesh", "args": ["mcp"]}, "mesh": {"command": "/bin/mesh", "args": ["mcp"]}}}`)
+	got := Doctor(Clients(skillText), home)
+	if len(got) != 1 || got[0].Status != Duplicate || len(got[0].Duplicates) != 1 || got[0].Duplicates[0] != "mesh" {
+		t.Fatalf("reports = %+v, want duplicate naming mesh", got)
+	}
+}
+
+func TestDoctorLegacyNameAloneIsLegacy(t *testing.T) {
+	home := doctorHome(t, ".cursor")
+	writeFile(t, filepath.Join(home, ".cursor", "mcp.json"),
+		`{"mcpServers": {"mesh-context": {"url": "https://api.runsheet.dev/mcp"}}}`)
+	got := Doctor(Clients(skillText), home)
+	if len(got) != 1 || got[0].Status != Legacy || len(got[0].Duplicates) != 1 ||
+		got[0].Duplicates[0] != "mesh-context" || got[0].URL != "https://api.runsheet.dev/mcp" {
+		t.Fatalf("reports = %+v, want legacy naming mesh-context", got)
+	}
+}
+
+func TestDoctorUnrelatedServerNamedMeshPointingElsewhereIsNotReported(t *testing.T) {
+	home := doctorHome(t, ".cursor")
+	writeFile(t, filepath.Join(home, ".cursor", "mcp.json"),
+		`{"mcpServers": {"runsheet": {"command": "/bin/mesh", "args": ["mcp"]}, "mesh": {"command": "/bin/other-tool"}}}`)
+	got := Doctor(Clients(skillText), home)
+	if len(got) != 1 || got[0].Status != Configured || len(got[0].Duplicates) != 0 {
+		t.Fatalf("reports = %+v, want configured with no duplicates (mesh points elsewhere)", got)
+	}
+}
+
 func TestReportHealthy(t *testing.T) {
 	cur := []InstructionReport{{Path: "a", Status: Current}}
 	for _, tc := range []struct {
@@ -172,6 +213,8 @@ func TestReportHealthy(t *testing.T) {
 		{Report{Status: Configured}, true},
 		{Report{Status: Missing, Instructions: cur}, false},
 		{Report{Status: Unparseable, Instructions: cur}, false},
+		{Report{Status: Duplicate, Duplicates: []string{"mesh"}, Instructions: cur}, false},
+		{Report{Status: Legacy, Duplicates: []string{"mesh-context"}, Instructions: cur}, false},
 		{Report{Status: Configured, Instructions: []InstructionReport{{Status: Current}, {Status: Stale}}}, false},
 		{Report{Status: Configured, Instructions: []InstructionReport{{Status: Missing}}}, false},
 	} {

@@ -66,8 +66,9 @@ const ToolEnvPrefix = "MESH_TOOL_"
 // BaseEnv are the variables the sandbox sets itself for every session.
 // DISABLE_AUTOUPDATER keeps claude from updating itself: the node image's
 // own ENV says so too, but --unsetenv-all drops the image's variables.
-// The package variables are set only when the node names its Stores.
-var BaseEnv = []string{"PATH", "HOME", "LANG", "TZ", "TERM", "CLAUDE_CONFIG_DIR", "MESH_ITEM", "MESH_SESSION_KIND", "DISABLE_AUTOUPDATER", "npm_config_store_dir", "pnpm_config_store_dir", "PNPM_HOME", "npm_config_cache"}
+// The package variables are set only when the node names its Stores, the
+// scratch and Go cache ones only for a run given a ValidationCache.
+var BaseEnv = []string{"PATH", "HOME", "LANG", "TZ", "TERM", "CLAUDE_CONFIG_DIR", "MESH_ITEM", "MESH_SESSION_KIND", "DISABLE_AUTOUPDATER", "npm_config_store_dir", "pnpm_config_store_dir", "PNPM_HOME", "npm_config_cache", "TMPDIR", "GOTMPDIR", "GOCACHE"}
 
 // Stores are the node's package store and cache, one of each per node and
 // shared by every session (mesh-specs ADR 017 §3): Pnpm is pnpm's
@@ -114,6 +115,78 @@ func (st Stores) Env() []string {
 	return e
 }
 
+// ValidationCache is what a validation's pod is given of the node beside
+// its workspace (goal a-node-validates-from-a-served-diff-with-a-shared-cache):
+// Scratch, the run's own dir under the node's scratch root, read-write
+// and the steps' TMPDIR and GOTMPDIR, so nothing a step makes lands in
+// the host's /tmp; GoCache, the node's one Go build cache, read-write
+// and their GOCACHE; and Blobs, the shared tree cache's blob store,
+// read-only, so no session user can change what every later validation
+// copies out of it. Nothing else of the cache root — its trees, its
+// commits, its counts — is mounted. Each is its own bind mount at its
+// own path, as the Stores are: link(2) refuses to cross them (EXDEV), so
+// a step copies out of the blob store rather than hardlinking, which is
+// the price of not mounting the cache root whole. Empty is none.
+type ValidationCache struct {
+	Scratch string
+	GoCache string
+	Blobs   string
+}
+
+// Mounts are the cache's mounts: the scratch and the Go cache
+// read-write, the blob store read-only.
+func (c ValidationCache) Mounts() []Mount {
+	var m []Mount
+	for _, d := range []struct {
+		path string
+		ro   bool
+	}{{c.Scratch, false}, {c.GoCache, false}, {c.Blobs, true}} {
+		if d.path != "" {
+			m = append(m, Mount{Source: d.path, Target: d.path, ReadOnly: d.ro})
+		}
+	}
+	return m
+}
+
+// Env is env with TMPDIR and GOTMPDIR the scratch and GOCACHE the Go
+// cache, each once: a value env already has is replaced, not shadowed.
+func (c ValidationCache) Env(env []string) []string {
+	set := map[string]string{}
+	if c.Scratch != "" {
+		set["TMPDIR"], set["GOTMPDIR"] = c.Scratch, c.Scratch
+	}
+	if c.GoCache != "" {
+		set["GOCACHE"] = c.GoCache
+	}
+	out := make([]string, 0, len(env)+len(set))
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		if _, ok := set[name]; !ok {
+			out = append(out, kv)
+		}
+	}
+	for _, name := range []string{"TMPDIR", "GOTMPDIR", "GOCACHE"} {
+		if v, ok := set[name]; ok {
+			out = append(out, name+"="+v)
+		}
+	}
+	return out
+}
+
+// ensure makes the directories a bind mount needs: the Go cache and the
+// blob store on first use. The scratch is the caller's, made per run.
+func (c ValidationCache) ensure() error {
+	for _, d := range []string{c.GoCache, c.Blobs} {
+		if d == "" {
+			continue
+		}
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return fmt.Errorf("sandbox: validation cache: %w", err)
+		}
+	}
+	return nil
+}
+
 // Config is a node's sandbox: the image, the agent's and the services'
 // limits, the registries services may come from, and the network policy.
 type Config struct {
@@ -149,6 +222,27 @@ func (sb *Sandbox) logf(format string, args ...any) {
 		return
 	}
 	log.Printf(format, args...)
+}
+
+// CodexVersion asks the node image for its codex (`codex --version` in
+// a throwaway container, Runtime.ImageExec) and answers `codex <version>`
+// ("codex 0.157.0"). An error is an image without codex — or one the
+// runtime could not run — and a sandboxed node runs no Codex session
+// then (ADR 007's amendment for Codex).
+func (s *Sandbox) CodexVersion(ctx context.Context) (string, error) {
+	if s == nil || s.Runtime == nil {
+		return "", errors.New("sandbox: off")
+	}
+	out, err := s.Runtime.ImageExec(ctx, s.Config.Image, []string{"codex", "--version"})
+	if err != nil {
+		return "", err
+	}
+	fields := strings.Fields(out)
+	if len(fields) == 0 {
+		return "", fmt.Errorf("codex --version in %s said nothing", s.Config.Image)
+	}
+	// "codex-cli 0.157.0": the last word is the version
+	return "codex " + fields[len(fields)-1], nil
 }
 
 // Session is one agent session's sandbox: its temporary HOME, made on
@@ -258,6 +352,39 @@ func gitConfigValue(v string) string {
 	return `"` + v + `"`
 }
 
+// ProbeLabel marks the throwaway pod Probe creates and removes, so a
+// stale one from a killed probe is still recognisable as the node's own
+// rather than a session's.
+const ProbeLabel = "mesh.probe"
+
+// Probe is the cheapest check that the runtime can start a pod to run a
+// session in: its version, then a throwaway pod of the node image's
+// labels, created and removed at once. A runtime that cannot — its
+// rootless storage corrupted or locked, its user namespace refused, or
+// no runtime there to ask at all — answers a *RuntimeError
+// (validate.RuntimeBroken); a healthy one answers nil.
+func (s *Sandbox) Probe(ctx context.Context) error {
+	if _, err := s.Runtime.Version(ctx); err != nil {
+		return asRuntimeError("version", err)
+	}
+	var rnd [4]byte
+	_, _ = rand.Read(rnd[:])
+	spec := PodSpec{
+		Name:    "mesh-probe-" + hex.EncodeToString(rnd[:]),
+		Labels:  map[string]string{ProbeLabel: "1"},
+		Image:   s.Config.Image,
+		Network: s.Config.Network,
+	}
+	pod, err := s.Runtime.CreatePod(ctx, spec)
+	if err != nil {
+		return asRuntimeError("pod create", err)
+	}
+	if err := s.Runtime.Remove(ctx, pod); err != nil {
+		return asRuntimeError("pod remove", err)
+	}
+	return nil
+}
+
 // Image is the image ref the session's agent runs.
 func (s *Session) Image() string { return s.image }
 
@@ -344,10 +471,18 @@ func Allowed(name string) bool {
 // directory of a workspace that is a worktree read-write (mesh-specs ADR
 // 017, so its `.git` file resolves in the pod and its commits land in the
 // clone's object store), and the checkout's hooks directory, when it has
-// one, read-only. A full clone mounts no common dir; nothing else of the
-// clone — its parent, its work tree, another item's worktree — is ever
-// mounted. The node's package store and cache are mounted read-write,
-// each at its own path (Stores, ADR 017 §3).
+// one, read-only. Under that common dir, `<common>/worktrees` is mounted
+// again read-only and the workspace's own admin entry,
+// `<common>/worktrees/<id>` (GitDir), read-write over it — the only
+// writable path under `.git/worktrees`, which its commits need (HEAD,
+// index, logs). Every other item's work tree is absent in the pod, so
+// its entry's gitdir pointer dangles there and a `git worktree prune`
+// would delete the live entry on the host; read-only, it cannot. A full
+// clone mounts no common dir; nothing else of the clone — its parent,
+// its work tree, another item's worktree — is ever mounted. The node's
+// package store and cache are mounted read-write, each at its own path
+// (Stores, ADR 017 §3). podman applies them shallowest target first
+// (agentArgs), so the deeper mount wins.
 func (s *Session) Mounts(workspace string) []Mount {
 	m := []Mount{
 		{Source: workspace, Target: workspace},
@@ -359,6 +494,7 @@ func (s *Session) Mounts(workspace string) []Mount {
 		s.sb.logf("sandbox: %v; mounting the workspace alone", err)
 	} else if common != "" {
 		m = append(m, Mount{Source: common, Target: common})
+		m = append(m, s.worktreeMounts(workspace, common)...)
 	}
 	for _, d := range s.sb.Config.Stores.dirs() {
 		m = append(m, Mount{Source: d, Target: d})
@@ -370,11 +506,35 @@ func (s *Session) Mounts(workspace string) []Mount {
 	return m
 }
 
+// worktreeMounts are the mounts over a worktree's common dir:
+// `<common>/worktrees` read-only and the workspace's own admin entry
+// read-write. An own entry that cannot be read, or is not under
+// `<common>/worktrees`, leaves the whole of `.git/worktrees` read-only
+// — logged; the session's commits then fail rather than a sibling's
+// entry being pruned.
+func (s *Session) worktreeMounts(workspace, common string) []Mount {
+	wts := filepath.Join(common, "worktrees")
+	m := []Mount{{Source: wts, Target: wts, ReadOnly: true}}
+	own, err := GitDir(workspace)
+	if err != nil {
+		s.sb.logf("sandbox: %v; .git/worktrees mounted read-only whole", err)
+		return m
+	}
+	if filepath.Dir(own) != wts {
+		s.sb.logf("sandbox: git dir of %s is %s, not under %s; .git/worktrees mounted read-only whole", workspace, own, wts)
+		return m
+	}
+	return append(m, Mount{Source: own, Target: own})
+}
+
 // RunSpec is what runs in a session's pod.
 type RunSpec struct {
 	Workspace string
 	// Env is the job's environment; Env filters it (Session.Env).
-	Env     []string
+	Env []string
+	// Cache, set, is a validation's scratch and shared cache, mounted
+	// beside the session's own and named in its env (ValidationCache).
+	Cache   *ValidationCache
 	Command []string
 	Timeout time.Duration
 	Stdin   io.Reader
@@ -407,6 +567,13 @@ func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 	}
 	defer s.remove(ctx, pod)
 
+	mounts, env := s.Mounts(spec.Workspace), s.Env(spec.Env)
+	if c := spec.Cache; c != nil {
+		if err := c.ensure(); err != nil {
+			return err
+		}
+		mounts, env = append(mounts, c.Mounts()...), c.Env(env)
+	}
 	timeout := runtimeTimeout(spec.Timeout)
 	tail := &tailBuffer{max: 8 << 10}
 	stderr := io.Writer(tail)
@@ -418,8 +585,8 @@ func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 		Name:           AgentName(pod),
 		Image:          cfg.Image,
 		Workdir:        spec.Workspace,
-		Mounts:         s.Mounts(spec.Workspace),
-		Env:            s.Env(spec.Env),
+		Mounts:         mounts,
+		Env:            env,
 		Command:        spec.Command,
 		Limits:         cfg.Limits,
 		TimeoutSeconds: timeout,
@@ -658,7 +825,7 @@ func (s *Session) Close() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := s.sb.removeHome(ctx, s.Home); err != nil {
+	if err := s.sb.RemoveTree(ctx, s.Home); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
@@ -677,12 +844,14 @@ func (s *Session) CloseAndLog() {
 	}
 }
 
-// removeHome removes a session's HOME whatever the agent left in it:
-// a plain RemoveAll; failing that, the tree made writable (Go's module
-// cache is 0555 directories of 0444 files) and RemoveAll again; failing
-// that, the runtime's removal inside its user namespace, for files the
-// pod's mapped users own. The error names every step that failed.
-func (sb *Sandbox) removeHome(ctx context.Context, home string) error {
+// RemoveTree removes a dir a pod wrote in — a session's HOME, a
+// validation's scratch — whatever the agent left in it: a plain
+// RemoveAll; failing that, the tree made writable (Go's module cache is
+// 0555 directories of 0444 files) and RemoveAll again; failing that, the
+// runtime's removal inside its user namespace, for files the pod's
+// mapped users own. The error names every step that failed; a dir
+// already gone is nil.
+func (sb *Sandbox) RemoveTree(ctx context.Context, home string) error {
 	if home == "" {
 		return nil
 	}
@@ -696,10 +865,10 @@ func (sb *Sandbox) removeHome(ctx context.Context, home string) error {
 		return nil
 	}
 	if err3 := sb.Runtime.RemoveTree(ctx, home); err3 != nil {
-		return fmt.Errorf("remove home %s: %w; in the user namespace: %w", home, err2, err3)
+		return fmt.Errorf("remove %s: %w; in the user namespace: %w", home, err2, err3)
 	}
 	if _, err := os.Lstat(home); !os.IsNotExist(err) {
-		return fmt.Errorf("remove home %s: %w; still there after the removal in the user namespace", home, err2)
+		return fmt.Errorf("remove %s: %w; still there after the removal in the user namespace", home, err2)
 	}
 	return nil
 }

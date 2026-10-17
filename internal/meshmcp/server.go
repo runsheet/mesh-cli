@@ -18,7 +18,7 @@ import (
 )
 
 // ServerName is the MCP server's name: `--dangerously-load-development-channels server:mesh`
-// for channel mode, `claude mcp add mesh -- mesh mcp` for the personal one.
+// for channel mode, `claude mcp add runsheet -- mesh mcp` for the personal one.
 const ServerName = "mesh"
 
 // Tool is one MCP tool: its schema and its handler.

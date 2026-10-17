@@ -128,7 +128,7 @@ func jsonRemote(t *testing.T, path string) remoteJSON {
 	if err := json.Unmarshal(read(t, path), &doc); err != nil {
 		t.Fatalf("%s: %v", path, err)
 	}
-	return doc.MCPServers["mesh"]
+	return doc.MCPServers[mcpinstall.ServerName]
 }
 
 func tomlRemote(t *testing.T, path string) map[string]any {
@@ -139,7 +139,7 @@ func tomlRemote(t *testing.T, path string) map[string]any {
 	if err := toml.Unmarshal(read(t, path), &doc); err != nil {
 		t.Fatalf("%s: %v", path, err)
 	}
-	return doc.MCPServers["mesh"]
+	return doc.MCPServers[mcpinstall.ServerName]
 }
 
 func remoteFiles(home string) []string {
@@ -200,7 +200,7 @@ func TestMcpInstallRemoteWithRegistrationWritesTheURLAlone(t *testing.T) {
 	if codex["url"] != url || len(codex) != 1 {
 		t.Fatalf("codex entry = %v", codex)
 	}
-	if !strings.Contains(out, "codex mcp login mesh") {
+	if !strings.Contains(out, "codex mcp login runsheet") {
 		t.Fatalf("no codex login hint:\n%s", out)
 	}
 	noSecrets(t, home)

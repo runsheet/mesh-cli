@@ -81,7 +81,7 @@ var meshMentionRe = regexp.MustCompile("`/mesh (\\w+)[^`]*`")
 func codexSubstitutions(body string) []substitution {
 	subs := []substitution{
 		{"from Claude Code", "from Codex"},
-		{"claude mcp add mesh -- mesh mcp", "mesh mcp install --client codex"},
+		{"claude mcp add runsheet -- mesh mcp", "mesh mcp install --client codex"},
 	}
 	seen := map[string]bool{}
 	for _, m := range meshMentionRe.FindAllStringSubmatch(body, -1) {
@@ -103,7 +103,7 @@ func codexSubstitutions(body string) []substitution {
 func cursorSubstitutions() []substitution {
 	return []substitution{
 		{"from Claude Code", "from Cursor"},
-		{"claude mcp add mesh -- mesh mcp", "mesh mcp install --client cursor"},
+		{"claude mcp add runsheet -- mesh mcp", "mesh mcp install --client cursor"},
 	}
 }
 

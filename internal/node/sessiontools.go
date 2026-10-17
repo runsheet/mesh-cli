@@ -29,8 +29,8 @@ type SessionTools struct {
 
 // SelectTools is tools.Select for the session's role and the node's
 // runtimes, and a tool the renderer refuses — a bad or repeated name, a
-// clash with a built-in such as mesh-context — is omitted with the
-// refusal as its note, not rendered (trd §3 Tools, mesh-context is
+// clash with a built-in such as runsheet — is omitted with the
+// refusal as its note, not rendered (trd §3 Tools, runsheet is
 // built in).
 func SelectTools(builtin map[string]any, ts []tools.Tool, role string, runtimes []string) SessionTools {
 	use, omitted, missing := tools.Select(ts, role, runtimes)
@@ -74,8 +74,8 @@ func (st SessionTools) OmittedNote() string {
 // errored, by its first error ("tools: perplexity: first call errored:
 // …"), in Use's order; then every other server the result names with
 // an error — the built-in context server (tools.IsBuiltin) above all,
-// never in Use, and Codex's own — by name ("mesh-context: first call
-// errored: …", or "mesh-context served, never called: …" for one that
+// never in Use, and Codex's own — by name ("runsheet: first call
+// errored: …", or "runsheet served, never called: …" for one that
 // failed to start); "" when every served tool was called cleanly and
 // no other server errored. The error text goes through redact (the
 // account's Redact) and has every value of every served tool's
@@ -188,7 +188,7 @@ func (st SessionTools) Names() string {
 }
 
 // Apply renders the tools in use for Claude Code beside builtin (the
-// mesh-context attachment) onto the job: MCPServers holds the built-in and
+// runsheet attachment) onto the job: MCPServers holds the built-in and
 // every tool, Env gains the secret values (the config names them only),
 // Secrets gains them so the harness redacts them, and Tools carries the
 // tools for an adapter that renders its own: Codex's config.toml takes

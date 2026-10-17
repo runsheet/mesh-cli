@@ -166,27 +166,73 @@ type mainCommit struct {
 }
 
 // validateCommit is a main validation's body, a batch candidate's or a
-// merged item's: c checked out at t.dir, the suites run in the sandbox
-// pod with the checkout's services, else on the host, and the
-// attestation uploaded for t — by mergeBatchId when t.batchID is set,
-// else as t.item's. A red suite is a red attestation and nil; a failure
-// of the node's own is returned with nothing attested. The worktree is
-// removed on every path.
+// merged item's: c materialised from GitHub's served diff in node-owned
+// scratch (checkoutServed) — else, when the served diff cannot give it,
+// checked out at t.dir as a worktree of the shared clone — the suites
+// run in the sandbox pod with the checkout's services, else on the
+// host, and the attestation uploaded for t — by mergeBatchId when
+// t.batchID is set, else as t.item's. A red suite is a red attestation
+// and nil; a failure of the node's own is returned with nothing
+// attested. The scratch or worktree is removed on every path.
 func (r *Runner) validateCommit(ctx context.Context, t validationTarget, c mainCommit) (validate.Attestation, error) {
+	prefix := t.prefix
+	r.logf("%s: validating %s at %s", prefix, c.what, short(c.sha))
+	dir, served, err := r.checkoutServed(ctx, t, c)
+	if err == nil {
+		t.dir, t.served = dir, served
+		defer func() {
+			// the validation's close removed it after the pod; this is
+			// every path that ended before one (validator.removeScratch)
+			if err := r.validator().removeScratch(dir); err != nil {
+				r.logf("%s: remove scratch %s: %v", prefix, dir, err)
+			}
+			_ = os.RemoveAll(sessionunit.Dir(dir))
+			_ = os.Remove(dir + ".attestation.json")
+		}()
+		if c.atHead {
+			if tok := t.cred.Token(); tok != nil {
+				r.logf("%s: candidate read on minted token (%s, %s)", prefix, orUnnamed(tok.Repository), orUnnamed(tok.Access))
+			}
+		}
+	} else {
+		fb, ok := fallbackOf(err)
+		if !ok {
+			var he *CandidateHeadError
+			var ne *CommitNotOnBranchError
+			var te *fetchTokenError
+			if errors.As(err, &he) || errors.As(err, &ne) {
+				r.logf("%s: %v", prefix, err)
+			} else if errors.As(err, &te) {
+				r.logf("%s: %v; not fetched", prefix, err)
+			}
+			return validate.Attestation{}, err
+		}
+		r.noteServedFallback(prefix, fb)
+		cleanup, err := r.checkoutWorktree(ctx, t, c)
+		defer cleanup()
+		if err != nil {
+			return validate.Attestation{}, err
+		}
+	}
+	return r.validateCheckout(ctx, t, c)
+}
+
+// checkoutWorktree checks c out at t.dir, a detached worktree of the
+// shared clone fetched on t's token; its cleanup, never nil, removes it.
+func (r *Runner) checkoutWorktree(ctx context.Context, t validationTarget, c mainCommit) (func(), error) {
 	wt, ok := r.WS.(candidateWorktrees)
 	if !ok {
-		return validate.Attestation{}, ErrNoCandidateWorktrees
+		return func() {}, ErrNoCandidateWorktrees
 	}
 	dir, prefix := t.dir, t.prefix
 	vr := r.validator()
-	defer func() {
+	cleanup := func() {
 		if err := wt.RemoveWorkspace(context.WithoutCancel(ctx), dir); err != nil {
 			r.logf("%s: remove %s: %v", prefix, dir, err)
 		}
 		_ = os.RemoveAll(sessionunit.Dir(dir))
 		_ = os.Remove(dir + ".attestation.json")
-	}()
-	r.logf("%s: validating %s at %s", prefix, c.what, short(c.sha))
+	}
 	add := wt.AddCommitWorktree
 	if c.atHead {
 		add = wt.AddCandidateWorktree
@@ -195,16 +241,16 @@ func (r *Runner) validateCommit(ctx context.Context, t validationTarget, c mainC
 	if err != nil {
 		err = &fetchTokenError{name: c.token, err: err}
 		r.logf("%s: %v; not fetched", prefix, err)
-		return validate.Attestation{}, err
+		return cleanup, err
 	}
 	if err := add(fctx, c.repo, dir, c.branch, c.sha); err != nil {
 		var he *CandidateHeadError
 		var ne *CommitNotOnBranchError
 		if errors.As(err, &he) || errors.As(err, &ne) {
 			r.logf("%s: %v", prefix, err)
-			return validate.Attestation{}, err
+			return cleanup, err
 		}
-		return validate.Attestation{}, validate.Classify(fmt.Errorf("fetch %s: %w", c.branch, err))
+		return cleanup, validate.Classify(fmt.Errorf("fetch %s: %w", c.branch, err))
 	}
 	if c.atHead {
 		if tok := t.cred.Token(); tok != nil {
@@ -213,6 +259,14 @@ func (r *Runner) validateCommit(ctx context.Context, t validationTarget, c mainC
 			r.logf("%s: candidate fetched on the operator's own login", prefix)
 		}
 	}
+	return cleanup, nil
+}
+
+// validateCheckout runs and attests c's validation at t.dir, its
+// checkout made.
+func (r *Runner) validateCheckout(ctx context.Context, t validationTarget, c mainCommit) (validate.Attestation, error) {
+	dir, prefix := t.dir, t.prefix
+	vr := r.validator()
 	if _, err := validate.Load(dir); err != nil {
 		// no validate.yml on the commit is nothing to attest: the caller's
 		return validate.Attestation{}, err
@@ -313,7 +367,9 @@ func (g *Git) addDetachedWorktree(ctx context.Context, repo, dir, branch, sha st
 		return err
 	}
 	defer unlock()
-	if _, err := g.run(ctx, clone, "git", "worktree", "prune"); err != nil {
+	// only dir's own stale registration goes: a blanket prune would take
+	// a live item's worktree a pod's mounts had hidden (forgetStaleRegistrations)
+	if err := forgetStaleRegistrations(clone, dir, ""); err != nil {
 		return err
 	}
 	_, err = g.run(ctx, clone, "git", "worktree", "add", "--quiet", "--detach", dir, sha)

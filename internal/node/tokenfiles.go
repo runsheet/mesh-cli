@@ -21,7 +21,7 @@ import (
 // never holds a bearer past its life (mesh-cli ADR-029).
 const TokenRefreshEvery = auth.RefreshSkew / 4
 
-// TokenFiles keeps every running session's mesh-context token file —
+// TokenFiles keeps every running session's runsheet token file —
 // the bearer its relay reads per request (`mesh mcp-relay`,
 // harness.RelayScript) — fresh for as long as the session runs
 // (mesh-cli ADR-029): Keep writes the file at once (0600, atomically:
@@ -167,7 +167,7 @@ func (t *TokenFiles) refresh(path string, k *keptToken, ticks <-chan time.Time, 
 			t.mu.Unlock()
 		}
 		if err != nil && t.Logf != nil {
-			t.Logf("mesh-context token %s: refresh: %v", path, err)
+			t.Logf("runsheet token %s: refresh: %v", path, err)
 		}
 	}
 }
@@ -203,7 +203,7 @@ func writeTokenFile(path, tok string, mkdir bool) error {
 			return err
 		}
 	}
-	f, err := os.CreateTemp(dir, ".mesh-context.token-*")
+	f, err := os.CreateTemp(dir, ".runsheet.token-*")
 	if err != nil {
 		return err
 	}

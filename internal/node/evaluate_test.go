@@ -67,7 +67,7 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 	if len(ws.pushed) != 0 {
 		t.Fatal("the evaluator changes nothing")
 	}
-	if len(h.jobs) != 1 || h.jobs[0].Kind != harness.KindEvaluate || h.jobs[0].MaxBudgetUSD != 2 || h.jobs[0].MCPServers["mesh-context"] == nil {
+	if len(h.jobs) != 1 || h.jobs[0].Kind != harness.KindEvaluate || h.jobs[0].MaxBudgetUSD != 2 || h.jobs[0].MCPServers["runsheet"] == nil {
 		t.Fatalf("job: %+v", h.jobs)
 	}
 	if _, err := os.Stat(filepath.Join(ws.prepared[0].Dir(), ContextDir, "instructions-acme-widgets-agents.md")); err != nil {

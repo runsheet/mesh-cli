@@ -218,6 +218,13 @@ type Loop struct {
 	// work root; ReopenClaims, mesh-cli ADR 009 Claims). Empty records
 	// nothing. A record is not a session: the drain does not wait on it.
 	ClaimsDir string
+	// WorkRoot is the node's work root (~/.mesh/work): the path whose
+	// free space the disk floor reads when node.yaml's disk.path is left
+	// out. Empty, with no disk.path, the floor is not judged.
+	WorkRoot string
+	// Statfs reads a path's free space for the disk floor; the real
+	// statfs(2) when nil (the quartermaster's, DiskCheck's).
+	Statfs StatfsFunc
 	// Live counts the build sessions alive on the host, orphans
 	// included, against the capacity and sweeps the orphans
 	// (liveproc.go). Nil counts the tracked builds alone.
@@ -304,6 +311,12 @@ type Loop struct {
 	// until Reload says otherwise (hostSet).
 	host    HostConfig
 	hostSet bool
+	// disk is node.yaml's `disk:` block in force, its floor defaulted:
+	// Cfg's until Reload says otherwise (diskSet).
+	disk    DiskConfig
+	diskSet bool
+	// diskState is the disk floor as last judged (diskFloor).
+	diskState diskState
 	// backoff is the host back-off over the plan figure (hostBackoff,
 	// ADR-023 the node backs off a hot host).
 	backoff hostState
@@ -1129,6 +1142,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	l.probe()
 	l.scale()
 	l.hostBackoff()
+	l.diskFloor()
 	runtimes, adapters := l.Runtimes()
 	// the platform's word on standing first, so a withdrawn account is
 	// gone from this heartbeat's limits and holding
@@ -1196,16 +1210,22 @@ func (l *Loop) Tick(ctx context.Context) {
 		l.unserved = map[string]map[string]int{}
 		l.heldBackFor = nil
 		l.unclaimed = nil
-		l.evaluateHeld(ctx)
-		l.rebaseRequested(ctx)
-		l.planRequested(ctx)
-		l.researchDue(ctx)
+		// a node low on disk claims nothing of any kind; what runs runs on
+		low := l.diskLow()
+		if !low {
+			l.evaluateHeld(ctx)
+			l.rebaseRequested(ctx)
+			l.planRequested(ctx)
+			l.researchDue(ctx)
+		}
 		// the slots taken are the tracked builds or, when more run on
 		// the host, the live agent sessions, orphans included (LiveProbe)
 		inUse := l.inUse(ctx)
 		// a merge batch candidate's validation takes a slot first: it
 		// lands work already built and attested
-		inUse += l.validateBatches(ctx, l.Capacity()-inUse)
+		if !low {
+			inUse += l.validateBatches(ctx, l.Capacity()-inUse)
+		}
 		free := l.Capacity() - inUse
 		if p.mode == pacePaced {
 			free = pacedFree(free, l.Capacity(), inUse)
@@ -1225,7 +1245,7 @@ func (l *Loop) Tick(ctx context.Context) {
 			normalFree = min(normalFree, free)
 		}
 		// a hot host claims nothing new; what runs runs on
-		if (free > 0 || l.buildCapped()) && !l.hostHot() {
+		if (free > 0 || l.buildCapped()) && !l.hostHot() && !low {
 			l.claimReady(ctx, free, normalFree, claimRank)
 		}
 		l.logWaiting()
@@ -1866,6 +1886,18 @@ func (l *Loop) reload(ctx context.Context) {
 		}
 		l.mu.Lock()
 		l.host, l.hostSet = now, true
+		l.mu.Unlock()
+	}
+	if got.Disk != nil {
+		was, now := l.DiskThresholds(), got.Disk.Effective()
+		if now.FreeMinGB != was.FreeMinGB {
+			l.logf("disk: free_min_gb %s → %s", hostNum(was.FreeMinGB), hostNum(now.FreeMinGB))
+		}
+		if now.Path != was.Path {
+			l.logf("disk: path %s → %s", orNone(was.Path), orNone(now.Path))
+		}
+		l.mu.Lock()
+		l.disk, l.diskSet = now, true
 		l.mu.Unlock()
 	}
 	if got.SharesRead {

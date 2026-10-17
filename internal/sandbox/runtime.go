@@ -13,6 +13,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"projectmesh.io/mesh-cli/internal/validate"
 )
 
 // Mount is one host path bound into a container.
@@ -155,6 +157,11 @@ type Runtime interface {
 	// RemoveContainer removes a container and its anonymous volumes,
 	// forced.
 	RemoveContainer(ctx context.Context, name string) error
+	// ImageExec runs cmd in a throwaway container of image — no pod, no
+	// network, no mount — and returns its stdout: what the image
+	// carries, read once at start (Sandbox.CodexVersion). A non-zero
+	// exit, or an image the runtime cannot have, is the error.
+	ImageExec(ctx context.Context, image string, cmd []string) (string, error)
 }
 
 // Container is one container as the runtime lists it.
@@ -200,6 +207,47 @@ type ExitError struct {
 }
 
 func (e *ExitError) Error() string { return fmt.Sprintf("sandbox: agent exited %d", e.Code) }
+
+// RuntimeError is the container runtime itself unable to do what a pod
+// needs — never the agent's own command inside one that started fine:
+// its rootless storage corrupted or locked (a root `podman` run against
+// the same store poisons it — the grapevine incident, 2026-10-15/16,
+// memory root-podman-poisons-rootless-storage-2026-10-16), its user
+// namespace refused, or no runtime there to ask at all.
+// `Podman.CreatePod` (the pod and its network-rules init container),
+// `RunAgent`'s container create and `StartAgent` wrap a failure of the
+// runtime, not of the agent's exit, in it (internal/sandbox/podman.go);
+// `Sandbox.Probe` answers one when it cannot even start a throwaway
+// pod. A pull podman refuses stays image_pull_refused, never this: a
+// non-zero exit of the agent's own command is never one either.
+type RuntimeError struct {
+	// Op names what failed: "version", "pod create", "network rules",
+	// "agent run", "agent start", "pod remove".
+	Op string
+	// Err is podman's own words.
+	Err error
+}
+
+func (e *RuntimeError) Error() string { return fmt.Sprintf("sandbox: runtime: %s: %s", e.Op, e.Err) }
+func (e *RuntimeError) Unwrap() error { return e.Err }
+
+// EnvironmentKind implements the kinded interface validate.Kinded reads
+// (internal/validate/envkind.go): a *RuntimeError is always
+// validate.RuntimeBroken.
+func (e *RuntimeError) EnvironmentKind() validate.EnvironmentKind { return validate.RuntimeBroken }
+
+// asRuntimeError is err as a *RuntimeError naming op, unless it already
+// is one (podman.go's own classification stands); nil is nil.
+func asRuntimeError(op string, err error) error {
+	if err == nil {
+		return nil
+	}
+	var re *RuntimeError
+	if errors.As(err, &re) {
+		return re
+	}
+	return &RuntimeError{Op: op, Err: err}
+}
 
 var (
 	_ Runtime = (*Podman)(nil)

@@ -39,7 +39,7 @@ type Rebaser struct {
 	WorkRoot string
 	// BuildCache is a host validation's GOCACHE; "" is BuildCacheDir().
 	BuildCache string
-	// MCP are the MCP servers the session gets (mesh-context).
+	// MCP are the MCP servers the session gets (runsheet).
 	MCP map[string]any
 	// MaxBudgetUSD caps the session (5 by default).
 	MaxBudgetUSD float64
@@ -129,6 +129,8 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 		branch = res.Branch()
 	}
 	spec := WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: branch, BaseRef: res.BaseRef()}
+	// live on this node while this runs: no cleanup touches it (HoldWorkspace)
+	defer HoldWorkspace(spec.Dir())()
 	// the item's own GitHub token: the push is the session's whole point
 	cred, err := NewItemCred(ctx, r.GW, r.WS, r.Scopes, item, spec, r.Fallback, r.logf)
 	if we := WorkspaceErrorOf(err); we != nil {
@@ -437,6 +439,8 @@ func (r *Rebaser) AdoptRebase(ctx context.Context, item gateway.WorkItem, s Foun
 	}
 	rb.base = res.BaseRef()
 	spec := WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: rb.branch, BaseRef: rb.base}
+	// live on this node while this runs: no cleanup touches it (HoldWorkspace)
+	defer HoldWorkspace(spec.Dir())()
 	if rb.cred, err = NewItemCred(ctx, r.GW, r.WS, r.Scopes, item, spec, r.Fallback, r.logf); err != nil {
 		if we := WorkspaceErrorOf(err); we != nil {
 			stopFound(r.logf, "item "+item.ID, s)

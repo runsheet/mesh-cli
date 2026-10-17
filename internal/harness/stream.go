@@ -216,7 +216,7 @@ func capText(s string, n int) string {
 // mcp_servers names each server whose status is not "connected" as an
 // error too, that status as FirstError, even with zero calls. Each
 // such tool_use is also counted on Result.ToolNames, keyed
-// <server>__<tool> with the prologue alias folded into mesh-context,
+// <server>__<tool> with the built-in's old names folded into runsheet,
 // and on Result.DocumentsFetched when it is a mesh_document or
 // mesh_search call on the built-in (goal context-is-fetched-not-shipped).
 // A mesh-work tool's tool_use (tools.IsWorkTool) keeps its input on

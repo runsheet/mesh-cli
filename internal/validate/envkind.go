@@ -25,11 +25,18 @@ const (
 	CredentialRefused EnvironmentKind = "credential_refused"
 	// ImagePullRefused is the sandbox image's registry refusing the pull.
 	ImagePullRefused EnvironmentKind = "image_pull_refused"
+	// RuntimeBroken is the container runtime itself unable to start a pod:
+	// its rootless storage corrupted or locked (a root `podman` run
+	// against the same store poisons it, the grapevine incident
+	// 2026-10-15/16, memory root-podman-poisons-rootless-storage-2026-10-16),
+	// its user namespace refused, or no runtime to ask at all — never the
+	// agent's own command failing inside a pod that started fine.
+	RuntimeBroken EnvironmentKind = "runtime_broken"
 )
 
 // EnvironmentKinds is the closed set, in the order the ADR names them.
 func EnvironmentKinds() []EnvironmentKind {
-	return []EnvironmentKind{StepTimeout, ToolMissing, CredentialRefused, ImagePullRefused}
+	return []EnvironmentKind{StepTimeout, ToolMissing, CredentialRefused, ImagePullRefused, RuntimeBroken}
 }
 
 // Valid says k is one of EnvironmentKinds.
@@ -70,7 +77,8 @@ func IsImagePullRefusal(text string) bool {
 }
 
 // podmanExit is the exit podman itself ends with when it could not run
-// the container — an image it could not pull among them.
+// the container — an image it could not pull, or its runtime broken,
+// among them.
 const podmanExit = 125
 
 // missingToolPatterns are the shells' own words for a command not found,
@@ -98,12 +106,48 @@ func MissingTool(output string) string {
 	return ""
 }
 
+// runtimeStorageWords are podman's own phrases for a rootless store it
+// cannot open, lock or make sense of: the whole phrase, whatever
+// follows it (a permission or a path), is enough — a root `podman` run
+// against the same store is what leaves it this way (the grapevine
+// incident, 2026-10-15/16).
+var runtimeStorageWords = regexp.MustCompile(`(?i)error opening storage|creating temporary storage|database configuration mismatch`)
+
+// runtimeNamespaceWords are podman's words for a user namespace it
+// could not set up: no newuidmap on the machine, or the kernel refusing
+// it.
+var runtimeNamespaceWords = regexp.MustCompile(`(?i)cannot set up namespace|newuidmap`)
+
+// runtimeStorageReadlink is a readlink into the rootless store's own
+// paths (containers/storage, an overlay layer) finding nothing: the
+// store's own book-keeping pointing at a layer that is gone.
+var runtimeStorageReadlink = regexp.MustCompile(`(?i)readlink [^:]*(containers/storage|/overlay/)[^:]*: no such file or directory`)
+
+// runtimeStoragePermission is a permission refusal on the rootless
+// store's own paths — never the agent's command refused on its own
+// files, which names no storage path.
+var runtimeStoragePermission = regexp.MustCompile(`(?i)(containers/storage|/overlay/)[^\n]*permission denied`)
+
+// IsRuntimeBroken reports whether text is podman's own words for a
+// runtime it cannot use at all: its rootless storage corrupted or
+// locked, or its user namespace refused. A command the agent ran inside
+// a pod that started fine — whatever it prints — never names the
+// runtime's own storage or namespace this way.
+func IsRuntimeBroken(text string) bool {
+	return runtimeStorageWords.MatchString(text) || runtimeNamespaceWords.MatchString(text) ||
+		runtimeStorageReadlink.MatchString(text) || runtimeStoragePermission.MatchString(text)
+}
+
 // EnvironmentKindOf classifies one step's failure: err, the runner's or
 // the validator's own error, first — a kind it carries (Kinded), else an
-// image pull's refusal, else a credential refusal by its words — then
-// the step's exit: 124 step_timeout, 127 tool_missing, podman's 125 with
-// a refused pull in its output image_pull_refused. Every other non-zero
-// exit, and exit 0, is a code verdict: no kind.
+// image pull's refusal, else a credential refusal, else the runtime
+// itself broken, each by its words — then the step's exit: 124
+// step_timeout, 127 tool_missing, podman's 125 with a refused pull in
+// its output image_pull_refused, else runtime_broken when the output
+// names the runtime itself. Every other non-zero exit, and exit 0, is a
+// code verdict: no kind. A pull refused stays image_pull_refused; a
+// non-zero exit from the agent's own command, checked first by neither
+// IsImagePullRefusal nor IsRuntimeBroken, is never runtime_broken.
 func EnvironmentKindOf(step StepResult, err error) EnvironmentKind {
 	if err != nil {
 		if k := Kinded(err); k != "" {
@@ -115,6 +159,8 @@ func EnvironmentKindOf(step StepResult, err error) EnvironmentKind {
 			return ImagePullRefused
 		case IsCredentialRefusal(msg):
 			return CredentialRefused
+		case IsRuntimeBroken(msg):
+			return RuntimeBroken
 		}
 	}
 	switch step.ExitCode {
@@ -123,8 +169,11 @@ func EnvironmentKindOf(step StepResult, err error) EnvironmentKind {
 	case 127:
 		return ToolMissing
 	case podmanExit:
-		if IsImagePullRefusal(step.Output) {
+		switch {
+		case IsImagePullRefusal(step.Output):
 			return ImagePullRefused
+		case IsRuntimeBroken(step.Output):
+			return RuntimeBroken
 		}
 	}
 	return ""

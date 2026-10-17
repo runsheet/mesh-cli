@@ -17,8 +17,12 @@ type Fake struct {
 	mu sync.Mutex
 	// VersionErr makes Version fail, as a node without podman does.
 	VersionErr error
-	Pods       []PodSpec
-	Agents     []AgentSpec
+	// CreatePodErr makes CreatePod fail, as a broken runtime does
+	// (Probe honours both: a *RuntimeError already, or any other error,
+	// answers one either way).
+	CreatePodErr error
+	Pods         []PodSpec
+	Agents       []AgentSpec
 	// Detached are the agents StartAgent started; each is also a running
 	// container in Running, mounting its spec's host paths, in a pod in
 	// Standing. States, when it names one, is what AgentState answers
@@ -57,6 +61,9 @@ type Fake struct {
 	// Health answers a sidecar's health check: its command (nil for a
 	// TCP probe) or the port probed. Nil passes every check.
 	Health func(sidecar string, cmd []string, port int) error
+	// Image answers ImageExec: the image's stdout for cmd. Nil is an
+	// image that carries nothing, every command an error.
+	Image func(image string, cmd []string) (string, error)
 }
 
 func (f *Fake) call(name string) {
@@ -78,8 +85,11 @@ func (f *Fake) Version(context.Context) (string, error) {
 func (f *Fake) CreatePod(_ context.Context, spec PodSpec) (Pod, error) {
 	f.call("create " + spec.Name)
 	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.CreatePodErr != nil {
+		return Pod{}, f.CreatePodErr
+	}
 	f.Pods = append(f.Pods, spec)
-	f.mu.Unlock()
 	return Pod{Name: spec.Name}, nil
 }
 
@@ -371,4 +381,13 @@ func (f *Fake) RemoveContainer(_ context.Context, name string) error {
 	}
 	f.Running = cs
 	return nil
+}
+
+// ImageExec implements Runtime.
+func (f *Fake) ImageExec(_ context.Context, image string, cmd []string) (string, error) {
+	f.call("image-exec " + image + " " + strings.Join(cmd, " "))
+	if f.Image == nil {
+		return "", fmt.Errorf("fake: %s: %s: not found", image, strings.Join(cmd, " "))
+	}
+	return f.Image(image, cmd)
 }

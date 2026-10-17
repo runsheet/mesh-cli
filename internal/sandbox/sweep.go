@@ -134,7 +134,7 @@ func SweepKeeping(ctx context.Context, rt Runtime, tempDir string, keep Keep) (S
 			res.HomesInUse++
 			continue
 		}
-		if err := sb.removeHome(ctx, home); err != nil {
+		if err := sb.RemoveTree(ctx, home); err != nil {
 			errs = append(errs, fmt.Errorf("sweep: %w", err))
 			continue
 		}
