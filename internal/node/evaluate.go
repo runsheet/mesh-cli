@@ -18,6 +18,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
+	"projectmesh.io/mesh-cli/internal/tripline"
 )
 
 // Evaluator is the second fresh session an item gets on the node
@@ -120,6 +121,9 @@ type Evaluator struct {
 	// runtime the node lacks, so the loop does not try it again (nil:
 	// not remembered).
 	Declines *Declines
+	// Tripline reports the node's failure classes to Tripline (ADR-034,
+	// a node reports its errors to Tripline); nil reports nothing.
+	Tripline *tripline.Reporter
 	// RuntimeBroken is told the error when a session's pod could not
 	// start on a broken container runtime (a *sandbox.RuntimeError) and
 	// its work was handed back runtime_broken; nil tells no one.
@@ -1035,9 +1039,13 @@ func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, jo
 		op.unavailable = fmt.Sprintf("the session ran out of time (%s)", e.Timeout)
 	case err != nil:
 		op.unavailable = truncate(acct.Redact(harness.Redact(err.Error(), job.Secrets...)), 300)
+		if _, ok := harness.AsUnavailable(err); ok {
+			reportFailure(e.Tripline, tripline.HarnessUnavailable, errors.New(op.unavailable), ev.item, label, repoOf(ev.res), gateway.RoleEvaluator)
+		}
 	default:
 		if result.SandboxBroken != "" {
 			op.unavailable = "sandbox broken (" + acct.Redact(harness.Redact(result.SandboxBroken, job.Secrets...)) + ")"
+			reportFailure(e.Tripline, tripline.SandboxBroken, errors.New(op.unavailable), ev.item, label, repoOf(ev.res), gateway.RoleEvaluator)
 			break
 		}
 		if blind, broken := e.toolBroken(result, acct, false); broken {
@@ -1651,6 +1659,7 @@ func (e *Evaluator) releaseInfrastructure(ctx context.Context, item gateway.Work
 		e.logf("item %s: not evaluated, the node's condition; left in evaluating", label)
 	}, e.logf)
 	if ctx.Err() == nil {
+		reportFailure(e.Tripline, tripline.Infrastructure, err, item, label, we.Repo, gateway.RoleEvaluator)
 		holdInfrastructure(e.Declines, item.ID, label, we, e.logf)
 	}
 	return err
