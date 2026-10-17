@@ -329,6 +329,10 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	budget, budgetSource := e.budgetWithSource(res.Goal, model)
 	e.logf("item %s: evaluate budget $%.2f (%s)", label, budget, budgetSource)
 	job := harness.Job{Kind: harness.KindEvaluate, Workspace: dir, Prompt: harness.EvaluatePrompt(in), MaxBudgetUSD: budget, Label: label + " evaluate", Timeout: e.Timeout, MCPServers: e.MCP, Model: model}
+	// a Codex session's stream is kept under the item's org's Kept root
+	if job.KeptRoot, err = keptRootFor(e.Roots, e.Scopes, item.OrgID); err != nil {
+		return fmt.Errorf("kept root: %w", err)
+	}
 	if tok := cred.Token(); tok != nil {
 		ghDir, err := NewGHConfigDir()
 		if err != nil {

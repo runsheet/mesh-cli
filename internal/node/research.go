@@ -235,6 +235,10 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		Kind: harness.KindResearch, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget,
 		Label: project.Slug + "/" + direction.Slug + " research", Timeout: d.Timeout, MCPServers: d.MCP, Model: d.Model,
 	}
+	// a Codex session's stream is kept under the scope's org's Kept root
+	if job.KeptRoot, err = keptRootOfScope(d.Roots, scope); err != nil {
+		return err
+	}
 	if toks != nil {
 		// gh in the session runs on the first sorted repo's token and a
 		// config dir of its own, never the operator's login (adr-022)

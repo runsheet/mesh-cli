@@ -2,6 +2,7 @@ package harness
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -35,13 +36,38 @@ type keptSessionNote struct {
 	StartedAt   time.Time `json:"startedAt"`
 }
 
-// openKeptSession makes root/kept-sessions/<name>/ fresh — its note,
-// and its output.jsonl and stderr.log open for writing — so the whole
-// stream survives the session (harness.RemoveSession never looks under
-// root/kept-sessions: it only removes the job's own work dir). The
-// caller closes out and errf.
+// KeptSessionsDir is the kept-sessions directory under a work root,
+// root/kept-sessions: where a job with no KeptRoot of its own keeps
+// its session.
+func KeptSessionsDir(root string) string {
+	return filepath.Join(root, keptSessionsDir)
+}
+
+// keptDirFor is where job's session is kept: its org's KeptRoot when
+// the node set one (ADR-034), else root/kept-sessions; "" when neither
+// is set.
+func keptDirFor(root string, job Job) string {
+	if job.KeptRoot != "" {
+		return job.KeptRoot
+	}
+	if root == "" {
+		return ""
+	}
+	return KeptSessionsDir(root)
+}
+
+// openKeptSession makes <kept>/<name>/ fresh — its note, and its
+// output.jsonl and stderr.log open for writing — so the whole stream
+// survives the session (harness.RemoveSession never looks under a kept
+// dir: it only removes the job's own work dir). <kept> is the job's
+// KeptRoot, its org's (ADR-034), else root/kept-sessions. The caller
+// closes out and errf.
 func openKeptSession(root string, job Job, now time.Time) (dir string, out, errf *os.File, err error) {
-	dir = filepath.Join(root, keptSessionsDir, keptSessionName(job, now))
+	kept := keptDirFor(root, job)
+	if kept == "" {
+		return "", nil, nil, errors.New("kept session: no kept root")
+	}
+	dir = filepath.Join(kept, keptSessionName(job, now))
 	if err = os.MkdirAll(dir, 0o700); err != nil {
 		return "", nil, nil, err
 	}
@@ -84,14 +110,14 @@ func keptSessionName(job Job, now time.Time) string {
 	return fmt.Sprintf("%s-%d", base, now.Unix())
 }
 
-// SweepKeptSessions removes every kept session directory under
-// root/kept-sessions whose note is older than KeepSessionOutput,
-// leaving younger ones (a directory with no readable note, by its own
-// modification time): the node calls it on each tick or each Codex
-// session start, so a session's stream and stderr never outlive their
-// day. A root with no kept-sessions directory is not an error.
-func SweepKeptSessions(root string, now time.Time) error {
-	dir := filepath.Join(root, keptSessionsDir)
+// SweepKeptSessions removes every kept session directory under the
+// kept dir (root/kept-sessions, or an org's Kept root, ADR-034) whose
+// note is older than KeepSessionOutput, leaving younger ones (a
+// directory with no readable note, by its own modification time): the
+// harness calls it on each Codex session start for the job's own kept
+// dir, and the node over every org's, so a session's stream and stderr
+// never outlive their day. A missing dir is not an error.
+func SweepKeptSessions(dir string, now time.Time) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {

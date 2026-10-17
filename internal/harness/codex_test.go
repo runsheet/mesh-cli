@@ -631,7 +631,7 @@ func TestSweepKeptSessions(t *testing.T) {
 	}
 	old := mkKept("old-1", now.Add(-25*time.Hour))
 	young := mkKept("young-1", now.Add(-1*time.Hour))
-	if err := SweepKeptSessions(root, now); err != nil {
+	if err := SweepKeptSessions(KeptSessionsDir(root), now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(old); !os.IsNotExist(err) {

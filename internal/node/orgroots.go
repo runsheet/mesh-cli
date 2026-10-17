@@ -17,13 +17,16 @@ package node
 // orgs lays them out under ~/.mesh/orgs/.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
+	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 )
 
@@ -311,4 +314,62 @@ func orgSandbox(sb *sandbox.Sandbox, roots *OrgRootSet, scopes Scopes, orgID str
 		return nil, err
 	}
 	return sb.WithStores(PackageStores(r.Store)), nil
+}
+
+// keptRootFor is the kept-sessions dir a session of orgID keeps its
+// stream under (harness.Job.KeptRoot): its org's Kept when roots are
+// laid out, else "" — the harness's WorkRoot/kept-sessions, today's.
+func keptRootFor(roots *OrgRootSet, scopes Scopes, orgID string) (string, error) {
+	if roots == nil {
+		return "", nil
+	}
+	r, err := roots.ForOrgID(scopes, orgID)
+	if err != nil {
+		return "", err
+	}
+	return r.Kept, nil
+}
+
+// keptRootOfScope is keptRootFor for a plan or research of scope.
+func keptRootOfScope(roots *OrgRootSet, scope Scope) (string, error) {
+	if roots == nil {
+		return "", nil
+	}
+	r, err := roots.For(scope.Name())
+	if err != nil {
+		return "", err
+	}
+	return r.Kept, nil
+}
+
+// SweepKeptSessions runs harness.SweepKeptSessions over every served
+// org's Kept root, so an org none of whose sessions start still has its
+// kept sessions removed past their day; each org's error is joined, one
+// org's never stopping another's sweep.
+func (s *OrgRootSet) SweepKeptSessions(now time.Time) error {
+	var errs []error
+	for _, org := range s.Orgs() {
+		r, _ := s.For(org)
+		if r.Kept == "" {
+			continue
+		}
+		if err := harness.SweepKeptSessions(r.Kept, now); err != nil {
+			errs = append(errs, fmt.Errorf("org %s: %w", org, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+type keptRootKey struct{}
+
+// withKeptRoot carries a plan's kept-sessions dir (keptRootOfScope) down
+// to where its Job is made.
+func withKeptRoot(ctx context.Context, kept string) context.Context {
+	return context.WithValue(ctx, keptRootKey{}, kept)
+}
+
+// keptRootOf is withKeptRoot's dir, else "" (today's WorkRoot/kept-sessions).
+func keptRootOf(ctx context.Context) string {
+	s, _ := ctx.Value(keptRootKey{}).(string)
+	return s
 }

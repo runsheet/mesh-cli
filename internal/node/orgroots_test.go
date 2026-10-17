@@ -2,11 +2,15 @@ package node
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"projectmesh.io/mesh-cli/internal/sessionunit"
 )
 
 // Two orgs' roots never meet: every directory of one is outside every
@@ -233,5 +237,69 @@ func TestOrgSpecRefusesAnUnservedOrgAndFindsTheOrgsRepos(t *testing.T) {
 	// with no roots laid out, today's root stands
 	if spec, err := orgSpec(nil, scopes, "org-z", WorkspaceSpec{Root: "/w"}); err != nil || spec.Root != "/w" || spec.Repos != "" {
 		t.Fatalf("orgSpec(nil) = %+v, %v", spec, err)
+	}
+}
+
+// The kept-sessions sweep, given two orgs' roots, removes an expired
+// kept session under each org's Kept root and keeps a young one in each.
+func TestKeptSessionsSweepCoversEveryOrgsKeptRoot(t *testing.T) {
+	set, err := NewOrgRootSet(t.TempDir(), []string{"acme", "grapevine"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	mk := func(kept, name string, started time.Time) string {
+		dir := filepath.Join(kept, name)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		note := fmt.Sprintf(`{"kind":"evaluate","startedAt":%q}`, started.Format(time.RFC3339Nano))
+		if err := os.WriteFile(filepath.Join(dir, sessionunit.StateFile), []byte(note), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	var old, young []string
+	for _, org := range set.Orgs() {
+		r, _ := set.For(org)
+		old = append(old, mk(r.Kept, "old-1", now.Add(-25*time.Hour)))
+		young = append(young, mk(r.Kept, "young-1", now.Add(-time.Hour)))
+	}
+	if err := set.SweepKeptSessions(now); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range old {
+		if _, err := os.Stat(d); !os.IsNotExist(err) {
+			t.Errorf("expired %s kept (err %v)", d, err)
+		}
+	}
+	for _, d := range young {
+		if _, err := os.Stat(d); err != nil {
+			t.Errorf("young %s removed: %v", d, err)
+		}
+	}
+}
+
+// keptRootFor answers the item's org's Kept root, refuses an org the
+// node does not serve, and is "" (today's path) with no roots laid out.
+func TestKeptRootForIsTheItemsOrg(t *testing.T) {
+	mesh := t.TempDir()
+	set, err := NewOrgRootSet(mesh, []string{"acme", "grapevine"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopes := Scopes{{Login: "acme", ID: "org-a"}, {Login: "grapevine", ID: "org-b"}}
+	got, err := keptRootFor(set, scopes, "org-a")
+	if want := filepath.Join(mesh, "orgs", "acme", "work", "kept-sessions"); err != nil || got != want {
+		t.Fatalf("keptRootFor(org-a) = %q, %v; want %q", got, err, want)
+	}
+	if _, err := keptRootFor(set, scopes, "org-x"); err == nil {
+		t.Fatal("unserved org: want a refusal")
+	}
+	if got, err := keptRootOfScope(set, Scope{Login: "grapevine"}); err != nil || !strings.HasPrefix(got, filepath.Join(mesh, "orgs", "grapevine")) {
+		t.Fatalf("keptRootOfScope(grapevine) = %q, %v", got, err)
+	}
+	if got, err := keptRootFor(nil, scopes, "org-a"); err != nil || got != "" {
+		t.Fatalf("no roots: %q, %v; want \"\"", got, err)
 	}
 }

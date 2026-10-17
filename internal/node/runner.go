@@ -441,6 +441,10 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		FoldNotes:   r.foldNotes(ctx, item, label),
 	}
 	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, MaxBudgetUSD: budget, Label: label, MCPServers: mcp, Model: model}
+	// a Codex session's stream is kept under the item's org's Kept root
+	if job.KeptRoot, err = keptRootFor(r.Roots, r.Scopes, item.OrgID); err != nil {
+		return r.fail(ctx, item, fmt.Errorf("kept root: %w", err))
+	}
 	// past 60% of its budget with nothing committed the session is handed
 	// back for one commit-and-finish turn (ADR 012 Hand-back)
 	job.HandBackAt = harness.DefaultHandBackAt

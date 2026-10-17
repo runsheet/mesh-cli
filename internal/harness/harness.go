@@ -68,6 +68,12 @@ type Job struct {
 	Secrets []string
 	// Label names the job in logs (e.g. "ship-it/2").
 	Label string
+	// KeptRoot is the kept-sessions dir of the job's org (node.OrgRoots
+	// Kept, ADR-034): a Codex session's stream and stderr are kept, and
+	// swept, there rather than under Codex.WorkRoot/kept-sessions, so one
+	// org's kept sessions never sit beside another's. Empty keeps today's
+	// WorkRoot/kept-sessions.
+	KeptRoot string
 	// Timeout caps the session's wall clock; 0 is none. A session that
 	// runs out is killed and Run returns context.DeadlineExceeded.
 	Timeout time.Duration

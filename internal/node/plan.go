@@ -465,6 +465,11 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		return err
 	}
 	dir := PlanDir(root, goal.Slug)
+	kept, err := keptRootOfScope(p.Roots, scope)
+	if err != nil {
+		return err
+	}
+	ctx = withKeptRoot(ctx, kept)
 	names := make([]string, 0, len(repos))
 	for name := range repos {
 		names = append(names, name)
@@ -850,7 +855,7 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 	// Tools: the served tools, so PlanPrompt can name them and say when
 	// to search.
 	in.Tools = toolHints(st.Use)
-	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: harness.PlanPrompt(in), MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model}
+	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: harness.PlanPrompt(in), MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model, KeptRoot: keptRootOf(ctx)}
 	if tok != nil {
 		// gh in the session runs on the goal's token and a config dir of
 		// its own, never the operator's login (adr-022)

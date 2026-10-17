@@ -187,6 +187,10 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	budget, budgetSource := r.budgetWithSource(res.Goal, model)
 	r.logf("item %s: rebase budget $%.2f (%s)", label, budget, budgetSource)
 	job := harness.Job{Kind: harness.KindRebase, Workspace: dir, MaxBudgetUSD: budget, Label: label + " rebase", Timeout: r.Timeout, MCPServers: r.MCP, Model: model}
+	// a Codex session's stream is kept under the item's org's Kept root
+	if job.KeptRoot, err = keptRootFor(r.Roots, r.Scopes, item.OrgID); err != nil {
+		return fmt.Errorf("kept root: %w", err)
+	}
 	// the checkout's services, started in the session's pod before its
 	// agent; the pod and its sidecars go on every way out. A required one
 	// that does not come up gives the rebase up, naming it.
