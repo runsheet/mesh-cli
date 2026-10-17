@@ -54,9 +54,21 @@ func freshRetryPrompt(build string, turn harness.RetryTurn) string {
 	return build + "\n\n# The last attempt failed\n\n" + harness.RetryTurnPrompt(turn)
 }
 
-// resumes is the node's resume store, or nil when the runner keeps no
-// run state.
-func (r *Runner) resumes() *ResumeStore {
+// resumes is the resume store for an item of orgID: its own org's when
+// Roots is laid out (ADR-034) — a ResumeStore over roots.Resumes, so an
+// org never finds or keeps a record under another org's dir — else the
+// runner's own (Resumes, then State's), nil when neither is set. An
+// orgID Roots does not serve looks up and keeps nothing (the item would
+// already have failed at its workspace, orgSpec).
+func (r *Runner) resumes(orgID string) *ResumeStore {
+	if r.Roots != nil {
+		roots, err := r.Roots.ForOrgID(r.Scopes, orgID)
+		if err != nil {
+			return nil
+		}
+		s := ResumeStore{Dir: roots.Resumes}
+		return &s
+	}
 	if r.Resumes != nil {
 		return r.Resumes
 	}
@@ -95,8 +107,8 @@ func sessionConfigDir(acct *SessionAccount, pod *SessionPod, adapter string) str
 // this node, another adapter, another credential, a worktree that is not
 // this claim's checkout (ADR-028: one worktree per item), or a transcript
 // that does not restore.
-func (r *Runner) resumable(itemID, label, dir string, acct *SessionAccount, pod *SessionPod) (ResumeRecord, string) {
-	store := r.resumes()
+func (r *Runner) resumable(orgID, itemID, label, dir string, acct *SessionAccount, pod *SessionPod) (ResumeRecord, string) {
+	store := r.resumes(orgID)
 	if store == nil {
 		return ResumeRecord{}, notResumedNoRecord
 	}
