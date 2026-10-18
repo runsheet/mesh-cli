@@ -2684,7 +2684,6 @@ func (c *Client) TakesHeartbeatFindings(ctx context.Context) bool {
 	return c.heartbeatInputHas(ctx, &c.findingsSchema, "findings")
 }
 
-
 // statusProbe is the cached answer to which values the gateway's
 // NodeStatus enum lists, and when it was asked.
 type statusProbe struct {
