@@ -246,10 +246,33 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		Label: project.Slug + "/" + direction.Slug + " research", Timeout: d.Timeout, MCPServers: d.MCP, Model: d.Model,
 		KeptRoot: kept,
 	}
+	scratchRoot, err := ScratchRoot(root)
+	if err != nil {
+		return fmt.Errorf("session scratch: %w", err)
+	}
+	// the project's org's pod, opened before anything runs: a pod that
+	// cannot start runs no session, never on the host in its place, and
+	// hands in an empty research so the direction is not left claimed
+	// (ADR-034, Refusals); nil on an unsandboxed node serving one org
+	pod, err := openScopePod(ctx, d.Sandbox, d.Roots, scope, dir, job.Label, harness.KindResearch, d.logf)
+	// a session the harness detached runs on in its pod (Session.Detach
+	// makes this Close nothing): the node that adopts it removes it
+	defer pod.Close()
+	if err != nil {
+		reason := err.Error()
+		if errors.Is(err, ErrHostServesSeveralOrgs) {
+			noteHostFallback(err, d.logf)
+			reason = HostFallbackReason(err)
+		}
+		d.Declines.HoldFor(direction.ID, reason, time.Now(), WorkspaceReleaseHold)
+		return d.emptyResearch(ctx, direction, project, scope, err, reason)
+	}
+	pod.Apply(&job)
 	if toks != nil {
 		// gh in the session runs on the first sorted repo's token and a
-		// config dir of its own, never the operator's login (adr-022)
-		ghDir, err := NewGHConfigDir()
+		// config dir of its own, never the operator's login (adr-022),
+		// under the org's scratch on a sandboxed node
+		ghDir, err := sessionGHConfigDir(d.Sandbox, scratchRoot)
 		if err != nil {
 			return fmt.Errorf("gh config dir: %w", err)
 		}
@@ -260,10 +283,6 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	}
 	// the session's own scratch as its TMPDIR, gone with the session
 	// (sessionScratch); a detached one's by the node that ends it
-	scratchRoot, err := ScratchRoot(root)
-	if err != nil {
-		return fmt.Errorf("session scratch: %w", err)
-	}
 	scratch, err := sessionScratch(d.Sandbox, scratchRoot, d.BuildCache, harness.KindResearch, direction.ID, &job)
 	if err != nil {
 		return fmt.Errorf("session scratch: %w", err)

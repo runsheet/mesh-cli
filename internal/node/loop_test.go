@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 )
 
 const (
@@ -1688,5 +1690,65 @@ func TestResolveScopesNamesAnOrgWithoutLoginBySlug(t *testing.T) {
 	all, err := ResolveScopes(ctx, gw, &Config{Slug: "box"})
 	if err != nil || len(all) != 2 {
 		t.Fatalf("naming no org still serves every one: %+v, %v", all, err)
+	}
+}
+
+// podGuardHarness is fakeHarness for a sandboxed node: it records every
+// Job and fails any run that carries no pod (Job.Session nil), so a
+// session that would have run on the host never runs (ADR-034).
+type podGuardHarness struct {
+	fakeHarness
+	t *testing.T
+	// unsandboxed counts the runs refused for carrying no pod.
+	unsandboxed int
+}
+
+func (h *podGuardHarness) Run(ctx context.Context, job harness.Job, on func(harness.Progress)) (harness.Result, error) {
+	if job.Session == nil {
+		h.mu.Lock()
+		h.unsandboxed++
+		h.jobs = append(h.jobs, job)
+		h.mu.Unlock()
+		h.t.Errorf("%s: run with no pod on a sandboxed node", job.Label)
+		return harness.Result{}, errors.New("run with no pod on a sandboxed node")
+	}
+	return h.fakeHarness.Run(ctx, job, on)
+}
+
+// A sandboxed node whose runtime cannot start a pod releases the plan
+// claim the loop granted, through the loop's own Plan path, and never
+// runs the planner unsandboxed.
+func TestLoopReleasesThePlanClaimWhenThePodDoesNotStart(t *testing.T) {
+	f := seed(t)
+	f.Goals[goalID]["status"] = "planning"
+	f.Projects[projID]["repoIds"] = []string{repoID}
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
+	ws := &fakeWS{root: t.TempDir()}
+	h := &podGuardHarness{t: t}
+	sb := nodeStoresSandbox(t)
+	sb.Runtime.(*sandbox.Fake).CreatePodErr = errors.New("pod create: no space left on device")
+	pl := &Planner{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Sandbox: sb, Declines: &Declines{}, Log: log.New(io.Discard, "", 0)}
+	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Log: pl.Log,
+		Dispatch: func(context.Context, gateway.WorkItem) {},
+		Plan: func(ctx context.Context, g gateway.Goal, sc Scope) {
+			_ = pl.Plan(ctx, g, sc)
+		}}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	loop.Tick(ctx)
+	loop.wg.Wait()
+	if len(f.CallsNamed("claimPlan")) != 1 {
+		t.Fatalf("claimPlan calls: %+v", f.CallsNamed("claimPlan"))
+	}
+	rel := f.CallsNamed("releasePlan")
+	if len(rel) != 1 || !strings.Contains(rel[0].Input["note"].(string), "no space left on device") {
+		t.Fatalf("releasePlan calls: %+v", rel)
+	}
+	if len(h.jobs) != 0 || h.unsandboxed != 0 {
+		t.Fatalf("the planner ran: %d jobs, %d unsandboxed", len(h.jobs), h.unsandboxed)
+	}
+	if len(f.CallsNamed("planGoal")) != 0 {
+		t.Fatal("a plan was handed in")
 	}
 }
