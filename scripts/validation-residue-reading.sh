@@ -222,7 +222,7 @@ main() {
       echo "validation-residue-reading: --dry directory not found: $dry_dir" >&2
       exit 2
     fi
-    echo "== validation-residue-reading (dry run) taken $(date '+%Y-%m-%d %H:%M:%S %z') on $(hostname), fixture $dry_dir"
+    echo "== validation-residue-reading (dry run) taken $(date '+%Y-%m-%d %H:%M:%S %z') on $(hostname 2>/dev/null || uname -n), fixture $dry_dir"
 
     scan_users=()
     read -r before_count before_bytes < <(scan "$dry_dir/before")
@@ -256,7 +256,7 @@ main() {
     users=("$(id -un)")
   fi
 
-  echo "== validation-residue-reading taken $(date '+%Y-%m-%d %H:%M:%S %z') on $(hostname), window ${window}m, users: ${users[*]}"
+  echo "== validation-residue-reading taken $(date '+%Y-%m-%d %H:%M:%S %z') on $(hostname 2>/dev/null || uname -n), window ${window}m, users: ${users[*]}"
 
   scan_users=("${users[@]}")
   start_ts="$(date '+%Y/%m/%d %H:%M:%S')"
