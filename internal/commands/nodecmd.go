@@ -607,10 +607,15 @@ func reportingStatusLine(cfg *node.Config) string {
 // hostConfigLine is `mesh node status`'s `host:` line: the thresholds
 // node.yaml's `host:` block is in force with, defaults applied
 // (HostConfig.Effective), so what judges the host hot is visible beside
-// its reading on the node row (adr-004's amendment 2026-10-03).
+// its reading on the node row (adr-004's amendment 2026-10-03), and the
+// memory floor when node.yaml sets one (ADR-037).
 func hostConfigLine(h node.HostConfig) string {
 	h = h.Effective()
-	return fmt.Sprintf("host: load_per_core_max %s, package_temp_max_c %s", hostStatusNum(h.LoadPerCoreMax), hostStatusNum(h.PackageTempMaxC))
+	line := fmt.Sprintf("host: load_per_core_max %s, package_temp_max_c %s", hostStatusNum(h.LoadPerCoreMax), hostStatusNum(h.PackageTempMaxC))
+	if h.MinFreeMemory != "" {
+		line += ", min_free_memory " + h.MinFreeMemory
+	}
+	return line
 }
 
 // hostStatusNum is a host: threshold as hostConfigLine shows it: "1.5",

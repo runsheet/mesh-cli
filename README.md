@@ -1440,8 +1440,8 @@ out a target from the same windows the node reads for its limits:
 3. **Slots** per window: the affordable rate / the burn per slot.
 4. **The target** is the smaller of the two, clamped to `[min, max]`,
    and capped by **free memory**: when it is 2 GB or less (CI runs on
-   the same machine), the node grows no further than the sessions it
-   already runs. The machine's load and temperature are [the
+   the same machine), or at or under `host.min_free_memory` when that is
+   set, the node grows no further than the sessions it already runs. The machine's load and temperature are [the
    back-off's](#backing-off-a-hot-host), a layer over this target.
 
 The capacity in force moves toward the target **one step at a time, at
@@ -1557,6 +1557,7 @@ host:
   overload_per_core: 1.0    # default; past it a silent session is starved, not failed
   overload_cpu_some_avg60: 70  # optional, %; /proc/pressure/cpu's some avg60 (0 or absent: not judged)
   starve_after: 15m         # default; how long a build may say nothing on an overloaded host
+  min_free_memory: 32g      # optional; 32g, 512m or 15% — free memory at or under it claims nothing (ADR-037)
 ```
 
 Each left out, or set to 0, takes its default (`overload_cpu_some_avg60`
@@ -1668,6 +1669,37 @@ disk ok: /home/chris/.mesh/work 40.0GiB free >= floor 10.0GiB; claiming again
 ```
 
 Free space and the next tick claims again; no restart is needed.
+
+### A node short of memory claims nothing
+
+`host.min_free_memory` in `~/.mesh/node.yaml` sets the memory available
+(`/proc/meminfo`'s `MemAvailable`) at or under which this node claims
+nothing (ADR-037) — a size, `32g`, `512m`, `1024k` or bytes, or a share
+of the machine's memory, `15%`:
+
+```yaml
+host:
+  min_free_memory: 32g
+```
+
+A zero, a percentage of 0 or 100 and more, or anything else unreadable is
+refused at start naming `host.min_free_memory`. Read again every tick, a
+change logged once — `host: min_free_memory (none) → 32g`. While it is
+set, every tick before any claim the node reads its memory; at or under
+the floor it claims nothing of **any** kind, as on a full disk, while
+what already runs runs on, and says so once as it crosses:
+
+```
+memory_low: 20.0GiB free <= floor 32.0GiB; claiming nothing
+memory ok: 100.0GiB free > floor 32.0GiB; claiming again
+```
+
+The ranged scalers take the same floor for their growth cap. Left out,
+nothing changes: the scalers alone hold growth at 2 GB free and a fixed
+`capacity:` is not affected by memory. A host whose sessions run in
+large pods — dl360 runs twenty at up to 32g each on 251 GB — sets a
+floor at least one pod's size, so a claim never starts a session the
+memory cannot hold.
 
 ### Capacity counts live sessions
 

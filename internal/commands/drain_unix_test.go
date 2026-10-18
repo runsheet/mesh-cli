@@ -142,4 +142,10 @@ func TestNodeStatusShowsHost(t *testing.T) {
 			t.Fatalf("host line %q does not contain %q", line, want)
 		}
 	}
+	if strings.Contains(line, "min_free_memory") {
+		t.Fatalf("host line %q names a memory floor node.yaml does not set", line)
+	}
+	if line := hostConfigLine(node.HostConfig{MinFreeMemory: "32g"}); !strings.HasSuffix(line, ", min_free_memory 32g") {
+		t.Fatalf("host line %q does not end with the memory floor", line)
+	}
 }

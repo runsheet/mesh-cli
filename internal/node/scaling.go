@@ -255,6 +255,7 @@ func (l *Loop) scale() {
 	} else {
 		ws, _ := l.windows()
 		scaler.Observe(ws, slotMinutes)
+		scaler.Host = l.HostThresholds()
 		target, reason = scaler.Target(running)
 		l.mu.Lock()
 		st.accounts, st.targeted = nil, false

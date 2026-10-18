@@ -459,7 +459,26 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   judgement` once per error; while low `Loop.DiskFindings()` is one
   critical `disk_low` Finding (subject the path, bytes the free space)
   for the quartermaster's report once its loop wiring folds it in;
-  `disklow_e2e_test.go`'s `TestDiskLowE2E` runs it on `Loop.Run`. **Capacity counts the live sessions** (ADR-029,
+  `disklow_e2e_test.go`'s `TestDiskLowE2E` runs it on `Loop.Run`.
+  **A node short of memory claims nothing** (ADR-037,
+  `docs/adr/adr-037-a-node-short-of-memory-claims-nothing.md`,
+  `internal/node/memfloor.go`): node.yaml's `host: {min_free_memory}`
+  (`HostConfig.MinFreeMemory`: a size, `32g`/`512m`/`1024k`/bytes, or a
+  share of `MemTotal`, `15%`; `HostConfig.MemoryFloor(total)` in bytes,
+  `MinFreeMemory` when left out or a share's total is unread; a zero,
+  a share at 0 or ≥100, or anything unreadable refused at load naming
+  `host.min_free_memory`; reloaded with `host:`, logged `host:
+  min_free_memory <old> → <new>`). While set, `Loop.memFloor` reads
+  `Loop.Machine` every tick after `diskFloor` and, at or under the floor
+  (`MachineReading.ShortOfMemoryAt`, `MemTotal` now read beside
+  `MemAvailable`), skips every claim path as a low disk does, logging
+  `memory_low: <free> free <= floor <floor>; claiming nothing` and
+  `memory ok: <free> free > floor <floor>; claiming again` once per
+  crossing, a critical `memory_low` Finding while low
+  (`Loop.MemoryFindings`). `Scaler`/`AccountsScaler.Host` (set from
+  `HostThresholds` before each `Target`) judge the `low memory` growth
+  cap by the same floor. Left out, the floor does not run and ADR-004's
+  2 GiB growth cap is unchanged. **Capacity counts the live sessions** (ADR-029,
   `internal/node/liveproc.go`): `Loop.Live` (`LiveProbe{Systemctl,
   Root, Find, SweepEvery}`) counts the build sessions alive on the host
   each tick — active `mesh-session-build-*` scopes, else
