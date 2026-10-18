@@ -72,6 +72,11 @@ type Fake struct {
 	// MeshV1Hits counts the /mesh/v1 context requests received, for a
 	// test to prove a 404 is not retried.
 	MeshV1Hits int
+	// MeshSessions are the mesh sessions POST /mesh/v1/sessions opened
+	// (runsheet ADR 056), by session id; NoMeshSessions answers that
+	// route 404, a platform that predates it (meshsessions.go).
+	MeshSessions   map[string]*MeshSession
+	NoMeshSessions bool
 	// ItemBearers are further tokens the fake takes on GraphQL, beside
 	// Token: an item's claim-time token, as RecordValidationAttestation
 	// carries it (WithItemToken).
@@ -1062,7 +1067,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			if f.answeredTransiently(w, r, m[1]) {
 				return
 			}
-			f.sessionRead(w, m[1], m[2], m[3], req.Variables)
+			f.sessionRead(w, m[1], m[2], m[3], req.Variables, r.Header.Get(gateway.NodeIDHeader))
 			return
 		}
 		if registryTokenRe.MatchString(q) {
@@ -1147,10 +1152,15 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 
 // sessionRead answers the claim-time read of one session subject: the
 // credentials field and, when selected, the tools field, each recorded
-// as a call named by the field with the argument it was given.
-func (f *Fake) sessionRead(w http.ResponseWriter, credField, arg, toolsField string, vars map[string]any) {
+// as a call named by the field with the argument it was given and, as
+// "nodeId", the node the read named (gateway.NodeIDHeader) when it named
+// one.
+func (f *Fake) sessionRead(w http.ResponseWriter, credField, arg, toolsField string, vars map[string]any, nodeID string) {
 	id, _ := vars["id"].(string)
 	in := map[string]any{arg: id}
+	if nodeID != "" {
+		in["nodeId"] = nodeID
+	}
 	if f.Unsupported[credField] {
 		writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type \"Query\".", credField))
 		return
@@ -2435,6 +2445,10 @@ func camel(s string) string {
 // mesh serves the context server's document endpoints under /mesh/v1, the
 // only path the gateway serves.
 func (f *Fake) mesh(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, gateway.MeshSessionsPath) {
+		f.meshSessions(w, r)
+		return
+	}
 	f.mu.Lock()
 	f.MeshV1Hits++
 	f.mu.Unlock()

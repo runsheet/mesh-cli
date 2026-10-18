@@ -347,6 +347,9 @@ func (c *Client) post(ctx context.Context, body []byte) (json.RawMessage, error)
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+tok)
+	if id := nodeIDFrom(ctx); id != "" {
+		req.Header.Set(NodeIDHeader, id)
+	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, err
