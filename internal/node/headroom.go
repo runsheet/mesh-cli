@@ -18,8 +18,9 @@ const (
 	ReasonWeeklyPace   Reason = "weekly pace"
 	ReasonFiveHourPace Reason = "five-hour pace"
 	// ReasonLowMemory is the growth cap of a machine short of memory
-	// (MinFreeMemory); a hot host's load and temperature are the
-	// back-off's (hostbackoff.go), not the scaler's.
+	// (host.min_free_memory, MinFreeMemory by default); a hot host's
+	// load and temperature are the back-off's (hostbackoff.go), not the
+	// scaler's.
 	ReasonLowMemory Reason = "low memory"
 )
 
@@ -136,6 +137,10 @@ type Scaler struct {
 	Now func() time.Time
 	// Machine caps the target by the host's free memory; nil is no cap.
 	Machine MachineProbe
+	// Host is node.yaml's `host:` in force (the loop's HostThresholds),
+	// whose min_free_memory is the floor Machine's free memory is judged
+	// by. Zero is the default floor, MinFreeMemory.
+	Host HostConfig
 
 	samples []headroomSample
 }
@@ -245,7 +250,7 @@ func (s *Scaler) Target(running int) (int, Reason) {
 		target = max(int(best), s.Min)
 	}
 	if s.Machine != nil {
-		if m, err := s.Machine.Read(); err == nil && m.ShortOfMemory() && running < target {
+		if m, err := s.Machine.Read(); err == nil && m.ShortOfMemoryAt(s.Host) && running < target {
 			target, reason = max(running, 0), ReasonLowMemory
 		}
 	}

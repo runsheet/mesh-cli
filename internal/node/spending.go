@@ -109,6 +109,7 @@ func (l *Loop) accountsTarget(r Capacity, accounts []AccountConfig, slotMinutes 
 	scaler.Min, scaler.Max = r.Min, r.Max
 	l.mu.Unlock()
 	scaler.Limits = l.Thresholds()
+	scaler.Host = l.HostThresholds()
 
 	scaler.Observe(observed)
 	t := scaler.Target(caps, running)

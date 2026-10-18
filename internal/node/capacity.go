@@ -134,6 +134,10 @@ type AccountsScaler struct {
 	Now func() time.Time
 	// Machine caps the target by the host's free memory; nil is no cap.
 	Machine MachineProbe
+	// Host is node.yaml's `host:` in force (the loop's HostThresholds),
+	// whose min_free_memory is the floor Machine's free memory is judged
+	// by. Zero is the default floor, MinFreeMemory.
+	Host HostConfig
 	// Location is where a day and a month begin and end; UTC when nil.
 	Location *time.Location
 	// Limits are the thresholds in force (the loop's Thresholds), for
@@ -364,7 +368,7 @@ func (s *AccountsScaler) Target(accounts []CapacityAccount, running int) Account
 		out.Capacity, out.Reason = s.Min, ReasonMin
 	}
 	if s.Machine != nil {
-		if m, err := s.Machine.Read(); err == nil && m.ShortOfMemory() && running < out.Capacity {
+		if m, err := s.Machine.Read(); err == nil && m.ShortOfMemoryAt(s.Host) && running < out.Capacity {
 			out.Capacity, out.Reason = max(running, 0), ReasonLowMemory
 		}
 	}

@@ -339,6 +339,8 @@ type Loop struct {
 	diskSet bool
 	// diskState is the disk floor as last judged (diskFloor).
 	diskState diskState
+	// memState is the memory floor as last judged (memFloor, ADR-037).
+	memState memState
 	// backoff is the host back-off over the plan figure (hostBackoff,
 	// ADR-023 the node backs off a hot host).
 	backoff hostState
@@ -1169,6 +1171,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	l.scale()
 	l.hostBackoff()
 	l.diskFloor()
+	l.memFloor()
 	runtimes, adapters := l.Runtimes()
 	// the platform's word on standing first, so a withdrawn account is
 	// gone from this heartbeat's limits and holding
@@ -1239,8 +1242,9 @@ func (l *Loop) Tick(ctx context.Context) {
 		l.unserved = map[string]map[string]int{}
 		l.heldBackFor = nil
 		l.unclaimed = nil
-		// a node low on disk claims nothing of any kind; what runs runs on
-		low := l.diskLow()
+		// a node low on disk or memory claims nothing of any kind; what
+		// runs runs on
+		low := l.diskLow() || l.memLow()
 		if rt != nil {
 			// a broken runtime claims nothing of any kind — what runs
 			// runs on, as in a drain — and says why on every ready goal
@@ -1921,6 +1925,9 @@ func (l *Loop) reload(ctx context.Context) {
 		}
 		if now.StarveAfter != was.StarveAfter {
 			l.logf("host: starve_after %s → %s", was.StarveAfter, now.StarveAfter)
+		}
+		if now.MinFreeMemory != was.MinFreeMemory {
+			l.logf("host: min_free_memory %s → %s", orNone(was.MinFreeMemory), orNone(now.MinFreeMemory))
 		}
 		l.mu.Lock()
 		l.host, l.hostSet = now, true

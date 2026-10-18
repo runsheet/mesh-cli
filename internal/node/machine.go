@@ -12,18 +12,23 @@ import (
 	"strings"
 )
 
-// MinFreeMemory is the free memory below which the machine is busy: CI
-// runs on the same mini, and a build that swaps is a build that fails.
+// MinFreeMemory is host.min_free_memory's default: the free memory at
+// or below which the machine is busy. CI runs on the same mini, and a
+// build that swaps is a build that fails. A larger machine running many
+// pods sets its own floor (HostConfig.MemoryFloor, ADR-037).
 const MinFreeMemory = 2 << 30
 
 // MachineReading is the host as last read: the 1-minute load average,
-// the CPU count, the memory available in bytes, the package thermal
+// the CPU count, the memory available and in total in bytes, the package thermal
 // zone's temperature when one was found, and the CPU pressure from
 // /proc/pressure/cpu when the host has PSI.
 type MachineReading struct {
 	Load1        float64
 	CPUs         int
 	MemAvailable uint64
+	// MemTotal is /proc/meminfo's MemTotal: what host.min_free_memory's
+	// percentage is a share of. 0 when it was not read.
+	MemTotal uint64
 	// PackageTempC is the package thermal zone's reading in degrees
 	// Celsius; meaningful only when HasTemp.
 	PackageTempC float64
@@ -64,22 +69,31 @@ func (m MachineReading) PerCore() float64 {
 
 // BusyAt says the machine is at or past h's load threshold — the
 // 1-minute load average at or above h.LoadPerCoreMax per core — or free
-// memory at or below MinFreeMemory. The one notion of "busy": Busy and
-// Hot both go through it, each at their own threshold.
+// memory at or below h's memory floor (ShortOfMemoryAt). The one notion
+// of "busy": Busy and Hot both go through it, each at their own
+// threshold.
 func (m MachineReading) BusyAt(h HostConfig) bool {
-	return (m.CPUs > 0 && m.Load1/float64(m.CPUs) >= h.LoadPerCoreMax) || m.MemAvailable <= MinFreeMemory
+	return (m.CPUs > 0 && m.Load1/float64(m.CPUs) >= h.LoadPerCoreMax) || m.ShortOfMemoryAt(h)
 }
 
-// ShortOfMemory says free memory is at or below MinFreeMemory: the
-// scalers' growth cap (ReasonLowMemory).
+// ShortOfMemoryAt says free memory is at or below h's floor
+// (host.min_free_memory, HostConfig.MemoryFloor): the scalers' growth
+// cap (ReasonLowMemory) and the memory floor's claim-nothing
+// (memfloor.go, ADR-037).
+func (m MachineReading) ShortOfMemoryAt(h HostConfig) bool {
+	return m.MemAvailable <= h.MemoryFloor(m.MemTotal)
+}
+
+// ShortOfMemory is ShortOfMemoryAt the default floor, MinFreeMemory.
 func (m MachineReading) ShortOfMemory() bool {
-	return m.MemAvailable <= MinFreeMemory
+	return m.ShortOfMemoryAt(HostConfig{})
 }
 
 // Busy says the machine can take no more sessions: load at or above one
 // per core (ADR-004's own threshold, unrelated to node.yaml's host:
 // load_per_core_max, which backs the scaler off earlier, at its own
-// usually lower bar), or free memory at or below MinFreeMemory.
+// usually lower bar), or free memory at or below the default floor,
+// MinFreeMemory.
 func (m MachineReading) Busy() bool {
 	return m.BusyAt(HostConfig{LoadPerCoreMax: 1})
 }
@@ -194,6 +208,14 @@ func (p *ProcMachine) Read() (MachineReading, error) {
 	sc := bufio.NewScanner(bytes.NewReader(mem))
 	for sc.Scan() {
 		f := strings.Fields(sc.Text())
+		// MemTotal comes first in /proc/meminfo; a file without it leaves
+		// MemTotal 0, and a percentage floor falls back to MinFreeMemory
+		if len(f) >= 2 && f[0] == "MemTotal:" {
+			if kb, err := strconv.ParseUint(f[1], 10, 64); err == nil {
+				m.MemTotal = kb * 1024
+			}
+			continue
+		}
 		if len(f) >= 2 && f[0] == "MemAvailable:" {
 			kb, err := strconv.ParseUint(f[1], 10, 64)
 			if err != nil {
