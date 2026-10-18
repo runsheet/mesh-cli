@@ -283,6 +283,16 @@ func PrepareCodexAccount(a AccountConfig, secret string) (*AccountSession, error
 	return s, nil
 }
 
+// loginCache is where a Codex login this session refreshed is kept
+// (CodexLoginCache), for the state of a session another node may end;
+// "" for any other account, and on nil.
+func (s *AccountSession) loginCache() string {
+	if s == nil {
+		return ""
+	}
+	return s.login
+}
+
 // cachedLogin is the refreshed login kept at path, when it is still a
 // JSON object; every other version of the same credential's is removed
 // — a new secret version is a login pasted or rotated on the platform,

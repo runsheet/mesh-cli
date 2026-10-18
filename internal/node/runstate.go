@@ -497,3 +497,51 @@ func (s RunState) CacheCounts() (CacheCounts, bool) {
 	}
 	return c, true
 }
+
+// CacheSizePath is the last measured size of the node's cache root and
+// scratch root: node.cachesize (CacheTrim). Like node.cache it outlives
+// the process, so `mesh node status` still has the last reading — with
+// when it was taken — between the hourly measurements.
+func (s RunState) CacheSizePath() string { return filepath.Join(s.Dir, "node.cachesize") }
+
+// CacheReading is one measurement of the cache root (SharedCacheRoot,
+// the Go build cache under it included) against its cap, and of the
+// scratch root beside it.
+type CacheReading struct {
+	Root         string    `json:"root"`
+	Bytes        int64     `json:"bytes"`
+	Cap          int64     `json:"cap"`
+	ScratchRoot  string    `json:"scratchRoot,omitempty"`
+	ScratchBytes int64     `json:"scratchBytes"`
+	At           time.Time `json:"at"`
+}
+
+// WriteCacheSize leaves the reading for `mesh node status`, atomic.
+func (s RunState) WriteCacheSize(r CacheReading) error {
+	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
+		return err
+	}
+	data, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	tmp := s.CacheSizePath() + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.CacheSizePath())
+}
+
+// CacheSize reads what WriteCacheSize left; false when nothing is there
+// or it cannot be read.
+func (s RunState) CacheSize() (CacheReading, bool) {
+	data, err := os.ReadFile(s.CacheSizePath())
+	if err != nil {
+		return CacheReading{}, false
+	}
+	var r CacheReading
+	if json.Unmarshal(data, &r) != nil {
+		return CacheReading{}, false
+	}
+	return r, true
+}

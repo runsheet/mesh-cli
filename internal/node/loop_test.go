@@ -101,6 +101,10 @@ type fakeWS struct {
 	fetchErr error
 	// identified are Identify's identities, in order
 	identified []Identity
+	// rebaseDirs are AddRebaseWorktree's dirs; rebaseErr, when set, is
+	// what it answers
+	rebaseDirs []string
+	rebaseErr  error
 }
 
 func (w *fakeWS) Authorize(_ context.Context, spec WorkspaceSpec, tok *gateway.GitHubToken) error {
@@ -134,6 +138,27 @@ func (w *fakeWS) Prepare(_ context.Context, spec WorkspaceSpec) (string, error) 
 	w.events = append(w.events, "prepare")
 	dir := spec.Dir()
 	return dir, os.MkdirAll(dir, 0o755)
+}
+
+// AddRebaseWorktree records the rebase's checkout and makes its dir;
+// rebaseErr, when set, is what it answers instead.
+func (w *fakeWS) AddRebaseWorktree(_ context.Context, repo, dir, branch string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.events = append(w.events, "rebase-worktree "+branch)
+	w.rebaseDirs = append(w.rebaseDirs, dir)
+	if w.rebaseErr != nil {
+		return w.rebaseErr
+	}
+	return os.MkdirAll(dir, 0o755)
+}
+
+// RemoveWorkspace records the removal and removes dir.
+func (w *fakeWS) RemoveWorkspace(_ context.Context, dir string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.events = append(w.events, "remove "+filepath.Base(dir))
+	return os.RemoveAll(dir)
 }
 
 func (w *fakeWS) Commit(_ context.Context, dir string, paths []string, msg string) error {

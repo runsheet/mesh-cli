@@ -211,9 +211,65 @@ type Sandbox struct {
 	Config  Config
 	// TempDir is where temporary HOMEs are made ("" is os.TempDir).
 	TempDir string
+	// Org, set (WithOrg), confines its sessions to one org's tree on a
+	// node serving several: every mount must resolve inside it
+	// (CheckedMounts, mesh-cli ADR-034 Refusals).
+	Org OrgRoot
 	// Logf is where the sandbox says what it fell back on (nil is the
 	// standard logger).
 	Logf func(format string, args ...any)
+	// open is the sessions this process has open, shared with every
+	// WithStores copy (openSet).
+	open *openSet
+}
+
+// openSet is the sessions of this node process between Open and Close:
+// what a sweep run while the node runs (the quartermaster's, ADR-034)
+// must keep whatever state their containers are in — a validation
+// between two steps, a session between Open and its agent's first
+// container, each a pod with only its infra running — which the
+// start-up sweep, run before any session of this process, never meets.
+type openSet struct {
+	mu sync.Mutex
+	m  map[*Session]struct{}
+}
+
+var openInit sync.Mutex
+
+// openSessions is sb's open set, made on first use under openInit so a
+// Sandbox and the WithStores copies made of it afterwards share one.
+func (sb *Sandbox) openSessions() *openSet {
+	openInit.Lock()
+	defer openInit.Unlock()
+	if sb.open == nil {
+		sb.open = &openSet{m: map[*Session]struct{}{}}
+	}
+	return sb.open
+}
+
+// Live is what a sweep run while this node process runs keeps: the pods
+// still standing and the HOME of every session Open made that Close has
+// not ended (openSet). It is the age guard ADR-034 owed, on the exact
+// sessions rather than an age.
+func (sb *Sandbox) Live() Keep {
+	var keep Keep
+	if sb == nil {
+		return keep
+	}
+	set := sb.openSessions()
+	set.mu.Lock()
+	sessions := make([]*Session, 0, len(set.m))
+	for s := range set.m {
+		sessions = append(sessions, s)
+	}
+	set.mu.Unlock()
+	for _, s := range sessions {
+		for _, p := range s.Pods() {
+			keep.Pods = append(keep.Pods, p.Name)
+		}
+		keep.Homes = append(keep.Homes, s.Home)
+	}
+	return keep
 }
 
 func (sb *Sandbox) logf(format string, args ...any) {
@@ -265,6 +321,11 @@ type Session struct {
 	// detached is a session whose agent outlives the node process: Close
 	// leaves its pods and HOME to whoever Reattaches it.
 	detached bool
+	// execs counts the commands Exec ran, naming each its own container.
+	execs int
+	// org is the org root every mount must resolve inside (the
+	// Sandbox's Org when it was opened); zero confines nothing.
+	org OrgRoot
 }
 
 // GitIdentity is a session's commit identity: the agent its .gitconfig
@@ -306,6 +367,9 @@ func (s *Sandbox) Open(label, kind string, git GitIdentity) (*Session, error) {
 			return nil, fmt.Errorf("sandbox: package store: %w", err)
 		}
 	}
+	if err := s.ensureHomes(); err != nil {
+		return nil, fmt.Errorf("sandbox: home: %w", err)
+	}
 	home, err := os.MkdirTemp(s.TempDir, HomePrefix)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: home: %w", err)
@@ -341,7 +405,12 @@ func (s *Sandbox) Open(label, kind string, git GitIdentity) (*Session, error) {
 	if len(name) > 40 {
 		name = name[:40]
 	}
-	return &Session{sb: s, Home: home, Label: label, Kind: kind, hooks: git.HooksDir, image: s.Config.Image, name: "mesh-" + name + "-" + hex.EncodeToString(rnd[:])}, nil
+	sess := &Session{sb: s, Home: home, Label: label, Kind: kind, hooks: git.HooksDir, image: s.Config.Image, org: s.Org, name: "mesh-" + name + "-" + hex.EncodeToString(rnd[:])}
+	set := s.openSessions()
+	set.mu.Lock()
+	set.m[sess] = struct{}{}
+	set.mu.Unlock()
+	return sess, nil
 }
 
 // gitConfigValue quotes v for a .gitconfig line: `Mesh builder (mini)`
@@ -482,26 +551,39 @@ func Allowed(name string) bool {
 // its work tree, another item's worktree — is ever mounted. The node's
 // package store and cache are mounted read-write, each at its own path
 // (Stores, ADR 017 §3). podman applies them shallowest target first
-// (agentArgs), so the deeper mount wins.
+// (agentArgs), so the deeper mount wins. A session confined to an org
+// runs on CheckedMounts, which refuses any of these outside its root.
 func (s *Session) Mounts(workspace string) []Mount {
-	m := []Mount{
-		{Source: workspace, Target: workspace},
-		{Source: s.Home, Target: s.Home},
+	named := s.namedMounts(workspace)
+	m := make([]Mount, len(named))
+	for i, n := range named {
+		m[i] = n.Mount
+	}
+	return m
+}
+
+// namedMounts are Mounts, each with what it is.
+func (s *Session) namedMounts(workspace string) []namedMount {
+	m := []namedMount{
+		{Mount{Source: workspace, Target: workspace}, "workspace"},
+		{Mount{Source: s.Home, Target: s.Home}, "home"},
 	}
 	// A workspace whose common dir cannot be read is mounted as a full
 	// clone would be: logged, and today's list, rather than no session.
 	if common, err := GitCommonDir(workspace); err != nil {
 		s.sb.logf("sandbox: %v; mounting the workspace alone", err)
 	} else if common != "" {
-		m = append(m, Mount{Source: common, Target: common})
-		m = append(m, s.worktreeMounts(workspace, common)...)
+		m = append(m, namedMount{Mount{Source: common, Target: common}, "git common dir"})
+		for _, w := range s.worktreeMounts(workspace, common) {
+			m = append(m, namedMount{w, "git dir"})
+		}
 	}
 	for _, d := range s.sb.Config.Stores.dirs() {
-		m = append(m, Mount{Source: d, Target: d})
+		m = append(m, namedMount{Mount{Source: d, Target: d}, "package store"})
 	}
 	// the checkout's hooks, which its core.hooksPath names (ADR-024)
 	if s.hooks != "" {
-		m = append(m, Mount{Source: s.hooks, Target: s.hooks, ReadOnly: true})
+		m = append(m, namedMount{Mount{Source: s.hooks, Target: s.hooks, ReadOnly: true}, "hooks"})
 	}
 	return m
 }
@@ -552,6 +634,12 @@ var pidsExhausted = regexp.MustCompile(`(?i)fork: (retry: )?resource temporarily
 // a *LimitError; any other non-zero exit an *ExitError.
 func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 	cfg := s.sb.Config
+	// every mount is checked before a pod is made: a refused one starts
+	// nothing (CheckedMounts)
+	mounts, err := s.CheckedMounts(spec.Workspace)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	started := s.started
 	s.started = nil
@@ -560,14 +648,13 @@ func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 	if started != nil {
 		pod = *started
 	} else {
-		var err error
 		if pod, err = s.createPod(ctx); err != nil {
 			return err
 		}
 	}
 	defer s.remove(ctx, pod)
 
-	mounts, env := s.Mounts(spec.Workspace), s.Env(spec.Env)
+	env := s.Env(spec.Env)
 	if c := spec.Cache; c != nil {
 		if err := c.ensure(); err != nil {
 			return err
@@ -602,6 +689,69 @@ func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 	}
 	return classify(exit, time.Since(start), spec.Timeout, cfg.Limits, tail.String())
 }
+
+// Exec runs a short command — a preflight's step — in the session's pod
+// beside where its agent will run: the pod Start made with its services,
+// else one made now and kept for the next Run or StartDetached, with the
+// same mounts, environment (Session.Env of spec.Env) and limits as the
+// agent, in a container of its own (ExecName). The pod is never removed
+// here. A cancelled ctx returns ctx.Err(); a kill by a limit a
+// *LimitError; any other non-zero exit an *ExitError.
+func (s *Session) Exec(ctx context.Context, spec RunSpec) error {
+	cfg := s.sb.Config
+	// a mount outside the session's org root refuses the exec before any
+	// pod is made (CheckedMounts, mesh-cli ADR-034 Refusals)
+	mounts, err := s.CheckedMounts(spec.Workspace)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	started := s.started
+	s.execs++
+	n := s.execs
+	s.mu.Unlock()
+	var pod Pod
+	if started != nil {
+		pod = *started
+	} else {
+		var err error
+		if pod, err = s.createPod(ctx); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		s.started = &pod
+		s.mu.Unlock()
+	}
+	tail := &tailBuffer{max: 8 << 10}
+	stderr := io.Writer(tail)
+	if spec.Stderr != nil {
+		stderr = io.MultiWriter(spec.Stderr, tail)
+	}
+	start := time.Now()
+	exit, err := s.sb.Runtime.RunAgent(ctx, pod, AgentSpec{
+		Name:           ExecName(pod, n),
+		Image:          cfg.Image,
+		Workdir:        spec.Workspace,
+		Mounts:         mounts,
+		Env:            s.Env(spec.Env),
+		Command:        spec.Command,
+		Limits:         cfg.Limits,
+		TimeoutSeconds: runtimeTimeout(spec.Timeout),
+		Stdin:          spec.Stdin,
+		Stdout:         spec.Stdout,
+		Stderr:         stderr,
+	})
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err != nil {
+		return fmt.Errorf("sandbox: exec: %w", err)
+	}
+	return classify(exit, time.Since(start), spec.Timeout, cfg.Limits, tail.String())
+}
+
+// ExecName is the container name of the session's nth Exec in a pod.
+func ExecName(pod Pod, n int) string { return fmt.Sprintf("%s-exec-%d", pod.Name, n) }
 
 // AgentName is the name of the agent's container in a pod.
 func AgentName(pod Pod) string { return pod.Name + "-agent" }
@@ -645,6 +795,20 @@ type DetachedAgent struct {
 // pod.
 func (s *Session) StartDetached(ctx context.Context, spec DetachedSpec) (DetachedAgent, error) {
 	cfg := s.sb.Config
+	// every mount, the streams' directories (StartAgentArgs) among them,
+	// is checked before a pod is made: a refused one starts nothing
+	mounts, err := s.CheckedMounts(spec.Workspace)
+	if err != nil {
+		return DetachedAgent{}, err
+	}
+	for _, f := range []string{spec.StdinFile, spec.StdoutFile, spec.StderrFile} {
+		if f == "" {
+			continue
+		}
+		if err := s.org.Check("stream dir", filepath.Dir(f)); err != nil {
+			return DetachedAgent{}, err
+		}
+	}
 	s.mu.Lock()
 	started := s.started
 	s.started = nil
@@ -663,7 +827,7 @@ func (s *Session) StartDetached(ctx context.Context, spec DetachedSpec) (Detache
 		Name:           name,
 		Image:          cfg.Image,
 		Workdir:        spec.Workspace,
-		Mounts:         s.Mounts(spec.Workspace),
+		Mounts:         mounts,
 		Env:            s.Env(spec.Env),
 		Command:        spec.Command,
 		Limits:         cfg.Limits,
@@ -716,6 +880,7 @@ func (sb *Sandbox) WithStores(st Stores) *Sandbox {
 	if sb == nil {
 		return nil
 	}
+	sb.openSessions()
 	c := *sb
 	c.Config.Stores = st
 	return &c
@@ -822,12 +987,17 @@ func (s *Session) remove(ctx context.Context, pod Pod) {
 // anonymous volumes with it — and the session's HOME, and returns every
 // removal that failed, joined.
 //
-// A Detached session's Close removes nothing: its agent runs on.
+// A Detached session's Close removes nothing: its agent runs on. Either
+// way the session leaves the sandbox's open set (Sandbox.Live).
 func (s *Session) Close() error {
 	s.mu.Lock()
 	pods := append([]Pod(nil), s.pods...)
 	detached := s.detached
 	s.mu.Unlock()
+	set := s.sb.openSessions()
+	set.mu.Lock()
+	delete(set.m, s)
+	set.mu.Unlock()
 	if detached {
 		return nil
 	}

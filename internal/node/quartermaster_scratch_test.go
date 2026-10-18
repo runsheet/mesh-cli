@@ -150,10 +150,7 @@ func TestScratchCheckRunsTheSandboxSweepPeriodically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stale, err := sb.Open("item 2", "build", sandbox.GitIdentity{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	stale := leftHome(t, tmp)
 	rt.Running = []sandbox.Container{
 		{Name: "mesh-live-0-agent", Pod: "mesh-live-0", Running: true, Mounts: []string{live.Home}},
 		{Name: "mesh-live-0-infra", Pod: "mesh-live-0", Running: true, Infra: true},
@@ -171,8 +168,8 @@ func TestScratchCheckRunsTheSandboxSweepPeriodically(t *testing.T) {
 		t.Fatalf("Check() = %+v, want 1 finding", got)
 	}
 
-	if _, err := os.Lstat(stale.Home); !os.IsNotExist(err) {
-		t.Fatalf("the stale HOME %s is still there", stale.Home)
+	if _, err := os.Lstat(stale); !os.IsNotExist(err) {
+		t.Fatalf("the stale HOME %s is still there", stale)
 	}
 	if _, err := os.Lstat(live.Home); err != nil {
 		t.Fatalf("the running session's HOME went: %v", err)

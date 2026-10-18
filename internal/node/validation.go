@@ -268,7 +268,7 @@ func (vr validator) start(ctx context.Context, t validationTarget) (*buildValida
 			removeScratch()
 			return nil, fmt.Errorf("package store: %w", err)
 		}
-		s, err := osb.Open(t.label, "validate", git)
+		s, err := confineTo(osb, t.dir).Open(t.label, "validate", git)
 		if err != nil {
 			removeScratch()
 			return nil, err
@@ -324,6 +324,7 @@ func (r *Runner) validateBuild(ctx context.Context, b *buildRun, v *buildValidat
 		return att, nil
 	}
 	vf := &validationFailure{Step: failed}
+	b.rec.check(failed)
 	r.logf("item %s: %v; one more turn", b.label, vf)
 	b.report(ctx, vf.Error()+"; the builder gets one more turn")
 	res, runErr, ran := r.retryTurn(ctx, b, failed, att.Commit)
@@ -357,6 +358,7 @@ func (r *Runner) validateBuild(ctx context.Context, b *buildRun, v *buildValidat
 		return att, err
 	}
 	if failed, ok := failedStep(att); ok {
+		b.rec.check(failed)
 		return att, &validationFailure{Step: failed}
 	}
 	return att, nil
@@ -503,7 +505,9 @@ func (r *Runner) retryTurn(ctx context.Context, b *buildRun, failed validate.Ste
 	}
 	msg := harness.RetryTurnPrompt(harness.RetryTurn{Step: failed.Name, Command: failed.Command, ExitCode: failed.ExitCode, Output: failed.Output,
 		Branch: b.spec.Branch, HeadSHA: head, Acceptance: acceptance})
+	freshWhy := ""
 	fresh := func(why string) {
+		freshWhy = why
 		note := "session not resumed (" + why + "); fresh session with the failure"
 		r.logf("item %s: %s", b.label, note)
 		b.report(ctx, note)
@@ -519,7 +523,7 @@ func (r *Runner) retryTurn(ctx context.Context, b *buildRun, failed validate.Ste
 	done := r.noteRetryTurn(b.item.ID, turn.Resume)
 	defer func() { done() }()
 	b.cost.carry()
-	res, err = r.runTurn(ctx, b, turn)
+	res, err = b.recordedRun(turn, freshWhy, func() (harness.Result, error) { return r.runTurn(ctx, b, turn) })
 	if turn.Resume != "" && ctx.Err() == nil && res.SessionID == "" && (err != nil || !res.Success) {
 		// the agent never took the session up: the id is unknown to it
 		why := "the agent did not resume session " + sid
@@ -532,7 +536,7 @@ func (r *Runner) retryTurn(ctx context.Context, b *buildRun, failed validate.Ste
 		done()
 		done = r.noteRetryTurn(b.item.ID, "")
 		b.cost.carry()
-		res, err = r.runTurn(ctx, b, turn)
+		res, err = b.recordedRun(turn, freshWhy, func() (harness.Result, error) { return r.runTurn(ctx, b, turn) })
 	}
 	return res, err, true
 }

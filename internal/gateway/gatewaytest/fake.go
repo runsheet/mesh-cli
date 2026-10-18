@@ -61,6 +61,11 @@ type Fake struct {
 	// Credentials are CredentialIndex rows (runsheet trd §6i), served
 	// by credentialIndexs on org_id or enterprise_id; no secret.
 	Credentials []map[string]any
+	// Activity are MeshActivityIndex rows, served by meshActivityIndexs
+	// on work_item_id: a test seeds them, and every reportWorkItemProgress
+	// note (a hosted mesh_ask's `question: …` among them) appends one of
+	// kind progress.
+	Activity []map[string]any
 	// Documents by "org/project" → list rows; Bodies by "org/project/slug".
 	Documents map[string][]map[string]any
 	Bodies    map[string]string
@@ -1711,6 +1716,8 @@ func (f *Fake) table(name string) map[string]map[string]any {
 		return f.Agents
 	case "credentialIndexs":
 		return byID(f.Credentials)
+	case "meshActivityIndexs":
+		return byID(f.Activity)
 	case "orgIndexs":
 		return byID(f.Orgs)
 	}
@@ -1956,6 +1963,10 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		item["costCents"] = toInt(item["costCents"]) + toInt(in["costCents"])
 		if n, _ := in["note"].(string); n != "" {
 			item["lastNote"] = n
+			f.Activity = append(f.Activity, map[string]any{
+				"id": fmt.Sprintf("activity-%d", len(f.Activity)+1), "workItemId": id, "kind": "progress",
+				"summary": n, "at": f.now().UTC().Format(time.RFC3339Nano), "logSeq": len(f.Activity) + 1,
+			})
 		}
 		if s, _ := in["sessionId"].(string); s != "" {
 			item["sessionId"] = s

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,6 +58,10 @@ type ClaudeCode struct {
 	// the job's runsheet is the relay (MeshContextRelay, mesh-cli
 	// ADR-029); an adopted session's too, from its state's TokenFile.
 	Tokens TokenKeeper
+	// ScratchRoot is where a job with no work dir gets its session
+	// directory when the job's own env names no TMPDIR: the node's
+	// scratch root (node.ScratchRoot), never /tmp; empty is os.TempDir().
+	ScratchRoot string
 }
 
 // Name implements Harness.
@@ -291,7 +296,7 @@ func (c *ClaudeCode) runHost(ctx context.Context, job Job, onProgress func(Progr
 	if unit == nil {
 		unit = sessionunit.Default()
 	}
-	dir, files, err := openSessionDir(job)
+	dir, files, err := openSessionDir(job, c.ScratchRoot)
 	if err != nil {
 		return Result{}, fmt.Errorf("harness claude-code: session dir: %w", err)
 	}
@@ -384,10 +389,27 @@ func RemoveSession(workdir string) error {
 	dir := sessionunit.Dir(workdir)
 	if st, err := sessionunit.ReadState(dir); err == nil {
 		for _, d := range st.TempDirs {
-			os.RemoveAll(d)
+			removeTree(d)
 		}
 	}
 	return os.RemoveAll(dir)
+}
+
+// removeTree removes dir and everything in it, a read-only tree too: a
+// session's scratch (its TMPDIR) may hold a Go module cache, whose dirs
+// are read-only, which RemoveAll alone cannot delete from — a failed
+// first pass makes every dir writable and tries again.
+func removeTree(dir string) {
+	if dir == "" || os.RemoveAll(dir) == nil {
+		return
+	}
+	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			_ = os.Chmod(path, 0o700)
+		}
+		return nil
+	})
+	_ = os.RemoveAll(dir)
 }
 
 // follow reads a running (or ended) session in dir to its end: stderr
@@ -400,6 +422,30 @@ func RemoveSession(workdir string) error {
 // stops it. Every other end kills the unit once the output is
 // read, and res.Killed is what that kill (or the stop before it) found.
 func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, end *unitEnd, dir string, st *sessionunit.State, from int64, secrets []string, onProgress func(Progress), watch func(Event)) (res Result, detached bool, waitErr error, errBuf *bytes.Buffer, rawOut *capBuffer) {
+	var stderr io.Writer
+	if c.Stderr != nil {
+		stderr = &redactWriter{w: c.Stderr, secrets: secrets}
+	}
+	parse := func(r io.Reader, progress func(Progress), each func(sessionID string)) Result {
+		return parseClaude(r, progress, func(ev Event) {
+			if watch != nil {
+				watch(ev)
+			}
+			each(ev.SessionID)
+		})
+	}
+	return followUnit(ctx, parent, outlive, end, dir, st, from, stderr, onProgress, parse, c.ended)
+}
+
+// streamParser reads a session's stream to its end, passing progress
+// on and calling each after every event with the session id it named
+// ("" when none): Claude's parseClaude, Codex's parseCodexStream.
+type streamParser func(r io.Reader, progress func(Progress), each func(sessionID string)) Result
+
+// followUnit is follow for any agent's stream: stderr, when set, sees
+// the session's stderr as it is written, parse reads its output, and
+// endedWith puts the unit's kill report on the Result.
+func followUnit(ctx, parent context.Context, outlive bool, end *unitEnd, dir string, st *sessionunit.State, from int64, logErr io.Writer, onProgress func(Progress), parse streamParser, endedWith func(*unitEnd, Result) Result) (res Result, detached bool, waitErr error, errBuf *bytes.Buffer, rawOut *capBuffer) {
 	errBuf, rawOut = &bytes.Buffer{}, &capBuffer{max: 64 << 10}
 	readCtx, stopReading := context.WithCancel(context.Background())
 	defer stopReading()
@@ -423,8 +469,8 @@ func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, end *unit
 	alive := end.alive
 
 	var stderr io.Writer = errBuf
-	if c.Stderr != nil {
-		stderr = io.MultiWriter(&redactWriter{w: c.Stderr, secrets: secrets}, errBuf)
+	if logErr != nil {
+		stderr = io.MultiWriter(logErr, errBuf)
 	}
 	errDone := make(chan struct{})
 	if errFollow, err := sessionunit.Follow(readCtx, filepath.Join(dir, sessionunit.StderrFile), 0, alive); err == nil {
@@ -440,7 +486,7 @@ func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, end *unit
 	if err != nil {
 		end.kill()
 		<-errDone
-		return c.ended(end, Result{}), false, fmt.Errorf("output: %w", err), errBuf, rawOut
+		return endedWith(end, Result{}), false, fmt.Errorf("output: %w", err), errBuf, rawOut
 	}
 	defer out.Close()
 	progress := onProgress
@@ -453,17 +499,14 @@ func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, end *unit
 			}
 		}
 	}
-	res = parseClaude(io.TeeReader(out, rawOut), progress, func(ev Event) {
-		if watch != nil {
-			watch(ev)
-		}
+	res = parse(io.TeeReader(out, rawOut), progress, func(sessionID string) {
 		if out.Offset() <= st.Offset {
 			return
 		}
 		// the offset read and reported so far, after every event, so a
 		// node that adopts reports nothing twice
-		if ev.SessionID != "" && st.SessionID == "" {
-			st.SessionID = ev.SessionID
+		if sessionID != "" && st.SessionID == "" {
+			st.SessionID = sessionID
 		}
 		st.Offset = out.Offset()
 		_ = sessionunit.WriteState(dir, *st)
@@ -481,7 +524,7 @@ func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, end *unit
 		_ = sessionunit.WriteState(dir, *st)
 	}
 	end.kill()
-	return c.ended(end, res), false, waitErr, errBuf, rawOut
+	return endedWith(end, res), false, waitErr, errBuf, rawOut
 }
 
 // unitEnd is a session's unit killed once, whichever end comes first — a
@@ -558,15 +601,28 @@ func (f sessionFiles) close() {
 }
 
 // openSessionDir makes the job's session directory, `<workdir>.session`
-// (a temporary one for a job with no work dir), fresh: the output and
+// (a temporary one for a job with no work dir — under the job's own
+// TMPDIR, else scratchRoot, else os.TempDir() — removed when Run
+// returns), fresh: the output and
 // stderr files empty, and the prompt in a file unlinked at once, which
 // the session reads on stdin — never on a pipe the node's exit would
 // break, and never left on disk.
-func openSessionDir(job Job) (string, sessionFiles, error) {
+func openSessionDir(job Job, scratchRoot string) (string, sessionFiles, error) {
 	var f sessionFiles
 	var dir string
 	if job.Workspace == "" {
-		d, err := os.MkdirTemp("", "mesh-session-*")
+		root := scratchRoot
+		for _, kv := range job.Env {
+			if v, ok := strings.CutPrefix(kv, "TMPDIR="); ok && v != "" {
+				root = v
+			}
+		}
+		if root != "" {
+			if err := os.MkdirAll(root, 0o700); err != nil {
+				return "", f, err
+			}
+		}
+		d, err := os.MkdirTemp(root, "mesh-session-*")
 		if err != nil {
 			return "", f, err
 		}
@@ -632,7 +688,7 @@ func (job Job) state(runner string, h sessionunit.Handle, harness string) sessio
 		Attempt: job.Meta.Attempt, Kind: string(job.Kind), Label: job.Label, Model: job.Model, Account: acct,
 		Harness: harness, Runner: runner, PID: h.PID, Unit: h.UnitName, Workspace: job.Workspace,
 		StartedAt: time.Now().UTC(), TimeoutSeconds: int(job.Timeout / time.Second), MaxBudgetUSD: job.MaxBudgetUSD,
-		TempDirs: job.Meta.TempDirs, TokenFile: job.tokenFile,
+		TempDirs: job.Meta.TempDirs, TokenFile: job.tokenFile, LoginCache: job.Meta.LoginCache,
 	}
 }
 
@@ -750,6 +806,9 @@ func parseClaude(stdout io.Reader, onProgress func(Progress), after func(Event))
 		case "assistant":
 			if t := ev.Text(); t != "" {
 				onProgress(Progress{Text: t, SessionID: ev.SessionID})
+			}
+			for _, call := range ev.WorkCalls() {
+				onProgress(Progress{WorkCall: &call})
 			}
 		case "system":
 			if ev.Subtype == "init" && ev.SessionID != "" {

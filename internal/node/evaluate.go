@@ -18,6 +18,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
+	"projectmesh.io/mesh-cli/internal/tripline"
 )
 
 // Evaluator is the second fresh session an item gets on the node
@@ -41,6 +42,8 @@ type Evaluator struct {
 	// unused for them. Nil keeps WorkRoot for every org.
 	Roots    *OrgRootSet
 	WorkRoot string
+	// BuildCache is a host session's GOCACHE; "" is BuildCacheDir().
+	BuildCache string
 	// MCP are the MCP servers the session gets (runsheet).
 	MCP map[string]any
 	// MaxBudgetUSD caps the review session (3 by default).
@@ -74,7 +77,10 @@ type Evaluator struct {
 	Codex harness.Harness
 	// CodexPreflight checks, before any Codex session starts, that the
 	// session's job reaches the built-in context server (the Codex
-	// harness's Preflight; nil: no check). A failure moves an unpinned
+	// harness's Preflight; nil: no check). On a sandboxed node the job
+	// carries the evaluation's pod (job.Session), opened before it, so
+	// the preflight runs in the pod the session then runs in, with its
+	// HOME and env (ADR 007, ADR 011). A failure moves an unpinned
 	// evaluation to Claude, keeps a pinned one waiting in evaluating, and
 	// makes a Codex second opinion unavailable.
 	CodexPreflight func(ctx context.Context, job harness.Job) error
@@ -117,6 +123,9 @@ type Evaluator struct {
 	// runtime the node lacks, so the loop does not try it again (nil:
 	// not remembered).
 	Declines *Declines
+	// Tripline reports the node's failure classes to Tripline (ADR-034,
+	// a node reports its errors to Tripline); nil reports nothing.
+	Tripline *tripline.Reporter
 	// RuntimeBroken is told the error when a session's pod could not
 	// start on a broken container runtime (a *sandbox.RuntimeError) and
 	// its work was handed back runtime_broken; nil tells no one.
@@ -328,7 +337,11 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	model := fam.model
 	budget, budgetSource := e.budgetWithSource(res.Goal, model)
 	e.logf("item %s: evaluate budget $%.2f (%s)", label, budget, budgetSource)
-	job := harness.Job{Kind: harness.KindEvaluate, Workspace: dir, Prompt: harness.EvaluatePrompt(in), MaxBudgetUSD: budget, Label: label + " evaluate", Timeout: e.Timeout, MCPServers: e.MCP, Model: model}
+	kept, err := keptRootFor(e.Roots, e.Scopes, item.OrgID)
+	if err != nil {
+		return err
+	}
+	job := harness.Job{Kind: harness.KindEvaluate, Workspace: dir, Prompt: harness.EvaluatePrompt(in), MaxBudgetUSD: budget, Label: label + " evaluate", Timeout: e.Timeout, MCPServers: e.MCP, Model: model, KeptRoot: kept}
 	if tok := cred.Token(); tok != nil {
 		ghDir, err := NewGHConfigDir()
 		if err != nil {
@@ -339,6 +352,17 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		defer unlessDetached(ctx, func() { os.RemoveAll(ghDir) })
 		job.Env = SessionEnv(tok, ghDir)
 	}
+	// the session's own scratch as its TMPDIR, gone with the session
+	// (sessionScratch); a detached one's by the node that ends it
+	scratchRoot, err := scratchRootFor(e.Roots, e.Scopes, item.OrgID, e.WorkRoot)
+	if err != nil {
+		return err
+	}
+	scratch, err := sessionScratch(e.Sandbox, scratchRoot, e.BuildCache, harness.KindEvaluate, item.ID, &job)
+	if err != nil {
+		return err
+	}
+	defer unlessDetached(ctx, func() { RemoveScratch(scratch) })
 	sc, _ := e.Scopes.ByOrg(item.OrgID)
 	ref := gateway.SessionRef{Kind: string(harness.KindEvaluate), ItemID: item.ID, GoalID: item.GoalID}
 	ctx = withSubject(ctx, sc, cmp.Or(item.ProjectID, res.Project.ID), res.Project.Slug)
@@ -348,17 +372,42 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	}
 	// whichever account the session ends on (a failed preflight swaps it)
 	defer unlessDetached(ctx, func() { acct.Cleanup() })
+	runtimes := e.runtimes()
+	// the checkout's services, started in the session's pod before the
+	// evaluator — and before a Codex preflight, which runs in this pod
+	// so it proves what the session will see (ADR 007, ADR 011); the pod
+	// and its sidecars go on every way out. An item
+	// in evaluating can be neither released nor reported on: a required
+	// service that does not come up leaves it unevaluated, and the loop
+	// does not try again while that holds; a missing optional one is in
+	// the verdict's notes.
+	pod, err := openOrgSessionPod(ctx, e.Sandbox, e.Roots, e.Scopes, item.OrgID, dir, job.Label, harness.KindEvaluate, sandbox.GitIdentity{}, e.logf)
+	defer pod.Close() // nothing, once the harness detached the session (Session.Detach)
+	if re := RuntimeErrorOf(err); re != nil {
+		return e.runtimeNoVerdict(ctx, evalRun{item: item, res: res, label: label, model: model, fam: fam, dir: dir, acct: acct}, re, harness.Result{})
+	}
+	if err != nil {
+		return fmt.Errorf("services: %w", err)
+	}
+	if _, failed := pod.RequiredFailure(); failed {
+		reason := pod.ReleaseReason()
+		e.Declines.Record(item.ID, pod.Declined(), runtimes, time.Now())
+		e.logf("item %s: not evaluated, %s", label, reason)
+		return fmt.Errorf("not evaluated, %s", reason)
+	}
+	if note := pod.MissingNote(); note != "" {
+		e.logf("item %s: %s", label, note)
+	}
 	base := job
 	base.Env = slices.Clone(job.Env)
 	var second harness.Job
 	var st SessionTools
-	runtimes := e.runtimes()
 	preflight := ""
 	for {
 		job = base
 		job.Env = slices.Clone(base.Env)
 		model, job.Model = fam.model, fam.model
-		job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts, TempDirs: sessionTempDirs(job, acct)}
+		job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts, TempDirs: sessionTempDirs(job, acct), LoginCache: acct.loginCache()}
 		// the second opinion's job: the same brief, none of the first
 		// session's account and none of the pod's services (Codex runs on
 		// the host; a Claude second opinion opens its own account)
@@ -383,7 +432,9 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		// a Codex session that cannot reach the context server would judge
 		// blind: it does not start, and a tool failure never becomes a
 		// verdict (ADR 011, the preflight)
-		why := e.preflight(ctx, job, acct)
+		pf := job
+		pod.Apply(&pf)
+		why := e.preflight(ctx, pf, acct)
 		if why == "" {
 			e.Waits.Forget(preflightKey(item.ID))
 			break
@@ -412,29 +463,6 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	if note := st.OmittedNote(); note != "" {
 		e.logf("item %s: %s", label, note)
 	}
-	// the checkout's services, started in the session's pod before the
-	// evaluator; the pod and its sidecars go on every way out. An item
-	// in evaluating can be neither released nor reported on: a required
-	// service that does not come up leaves it unevaluated, and the loop
-	// does not try again while that holds; a missing optional one is in
-	// the verdict's notes.
-	pod, err := openOrgSessionPod(ctx, e.Sandbox, e.Roots, e.Scopes, item.OrgID, dir, job.Label, harness.KindEvaluate, sandbox.GitIdentity{}, e.logf)
-	defer pod.Close() // nothing, once the harness detached the session (Session.Detach)
-	if re := RuntimeErrorOf(err); re != nil {
-		return e.runtimeNoVerdict(ctx, evalRun{item: item, res: res, label: label, model: model, fam: fam, dir: dir, acct: acct}, re, harness.Result{})
-	}
-	if err != nil {
-		return fmt.Errorf("services: %w", err)
-	}
-	if _, failed := pod.RequiredFailure(); failed {
-		reason := pod.ReleaseReason()
-		e.Declines.Record(item.ID, pod.Declined(), runtimes, time.Now())
-		e.logf("item %s: not evaluated, %s", label, reason)
-		return fmt.Errorf("not evaluated, %s", reason)
-	}
-	if note := pod.MissingNote(); note != "" {
-		e.logf("item %s: %s", label, note)
-	}
 	pod.Apply(&job)
 	in.Services = pod.Prompt()
 	job.Prompt = harness.EvaluatePrompt(in)
@@ -444,12 +472,12 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		e.logf("item %s: evaluate on %s: %s (%d bytes of diff)", label, fam.logName(), branch, len(diff))
 	}
 	h := e.Harness
+	// the session outlives this process: a restart adopts it (ADR 009) —
+	// a Codex one in its pod on a sandboxed node, by its state's adapter
+	// (AdoptEvaluation); Codex on the host still ends with the node
+	job.Outlive = !fam.codex || e.Sandbox != nil
 	if fam.codex {
-		// a Codex session still ends with the node
 		h = e.Codex
-	} else {
-		// the session outlives this process: a restart adopts it (ADR 009)
-		job.Outlive = true
 	}
 	result, err := h.Run(ctx, job, nil)
 	// the usage report rides the verdict (afterEvaluate); Finish logs it
@@ -930,7 +958,14 @@ func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, 
 	if err != nil {
 		return fmt.Errorf("resolve: %w", err)
 	}
-	at, ok := e.Harness.(harness.Attacher)
+	// the harness the session ran on, by its state's adapter: a Codex
+	// pod session's stream is Codex's (ADR 009)
+	h, fam := e.Harness, family{model: s.State.Model, claude: s.State.Model}
+	if s.State.Harness == AdapterCodex {
+		h = e.Codex
+		fam = family{codex: true, model: s.State.Model, claude: EvaluateModel(ctx, e.GW, item, e.Model), priority: res.Goal.Priority}
+	}
+	at, ok := h.(harness.Attacher)
 	if !ok {
 		stopFound(e.logf, "item "+item.ID, s)
 		s.Remove()
@@ -938,10 +973,10 @@ func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, 
 	}
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
 	ctx = WithLockHolder(ctx, label)
-	e.logf("item %s: adopted its %s evaluation (pid %d)", label, s.Liveness(), s.State.PID)
+	e.logf("item %s: adopted its %s evaluation on %s (pid %d)", label, s.Liveness(), fam.logName(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
 	changed, cfg := e.touched(ctx, label, s.State.Workspace, res.BaseRef(), defaultBranchOf(res), item.Outcome == gateway.OutcomeAlreadyDone)
-	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: s.State.Model, fam: family{model: s.State.Model, claude: s.State.Model}, dir: s.State.Workspace, adopted: true, prior: e.priorAttempts(ctx, item, label), changed: changed, setting: cfg.setting(), protected: cfg.ProtectedPaths}, result, err)
+	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: s.State.Model, fam: fam, dir: s.State.Workspace, adopted: true, prior: e.priorAttempts(ctx, item, label), changed: changed, setting: cfg.setting(), protected: cfg.ProtectedPaths}, result, err)
 }
 
 // opinion is the second evaluation's outcome: its verdict and notes, or
@@ -1028,9 +1063,13 @@ func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, jo
 		op.unavailable = fmt.Sprintf("the session ran out of time (%s)", e.Timeout)
 	case err != nil:
 		op.unavailable = truncate(acct.Redact(harness.Redact(err.Error(), job.Secrets...)), 300)
+		if _, ok := harness.AsUnavailable(err); ok {
+			reportFailure(e.Tripline, tripline.HarnessUnavailable, errors.New(op.unavailable), ev.item, label, repoOf(ev.res), gateway.RoleEvaluator)
+		}
 	default:
 		if result.SandboxBroken != "" {
 			op.unavailable = "sandbox broken (" + acct.Redact(harness.Redact(result.SandboxBroken, job.Secrets...)) + ")"
+			reportFailure(e.Tripline, tripline.SandboxBroken, errors.New(op.unavailable), ev.item, label, repoOf(ev.res), gateway.RoleEvaluator)
 			break
 		}
 		if blind, broken := e.toolBroken(result, acct, false); broken {
@@ -1644,6 +1683,7 @@ func (e *Evaluator) releaseInfrastructure(ctx context.Context, item gateway.Work
 		e.logf("item %s: not evaluated, the node's condition; left in evaluating", label)
 	}, e.logf)
 	if ctx.Err() == nil {
+		reportFailure(e.Tripline, tripline.Infrastructure, err, item, label, we.Repo, gateway.RoleEvaluator)
 		holdInfrastructure(e.Declines, item.ID, label, we, e.logf)
 	}
 	return err

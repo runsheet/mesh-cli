@@ -35,6 +35,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/selfupdate"
 	"projectmesh.io/mesh-cli/internal/sessionunit"
+	"projectmesh.io/mesh-cli/internal/tripline"
 	"projectmesh.io/mesh-cli/internal/version"
 )
 
@@ -387,11 +388,13 @@ var nodeStatusCmd = &cobra.Command{
 		local, draining := localNodeState(state)
 		fmt.Println(local)
 		fmt.Println(takesStatusLine(cfg))
+		fmt.Println(reportingStatusLine(cfg))
 		fmt.Println(hostConfigLine(cfg.Host))
 		if line, ok := attestationsStatusLine(state, time.Now()); ok {
 			fmt.Println(line)
 		}
 		fmt.Println(cacheStatusLine(state, cfg.ValidationCacheCap()))
+		fmt.Println(cacheSizeStatusLine(state))
 		scaling, scales := localScaling(state)
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "ORG\tNAME\tSLUG\tSTATUS\tRUNNING\tCAPACITY\tVERSION\tLAST_SEEN")
@@ -594,6 +597,13 @@ func takesStatusLine(cfg *node.Config) string {
 	return "Takes: " + cfg.Takes.String()
 }
 
+// reportingStatusLine is `mesh node status`'s line saying whether this
+// node reports its failures to Tripline, node.ReportingStatusLine: "on
+// (tripline <host>)", never the DSN's key.
+func reportingStatusLine(cfg *node.Config) string {
+	return node.ReportingStatusLine(cfg)
+}
+
 // hostConfigLine is `mesh node status`'s `host:` line: the thresholds
 // node.yaml's `host:` block is in force with, defaults applied
 // (HostConfig.Effective), so what judges the host hot is visible beside
@@ -642,6 +652,24 @@ func cacheStatusLine(state node.RunState, cap int64) string {
 	}
 	return fmt.Sprintf("validation cache: %d%% hits (%d/%d), %s of %s",
 		hits*100/lookups, hits, lookups, node.FormatBytes(size), node.FormatBytes(cap))
+}
+
+// cacheSizeStatusLine is `mesh node status`'s line for the cache root's
+// size against its cap and the scratch root's size, as the node's last
+// CacheTrim reading left them in node.cachesize — `cache: 4.2 GiB of
+// 20.0 GiB (/home/u/.cache/mesh/cache); scratch 1.0 GiB
+// (/home/u/.mesh/work/.scratch); measured 2026-10-17T18:00:00Z` — and
+// `cache: size unknown (no reading yet)` before the first.
+func cacheSizeStatusLine(state node.RunState) string {
+	r, ok := state.CacheSize()
+	if !ok {
+		return "cache: size unknown (no reading yet)"
+	}
+	line := fmt.Sprintf("cache: %s of %s (%s)", node.FormatBytes(r.Bytes), node.FormatBytes(r.Cap), r.Root)
+	if r.ScratchRoot != "" {
+		line += fmt.Sprintf("; scratch %s (%s)", node.FormatBytes(r.ScratchBytes), r.ScratchRoot)
+	}
+	return line + "; measured " + r.At.UTC().Format(time.RFC3339)
 }
 
 // localScaling is the capacity the node on this machine has in force
@@ -981,6 +1009,27 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 	}
 	scopes, owned := reg.Scopes, reg.Owned
 
+	// the node's failure classes go to Tripline when node.yaml (or
+	// MESH_TRIPLINE_DSN) names a dsn; ~/.mesh/token's secrets and the
+	// bearer are literals the scrubber never sends (ADR-034)
+	trip := cfg.Tripline
+	trip.Secrets = append([]string(nil), trip.Secrets...)
+	if home, err := os.UserHomeDir(); err == nil {
+		if b, err := os.ReadFile(filepath.Join(home, ".mesh", "token")); err == nil {
+			trip.Secrets = append(trip.Secrets, tripline.TokenFileSecrets(b)...)
+		}
+	}
+	if bearer, err := gw.Bearer(ctx); err == nil && bearer != "" {
+		trip.Secrets = append(trip.Secrets, bearer)
+	}
+	reporter, err := tripline.New(trip, cfg.Slug, version.Resolved())
+	if err != nil {
+		logger.Printf("%v; tripline reporting off", err)
+		reporter = nil
+	}
+	logger.Print(node.ReportingStartLine(reporter))
+	defer reporter.Flush(5 * time.Second)
+
 	// every session's plan standing lands in Limits: the heartbeat
 	// carries it and the loop paces by it
 	loop := &node.Loop{GW: gw, Cfg: cfg, Scopes: scopes, Owned: owned, ClaimsDir: node.ClaimsDir(workRoot), WorkRoot: workRoot, Version: version.Resolved(), Commit: version.Commit(), Harness: "claude-code", Interval: nodeIntervalFlag, Log: logger, Limits: &node.Limits{},
@@ -1240,7 +1289,7 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 		rs := st.Resumes()
 		resumes = &rs
 	}
-	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return meshContextMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, BatchFallback: &node.TokenFallback{}, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, RuntimeBroken: loop.NoteRuntimeBroken, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Sandbox: sessionSandbox, MeshBinary: meshBinary(), State: state, Notices: validationNotices, Machine: loop.Machine, Host: loop.HostThresholds, RetryTurns: loop.NoteRetryTurn, Resumes: resumes, Bearers: sessionBearers, Log: logger}
+	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return meshContextMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, BatchFallback: &node.TokenFallback{}, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, RuntimeBroken: loop.NoteRuntimeBroken, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Sandbox: sessionSandbox, MeshBinary: meshBinary(), State: state, Notices: validationNotices, Machine: loop.Machine, Host: loop.HostThresholds, RetryTurns: loop.NoteRetryTurn, Resumes: resumes, Tripline: loop.Tripline, Bearers: sessionBearers, Log: logger}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		r := *runner
 		r.Scopes = loop.CurrentScopes() // an org served since start is known to its build
@@ -1267,6 +1316,10 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 	// adopts is swept; an adopted one's pod and HOME are kept (ADR-007's
 	// amendment, ADR 009)
 	node.SweepSandbox(ctx, sessionSandbox, found, logger.Printf)
+	// and what a killed node's host sessions left of their scratch, on
+	// every node: the scratch root's dirs and the node's own /tmp dirs no
+	// adopted session names
+	sweepScratch(workRoot, found, logger)
 	// plan and research claims it held but had not opened are taken again
 	reopenClaims(ctx, loop, workRoot, found, logger)
 	// items this node held when it last stopped are taken up again: a
@@ -1649,8 +1702,9 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	// one per node: the evaluations of every tick and the adopted ones
 	// share what has been said once per item
 	second := codexSecondOpinion(cfg, loop, workRoot, logger)
-	found := adoptSessions(ctx, gw, cfg, oneShot, second, loop, &node.Runner{GW: gw, Harness: oneShot, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, RuntimeBroken: loop.NoteRuntimeBroken, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Machine: loop.Machine, Host: loop.HostThresholds, Bearers: sessionBearers, Log: logger}, workRoot, fallback, accounts, logger)
+	found := adoptSessions(ctx, gw, cfg, oneShot, second, loop, &node.Runner{GW: gw, Harness: oneShot, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, RuntimeBroken: loop.NoteRuntimeBroken, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Machine: loop.Machine, Host: loop.HostThresholds, Tripline: loop.Tripline, Bearers: sessionBearers, Log: logger}, workRoot, fallback, accounts, logger)
 	node.SweepSandbox(ctx, sessionSandbox, found, logger.Printf)
+	sweepScratch(workRoot, found, logger)
 	loop.Evaluate = evaluateWith(gw, cfg, observed(loop, logger), second, loop, workRoot, fallback, accounts, logger)
 	mainRunner := &node.Runner{GW: gw, WS: ws, RuntimeBroken: loop.NoteRuntimeBroken, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, BatchFallback: &node.TokenFallback{}, Sandbox: sessionSandbox, Notices: validationNotices, Log: logger}
 	// a pushed commit is validated from GitHub's served diff through the
@@ -1659,6 +1713,13 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 		logger.Printf("served diff: %v; main validations take worktrees", err)
 	} else {
 		mainRunner.ServedDiff(&gitdata.Client{}, cache)
+		// the same cache, Go build cache included, measured and trimmed
+		// under its cap at the first tick and hourly after
+		trim := &node.CacheTrim{Cache: cache, State: cache.State, Logf: logger.Printf}
+		if root, err := node.ScratchRoot(workRoot); err == nil {
+			trim.ScratchRoot = root
+		}
+		loop.CacheTrim = trim
 	}
 	loop.ValidateBatch = mainRunner.ValidateCandidate
 	loop.ValidateMain = mainRunner.ValidateMainRequest
@@ -1852,6 +1913,15 @@ func nodeQuartermaster(gw node.Gateway, loop *node.Loop, workRoot, tempDir strin
 		scratch.Check,
 		node.DeadCheckoutCheck(gw, &node.Git{Log: sessionsOut}, workRoot, loop.LiveCheckout),
 		node.VersionCheck(loop),
+		// every served org's kept session streams, swept whether or not
+		// a Codex session of that org starts again (ADR-034)
+		node.KeptSessionsCheck(func() *node.OrgRootSet {
+			roots, err := node.NewOrgRootSetFor(loop.CurrentScopes())
+			if err != nil {
+				return nil
+			}
+			return roots
+		}, workRoot),
 	}}
 }
 
@@ -1889,6 +1959,17 @@ func tokenKeeper() harness.TokenKeeper {
 
 // sessionSandbox is the pod every one-shot session runs in (OpenSandbox);
 // nil runs it on the host, as `sandbox: off` does.
+// sweepScratch is the start-up scratch sweep (node.SweepScratch) of
+// workRoot's scratch root and os.TempDir(), keeping what found names.
+func sweepScratch(workRoot string, found []node.FoundSession, logger *log.Logger) {
+	root, err := node.ScratchRoot(workRoot)
+	if err != nil {
+		logger.Printf("scratch: sweep at start: %v", err)
+		return
+	}
+	node.SweepScratch(node.ScratchSweep{Roots: []string{root}, Sandboxed: sessionSandbox != nil, Found: found, InUse: node.WorkspaceLive}, logger.Printf)
+}
+
 var sessionSandbox *sandbox.Sandbox
 
 // oneShotHarness is `claude -p` for a session that ends with its turn:
@@ -1897,6 +1978,11 @@ func oneShotHarness() *harness.ClaudeCode {
 	// a sandboxed session's agent runs detached in its pod and outlives
 	// the node like a host one: the next node adopts it (ADR 009)
 	h := &harness.ClaudeCode{Stderr: sessionsOut, Sandbox: sessionSandbox, MeshBinary: meshBinary(), DetachSandboxed: sessionSandbox != nil, Tokens: tokenKeeper()}
+	// a job with no work dir keeps its session dir in the node's scratch
+	// root, never /tmp
+	if root, err := node.ScratchRoot(""); err == nil {
+		h.ScratchRoot = root
+	}
 	if nodeUnattended {
 		h.ExtraArgs = []string{"--dangerously-skip-permissions"}
 	}
@@ -2023,7 +2109,7 @@ func codexSecondOpinionFrom(src codexSource, loop *node.Loop, workRoot string, l
 	if !src.Built() {
 		return secondOpinion{blind: &node.OncePer{}, noVerdict: &node.OncePer{}, left: &node.LeftRunning{}}
 	}
-	c := &harness.Codex{Binary: src.Binary, Sandbox: src.Sandbox, Stderr: sessionsOut, WorkRoot: workRoot, Tokens: tokenKeeper()}
+	c := &harness.Codex{Binary: src.Binary, Sandbox: src.Sandbox, DetachSandboxed: src.Sandbox != nil, Stderr: sessionsOut, WorkRoot: workRoot, Tokens: tokenKeeper()}
 	if c.Binary == "" {
 		c.Binary = "codex"
 	}
@@ -2106,7 +2192,7 @@ func researchWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, loop 
 }
 
 func evaluator(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, second secondOpinion, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) *node.Evaluator {
-	return &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: loop.CurrentScopes(), WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Sandbox: sessionSandbox, Log: logger,
+	return &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: loop.CurrentScopes(), WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Sandbox: sessionSandbox, Tripline: loop.Tripline, Log: logger,
 		Codex: second.h, CodexPreflight: second.preflight, CodexModel: cfg.Codex.CodexModel, CodexAccounts: second.accounts, Waits: second.waits, Blind: second.blind, NoVerdict: second.noVerdict, Splits: &node.OncePer{}, LeftRunning: second.left, Limits: second.limits, Thresholds: second.thresholds}
 }
 
@@ -2115,15 +2201,15 @@ func evaluator(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harn
 var validationNotices = &node.ValidationNotices{}
 
 func rebaser(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, scopes func() node.Scopes, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) *node.Rebaser {
-	return &node.Rebaser{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes(), WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeRebaseBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("rebase"), Fallback: fallback, Credentials: accounts, Sandbox: sessionSandbox, Notices: validationNotices, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Log: logger}
+	return &node.Rebaser{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes(), WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeRebaseBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("rebase"), Fallback: fallback, Credentials: accounts, Sandbox: sessionSandbox, Notices: validationNotices, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Tripline: loop.Tripline, Log: logger}
 }
 
 func planner(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, workRoot string, accounts *node.Credentials, logger *log.Logger) *node.Planner {
-	return &node.Planner{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodePlanBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.PlanModel(), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Log: logger}
+	return &node.Planner{GW: gw, Harness: h, Sandbox: sessionSandbox, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodePlanBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.PlanModel(), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Log: logger}
 }
 
 func director(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, workRoot string, accounts *node.Credentials, logger *log.Logger) *node.Director {
-	return &node.Director{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeResearchBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("research"), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Log: logger}
+	return &node.Director{GW: gw, Harness: h, Sandbox: sessionSandbox, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeResearchBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("research"), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Log: logger}
 }
 
 // adoptSessions takes up, before the first claim, every session under the

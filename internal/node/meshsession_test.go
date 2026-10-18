@@ -13,6 +13,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 )
 
 const (
@@ -242,6 +243,9 @@ func TestRunItemOnTwoOrgsWithoutMeshSessionsReleases(t *testing.T) {
 	h := &fakeHarness{}
 	r, _, item, row := runnerOnFake(t, f, h, nil)
 	r.Scopes = append(r.Scopes, Scope{Login: "beta", ID: orgB, NodeID: nodeB})
+	// sandboxed, so the host fallback's own refusal of a second org
+	// (sandbox_required) is not what stops it
+	r.Sandbox = &sandbox.Sandbox{Runtime: &sandbox.Fake{}, Config: sandbox.Config{Image: "ghcr.io/runsheet/mesh-node:v1"}, TempDir: t.TempDir()}
 	r.Bearers = &SessionBearers{GW: gateway.New(f.URL(), machine), Tokens: &TokenFiles{Token: func(context.Context) (string, error) { return machine, nil }}, Orgs: func() int { return len(r.Scopes) }}
 	var buf bytes.Buffer
 	r.Log = log.New(&buf, "", 0)

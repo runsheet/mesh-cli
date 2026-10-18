@@ -178,7 +178,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `mesh_fail(item_id, error)` — on `runsheet` (BuildPrompt's
   `# Finish by tool call`): the harness keeps each mesh-work tool's input
   (`tools.IsWorkTool`: mesh_finish, mesh_fail, mesh_verdict, mesh_plan,
-  mesh_progress) on `Result.WorkCalls` by tool name, from Claude's
+  mesh_progress, mesh_ask; each call also reaches the node as it is made
+  on `harness.Progress.WorkCall`, input byte-equal) on `Result.WorkCalls` by tool name, from Claude's
   `tool_use` and Codex's `mcp_tool_call` alike, and `Runner.afterBuild`
   takes a `mesh_finish` call as the finish whatever the final message
   says (`finishCallOf`; the node still pushes and hands in the head it
@@ -535,7 +536,23 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   Each retry turn is `Loop.NoteRetryTurn`'d: the heartbeat's `resumed
   [{itemId, kind, sessionId, fresh}]` (`takesResumed`) and one session
   in `Loop.Running`, each item once. `internal/node/resume_e2e_test.go`
-  runs it end to end.
+  runs it end to end. Beside `record.json` each item keeps
+  `record.jsonl` (`ResumeStore.AppendRecord`, `recordwrite.go`'s
+  `recorder`): `{at, kind, text}` lines — `note` (every `mesh_progress`),
+  `question`/`answer`, `check` (a failed step, exit and last 20 lines),
+  `handback`, `turn` (start, end, a hand-back or ask with no `state:`
+  note) — appended, never rewritten, no secret; `ItemRecord` reads it
+  under `RecordBudget` (6,000), oldest whole entries dropped, the first
+  turn kept, `Runner.itemRecord` falling back to the platform's
+  `MeshActivityIndex` rows (`ItemActivity`). A fresh fallback's prompt
+  (`freshRetryPrompt`, both the not-resumable and unknown-session paths)
+  puts `recordSections(freshContext)` — `# What earlier sessions did`
+  (`<at> <kind>: <text>`, the dropped count), `# What the branch holds`
+  (`BranchState`: commits and diff stat past base, the default branch
+  when it is gone) and one continue line — between the brief and the
+  failure; a resumed turn gets neither; logged `item <label>: fresh
+  session with the item's record (N entries, M commits)` or `fresh
+  session with no record (<why>)` (ADR-030's amendment 2026-10).
 - **A death names itself** (`internal/crash/`): `defer crash.Guard()`
   at the top of `mesh node start` and of every goroutine the node
   starts turns a panic into one node.log line, `mesh node: fatal:
@@ -714,7 +731,15 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   containers and HOMEs (`sandbox.SweepKeeping`), and `LiveProbe.Sandbox`
   counts a sandboxed build by its container.
   `sandboxed_swap_e2e_test.go` proves an upgrade mid sandboxed build
-  finishing on the new node. Codex sessions still end with the node.
+  finishing on the new node. A Codex evaluation on a sandboxed node is
+  `Outlive` the same way (`Codex.DetachSandboxed`, `Codex.runDetached`):
+  `state.json` names `harness: codex`, the pod, container and HOME and
+  the login's `loginFile`/`loginCache` paths (`SessionMeta.LoginCache`,
+  the credential's `CodexLoginCache`), `Codex.Attach` follows the
+  container and parses the Codex stream, writes a refreshed `auth.json`
+  back and removes the pod and HOME, and `AdoptEvaluation` routes by the
+  state's adapter (`TestCodexPodSessionAdopted`); a host Codex session
+  still ends with the node.
   **Claims outlive the node too** (`claims.go`, ADR-009
   Claims): a plan or research claim is recorded as a `ClaimRecord` in
   `<root>/.claims/` (`Loop.ClaimsDir`) the moment it is granted and
@@ -910,6 +935,44 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   released: <reason>`; a silent build on a host not overloaded runs on.
   A claim lost while the host is overloaded names it in `afterLost`'s
   line, `claim lost (item is ready; host overloaded: …)`.
+- **A host session's scratch dies with the session** (ADR-036,
+  `docs/adr/adr-036-a-host-sessions-scratch-dies-with-the-session.md`,
+  `internal/node/scratch.go`, `scratchsweep.go`, `cachetrim.go`): no
+  unsandboxed session or validation writes into the node process's
+  /tmp. Each host validation gets `MakeScratch(ScratchRoot(workRoot),
+  "validate", <item|batch>)`, `<work root>/.scratch/validate-<subject>-<rand>`,
+  set once by `hostValidationEnv`/`scratchEnv` as TMPDIR and GOTMPDIR
+  and removed by `buildValidation.close` (`RemoveScratch`, which chmods
+  read-only module dirs and retries). Each host build, evaluation, plan,
+  rebase and research session gets `sessionScratch`,
+  `<scratch root>/<kind>-<subject>-<rand>` under its org's root
+  (`scratchRootFor`), carried into `SessionMeta.TempDirs`
+  (`sessionTempDirs`), so `harness.RemoveSession` removes it on every
+  end, adopted or given up included. A no-workspace Claude Code session's
+  `mesh-session-*` dir goes under the job's TMPDIR, else
+  `ClaudeCode.ScratchRoot`. Every one shares GOCACHE
+  `BuildCacheDir()` = `<user cache dir>/mesh/cache/go` under the cache
+  root, held under node.yaml's **`validation_cache_max_bytes`** (default
+  20 GiB). `Loop.CacheTrim` (`CacheTrim.RunIfDue`, first tick then
+  hourly) trims an over-cap root below 80% of the cap
+  (`SharedCache.Trim`: LRU entries, then `go clean -cache`), logged
+  `cache: trimmed X to Y`, and leaves the reading at
+  `~/.mesh/node.cachesize` (`RunState.WriteCacheSize`). `mesh node
+  status` prints it as `cache: <size> of <cap> (<root>); scratch <size>
+  (<root>); measured <RFC3339>`, or `cache: size unknown (no reading
+  yet)` (`cacheSizeStatusLine`). A sandboxed session gets none of it; its
+  pod has its own TMPDIR. At start, after `SweepSandbox`, `SweepScratch`
+  (`ScratchSweep`) removes every dir under the scratch root and every
+  `HostScratchPrefixes` dir (`mesh-session-`, `mesh-gh-`, `mesh-claude-`,
+  `mesh-node-pull-/image-/push-`, plus `mesh-home-` on a host node)
+  under `os.TempDir()` that the node's uid owns. It keeps what a found
+  session names (dir, workspace, HOME, TempDirs, token file's dir), what
+  `WorkspaceLive` holds, the process's own HOME (`internal/commands`'
+  `TestMain` gives the package's tests a TMPDIR of their own), and symlinks, and logs `scratch: swept N dirs, M
+  bytes at start (K kept)`. `scripts/host-tmp-reading.sh [--baseline
+  FILE] <user>...` takes the /tmp reading by prefix.
+  `host_scratch_e2e_test.go`'s `TestHostScratchE2E` (`go test
+  ./internal/node -run HostScratch`) runs it end to end.
 - **The quartermaster keeps the node fit** (`internal/node/quartermaster*.go`,
   ADR-034, `docs/adr/adr-034-the-quartermaster-keeps-the-node-fit.md`):
   `Loop.Quartermaster` (`Quartermaster{Checks, Every}`) runs from `Tick`
@@ -923,7 +986,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `latchkey-*`, `go-build*`, `mesh-*` dirs under /tmp of the node's uid
   past `ScratchMinAge`, 6h, reaped — never a symlink, another uid's, an
   `InUse` path or `mesh-home-*`, left to `SweepSandbox` run each time
-  keeping found sessions; warn past 20G left), `dead_checkout`
+  keeping found sessions and every session this process has open —
+  `sandbox.Sandbox.Live`, the pods and HOME of each `Open` not yet
+  `Close`d, so a validation between two steps (its pod with only the
+  infra running) is never swept, as 184 were on the dl360 on 2026-10-17;
+  warn past 20G left), `dead_checkout`
   (`DeadCheckoutCheck`: an item worktree whose item is merged, done,
   already_done, cancelled, superseded or unknown, idle `DeadCheckoutIdle`
   (1h) and not `Loop.LiveCheckout`, removed by `Git.RemoveWorkspace`,
@@ -999,14 +1066,61 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   since <RFC3339>: <reason>; the node claims nothing until the runtime
   heals` (item 4) — nothing when the runtime reads healthy or no node
   runs here.
+- **A node reports its errors to Tripline** (`internal/tripline/`,
+  `docs/adr/adr-034-a-node-reports-its-errors-to-tripline.md`): node.yaml's
+  `tripline: {dsn, enabled}` (`Config.Tripline`, `tripline.Config`;
+  `MESH_TRIPLINE_DSN` read into `FromEnv`, in force over `dsn`
+  (`DSNInForce`), never saved; `On` is a dsn and enabled not false) makes
+  `tripline.New(cfg, slug, version)` a `Reporter` on its own sentry-go
+  Hub, every event through `NewScrubber`'s BeforeSend (`Scrub`: the
+  harness's and tools' redaction, `Options.Secrets` — the bearer
+  `mesh node start` adds — URL userinfo, query tokens, nested maps,
+  frame vars, fingerprint and tags; `TestScrubberAdversarial`).
+  `Report(class, err, Fields)` sends one event of a closed `Class` —
+  `infrastructure`, `harness_unavailable`, `sandbox_broken`,
+  `session_failed` — tagged node, item, seq, goal, repo, role and class,
+  fingerprinted `[class, Normalise(msg, …)]` so alike failures on
+  different items are one issue; nil or disabled sends nothing.
+  `mesh node start` logs `tripline reporting on (<host>)` or `off`
+  (`node.ReportingStartLine`), sets `Loop.Tripline` and from it the
+  Runner's, Evaluator's and Rebaser's, and `Flush`es on the way out; the
+  node's `reportFailure` (`internal/node/tripline.go`) is called in each
+  `releaseInfrastructure` and `Runner.releaseWorkspace` (infrastructure),
+  on a `harness.AsUnavailable` session error in the Runner and the
+  Evaluator, on the Evaluator's `sandbox broken`, and on the Runner's
+  `session ended without success`. `mesh node status` prints
+  `reportingStatusLine` = `node.ReportingStatusLine`: `reporting: on
+  (tripline <host>)` (`Reporter.Endpoint`, never the key), else `off (no
+  tripline dsn)`, `off (disabled in node.yaml)` or `off (bad tripline
+  dsn)`. `internal/tripline/triplinetest` is the fake ingest
+  (`NewServer`, `DSN`, `Events` with each `Payload`, `Issues` grouped by
+  fingerprint, `Wait`); `tripline_e2e_test.go`'s
+  `TestNodeReportsInfrastructureToTripline` (`-tags e2e`) runs three alike
+  infrastructure releases through the Loop into one Issue, Count 3.
 - **The rebase** (`internal/node/rebase.go`, runsheet ADR 008): an item
   whose pull request conflicts in a way the integrator could not
   resolve itself carries `rebase_state: requested`. Every tick the loop
   lists them in each served org (`RequestedRebases`), in goal priority
   then seq (`rebaseOrder`), and claims each with `ClaimWorkItemRebase`
   — a refusal is the ordinary answer, not an error. The session works
-  in the item's own checkout on its token, rebases onto the base,
-  re-runs the acceptance and pushes with `--force-with-lease`; the node
+  in a fresh checkout of its own, never the item's build checkout
+  (ADR-028, A rebase gets its own worktree): `RebaseWorkspaceSpec`'s
+  `<goal>/<seq>-rebase`, made by `Git.AddRebaseWorktree` — a detached
+  worktree of the shared clone at `origin/<branch>`, by
+  `addDetachedWorktree` as a batch candidate's, a stale dir there
+  removed first, nothing run in the item's checkout, deleted or
+  dangling — on the item's token before `NewItemCredAt` `Authorize`s it
+  there; a worktree that cannot be made is a `*WorkspaceError` released
+  as infrastructure (`rebaseRun.releaseInfrastructure`, held in
+  `Declines`, never `FailWorkItemRebase`; a refused release leaves the
+  claim to lapse; ADR-024), and the checkout is removed after
+  `afterRebase` unless left for adoption (`AdoptRebase` keeps the
+  state's workspace). It rebases the detached HEAD onto the base,
+  re-runs the acceptance and pushes `HEAD:refs/heads/<branch>` with
+  `--force-with-lease=<branch>:origin/<branch>`
+  (`TestRebaseRunsInAFreshCheckout`, `-tags e2e`, lands one with the
+  item's checkout deleted and with it dangling;
+  `rebaseworktree_e2e_test.go` the method's own cases); the node
   reads the pushed head back (`Workspacer.PushedHead`) and hands it in
   with `FinishWorkItemRebase`, or `FailWorkItemRebase` with the reason
   for *anything* else but `ErrNoCredential` (a wait: the claim lapses)
@@ -1195,9 +1309,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `docs/adr/adr-011-evaluations-run-on-the-family-with-headroom.md`,
   amending `adr-005-codex-second-opinion.md`; goal
   `codex-sessions-reach-the-context-tool`): `Evaluator.Codex` is the
-  Codex harness (`codexSecondOpinion` in `nodecmd.go`: built whenever
-  the codex binary is found, with or without a `codex:` block, with no
-  account of its own) and `CodexAccounts` is
+  Codex harness (`codexSecondOpinion` in `nodecmd.go`, with or without
+  a `codex:` block, with no account of its own: on a sandboxed node from
+  the node image's codex, `Sandbox.CodexVersion`, never the host's; with
+  the sandbox off from the host binary; neither, none — logged once per
+  start by `codexSourceOf`, `codex: evaluations on Codex from the node
+  image (…)`, `… from the host binary <path> …` or `codex: no Codex
+  evaluations: <why>`; ADR-007's amendment 2026-10-17) and `CodexAccounts` is
   `Loop.CodexCandidates` — the issued Codex accounts `Known` holds and
   only those: no Codex session runs on the machine's own login, and a
   Codex job with no placed `CODEX_HOME` is refused by the harness
@@ -1689,8 +1807,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   containers, mesh pods with no running container, `mesh-home-*` dirs no
   running container mounts) and logs `sandbox: swept N homes, M pods, K
   containers at start (L homes in use)` (ADR-007's amendment
-  2026-10-10). Channel-mode sessions and Codex are not in
-  the pod yet. **A runtime that cannot start a pod at all is told apart
+  2026-10-10). A Codex session runs in its pod too
+  (`harness.Codex.Sandbox`, `runSandboxed`: the image's `codex exec`,
+  the same two mounts, CODEX_HOME at `Session.CodexHome()` inside the
+  HOME, the env by name, the preflight by `Session.Exec` in that pod;
+  ADR-007's amendment 2026-10-17, `TestCodexEvaluationInAPodE2E`).
+  Channel-mode sessions are not in the pod yet. **A runtime that cannot start a pod at all is told apart
   from the agent's own failure inside one that started fine**
   (ADR-030's amendment,
   `docs/adr/adr-034-a-node-whose-runtime-is-broken-stops-claiming.md`,
