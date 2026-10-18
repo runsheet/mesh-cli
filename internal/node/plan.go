@@ -220,6 +220,19 @@ func (p *Planner) Plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		p.releaseRuntime(ctx, goal, scope, re)
 		return err
 	}
+	if pe, ok := PodStartErrorOf(err); ok && ctx.Err() == nil {
+		// the goal's org's pod did not start: the node's condition, not
+		// the goal's — the claim goes back with the reason, no try is
+		// counted, and the goal is held off this node a while (ADR-034)
+		p.releasePodFailure(ctx, goal, scope, pe.Error())
+		return err
+	}
+	if errors.Is(err, ErrHostServesSeveralOrgs) && ctx.Err() == nil {
+		// no sandbox on a node serving several orgs: never on the host
+		noteHostFallback(err, p.logf)
+		p.releasePodFailure(ctx, goal, scope, HostFallbackReason(err))
+		return err
+	}
 	var fe *PlanFetchError
 	if errors.As(err, &fe) && ctx.Err() == nil {
 		// a fetch or a plan token that failed before the session opened
@@ -862,10 +875,27 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, scope Scope, dir s
 		return nil, nil, nil, nil, nil, nil, nil, 0, acct, err
 	}
 	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: harness.PlanPrompt(in), MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model, KeptRoot: kept}
+	// dir is PlanDir(root, slug): the org's work root is two up
+	scratchRoot, err := ScratchRoot(filepath.Dir(filepath.Dir(dir)))
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, nil, 0, acct, err
+	}
+	// the goal's org's pod, opened before anything runs: a pod that
+	// cannot start runs no session, never on the host in its place
+	// (ADR-034, Refusals); nil on an unsandboxed node serving one org
+	pod, err := openScopePod(ctx, p.Sandbox, p.Roots, scope, dir, job.Label, harness.KindPlan, p.logf)
+	// a session the harness detached runs on in its pod (Session.Detach
+	// makes this Close nothing): the node that adopts it removes it
+	defer pod.Close()
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, nil, 0, acct, err
+	}
+	pod.Apply(&job)
 	if tok != nil {
 		// gh in the session runs on the goal's token and a config dir of
-		// its own, never the operator's login (adr-022)
-		ghDir, err := NewGHConfigDir()
+		// its own, never the operator's login (adr-022), under the org's
+		// scratch on a sandboxed node
+		ghDir, err := sessionGHConfigDir(p.Sandbox, scratchRoot)
 		if err != nil {
 			return nil, nil, nil, nil, nil, nil, nil, 0, acct, fmt.Errorf("gh config dir: %w", err)
 		}
@@ -876,11 +906,6 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, scope Scope, dir s
 	}
 	// the session's own scratch as its TMPDIR, gone with the session
 	// (sessionScratch); a detached one's by the node that ends it
-	// dir is PlanDir(root, slug): the org's work root is two up
-	scratchRoot, err := ScratchRoot(filepath.Dir(filepath.Dir(dir)))
-	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, 0, acct, err
-	}
 	scratch, err := sessionScratch(p.Sandbox, scratchRoot, p.BuildCache, harness.KindPlan, goal.ID, &job)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, nil, 0, acct, err
