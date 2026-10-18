@@ -120,7 +120,7 @@ the dir; `confineTo` → `Sandbox.WithOrg`), in `OpenSessionPod` — build,
 evaluate, rebase, a merge batch's candidate and a main validation — and
 in a validation that opens its own pod. A confined sandbox makes its
 sessions' HOMEs under `<org root>/homes` (`OrgRoot.HomesDir`, 0700),
-and `Session.Run` and `Session.StartDetached` take their mounts from
+and `Session.Run`, `Session.StartDetached` and `Session.Exec` take their mounts from
 `Session.CheckedMounts`, which runs every source through
 `OrgRoot.Check(what, path)` **before a pod is made**:
 `filepath.EvalSymlinks` of the source must be the org's resolved root
