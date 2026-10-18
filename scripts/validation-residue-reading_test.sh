@@ -3,7 +3,12 @@
 # output (scripts/testdata/validation-residue-reading, merged in item
 # 12): runs `--dry` over it and checks the before/after/difference
 # lines it prints, and that --help names the --dry fixture invocation.
-# No network, no podman, no Go — plain bash and the script under test.
+# Also sources the script (item 15's guard,
+# `[[ "${BASH_SOURCE[0]}" == "$0" ]]`, keeps main() from running on
+# source) to exercise count_validations' window arithmetic directly,
+# since --dry has no bounds to give it, and checks --window's own
+# argument validation. No network, no podman, no Go — plain bash and
+# the script under test.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -60,6 +65,47 @@ check_contains "validations in window" "$diff_block" "validations in window: 2"
 help_out="$(bash "$script" --help)"
 check_contains "--help names the --dry fixture invocation" "$help_out" \
   "scripts/validation-residue-reading.sh --dry scripts/testdata/validation-residue-reading"
+
+# source the script for count_validations alone; the BASH_SOURCE guard
+# keeps main() (its arg parsing, its --dry and live paths) from running.
+# shellcheck source=scripts/validation-residue-reading.sh
+source "$script"
+
+tmp_log="$(mktemp)"
+trap 'rm -f "$tmp_log"' EXIT
+
+cat >"$tmp_log" <<'LOG'
+not a mesh node line at all: attestation recorded zzz ok
+mesh node: 2026/10/15 05:00:00 item x/1: attestation recorded a ok
+mesh node: 2026/10/15 06:00:00 item x/2: attestation recorded b ok
+mesh node: 2026/10/15 06:30:00 item x/3: attestation refused c nope
+mesh node: 2026/10/15 06:45:00 item x/3: attestation recorded c ok
+mesh node: 2026/10/15 07:00:00 item x/4: attestation recorded d ok
+mesh node: 2026/10/15 08:00:00 item x/5: attestation recorded e ok
+LOG
+
+check "count_validations with no bounds counts only mesh node: attestation recorded lines" \
+  "5" "$(count_validations "$tmp_log")"
+
+check "count_validations since bound is inclusive" \
+  "1" "$(count_validations "$tmp_log" "2026/10/15 06:00:00" "2026/10/15 06:00:00")"
+
+check "count_validations until bound is inclusive" \
+  "1" "$(count_validations "$tmp_log" "2026/10/15 07:00:00" "2026/10/15 07:00:00")"
+
+check "count_validations skips lines outside the window" \
+  "3" "$(count_validations "$tmp_log" "2026/10/15 06:00:00" "2026/10/15 07:00:00")"
+
+check "count_validations on a missing log gives 0" \
+  "0" "$(count_validations "$here/no-such-node.log")"
+
+set +e
+window_out="$(bash "$script" --window not-a-number 2>&1)"
+window_rc=$?
+set -e
+check "--window rejects a non-number: exit code" "2" "$window_rc"
+check_contains "--window rejects a non-number: message" "$window_out" \
+  "--window wants a whole number of minutes, got 'not-a-number'"
 
 if [ "$failures" -eq 0 ]; then
   echo "ok: validation-residue-reading_test.sh"

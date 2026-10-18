@@ -31,6 +31,12 @@
 # instants, not the scan's doing: scan() now keeps its file list in
 # memory, never writing a scratch file under /tmp, so scanning /tmp no
 # longer counts itself.)
+#
+# Sourceable: this file's top-level run is behind the
+# `[[ "${BASH_SOURCE[0]}" == "$0" ]]` guard at the bottom, so
+# scripts/validation-residue-reading_test.sh can `source` it and call
+# count_validations directly against a fixture node.log, which --dry
+# has no way to reach (its window is the whole fixture file).
 set -euo pipefail
 
 usage() {
@@ -78,33 +84,6 @@ which prints the `== before` and `== after` entries and bytes, each
 end's `validation cache:` line, and the `== difference` between them.
 EOF
 }
-
-window=60
-users_arg=""
-log=""
-dry_dir=""
-
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --help | -h) usage; exit 0 ;;
-    --window) window="$2"; shift 2 ;;
-    --window=*) window="${1#--window=}"; shift ;;
-    --users) users_arg="$2"; shift 2 ;;
-    --users=*) users_arg="${1#--users=}"; shift ;;
-    --log) log="$2"; shift 2 ;;
-    --log=*) log="${1#--log=}"; shift ;;
-    --dry) dry_dir="$2"; shift 2 ;;
-    --dry=*) dry_dir="${1#--dry=}"; shift ;;
-    -*) echo "validation-residue-reading: unknown argument: $1" >&2; usage >&2; exit 2 ;;
-    *) echo "validation-residue-reading: unexpected argument: $1" >&2; usage >&2; exit 2 ;;
-  esac
-done
-
-case "$window" in '' | *[!0-9]*) echo "validation-residue-reading: --window wants a whole number of minutes, got '$window'" >&2; exit 2 ;; esac
-
-home="${MESH_HOME:-$HOME/.mesh}"
-mesh_bin="${MESH_BIN:-mesh}"
-log="${log:-$home/node.log}"
 
 # cache_line [status-file]: `mesh node status`'s own `validation cache:`
 # line, read live (STATUS_TIMEOUT seconds, default 60) or, given a
@@ -205,68 +184,106 @@ count_validations() {
   ' "$f"
 }
 
-if [ -n "$dry_dir" ]; then
-  if [ ! -d "$dry_dir" ]; then
-    echo "validation-residue-reading: --dry directory not found: $dry_dir" >&2
-    exit 2
-  fi
-  echo "== validation-residue-reading (dry run) taken $(date '+%Y-%m-%d %H:%M:%S %z') on $(hostname), fixture $dry_dir"
+# main args...: the script's own run — argument parsing, the --dry
+# fixture path and the live snapshot-wait-snapshot path. Kept out of
+# top level (behind the BASH_SOURCE guard below) so the test can
+# source this file for its functions alone, with no node.log waited on
+# and no real /tmp scanned.
+main() {
+  window=60
+  users_arg=""
+  log=""
+  dry_dir=""
 
-  scan_users=()
-  read -r before_count before_bytes < <(scan "$dry_dir/before")
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --help | -h) usage; exit 0 ;;
+      --window) window="$2"; shift 2 ;;
+      --window=*) window="${1#--window=}"; shift ;;
+      --users) users_arg="$2"; shift 2 ;;
+      --users=*) users_arg="${1#--users=}"; shift ;;
+      --log) log="$2"; shift 2 ;;
+      --log=*) log="${1#--log=}"; shift ;;
+      --dry) dry_dir="$2"; shift 2 ;;
+      --dry=*) dry_dir="${1#--dry=}"; shift ;;
+      -*) echo "validation-residue-reading: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+      *) echo "validation-residue-reading: unexpected argument: $1" >&2; usage >&2; exit 2 ;;
+    esac
+  done
+
+  case "$window" in '' | *[!0-9]*) echo "validation-residue-reading: --window wants a whole number of minutes, got '$window'" >&2; exit 2 ;; esac
+
+  home="${MESH_HOME:-$HOME/.mesh}"
+  mesh_bin="${MESH_BIN:-mesh}"
+  log="${log:-$home/node.log}"
+
+  if [ -n "$dry_dir" ]; then
+    if [ ! -d "$dry_dir" ]; then
+      echo "validation-residue-reading: --dry directory not found: $dry_dir" >&2
+      exit 2
+    fi
+    echo "== validation-residue-reading (dry run) taken $(date '+%Y-%m-%d %H:%M:%S %z') on $(hostname), fixture $dry_dir"
+
+    scan_users=()
+    read -r before_count before_bytes < <(scan "$dry_dir/before")
+    echo "== before"
+    echo "entries: $before_count"
+    echo "bytes: $before_bytes"
+    cache_line "$dry_dir/status-before.txt"
+
+    read -r after_count after_bytes < <(scan "$dry_dir/after")
+    echo "== after"
+    echo "entries: $after_count"
+    echo "bytes: $after_bytes"
+    cache_line "$dry_dir/status-after.txt"
+
+    echo "== difference"
+    echo "new entries: $((after_count - before_count))"
+    echo "new bytes: $((after_bytes - before_bytes))"
+    echo "validations in window: $(count_validations "$dry_dir/node.log")"
+    exit 0
+  fi
+
+  users=()
+  if [ -n "$users_arg" ]; then
+    IFS=', ' read -r -a users <<<"$users_arg"
+  else
+    while IFS= read -r u; do
+      [ -n "$u" ] && users+=("$u")
+    done < <(default_users)
+  fi
+  if [ ${#users[@]} -eq 0 ]; then
+    users=("$(id -un)")
+  fi
+
+  echo "== validation-residue-reading taken $(date '+%Y-%m-%d %H:%M:%S %z') on $(hostname), window ${window}m, users: ${users[*]}"
+
+  scan_users=("${users[@]}")
+  start_ts="$(date '+%Y/%m/%d %H:%M:%S')"
+  read -r before_count before_bytes < <(scan /tmp "$home/work")
   echo "== before"
   echo "entries: $before_count"
   echo "bytes: $before_bytes"
-  cache_line "$dry_dir/status-before.txt"
+  cache_line
 
-  read -r after_count after_bytes < <(scan "$dry_dir/after")
+  if [ "$window" -gt 0 ]; then
+    echo "validation-residue-reading: waiting ${window}m ..." >&2
+    sleep "$((window * 60))"
+  fi
+
+  end_ts="$(date '+%Y/%m/%d %H:%M:%S')"
+  read -r after_count after_bytes < <(scan /tmp "$home/work")
   echo "== after"
   echo "entries: $after_count"
   echo "bytes: $after_bytes"
-  cache_line "$dry_dir/status-after.txt"
+  cache_line
 
   echo "== difference"
   echo "new entries: $((after_count - before_count))"
   echo "new bytes: $((after_bytes - before_bytes))"
-  echo "validations in window: $(count_validations "$dry_dir/node.log")"
-  exit 0
+  echo "validations in window: $(count_validations "$log" "$start_ts" "$end_ts")"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
 fi
-
-users=()
-if [ -n "$users_arg" ]; then
-  IFS=', ' read -r -a users <<<"$users_arg"
-else
-  while IFS= read -r u; do
-    [ -n "$u" ] && users+=("$u")
-  done < <(default_users)
-fi
-if [ ${#users[@]} -eq 0 ]; then
-  users=("$(id -un)")
-fi
-
-echo "== validation-residue-reading taken $(date '+%Y-%m-%d %H:%M:%S %z') on $(hostname), window ${window}m, users: ${users[*]}"
-
-scan_users=("${users[@]}")
-start_ts="$(date '+%Y/%m/%d %H:%M:%S')"
-read -r before_count before_bytes < <(scan /tmp "$home/work")
-echo "== before"
-echo "entries: $before_count"
-echo "bytes: $before_bytes"
-cache_line
-
-if [ "$window" -gt 0 ]; then
-  echo "validation-residue-reading: waiting ${window}m ..." >&2
-  sleep "$((window * 60))"
-fi
-
-end_ts="$(date '+%Y/%m/%d %H:%M:%S')"
-read -r after_count after_bytes < <(scan /tmp "$home/work")
-echo "== after"
-echo "entries: $after_count"
-echo "bytes: $after_bytes"
-cache_line
-
-echo "== difference"
-echo "new entries: $((after_count - before_count))"
-echo "new bytes: $((after_bytes - before_bytes))"
-echo "validations in window: $(count_validations "$log" "$start_ts" "$end_ts")"
