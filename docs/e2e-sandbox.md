@@ -1,5 +1,5 @@
 ---
-summary: The sandboxed-sessions e2e — scripts/e2e-sandbox.sh builds or pulls the node image through EnsureImage, runs the probe, sidecar and node-path e2e tests (a build and its evaluation on runsheet's Postgres and on a Redis fixture, no pod left after), the operator's live checklist on the mini, the image tools check (TestImageToolsE2E: node/npm with npm ci && npx tsc, Postgres, headless Chromium, with today's image's failing output), and the check-then-remove-by-hand runbook for retiring latchkey-e2e-pg.
+summary: The sandboxed-sessions e2e — scripts/e2e-sandbox.sh builds or pulls the node image through EnsureImage, runs the probe, sidecar and node-path e2e tests (a build and its evaluation on runsheet's Postgres and on a Redis fixture, no pod left after), the operator's live checklist on the mini, the image tools check (TestImageToolsE2E: node/npm with npm ci && npx tsc, Postgres, headless Chromium, with today's image's failing output), the Codex case (TestCodexEvaluationInAPodE2E: a runsheet evaluation on Codex in a pod from the node image on a credential from MESH_E2E_CODEX_AUTH or MESH_E2E_CODEX_API_KEY, its usage naming adapter codex and a gpt- model, no pod or HOME left; recorded 2026-10-17), and the check-then-remove-by-hand runbook for retiring latchkey-e2e-pg.
 ---
 
 # The sandbox e2e
@@ -48,6 +48,7 @@ It runs, with `MESH_SANDBOX_E2E=1`, every `E2E` test of
 | `TestLocalOnlyImageE2E` | a session starts from a local-only image under an unresolvable registry name (`localOnlyImage` retags the node image as `mesh-local.invalid/…`) with no pull: the agent runs and podman's stderr has no `Trying to pull`, though the session's env sets its own `HOME` — podman keeps the node's (`podmanEnv`) |
 | `TestServicesSidecarsE2E` | the sandbox package alone: Postgres and Redis sidecars health-checked and reachable on 127.0.0.1, the pod gone after |
 | `TestSandboxedSessionsE2E` | the node's own path, for **a build (`Runner.RunItem`) and its evaluation (`Evaluator.Evaluate`)**: `OpenSessionPod` resolves the checkout's services, starts the sidecars, waits for their health checks; the ClaudeCode harness runs a stub agent in the pod (`ClaudeCode.SandboxBinary`) which reaches Postgres on 127.0.0.1:5432 (its SSLRequest answered) or Redis on 127.0.0.1:6379 (`PING` → `+PONG`) and says `VERDICT: PASS`; the evaluation is recorded passed; afterwards `podman pod ls` and `podman ps -a` hold nothing of the session and no session HOME is left |
+| `TestCodexEvaluationInAPodE2E` | run apart, as the script's step 3 — see [The Codex case](#the-codex-case) |
 
 `TestSandboxedSessionsE2E` runs twice, on the two fixtures in
 `internal/node/testdata/`:
@@ -116,6 +117,93 @@ leaves podman's `HOME=/home/node` and the container's on `--env HOME` —
 passes; the pull itself is unproven until a host with rootless podman
 runs `MESH_SANDBOX_ENSURE=skip scripts/e2e-sandbox.sh` (or the command
 above) and pastes its output here, in place of this paragraph.
+
+## The Codex case
+
+Goal `codex-sessions-run-in-the-sandbox` (item 5; ADR-007's amendment
+2026-10-17): a runsheet item's evaluation on Codex in a pod from the
+node image. `scripts/e2e-sandbox.sh`'s step 3 runs
+**`TestCodexEvaluationInAPodE2E`** (`internal/node/codex_sandbox_e2e_test.go`)
+on its own, after the other e2e tests (step 2 skips it), when a Codex
+credential is given:
+
+```sh
+MESH_E2E_CODEX_AUTH=$HOME/codex-e2e-auth.json scripts/e2e-sandbox.sh   # a copy of a ChatGPT login's auth.json
+# or: MESH_E2E_CODEX_API_KEY=sk-… scripts/e2e-sandbox.sh
+```
+
+The credential is the platform's issued Codex credential in shape — a
+ChatGPT login (`oauth_token`, the "codex - chatgpt pro" row) or an
+OpenAI key (`api_key`) — seeded on the gatewaytest fake as item 1's
+session credential beside a Claude one, and known to the node with
+headroom, so the evaluator chooses Codex by ADR-011's rule (a normal
+goal, sonnet → `gpt-6-luna`). Without one the script says
+`== codex: skipped — no Codex credential given; …` and goes on; the
+test itself skips naming both variables. Codex may refresh the login:
+the test keeps the refresh in its own `XDG_CACHE_HOME`, so give it a
+copy.
+
+What it runs, on podman with the node image (`MESH_SANDBOX_IMAGE`): the
+node's own `Evaluator.Evaluate` with a sandboxed node's evaluator — the
+real `harness.Codex` with `Sandbox` set, its `Preflight` the
+evaluator's — in a checkout of `testdata/runsheet-postgres` (so the pod
+gets its Postgres sidecar) with a README the acceptance names. The pod
+is opened once; the preflight's sandbox probe (`codex sandbox … --
+node -e …`) runs in it under the session's HOME and env, then the
+image's `codex exec --json --sandbox workspace-write` evaluates. The
+fake gateway listens on the host's loopback, which the pod's network
+refuses, so this session is given no `runsheet` MCP server and the
+preflight's `codex mcp get`/tools/list steps have nothing to check;
+`TestSandboxedCodexEvaluationPreflightsInItsPod` covers them over the
+fake runtime. It passes when:
+
+- `evaluateWorkItem` is called once with a verdict (`passed` true or
+  false, never `noVerdict`) and the Claude harness never ran;
+- its usage names `"adapter":"codex"`, a `gpt-` model and the
+  credential (printed as `usage record: {…}`, beside `verdict recorded:
+  passed=…`);
+- the credential's secret is nowhere in the node's log;
+- afterwards no session HOME is left under the sandbox's HOME root and
+  podman holds no pod or container named `mesh-e2e-codex-…`
+  (`assertNoPods`; the script prints `podman pod ls` after it).
+
+The same path runs in every `go test` over the fake runtime as
+**`TestCodexEvaluationInAPodOverTheFake`**: the fake image's codex
+answering the probe and the session, the pod created once and removed,
+its containers the probe then `codex exec`.
+
+**Recorded run, 2026-10-17** (item 5's build session, on dl360-anythink
+inside its own build pod, Linux 6.8.0-146, x86_64). **Not run on
+podman:** the session's pod has no podman (`podman: command not
+found`), no root to install it, and no Codex credential in its
+environment, so no real pod started and no real Codex turn was taken.
+What was run there, on this branch (the second command's node log lines cut to the Codex ones):
+
+```
+$ scripts/e2e-sandbox.sh; echo "exit $?"
+e2e-sandbox: podman is not installed; the sandbox e2e needs rootless podman
+exit 1
+
+$ MESH_SANDBOX_E2E=1 go test -count=1 -run CodexEvaluationInAPod -v ./internal/node
+=== RUN   TestCodexEvaluationInAPodE2E
+    codex_sandbox_e2e_test.go:61: no Codex credential given: set MESH_E2E_CODEX_AUTH=<a ChatGPT login's auth.json> or MESH_E2E_CODEX_API_KEY=<an OpenAI key> to run a Codex evaluation in a pod
+--- SKIP: TestCodexEvaluationInAPodE2E (0.00s)
+=== RUN   TestCodexEvaluationInAPodOverTheFake
+    codex_sandbox_e2e_test.go:195: item e2e-codex-174856/1: evaluate on Codex gpt-6-luna: mesh/e2e-codex-174856-1 (52 bytes of diff)
+    codex_sandbox_e2e_test.go:195: item e2e-codex-174856/1: evaluation passed on Codex gpt-6-luna ($0.00)
+    codex_sandbox_e2e_test.go:82: verdict recorded: passed=true; notes: README.md says what the fixture is for.
+    codex_sandbox_e2e_test.go:82: usage record: {"actualCostCents":0,"adapter":"codex","cacheReadTokens":0,"cacheWriteTokens":0,"contextBytes":1124,"credentialId":"oa-1","credentialKind":"subscription","inputPerTurnMax":10,"inputPerTurnMean":10,"inputTokens":10,"listCostCents":0,"model":"gpt-6-luna","outputTokens":5,"sessionId":"t1","toolCalls":0,"turns":1,"wallMs":1}
+--- PASS: TestCodexEvaluationInAPodOverTheFake (0.01s)
+PASS
+ok  	projectmesh.io/mesh-cli/internal/node	0.028s
+```
+
+The live run is owed: on a host with rootless podman (the dl360 as the
+node's user, outside any pod), `MESH_SANDBOX_ENSURE=skip
+MESH_E2E_CODEX_AUTH=<copy of the issued login> scripts/e2e-sandbox.sh`
+— or `build` to make the image first — and paste its `== codex:` lines
+(the usage record, the verdict, `podman pod ls after`) here in place of
+this paragraph.
 
 ## Tools check
 

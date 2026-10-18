@@ -667,6 +667,17 @@ func TestPromptsNameMeshContext(t *testing.T) {
 	}
 }
 
+// The build prompt asks for a last mesh_progress note opening `state:`
+// naming what is done, what is next and what is open, so a fresh
+// fallback session has somewhere to start from (goal
+// a-fresh-session-starts-from-the-items-record).
+func TestBuildPromptAsksForAStateNote(t *testing.T) {
+	p := BuildPrompt(PromptInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main"})
+	if !strings.Contains(p, "mesh_progress note") || !strings.Contains(p, "`state:`") {
+		t.Errorf("build prompt lacks a line asking for a final mesh_progress note opening `state:`:\n%s", p)
+	}
+}
+
 func TestBuildPromptNotesToFoldIn(t *testing.T) {
 	in := PromptInput{GoalSlug: "g", GoalTitle: "G", Seq: 3, Title: "Docs", Brief: "write the ADR", Repo: "o/r", Branch: "b", BaseRef: "main"}
 	if p := BuildPrompt(in); strings.Contains(p, "## Notes to fold in") {

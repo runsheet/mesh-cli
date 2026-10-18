@@ -1,5 +1,5 @@
 ---
-summary: How mesh-cli implements mesh-specs ADR 007 — the node image carrying Postgres and headless Chromium beside Go, Node and Python (scripts/image-tools-check.sh run in it by TestImageToolsE2E), internal/sandbox's Runtime (Podman, a test Fake) runs claude in a per-session pod with two mounts, an allow-listed env passed to podman by name, node.yaml's flat sandbox keys (mode, cpus, memory, pids, services_cpus, services_memory, registries, image), a mode left out following `podman --version` while an explicit on fails closed at start, a limit kill (OOM, pids, the runtime's timeout backstop) released as the node's condition with the heartbeat's reason, service sidecars started and health-checked in the session's pod before the agent (a required one failing releases the claim, an optional one is a note), the node image (images/node/Containerfile, embedded) pulled for the new version before a self-update swaps or `mesh node update` drains — a failed pull an updateError with no drain and no swap, the pull on a registry credential the platform brokers (`nodeRegistryToken`) written to a temporary auth.json passed by --authfile and removed after, `sandbox.image: build` building it locally — the pod mapping the host user onto the image's declared user (`--userns keep-id:uid=<image uid>,gid=<image gid>`, 1000 when it declares none; podman 4.3 or later), a session's HOME, pod, containers and volumes removed on every way it ends — `Session.Close` sure of the HOME (RemoveAll, then u+w, then `podman unshare rm -rf`) and logging what it could not remove — and a node start sweeping (`sandbox.Sweep`) the mesh-home dirs no running container mounts, the mesh pods with no running container and the exited mesh containers an earlier process left, a sandboxed Outlive session's pod its unit — the agent run detached (`podman run -d`, streams on `<workdir>.session/` files), `state.json` naming the pod, container and HOME, the pod and HOME left standing when the node lets go, kept by the start-up sweep, and reattached by the adopting node, so a sandboxed node's self-update no longer drains — and channel mode and Codex not yet sandboxed.
+summary: How mesh-cli implements mesh-specs ADR 007 — the node image carrying Postgres and headless Chromium beside Go, Node and Python (scripts/image-tools-check.sh run in it by TestImageToolsE2E), internal/sandbox's Runtime (Podman, a test Fake) runs claude in a per-session pod with two mounts, an allow-listed env passed to podman by name, node.yaml's flat sandbox keys (mode, cpus, memory, pids, services_cpus, services_memory, registries, image), a mode left out following `podman --version` while an explicit on fails closed at start, a limit kill (OOM, pids, the runtime's timeout backstop) released as the node's condition with the heartbeat's reason, service sidecars started and health-checked in the session's pod before the agent (a required one failing releases the claim, an optional one is a note), the node image (images/node/Containerfile, embedded) pulled for the new version before a self-update swaps or `mesh node update` drains — a failed pull an updateError with no drain and no swap, the pull on a registry credential the platform brokers (`nodeRegistryToken`) written to a temporary auth.json passed by --authfile and removed after, `sandbox.image: build` building it locally — the pod mapping the host user onto the image's declared user (`--userns keep-id:uid=<image uid>,gid=<image gid>`, 1000 when it declares none; podman 4.3 or later), a session's HOME, pod, containers and volumes removed on every way it ends — `Session.Close` sure of the HOME (RemoveAll, then u+w, then `podman unshare rm -rf`) and logging what it could not remove — and a node start sweeping (`sandbox.Sweep`) the mesh-home dirs no running container mounts, the mesh pods with no running container and the exited mesh containers an earlier process left, a sandboxed Outlive session's pod its unit — the agent run detached (`podman run -d`, streams on `<workdir>.session/` files), `state.json` naming the pod, container and HOME, the pod and HOME left standing when the node lets go, kept by the start-up sweep, and reattached by the adopting node, so a sandboxed node's self-update no longer drains — and, amended 2026-10-17, a Codex session (an evaluation, its preflight, the second opinion) in its own pod from the image's codex with the same two mounts, CODEX_HOME at `$HOME/.codex` inside the session HOME, the allow-listed env by name, the preflight run in that pod, and the evaluator built from the image on a sandboxed node, logged once at start; channel mode still not sandboxed.
 status: accepted
 ---
 
@@ -27,8 +27,8 @@ implementing it that the spec leaves open or that differ in detail.
   `$HOME/mcp.json` (the mesh-context bearer on no command line), and runs
   `claude` with the same arguments otherwise in the pod. Every one-shot
   session (poll-mode build, evaluate, plan, research, rebase) goes
-  through it. Channel-mode sessions and Codex are later items of the
-  goal.
+  through it. Channel-mode sessions are a later item; Codex sessions
+  run in the pod too since the amendment of 2026-10-17 below.
 - **Env by name.** The container's variables are given to `podman run`
   as `--env NAME` with the values in podman's own process environment,
   and `--unsetenv-all` drops the image's and podman's defaults, so no
@@ -516,3 +516,119 @@ repository already set that variable itself, in which case its own
 value is kept. `/tmp` is writable by the pod's user under keep-id, and
 `--no-sync` keeps the default's `initdb` as cheap as the tuning already
 turns the running server's durability off.
+
+## Amendment 2026-10-17: Codex sessions run in the pod (goal codex-sessions-run-in-the-sandbox)
+
+The node image has carried `codex` (0.157.0, `images/node/Containerfile`)
+since the sandbox began, yet only Claude sessions ran in a pod: the Codex
+evaluator was built only when `codex` was on the node user's host
+`PATH` (`codexSecondOpinion`) and ran `codex exec --json` on the host
+with the node user's whole network and filesystem view. On the dl360s,
+with no host codex installed, 17,471 evaluations ran with none on Codex
+although the platform issued a ChatGPT Pro credential to both nodes
+(2026-10-10 to 2026-10-15). A Codex session is now a sandboxed session
+like any other:
+
+- **Where it plugs in.** `harness.Codex.Sandbox`: nil is the host path,
+  unchanged; set (or a job carrying its `Session`), `Codex.Run` goes
+  through `runSandboxed` (`internal/harness/codexsandbox.go`): `codex
+  exec --json --sandbox workspace-write -c
+  sandbox_workspace_write.network_access=true …` from the node image
+  (`Codex.SandboxBinary`, default `codex` on the image's `PATH`), the
+  prompt on stdin, the stream read by the same parser. An evaluation, a
+  pinned evaluation and the urgent/high second opinion all take it.
+- **The two mounts.** The item's workspace (with, for a worktree, the
+  shared clone's git dir as for Claude) and the session's temporary
+  HOME — nothing else. The session's **`CODEX_HOME` is
+  `Session.CodexHome()`, `$HOME/.codex`, inside that HOME**
+  (`prepareSandboxHome`): its `config.toml` of MCP servers (the
+  built-in `runsheet` as `RelayScript` in the HOME on a token file in
+  the `CODEX_HOME`, the pod having no `mesh` binary; console tools by
+  variable name) and the issued credential's `auth.json` the node
+  places (copied in at 0600, written back to `CodexLoginCache` when
+  Codex refreshed it). A host `CODEX_HOME` path never reaches the pod:
+  `Session.Env` moves the name under the HOME.
+- **Env names.** The pod's environment is `Session.Env` from the
+  allow-list, every variable given to podman as a bare `--env NAME`
+  with its value in podman's process environment (goal item 6; HOME,
+  PATH and the limit variables included, so the passthrough exception
+  above reaches no container variable): `CODEX_HOME`, `OPENAI_API_KEY`
+  or `CODEX_API_KEY` (an API-key credential; a ChatGPT login is the
+  `auth.json` alone), `MESH_ACCOUNT`, `MESH_ITEM`, `MESH_SESSION_KIND`,
+  `MESH_TOOL_*`, `GH_TOKEN`, `GH_CONFIG_DIR`, the agent identity and
+  `BaseEnv`. No token, key or `auth.json` content is on a command line
+  or in node.log: the stream and stderr are redacted by a streaming
+  redactor that holds a secret's prefix across write boundaries
+  (`streamredact.go`, `TestStreamRedactorSplitSecret`).
+- **The same pod.** The same nftables rules, `--cpus/--memory/--pids-limit`
+  and `LimitEnv`, service sidecars (`OpenSessionPod` before the family
+  is chosen, the pod handed to whichever harness runs), and the same
+  limit classification: an OOM, pids or timeout kill is the
+  `*sandbox.LimitError` the node releases and reports as its condition.
+- **The preflight runs in the pod** (ADR-011's preflight;
+  `internal/harness/codexpreflight_pod.go`, `preflightSandboxed`): in
+  the evaluation's own pod and with the CODEX_HOME and env the session
+  will get, each step a `Session.Exec` container (`ExecName`) before
+  the session's `codex exec`: (1) the image's `codex mcp get runsheet`,
+  (2) the tools/list handshake over the relay's stdio in the pod, on
+  the token file the session's relay reads, and (3) `codex sandbox -c
+  sandbox_mode="workspace-write" -c
+  sandbox_workspace_write.network_access=true -- <PodProbeLoopback>`,
+  `node` binding 127.0.0.1:0 since the pod has no `mesh sandbox-probe`.
+  It proves what the session will see, not what the host has. A failure
+  moves an unpinned evaluation to Claude (`Codex preflight failed
+  (<why>); evaluating on Claude`), keeps a pinned one waiting, and
+  makes a second opinion `unavailable: preflight …`, as ADR-011 says.
+- **Image or host, said at start.** `mesh node start` builds the Codex
+  evaluator from the node image on a sandboxed node whether or not the
+  host has codex — `Sandbox.CodexVersion` (`podman run --rm --network
+  none <image> codex --version`, `Runtime.ImageExec`) — and never uses
+  host codex there; with the sandbox off, from the host binary as
+  before; neither, none, and the node evaluates on Claude. It logs
+  which once per start (`codexSourceOf`): `codex: evaluations on Codex
+  from the node image (codex 0.157.0) when an issued Codex credential
+  has headroom, else on Claude; …`, `… from the host binary <path> …`,
+  or `codex: no Codex evaluations: <why>` (neither has it, the image
+  lacks it on a sandboxed node, or the sandbox is off and the host has
+  none). A sandboxed node with no Codex account issued still evaluates
+  on Claude.
+- **Unit and adoption.** A Codex evaluation on a sandboxed node is
+  `Outlive` and runs detached in its pod (`Codex.DetachSandboxed`,
+  `runDetached`), with `state.json` naming `harness: codex`, the pod,
+  container and HOME, the token file and the login's `loginFile`/
+  `loginCache` paths; the next process adopts it (`Codex.Attach`,
+  `AdoptEvaluation` by the state's adapter) as the 2026-10-13
+  amendment adopts a Claude one (ADR-009, ADR-005's and ADR-011's
+  amendments of this date). The second opinion and a host Codex
+  session are not `Outlive` and end with the node.
+
+### Tests
+
+`internal/harness/codex_sandbox_test.go` (`TestCodexRunsInTheSandbox`:
+the argv, two mounts, CODEX_HOME inside HOME, bare `--env` names, a
+secret split across stderr writes absent from argv and log, a
+`LimitError`), `internal/harness/codexpreflight_test.go` and
+`internal/node/codexpod_eval_test.go` (the preflight's three steps in
+the session's pod before it; a failure evaluating on Claude),
+`internal/commands`' `TestCodex*` source tests, `internal/node`'s
+`TestCodexPodSessionAdopted`, and the e2e `TestCodexEvaluationInAPodE2E`
+run by `scripts/e2e-sandbox.sh` (docs/e2e-sandbox.md, *The Codex
+case*), whose path runs over the fake runtime in every `go test` as
+`TestCodexEvaluationInAPodOverTheFake`.
+
+## Amendment 2026-10-17: the start-up sweep covers a host session's scratch
+
+[ADR-036](adr-036-a-host-sessions-scratch-dies-with-the-session.md)
+(goal a-host-sessions-scratch-dies-with-the-session). The sweep above,
+`sandbox.Sweep`, still runs on a sandboxed node alone. Beside it, on
+every node, sandboxed or not, `mesh node start` now runs the scratch
+sweep (`node.SweepScratch`), right after `SweepSandbox` and with the
+same found sessions. That sweep removes every dir under the scratch root
+`<work root>/.scratch` and the node's own `mesh-session-`, `mesh-gh-`,
+`mesh-claude-` and `mesh-node-*` dirs under `/tmp`. It keeps what a
+found session names, a path held live, another user's dir and a symlink,
+and it logs `scratch: swept <n> dirs, <bytes> bytes at start (<k> kept)`.
+`mesh-home-*` stays this sweep's on a sandboxed node, because only it
+knows which HOME a running container mounts. The scratch sweep takes
+`mesh-home-*` on a host node, where no container mounts one. A pod's own
+TMPDIR is unchanged: a sandboxed session gets no host scratch.

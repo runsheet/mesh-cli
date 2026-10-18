@@ -17,7 +17,7 @@ import (
 // (the session left for adoption), a lost claim and a starved session
 // never reach it. A Keep that fails is logged, never the item's failure.
 func (r *Runner) keepResume(b *buildRun) {
-	store := r.resumes()
+	store := r.resumes(b.item.OrgID)
 	if store == nil {
 		return
 	}

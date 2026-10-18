@@ -1,6 +1,6 @@
 ---
 title: "ADR-030: A failed check resumes the session that built it"
-summary: The node keeps each item's last build session — id, adapter, credential, worktree and a copy of its transcript — in ~/.mesh/resume until the item is merged, cancelled, failed or superseded, or seven days; a failing validation step and a retry after a failed evaluation resume that session (`claude --resume`, `codex exec resume`) with one message — what failed, where, the item's acceptance — under the same credential and worktree, else run a fresh session with the brief and the same message and log `item <label>: session not resumed (<reason>); fresh session with the failure`; validation re-runs on the new head, and every retry turn rides the heartbeat's `resumed` and counts as one build session.
+summary: The node keeps each item's last build session — id, adapter, credential, worktree and a copy of its transcript — in ~/.mesh/resume until the item is merged, cancelled, failed or superseded, or seven days; a failing validation step and a retry after a failed evaluation resume that session (`claude --resume`, `codex exec resume`) with one message — what failed, where, the item's acceptance — under the same credential and worktree, else run a fresh session with the brief and the same message and log `item <label>: session not resumed (<reason>); fresh session with the failure`; validation re-runs on the new head, and every retry turn rides the heartbeat's `resumed` and counts as one build session. Amended 2026-10: each item's record.jsonl keeps every note, question, answer, check, hand-back and turn verbatim, read under RecordBudget clipped from the front (else from the platform's activity rows), and a fresh fallback is told it and the branch's state in `# What earlier sessions did` and `# What the branch holds`.
 status: accepted
 ---
 
@@ -142,3 +142,93 @@ during each retry turn carrying it while the loop counts one session.
   (the ask/answer path, goal
   a-builder-asks-and-the-answer-resumes-its-session, reuses this
   store and `Job.Resume`).
+
+## Amendment (2026-10): a fresh session starts from the item's record
+
+Goal `a-fresh-session-starts-from-the-items-record` (items 1–8). A
+session that cannot be resumed — no record, another adapter or
+credential, the worktree or transcript gone, the agent refusing the id
+— got the brief and the failure and nothing of what earlier sessions
+did, so it started the work again. The node had the notes and the
+branch; it did not hand them over. Now it does, and it never paraphrases
+them: an entry is kept or dropped whole, never shortened or reworded.
+
+**record.jsonl** (`internal/node/record.go`, `recordwrite.go`). Beside
+`record.json` in `~/.mesh/resume/<item>/` the node keeps
+`record.jsonl`: one JSON line per entry, `{at, kind, text}` (`at` RFC
+3339, `RecordEntry`), appended `O_APPEND` by `ResumeStore.AppendRecord`
+as it happens and **never rewritten** — a line already read stays
+byte-equal. `Keep` carries it across a record's replacement, and
+`Forget`/`Sweep` take it with the item's dir. The build's `recorder`
+writes, in the order things happen:
+
+- `note` — every `mesh_progress` note the session makes, read off the
+  stream as it is made (`harness.Progress.WorkCall`, Claude's and
+  Codex's streams alike), not only the last;
+- `question` — every `mesh_ask` question; `answer` — its answer and
+  answerer when the platform serves one on the item (the writer is
+  there; the platform serves none yet);
+- `check` — a failed validation step: `step <name> (<command>) exited
+  <code>`, its environment kind, then its output's last twenty lines;
+- `handback` — a hand-back's reason (`SpentOn`) and the session's final
+  text;
+- `turn` — each session's start (`start: <adapter>, fresh session
+  (<why>)` or `resumed session <id>`) and end (session id, resumed or
+  fresh, how it ended), and, when a turn ends on a hand-back or a
+  question with no note opening `state:`, a turn entry saying so.
+
+The text is the session's or the tool's own words. **No secret is
+written**: no env value the node set, no token or credential — the
+session account's own secrets are redacted (`SessionAccount.Redact`), the
+same rule `record.json` keeps; a note that quotes a value is kept as the
+note said it.
+
+**The `state:` note** (`internal/harness/prompt.go`, `handback.go`).
+`BuildPrompt`'s `mesh_progress` guidance and `HandBackPrompt` ask for a
+last note opening `state:` naming what is done, what is next and what
+is open, so the platform's `last_note` and the record both carry where
+the work stands. Nothing is refused for its absence; the turn entry
+above records it.
+
+**RecordBudget and the read.** `ItemRecord` reads record.jsonl whole
+when it is within `RecordBudget` (6,000 characters); past it, the oldest
+whole entries are dropped from the front until it fits, the record's
+first `turn` entry always kept, and the read says how many were dropped
+(`clipRecord`). **The platform fallback**: with no local record —
+another node built the item, or the file is gone — `Runner.itemRecord`
+reads the item's `MeshActivityIndex` rows by `workItemId`
+(`gateway.Client.ItemActivity`, `fields/MeshActivityIndex.txt`) into the
+same entries — a progress row a `note`, one opening `question: ` a
+`question`, an answer row an `answer` — in time order, clipped the same
+way, logged `item <label>: record read from the platform (N entries)`.
+
+**BranchState** (`internal/node/branchstate.go`). `git log --oneline
+<base>..HEAD`, oldest first, at most thirty lines (the newest kept), and
+`git diff --stat <base>...HEAD`, at most forty, on the item's checkout;
+against the repo's default branch when the base is gone (merged), by
+the same rule as the retry's changed paths, logged `branch state: base
+<dep> is gone (merged); read against origin/<default>`; none when the
+checkout is gone, logged `branch state: checkout is gone; none read`.
+
+**The fallback prompt's two sections** (`internal/node/retryturn.go`).
+`freshRetryPrompt` — on both the not-resumable path and the
+unknown-session fallback in `Runner.RunItem` — is the build prompt,
+then `recordSections(freshContext)`, then `# The last attempt failed`
+and the retry message:
+
+- `# What earlier sessions did` — the record's entries oldest first as
+  `<at> <kind>: <text>`, after a line `(N older entries dropped to fit
+  the record's budget)` when any were;
+- `# What the branch holds` — the commits, then the diff stat;
+- one line: continue from the last entry, do not redo what the commits
+  already hold, and run the checks before any new work.
+
+A section with nothing in it is left out. A resumed session gets
+neither (its transcript has them). node.log says `item <label>: fresh
+session with the item's record (N entries, M commits)`, else `fresh
+session with no record (<why>; M commits)`. `freshContext` and
+`recordSections` are the shape the ask goal's fresh fallback (draft
+`the-node-resumes-a-session-when-its-question-is-answered`) reuses.
+`TestFreshRetryPromptCarriesTheRecord` proves the order and the log
+line, and that a resumed turn carries neither heading.
+

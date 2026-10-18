@@ -22,7 +22,9 @@ import (
 // on the argv, and the log is redacted. A kill by the pod's limits is
 // returned as the *sandbox.LimitError it is. The job's own Session (its
 // services started by the node) is used and left open; without one the
-// harness opens and closes its own.
+// harness opens and closes its own. An Outlive job on a harness that
+// DetachSandboxed runs detached instead (runDetached), outliving the
+// node.
 func (c *Codex) runSandboxed(ctx context.Context, job Job, onProgress func(Progress)) (Result, error) {
 	sess := job.Session
 	if sess == nil {
@@ -35,19 +37,31 @@ func (c *Codex) runSandboxed(ctx context.Context, job Job, onProgress func(Progr
 		}
 		defer sess.CloseAndLog()
 	}
-	home, env, err := c.prepareSandboxHome(job, sess)
+	home, env, _, err := c.prepareSandboxHome(job, sess)
 	if errors.Is(err, ErrNoIssuedCredential) {
 		return Result{}, fmt.Errorf("harness codex: %w", err)
 	}
 	if err != nil {
 		return Result{}, fmt.Errorf("harness codex: %s", Redact(err.Error(), job.Secrets...))
 	}
+	// a detached session keeps its home's token file for the node that
+	// adopts it, and its login for that node to write back (Attach)
+	detached := false
 	defer func() {
+		if detached {
+			home.release(false)
+			return
+		}
 		if err := home.close(); err != nil && c.Stderr != nil {
 			fmt.Fprintf(c.Stderr, "harness codex: write back the refreshed login: %v\n", err)
 		}
 	}()
 	secrets := append(append([]string{}, job.Secrets...), home.secrets...)
+	if c.DetachSandboxed && job.Outlive && job.Workspace != "" {
+		res, err, left := c.runDetached(ctx, job, sess, home, env, secrets, onProgress)
+		detached = left
+		return res, err
+	}
 
 	kept := c.keepSession(job, secrets)
 	defer kept.close()
@@ -93,7 +107,8 @@ func (c *Codex) runSandboxed(ctx context.Context, job Job, onProgress func(Progr
 // prepareSandboxHome makes the session's CODEX_HOME at
 // sess.CodexHome(), inside the pod's HOME, and returns it with the pod
 // session's env: job.Env with CODEX_HOME naming that directory (which
-// Session.Env passes by name), and the home's own variables. The login
+// Session.Env passes by name), and the home's own variables; and the job
+// as config.toml renders it (its runsheet relay placed in the pod). The login
 // is placed as prepareHome places it — a job's own CODEX_HOME (an
 // issued credential's auth.json) copied in and written back when Codex
 // refreshed it, else Account's plan login copied likewise or its API key
@@ -101,15 +116,15 @@ func (c *Codex) runSandboxed(ctx context.Context, job Job, onProgress func(Progr
 // runsheet relay as RelayScript in the HOME on a token file in the
 // CODEX_HOME. The HOME is the session's: Close removes it, so the home
 // is never owned here.
-func (c *Codex) prepareSandboxHome(job Job, sess *sandbox.Session) (*codexHome, []string, error) {
+func (c *Codex) prepareSandboxHome(job Job, sess *sandbox.Session) (*codexHome, []string, Job, error) {
 	dir := sess.CodexHome()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, nil, err
+		return nil, nil, job, err
 	}
 	h := &codexHome{dir: dir}
-	fail := func(err error) (*codexHome, []string, error) {
+	fail := func(err error) (*codexHome, []string, Job, error) {
 		h.release(true)
-		return nil, nil, err
+		return nil, nil, job, err
 	}
 	prov := c.Account.Provider
 	placed := jobCodexHome(job.Env)
@@ -173,7 +188,7 @@ func (c *Codex) prepareSandboxHome(job Job, sess *sandbox.Session) (*codexHome, 
 		}
 	}
 	env = append(env, "CODEX_HOME="+dir)
-	return h, append(env, h.env...), nil
+	return h, append(env, h.env...), job, nil
 }
 
 // copyLogin copies from's auth.json into the home, remembering it so

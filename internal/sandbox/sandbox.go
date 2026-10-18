@@ -200,8 +200,8 @@ type Config struct {
 	// ServiceTimeout bounds the wait for the services' health checks
 	// (DefaultServiceTimeout when 0).
 	ServiceTimeout time.Duration
-	// Stores are the node's package store and cache every session
-	// installs against (ADR 017 §3).
+	// Stores are the package store and cache every session installs
+	// against (ADR 017 §3): the node's, or one org's (WithStores).
 	Stores Stores
 }
 
@@ -214,6 +214,58 @@ type Sandbox struct {
 	// Logf is where the sandbox says what it fell back on (nil is the
 	// standard logger).
 	Logf func(format string, args ...any)
+	// open is the sessions this process has open, shared with every
+	// WithStores copy (openSet).
+	open *openSet
+}
+
+// openSet is the sessions of this node process between Open and Close:
+// what a sweep run while the node runs (the quartermaster's, ADR-034)
+// must keep whatever state their containers are in — a validation
+// between two steps, a session between Open and its agent's first
+// container, each a pod with only its infra running — which the
+// start-up sweep, run before any session of this process, never meets.
+type openSet struct {
+	mu sync.Mutex
+	m  map[*Session]struct{}
+}
+
+var openInit sync.Mutex
+
+// openSessions is sb's open set, made on first use under openInit so a
+// Sandbox and the WithStores copies made of it afterwards share one.
+func (sb *Sandbox) openSessions() *openSet {
+	openInit.Lock()
+	defer openInit.Unlock()
+	if sb.open == nil {
+		sb.open = &openSet{m: map[*Session]struct{}{}}
+	}
+	return sb.open
+}
+
+// Live is what a sweep run while this node process runs keeps: the pods
+// still standing and the HOME of every session Open made that Close has
+// not ended (openSet). It is the age guard ADR-034 owed, on the exact
+// sessions rather than an age.
+func (sb *Sandbox) Live() Keep {
+	var keep Keep
+	if sb == nil {
+		return keep
+	}
+	set := sb.openSessions()
+	set.mu.Lock()
+	sessions := make([]*Session, 0, len(set.m))
+	for s := range set.m {
+		sessions = append(sessions, s)
+	}
+	set.mu.Unlock()
+	for _, s := range sessions {
+		for _, p := range s.Pods() {
+			keep.Pods = append(keep.Pods, p.Name)
+		}
+		keep.Homes = append(keep.Homes, s.Home)
+	}
+	return keep
 }
 
 func (sb *Sandbox) logf(format string, args ...any) {
@@ -265,6 +317,8 @@ type Session struct {
 	// detached is a session whose agent outlives the node process: Close
 	// leaves its pods and HOME to whoever Reattaches it.
 	detached bool
+	// execs counts the commands Exec ran, naming each its own container.
+	execs int
 }
 
 // GitIdentity is a session's commit identity: the agent its .gitconfig
@@ -341,7 +395,12 @@ func (s *Sandbox) Open(label, kind string, git GitIdentity) (*Session, error) {
 	if len(name) > 40 {
 		name = name[:40]
 	}
-	return &Session{sb: s, Home: home, Label: label, Kind: kind, hooks: git.HooksDir, image: s.Config.Image, name: "mesh-" + name + "-" + hex.EncodeToString(rnd[:])}, nil
+	sess := &Session{sb: s, Home: home, Label: label, Kind: kind, hooks: git.HooksDir, image: s.Config.Image, name: "mesh-" + name + "-" + hex.EncodeToString(rnd[:])}
+	set := s.openSessions()
+	set.mu.Lock()
+	set.m[sess] = struct{}{}
+	set.mu.Unlock()
+	return sess, nil
 }
 
 // gitConfigValue quotes v for a .gitconfig line: `Mesh builder (mini)`
@@ -603,6 +662,63 @@ func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 	return classify(exit, time.Since(start), spec.Timeout, cfg.Limits, tail.String())
 }
 
+// Exec runs a short command — a preflight's step — in the session's pod
+// beside where its agent will run: the pod Start made with its services,
+// else one made now and kept for the next Run or StartDetached, with the
+// same mounts, environment (Session.Env of spec.Env) and limits as the
+// agent, in a container of its own (ExecName). The pod is never removed
+// here. A cancelled ctx returns ctx.Err(); a kill by a limit a
+// *LimitError; any other non-zero exit an *ExitError.
+func (s *Session) Exec(ctx context.Context, spec RunSpec) error {
+	cfg := s.sb.Config
+	s.mu.Lock()
+	started := s.started
+	s.execs++
+	n := s.execs
+	s.mu.Unlock()
+	var pod Pod
+	if started != nil {
+		pod = *started
+	} else {
+		var err error
+		if pod, err = s.createPod(ctx); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		s.started = &pod
+		s.mu.Unlock()
+	}
+	tail := &tailBuffer{max: 8 << 10}
+	stderr := io.Writer(tail)
+	if spec.Stderr != nil {
+		stderr = io.MultiWriter(spec.Stderr, tail)
+	}
+	start := time.Now()
+	exit, err := s.sb.Runtime.RunAgent(ctx, pod, AgentSpec{
+		Name:           ExecName(pod, n),
+		Image:          cfg.Image,
+		Workdir:        spec.Workspace,
+		Mounts:         s.Mounts(spec.Workspace),
+		Env:            s.Env(spec.Env),
+		Command:        spec.Command,
+		Limits:         cfg.Limits,
+		TimeoutSeconds: runtimeTimeout(spec.Timeout),
+		Stdin:          spec.Stdin,
+		Stdout:         spec.Stdout,
+		Stderr:         stderr,
+	})
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err != nil {
+		return fmt.Errorf("sandbox: exec: %w", err)
+	}
+	return classify(exit, time.Since(start), spec.Timeout, cfg.Limits, tail.String())
+}
+
+// ExecName is the container name of the session's nth Exec in a pod.
+func ExecName(pod Pod, n int) string { return fmt.Sprintf("%s-exec-%d", pod.Name, n) }
+
 // AgentName is the name of the agent's container in a pod.
 func AgentName(pod Pod) string { return pod.Name + "-agent" }
 
@@ -703,6 +819,23 @@ func (s *Session) Pods() []Pod {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]Pod(nil), s.pods...)
+}
+
+// WithStores is sb for sessions that install against st in place of
+// the node's Stores: the same runtime, image, limits, network and
+// TempDir, its sessions mounting st's dirs and naming them in their env
+// (Session.Mounts, Session.Env). A node serving several orgs opens each
+// org's sessions on its own org's store (mesh-cli ADR-034), so no
+// session mounts or names another org's pnpm store or npm cache. A nil
+// sb is nil.
+func (sb *Sandbox) WithStores(st Stores) *Sandbox {
+	if sb == nil {
+		return nil
+	}
+	sb.openSessions()
+	c := *sb
+	c.Config.Stores = st
+	return &c
 }
 
 // Reattach is the session an earlier node process detached: its pod and
@@ -806,12 +939,17 @@ func (s *Session) remove(ctx context.Context, pod Pod) {
 // anonymous volumes with it — and the session's HOME, and returns every
 // removal that failed, joined.
 //
-// A Detached session's Close removes nothing: its agent runs on.
+// A Detached session's Close removes nothing: its agent runs on. Either
+// way the session leaves the sandbox's open set (Sandbox.Live).
 func (s *Session) Close() error {
 	s.mu.Lock()
 	pods := append([]Pod(nil), s.pods...)
 	detached := s.detached
 	s.mu.Unlock()
+	set := s.sb.openSessions()
+	set.mu.Lock()
+	delete(set.m, s)
+	set.mu.Unlock()
 	if detached {
 		return nil
 	}

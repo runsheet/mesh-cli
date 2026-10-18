@@ -14,6 +14,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
 )
 
@@ -24,11 +25,19 @@ import (
 // graph handed in with PlanGoal, the session's cost with it. A goal
 // whose plan cannot be read three times is left in planning and said so.
 type Planner struct {
-	GW       Gateway
-	Harness  harness.Harness
-	WS       Workspacer
-	Cfg      *Config
+	GW      Gateway
+	Harness harness.Harness
+	WS      Workspacer
+	Cfg     *Config
+	// Roots, when set, put the session's checkouts under its org's work
+	// root (ADR-034). Nil keeps WorkRoot for every org.
+	Roots    *OrgRootSet
 	WorkRoot string
+	// BuildCache is a host session's GOCACHE; "" is BuildCacheDir().
+	BuildCache string
+	// Sandbox is the node's sandbox, when its sessions run in pods: a
+	// host session (nil) gets a scratch of its own (sessionScratch).
+	Sandbox *sandbox.Sandbox
 	// MCP is the built-in MCP server the session gets (runsheet);
 	// the tools attached for the planner role are rendered beside it
 	// (SelectTools, trd §3 Tools).
@@ -457,7 +466,11 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	if err != nil {
 		return err
 	}
-	dir := PlanDir(p.WorkRoot, goal.Slug)
+	root, err := workRootOfScope(p.Roots, scope, p.WorkRoot)
+	if err != nil {
+		return err
+	}
+	dir := PlanDir(root, goal.Slug)
 	names := make([]string, 0, len(repos))
 	for name := range repos {
 		names = append(names, name)
@@ -553,7 +566,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	p.logf("goal %s: planning in %s (%d repos), budget $%.2f (%s)", goal.Slug, dir, len(repos), budget, budgetSource)
 	ctx = withSubject(ctx, scope, goal.ProjectID, project.Slug)
 	gr, hasGoalRepo := goalRepo(goal, project, repos)
-	items, reasons, flags, questions, checkpoints, drafts, added, cost, acct, err := p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged, goalItems, replacing, sessionTok, gr, hasGoalRepo)
+	items, reasons, flags, questions, checkpoints, drafts, added, cost, acct, err := p.ask(ctx, goal, scope, dir, budget, in, repos, merged, goalItems, replacing, sessionTok, gr, hasGoalRepo)
 	acct.SetContextBytes(written.Bytes)
 	acct.SetLabel("goal "+goal.Slug, string(harness.KindPlan))
 	// the session's usage report rides the plan's hand-in; Finish logs it
@@ -577,7 +590,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		in.OverCap = over > in.MaxItems
 		var again float64
 		var second *SessionAccount
-		items, reasons, flags, questions, checkpoints, drafts, added, again, second, err = p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged, goalItems, replacing, sessionTok, gr, hasGoalRepo)
+		items, reasons, flags, questions, checkpoints, drafts, added, again, second, err = p.ask(ctx, goal, scope, dir, budget, in, repos, merged, goalItems, replacing, sessionTok, gr, hasGoalRepo)
 		defer second.Finish(ctx, harness.Result{})
 		second.SetContextBytes(written.Bytes)
 		second.SetLabel("goal "+goal.Slug, string(harness.KindPlan))
@@ -821,7 +834,8 @@ func (p *Planner) handInSplit(ctx context.Context, goal gateway.Goal, drafts []g
 // its goal drafts in place of all of those (ADR-023 (a)) — the session's cost and its account, whose usage report is built as the
 // session ends: the caller hands it in and Finishes it. An error means
 // there is no graph to hand in.
-func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int, goalItems []gateway.WorkItem, replacing *gateway.WorkItem, tok *gateway.GitHubToken, gr gateway.Repo, hasGoalRepo bool) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, []string, []gateway.GoalDraft, []addedDep, float64, *SessionAccount, error) {
+func (p *Planner) ask(ctx context.Context, goal gateway.Goal, scope Scope, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int, goalItems []gateway.WorkItem, replacing *gateway.WorkItem, tok *gateway.GitHubToken, gr gateway.Repo, hasGoalRepo bool) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, []string, []gateway.GoalDraft, []addedDep, float64, *SessionAccount, error) {
+	nodeID := scope.NodeID
 	acct, err := p.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goal.ID}, nodeID, Adapter(p.Harness))
 	if err != nil {
 		// an ErrNoCredential among them: no session starts, and the loop
@@ -843,7 +857,11 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 	// Tools: the served tools, so PlanPrompt can name them and say when
 	// to search.
 	in.Tools = toolHints(st.Use)
-	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: harness.PlanPrompt(in), MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model}
+	kept, err := keptRootOfScope(p.Roots, scope)
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, nil, 0, acct, err
+	}
+	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: harness.PlanPrompt(in), MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model, KeptRoot: kept}
 	if tok != nil {
 		// gh in the session runs on the goal's token and a config dir of
 		// its own, never the operator's login (adr-022)
@@ -856,6 +874,18 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 		defer unlessDetached(ctx, func() { os.RemoveAll(ghDir) })
 		job.Env = SessionEnv(tok, ghDir)
 	}
+	// the session's own scratch as its TMPDIR, gone with the session
+	// (sessionScratch); a detached one's by the node that ends it
+	// dir is PlanDir(root, slug): the org's work root is two up
+	scratchRoot, err := ScratchRoot(filepath.Dir(filepath.Dir(dir)))
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, nil, 0, acct, err
+	}
+	scratch, err := sessionScratch(p.Sandbox, scratchRoot, p.BuildCache, harness.KindPlan, goal.ID, &job)
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, nil, 0, acct, err
+	}
+	defer unlessDetached(ctx, func() { RemoveScratch(scratch) })
 	acct.Apply(&job)
 	if err := st.UseTools(&job, p.MCP, acct); err != nil {
 		return nil, nil, nil, nil, nil, nil, nil, 0, acct, fmt.Errorf("tools: %w", err)

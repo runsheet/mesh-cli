@@ -188,7 +188,7 @@ func (r *Runner) checkoutServed(ctx context.Context, t validationTarget, c mainC
 		}
 		return "", nil, validate.Classify(fmt.Errorf("compare %s...%s: %w", base, short(c.sha), err))
 	}
-	root, err := ScratchRoot(r.WorkRoot)
+	root, err := scratchRootFor(r.Roots, r.Scopes, t.item.OrgID, r.WorkRoot)
 	if err != nil {
 		return "", nil, fmt.Errorf("scratch: %w", err)
 	}

@@ -85,6 +85,9 @@ type validator struct {
 	// WorkRoot is the node's work root, under which a host run's
 	// scratch is made (ScratchRoot, scratch.go); "" is ~/.mesh/work.
 	WorkRoot string
+	// Roots, when set, put a host run's scratch under its item's org's
+	// (ADR-034).
+	Roots *OrgRootSet
 	// BuildCache is a run's GOCACHE; "" is CacheRoot's go/.
 	BuildCache string
 	// CacheRoot is the shared cache's root (the Runner's Cache.Root),
@@ -143,7 +146,7 @@ type validationTarget struct {
 }
 
 func (r *Runner) validator() validator {
-	vr := validator{GW: r.GW, WS: r.WS, Scopes: r.Scopes, Sandbox: r.Sandbox, Inspect: r.Inspect, Notices: r.Notices, logf: r.logf, WorkRoot: r.WorkRoot, BuildCache: r.BuildCache}
+	vr := validator{GW: r.GW, WS: r.WS, Scopes: r.Scopes, Sandbox: r.Sandbox, Inspect: r.Inspect, Notices: r.Notices, logf: r.logf, WorkRoot: r.WorkRoot, Roots: r.Roots, BuildCache: r.BuildCache}
 	if r.Cache != nil {
 		vr.CacheRoot = r.Cache.Root
 	}
@@ -214,7 +217,7 @@ func (vr validator) start(ctx context.Context, t validationTarget) (*buildValida
 	// node's one build cache (scratch.go): nothing of it left in /tmp —
 	// a sandboxed run's mounted into its pods with the shared cache's
 	// blob store read-only (sandbox.ValidationCache)
-	root, err := ScratchRoot(vr.WorkRoot)
+	root, err := scratchRootFor(vr.Roots, vr.Scopes, t.item.OrgID, vr.WorkRoot)
 	if err != nil {
 		return nil, fmt.Errorf("scratch: %w", err)
 	}
@@ -260,7 +263,12 @@ func (vr validator) start(ctx context.Context, t validationTarget) (*buildValida
 		if t.job != nil {
 			git = sandbox.GitIdentityFromEnv(t.job.Env)
 		}
-		s, err := vr.Sandbox.Open(t.label, "validate", git)
+		osb, err := orgSandbox(vr.Sandbox, vr.Roots, vr.Scopes, t.item.OrgID)
+		if err != nil {
+			removeScratch()
+			return nil, fmt.Errorf("package store: %w", err)
+		}
+		s, err := osb.Open(t.label, "validate", git)
 		if err != nil {
 			removeScratch()
 			return nil, err
@@ -316,6 +324,7 @@ func (r *Runner) validateBuild(ctx context.Context, b *buildRun, v *buildValidat
 		return att, nil
 	}
 	vf := &validationFailure{Step: failed}
+	b.rec.check(failed)
 	r.logf("item %s: %v; one more turn", b.label, vf)
 	b.report(ctx, vf.Error()+"; the builder gets one more turn")
 	res, runErr, ran := r.retryTurn(ctx, b, failed, att.Commit)
@@ -349,6 +358,7 @@ func (r *Runner) validateBuild(ctx context.Context, b *buildRun, v *buildValidat
 		return att, err
 	}
 	if failed, ok := failedStep(att); ok {
+		b.rec.check(failed)
 		return att, &validationFailure{Step: failed}
 	}
 	return att, nil
@@ -495,7 +505,9 @@ func (r *Runner) retryTurn(ctx context.Context, b *buildRun, failed validate.Ste
 	}
 	msg := harness.RetryTurnPrompt(harness.RetryTurn{Step: failed.Name, Command: failed.Command, ExitCode: failed.ExitCode, Output: failed.Output,
 		Branch: b.spec.Branch, HeadSHA: head, Acceptance: acceptance})
+	freshWhy := ""
 	fresh := func(why string) {
+		freshWhy = why
 		note := "session not resumed (" + why + "); fresh session with the failure"
 		r.logf("item %s: %s", b.label, note)
 		b.report(ctx, note)
@@ -511,7 +523,7 @@ func (r *Runner) retryTurn(ctx context.Context, b *buildRun, failed validate.Ste
 	done := r.noteRetryTurn(b.item.ID, turn.Resume)
 	defer func() { done() }()
 	b.cost.carry()
-	res, err = r.runTurn(ctx, b, turn)
+	res, err = b.recordedRun(turn, freshWhy, func() (harness.Result, error) { return r.runTurn(ctx, b, turn) })
 	if turn.Resume != "" && ctx.Err() == nil && res.SessionID == "" && (err != nil || !res.Success) {
 		// the agent never took the session up: the id is unknown to it
 		why := "the agent did not resume session " + sid
@@ -524,7 +536,7 @@ func (r *Runner) retryTurn(ctx context.Context, b *buildRun, failed validate.Ste
 		done()
 		done = r.noteRetryTurn(b.item.ID, "")
 		b.cost.carry()
-		res, err = r.runTurn(ctx, b, turn)
+		res, err = b.recordedRun(turn, freshWhy, func() (harness.Result, error) { return r.runTurn(ctx, b, turn) })
 	}
 	return res, err, true
 }

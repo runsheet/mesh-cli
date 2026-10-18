@@ -916,6 +916,11 @@ blob lookup the node's served-diff validations made (counts persisted
 in `~/.mesh/node.cache`), the cache root's size on disk and node.yaml's
 `validation_cache_max_bytes` — or `validation cache: no lookups yet`
 (Main validations from the served diff, below).
+Beside it is the cache's size line, from the node's hourly cache trim
+(`~/.mesh/node.cachesize`): `cache: 4.2 GiB of 20.0 GiB
+(/home/u/.cache/mesh/cache); scratch 1.0 GiB (/home/u/.mesh/work/.scratch);
+measured 2026-10-17T18:00:00Z`, or `cache: size unknown (no reading
+yet)` before the first trim (A host session's scratch, below).
 
 ### Start
 
@@ -1990,6 +1995,25 @@ heartbeat's holding summary opens with `takes <list>; ` and carries the
 same kinds as `holding.kinds` once the platform's schema reads it, so
 the console can say a kind no online node takes is why a goal waits.
 
+### A failed check resumes its session
+
+A failing validation step, or a retry claimed after a failed
+evaluation, resumes the build session that made the item — same
+adapter, credential and worktree, its transcript kept under
+`~/.mesh/resume/<item>/` for seven days — with one message naming what
+failed (ADR-030). Beside the resume record the node keeps
+`record.jsonl`: one line per note, question, answer, failed check,
+hand-back and turn, appended as it happens, never rewritten, and never
+holding a token or env value. When the session cannot be resumed, the
+fresh one gets the brief, then `# What earlier sessions did` — the
+record, oldest first — and `# What the branch holds` — the commits and
+diff stat past base — then the failure. The record is given whole up to
+`RecordBudget` (6,000 characters); past it the oldest whole entries are
+dropped, the first turn entry kept, never an entry shortened. With no
+local record (another node built it) it is read from the platform's
+activity rows. node.log says `fresh session with the item's record (N
+entries, M commits)` or `fresh session with no record (<why>)`.
+
 ### Attestations: the head it pushed
 
 After the last push of a build, a rework or a rebase — the push on the
@@ -2047,6 +2071,40 @@ for it. An evaluation still runs on the item's own checkout (ADR-027).
 [ADR-034](docs/adr/adr-034-a-node-validates-from-a-served-diff-with-a-shared-cache.md)
 has the detail.
 
+### A host session's scratch
+
+An unsandboxed session or validation never writes into the node's own
+`/tmp`. Each host build, evaluation, plan, rebase and research session,
+and each host validation, runs with a scratch dir of its own under
+`~/.mesh/work/.scratch` as its TMPDIR and GOTMPDIR, so whatever its
+`go test`, `mktemp` and go-build leave goes with it. They all share one
+Go build cache, `~/.cache/mesh/cache/go`, as GOCACHE. The scratch is
+removed when the session or validation ends, by whichever node handles
+the end, adopting or giving up included.
+
+The cache root, the Go build cache included, is held under node.yaml's
+`validation_cache_max_bytes` (default 20 GiB):
+
+```yaml
+validation_cache_max_bytes: 21474836480   # 20 GiB, the default
+```
+
+At the first tick and hourly after, a root over the cap is trimmed below
+80% of it, logged `cache: trimmed <before> to <after>`, and the size
+lands in `mesh node status`'s `cache:` line (above).
+
+A node killed mid-session leaves that session's scratch behind. At the
+next `mesh node start` the scratch sweep removes every dir under the
+scratch root and the node's own `mesh-session-*`, `mesh-gh-*`,
+`mesh-claude-*`, `mesh-node-*` (and, on a host node, `mesh-home-*`) dirs
+under `/tmp`. It keeps whatever an adopted session still names, another
+user's dirs and symlinks, and logs `scratch: swept N dirs, M bytes at
+start (K kept)`. `scripts/host-tmp-reading.sh [--baseline FILE]
+<user>...` reads what the node users hold under `/tmp` by prefix, to
+compare an hour apart.
+[ADR-036](docs/adr/adr-036-a-host-sessions-scratch-dies-with-the-session.md)
+has the detail.
+
 ### Credentials on fetch, push and pull
 
 Every git command the node runs for an item goes out on the item's own
@@ -2091,6 +2149,34 @@ $PATH`), and the step's command — ``command not found: <tool> (in
 a build's `failWorkItem` and a merge batch candidate's or main
 validation's failure alike (ADR-030's amendment 2026-10-16).
 
+### Reporting errors to Tripline
+
+A node can send its failures to Tripline, a Sentry-protocol ingest
+(`internal/tripline`, ADR-034). Give it a DSN in node.yaml, or in
+`MESH_TRIPLINE_DSN`, which wins and is never saved:
+
+```yaml
+tripline:
+  dsn: https://<key>@tripline.example/<project>
+  enabled: true   # left out, a dsn is on; false turns it off
+```
+
+`mesh node start` logs `tripline reporting on (<host>)` or `tripline
+reporting off`, and `mesh node status` prints `reporting: on (tripline
+<host>)` or why it is off (`no tripline dsn`, `disabled in node.yaml`,
+`bad tripline dsn`) — the host only, never the key.
+
+Four classes are sent, each where node.log already names it:
+`infrastructure` (an infrastructure or workspace release),
+`harness_unavailable` (an agent CLI out of credit or rate-limited),
+`sandbox_broken` and `session_failed` (a build's `session ended without
+success`). Each event is tagged `node`, `item`, `seq`, `goal`, `repo`,
+`role` and `class` and fingerprinted on the class and the message with
+ids, paths, shas and numbers taken out, so the same failure on three
+items is one issue counted three times. Every event passes a scrubber
+first: tokens, keys, URL credentials, the node's bearer and home paths
+never leave the machine.
+
 ### Tool results
 
 One `go test ./...` log or file dump can put 100 KB into a session's
@@ -2125,8 +2211,10 @@ research or a rebase session — runs in its own rootless **Podman** pod
 (mesh-specs ADR 007; `internal/sandbox/`), created when the session
 starts and removed when it ends. Build, evaluate and rebase sessions
 get their repository's services beside them in the pod (see
-[Services](#services)). Channel-mode sessions and Codex do not run in
-one yet.
+[Services](#services)). A Codex session — an evaluation, its preflight
+and the second opinion — runs in its pod too, from the image's `codex`
+(see [Codex on a node](#codex-on-a-node)). Channel-mode sessions do not
+run in one yet.
 
 - **Runtime.** `podman` on the node's `PATH`, rootless (the operator
   needs a subuid/subgid range, and the `cpu`, `memory` and `pids` cgroup
@@ -2143,13 +2231,16 @@ one yet.
   path, and a fresh temporary HOME (removed after the session) holding
   the `--mcp-config` file, `CLAUDE_CONFIG_DIR` (`$HOME/.claude`), an
   empty `GH_CONFIG_DIR` (`$HOME/.config/gh`) and a `.gitconfig` with the
-  operator's commit identity. Never the operator's home, `~/.mesh`, a
-  runner's directory or a container socket.
+  operator's commit identity — and, for a Codex session, its
+  `CODEX_HOME` at `$HOME/.codex` with the session's `config.toml` and
+  the issued credential's `auth.json`. Never the operator's home,
+  `~/.mesh`, a runner's directory or a container socket.
 - **Environment.** Built from an allow-list, never inherited:
   `PATH`, `HOME`, `LANG`, `TZ`, `TERM`, `CLAUDE_CONFIG_DIR`,
   `MESH_ITEM`, `MESH_SESSION_KIND`, `DISABLE_AUTOUPDATER=1`, and of what the node gave the
   session: `GH_TOKEN`, `GH_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN` or
-  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CODEX_API_KEY`,
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CODEX_API_KEY`, `CODEX_HOME`
+  (moved under the session's HOME),
   `MESH_ACCOUNT` and the tool secrets `MESH_TOOL_*`. Values reach
   podman through its own environment (`--env NAME`), never its command
   line. A sandboxed session has no operator login to fall back on: it
@@ -2545,8 +2636,11 @@ the other family by the rule below
 **The node's family choice** (ADR-011): before an evaluation starts, the node
 judges headroom across the issued Codex credentials and the Claude accounts and
 prefers Codex when an issued Codex credential has headroom for the item's priority.
-`mesh node start` says so in node.log: `codex: evaluations on Codex when an
-issued Codex credential has headroom, else on Claude`.
+`mesh node start` says once where its Codex comes from: `codex: evaluations on
+Codex from the node image (codex 0.157.0) when an issued Codex credential has
+headroom, else on Claude; …` on a sandboxed node, `… from the host binary <path>
+…` with the sandbox off, or `codex: no Codex evaluations: <why>` when neither
+has it.
 A planner may pin an item's evaluator to a family through the agent model;
 a pinned family with no headroom waits (not claimed, not failed).
 
@@ -2565,6 +2659,11 @@ path` or `evaluators: two — <reason>`.
 
 ### Install the CLI
 
+**A sandboxed node needs none**: its Codex sessions run in their pods
+from the node image's `codex` (ADR-007's amendment 2026-10-17), the
+preflight there too, and a host `codex` is never used. Install the CLI
+on the host only for a node with `sandbox: off`.
+
 Verified with **codex-cli 0.157.0**. With Node.js:
 
 ```bash
@@ -2580,8 +2679,10 @@ every session starts with a `Code Mode is unavailable` warning.
 
 ### The sandbox on Ubuntu
 
-Codex runs on the host, not in the node's pod (ADR 007), and its
-workspace-write sandbox is its own bundled bubblewrap. On Ubuntu with
+With `sandbox: off` Codex runs on the host, and its
+workspace-write sandbox is its own bundled bubblewrap. (On a sandboxed
+node it runs in the session's pod and the probe below runs there, `node`
+binding the socket in place of `mesh sandbox-probe`.) On Ubuntu with
 `kernel.apparmor_restrict_unprivileged_userns = 1` (the default since
 23.10) that bubblewrap cannot set up its network namespace and fails
 with `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`.

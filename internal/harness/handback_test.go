@@ -115,6 +115,17 @@ func TestHandBackOff(t *testing.T) {
 	}
 }
 
+// The hand-back prompt asks for a last mesh_progress note opening
+// `state:` naming what is done, what is next and what is open, so a
+// fresh fallback session has somewhere to start from (goal
+// a-fresh-session-starts-from-the-items-record).
+func TestHandBackAsksForAStateNote(t *testing.T) {
+	p := HandBackPrompt(DefaultHandBackAt)
+	if !strings.Contains(p, "mesh_progress note") || !strings.Contains(p, "`state:`") {
+		t.Errorf("hand-back prompt lacks a line asking for a final mesh_progress note opening `state:`:\n%s", p)
+	}
+}
+
 // The validation retry's turn names the step, its command, exit code and
 // output's end, and gives the hand-back's rule: never a push.
 func TestValidationRetryPromptNamesTheStep(t *testing.T) {

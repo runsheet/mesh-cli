@@ -15,6 +15,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
 )
 
@@ -34,11 +35,19 @@ import (
 // the claim on every tick and is told to wait, the way the loop asks
 // for work items. So a refusal here is the normal answer, not an error.
 type Director struct {
-	GW       Gateway
-	Harness  harness.Harness
-	WS       Workspacer
-	Cfg      *Config
+	GW      Gateway
+	Harness harness.Harness
+	WS      Workspacer
+	Cfg     *Config
+	// Roots, when set, put the session's checkouts under its org's work
+	// root (ADR-034). Nil keeps WorkRoot for every org.
+	Roots    *OrgRootSet
 	WorkRoot string
+	// BuildCache is a host session's GOCACHE; "" is BuildCacheDir().
+	BuildCache string
+	// Sandbox is the node's sandbox, when its sessions run in pods: a
+	// host session (nil) gets a scratch of its own (sessionScratch).
+	Sandbox *sandbox.Sandbox
 	// MCP is the built-in MCP server the session gets (runsheet);
 	// the tools attached for the director role are rendered beside it
 	// (SelectTools, trd §3 Tools).
@@ -153,7 +162,11 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	if err != nil {
 		return fmt.Errorf("repos: %w", err)
 	}
-	dir := ResearchDir(d.WorkRoot, project.Slug, direction.Slug)
+	root, err := workRootOfScope(d.Roots, scope, d.WorkRoot)
+	if err != nil {
+		return err
+	}
+	dir := ResearchDir(root, project.Slug, direction.Slug)
 	byName := map[string]gateway.Repo{}
 	names := make([]string, 0, len(all))
 	for _, r := range all {
@@ -224,9 +237,14 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		Tools: toolHints(st.Use), Goals: existing, Room: room, Proposes: direction.Proposes(),
 	})
 	budget, budgetSource := d.budgetWithSource()
+	kept, err := keptRootOfScope(d.Roots, scope)
+	if err != nil {
+		return err
+	}
 	job := harness.Job{
 		Kind: harness.KindResearch, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget,
 		Label: project.Slug + "/" + direction.Slug + " research", Timeout: d.Timeout, MCPServers: d.MCP, Model: d.Model,
+		KeptRoot: kept,
 	}
 	if toks != nil {
 		// gh in the session runs on the first sorted repo's token and a
@@ -240,6 +258,17 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		defer unlessDetached(ctx, func() { os.RemoveAll(ghDir) })
 		job.Env = SessionEnv(toks[names[0]], ghDir)
 	}
+	// the session's own scratch as its TMPDIR, gone with the session
+	// (sessionScratch); a detached one's by the node that ends it
+	scratchRoot, err := ScratchRoot(root)
+	if err != nil {
+		return fmt.Errorf("session scratch: %w", err)
+	}
+	scratch, err := sessionScratch(d.Sandbox, scratchRoot, d.BuildCache, harness.KindResearch, direction.ID, &job)
+	if err != nil {
+		return fmt.Errorf("session scratch: %w", err)
+	}
+	defer unlessDetached(ctx, func() { RemoveScratch(scratch) })
 	acct.SetContextBytes(written.Bytes)
 	acct.Apply(&job)
 	if err := st.UseTools(&job, d.MCP, acct); err != nil {

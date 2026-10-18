@@ -94,3 +94,33 @@ func TestNoStoresNoPackageEnv(t *testing.T) {
 		t.Errorf("mounts = %d, want the workspace and HOME alone", n)
 	}
 }
+
+// WithStores gives a session another store — one org's — in its mounts
+// and env, leaving the node's sandbox as it was.
+func TestWithStoresNamesTheGivenStores(t *testing.T) {
+	sb, node := storesSandbox(t)
+	root := filepath.Join(t.TempDir(), "orgs", "acme", "store")
+	org := Stores{Pnpm: filepath.Join(root, "pnpm"), Npm: filepath.Join(root, "npm")}
+	osb := sb.WithStores(org)
+	if sb.Config.Stores != node {
+		t.Fatalf("the node's stores changed: %+v", sb.Config.Stores)
+	}
+	sess, err := osb.Open("ship-it/2", "build", GitIdentity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	env := sess.Env(nil)
+	if !slices.Contains(env, "npm_config_cache="+org.Npm) || !slices.Contains(env, "pnpm_config_store_dir="+org.Pnpm) {
+		t.Errorf("env lacks the org's stores: %v", env)
+	}
+	m := sess.Mounts(t.TempDir())
+	for _, d := range []string{node.Pnpm, node.Npm} {
+		if slices.Contains(m, Mount{Source: d, Target: d}) {
+			t.Errorf("mounts carry the node's store %s: %+v", d, m)
+		}
+	}
+	if (*Sandbox)(nil).WithStores(org) != nil {
+		t.Error("a nil sandbox's WithStores is not nil")
+	}
+}

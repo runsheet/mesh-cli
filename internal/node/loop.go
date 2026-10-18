@@ -17,6 +17,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
+	"projectmesh.io/mesh-cli/internal/tripline"
 	"projectmesh.io/mesh-cli/internal/validate"
 )
 
@@ -114,6 +115,10 @@ type Loop struct {
 	// finding and each reclaim logged, the findings told to Findings and
 	// carried by every heartbeat after. Nil runs none.
 	Quartermaster *Quartermaster
+	// CacheTrim measures the shared cache and trims it under its cap at
+	// the first tick and at most once an hour after (cachetrim.go); nil
+	// trims nothing.
+	CacheTrim *CacheTrim
 	// Findings is told the quartermaster's findings each time its checks
 	// run (optional: `mesh node start` leaves them in node.findings by
 	// RunState.WriteFindings, for `mesh node status`).
@@ -205,6 +210,9 @@ type Loop struct {
 	// while the runtimes are unchanged. The build, evaluate, plan and
 	// research sessions record into the same one; nil declines nothing.
 	Declines *Declines
+	// Tripline reports the node's failure classes to Tripline (ADR-034,
+	// a node reports its errors to Tripline); nil reports nothing.
+	Tripline *tripline.Reporter
 	// Sandbox is the heartbeat's `sandbox` — the mode, runtime and image
 	// sessions run in (OpenSandbox, ADR 007); nil sends none.
 	Sandbox *gateway.SandboxInfo
@@ -1030,7 +1038,8 @@ func (l *Loop) Context(parent context.Context) context.Context {
 // any session: every context Context derived is cancelled, so each
 // session that outlives the node (Job.Outlive) detaches and runs on in
 // its own unit, for the next process to adopt (`mesh node upgrade`,
-// SIGHUP). A sandboxed or Codex session still ends with the node.
+// SIGHUP) — a sandboxed one, Claude's or Codex's, in its pod. A Codex
+// session on the host still ends with the node.
 func (l *Loop) Restart() {
 	l.mu.Lock()
 	l.exiting = true
@@ -1221,6 +1230,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	// the quartermaster after the heartbeat, so its checks never hold
 	// one up: what they find rides the next
 	l.runQuartermaster(ctx)
+	l.CacheTrim.RunIfDue(ctx, l.now())
 	p := l.pacing()
 	if !l.Draining() {
 		// every start below first picks its account (accountFor): one

@@ -20,6 +20,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
+	"projectmesh.io/mesh-cli/internal/tripline"
 	"projectmesh.io/mesh-cli/internal/validate"
 )
 
@@ -64,11 +65,15 @@ func Resolve(ctx context.Context, gw Gateway, item gateway.WorkItem) (*Resolved,
 
 // Runner runs one claimed item to its end (poll mode: `claude -p`).
 type Runner struct {
-	GW       Gateway
-	Harness  harness.Harness
-	WS       Workspacer
-	Cfg      *Config
-	Scopes   Scopes
+	GW      Gateway
+	Harness harness.Harness
+	WS      Workspacer
+	Cfg     *Config
+	Scopes  Scopes
+	// Roots, when set, are each served org's own roots (ADR-034): the
+	// item's checkout, clone and scratch go under its org's, WorkRoot
+	// unused for them. Nil keeps WorkRoot for every org.
+	Roots    *OrgRootSet
 	WorkRoot string
 	// BuildCache is a host validation's GOCACHE; "" is BuildCacheDir().
 	BuildCache string
@@ -107,6 +112,9 @@ type Runner struct {
 	// limits kill it (Loop.NoteCondition, the heartbeat's reason); nil
 	// tells no one.
 	Condition func(reason string)
+	// Tripline reports the node's failure classes to Tripline (ADR-034,
+	// a node reports its errors to Tripline); nil reports nothing.
+	Tripline *tripline.Reporter
 	// RuntimeBroken is told the error when a session's pod could not
 	// start on a broken container runtime (a *sandbox.RuntimeError) and
 	// its work was handed back runtime_broken; nil tells no one.
@@ -350,7 +358,10 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	ctx = WithLockHolder(ctx, label)
 	r.logf("item %s: %q on %s from %s", label, item.Title, res.Repo.FullName(), res.BaseRef())
 
-	spec := WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()}
+	spec, err := orgSpec(r.Roots, r.Scopes, item.OrgID, WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()})
+	if err != nil {
+		return r.fail(ctx, item, fmt.Errorf("workspace: %w", err))
+	}
 	// live on this node while this runs: no cleanup touches it (HoldWorkspace)
 	defer HoldWorkspace(spec.Dir())()
 	// the item's own GitHub token, on the checkout before it is cloned
@@ -433,7 +444,11 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		LastSession: r.State.LastSession(item.ID),
 		FoldNotes:   r.foldNotes(ctx, item, label),
 	}
-	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, MaxBudgetUSD: budget, Label: label, MCPServers: mcp, Model: model}
+	kept, err := keptRootFor(r.Roots, r.Scopes, item.OrgID)
+	if err != nil {
+		return err
+	}
+	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, MaxBudgetUSD: budget, Label: label, MCPServers: mcp, Model: model, KeptRoot: kept}
 	// past 60% of its budget with nothing committed the session is handed
 	// back for one commit-and-finish turn (ADR 012 Hand-back)
 	job.HandBackAt = harness.DefaultHandBackAt
@@ -448,6 +463,17 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		defer unlessDetached(ctx, func() { os.RemoveAll(ghDir) })
 		job.Env = SessionEnv(tok, ghDir)
 	}
+	// the session's own scratch as its TMPDIR, gone with the session
+	// (sessionScratch); a detached one's by the node that ends it
+	scratchRoot, err := scratchRootFor(r.Roots, r.Scopes, item.OrgID, r.WorkRoot)
+	if err != nil {
+		return r.fail(ctx, item, err)
+	}
+	scratch, err := sessionScratch(r.Sandbox, scratchRoot, r.BuildCache, harness.KindBuild, item.ID, &job)
+	if err != nil {
+		return r.fail(ctx, item, err)
+	}
+	defer unlessDetached(ctx, func() { RemoveScratch(scratch) })
 	ident.Apply(&job)
 	sc, _ := r.Scopes.ByOrg(item.OrgID)
 	acct, err := r.Credentials.Open(withSubject(ctx, sc, cmp.Or(res.Project.ID, item.ProjectID), res.Project.Slug), gateway.SessionRef{Kind: string(harness.KindBuild), ItemID: item.ID, GoalID: item.GoalID}, sc.NodeID, Adapter(r.Harness))
@@ -504,7 +530,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	}
 	// the checkout's services, started in the session's pod before its
 	// agent; the pod and its sidecars go on every way out
-	pod, err := OpenSessionPod(ctx, r.Sandbox, dir, label, harness.KindBuild, ident.Sandbox(dir), r.logf)
+	pod, err := openOrgSessionPod(ctx, r.Sandbox, r.Roots, r.Scopes, item.OrgID, dir, label, harness.KindBuild, ident.Sandbox(dir), r.logf)
 	// a session the harness detached at the node's shutdown runs on in
 	// its pod, its services and HOME (Session.Detach makes this Close
 	// nothing): the node that adopts it removes them
@@ -536,26 +562,33 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	// that built the item when this node kept it, else a fresh session
 	// told the same failure, saying why
 	turn, retrying := retryAfterEvaluation(item, latest)
-	freshPrompt, notResumed := job.Prompt, ""
+	// a fresh session — one that cannot resume, or whose resume the agent
+	// refuses — is told the item's record and branch state besides
+	// (freshRetryPrompt); a resumed one has them in its transcript
+	buildPrompt, notResumed, freshWhy := job.Prompt, "", ""
+	freshPrompt := func() string {
+		fc := r.freshContextFor(ctx, item, label, dir, spec.BaseRef, defaultBranchOf(res))
+		return freshRetryPrompt(buildPrompt, fc, turn)
+	}
 	if retrying {
 		turn.Branch = spec.Branch
 		turn.HeadSHA, _ = gitHead(ctx, dir)
 		turn.ChangedPaths = r.retryChangedPaths(ctx, label, dir, spec.BaseRef, defaultBranchOf(res))
-		freshPrompt = freshRetryPrompt(job.Prompt, turn)
-		rec, why := r.resumable(item.ID, label, dir, acct, pod)
+		rec, why := r.resumable(item.OrgID, item.ID, label, dir, acct, pod)
 		if why == "" {
 			job.Resume = rec.SessionID
 			job.Prompt = harness.RetryTurnPrompt(turn)
 			r.logf("item %s: resuming session %s with the failure", label, rec.SessionID)
 		} else {
-			notResumed = notResumedLine(label, why)
-			job.Prompt = freshPrompt
+			notResumed, freshWhy = notResumedLine(label, why), why
+			job.Prompt = freshPrompt()
 		}
 	}
 
 	// the session outlives this process: a restart adopts it (ADR 009)
 	job.Outlive = true
 	b := &buildRun{r: r, item: item, res: res, label: label, spec: spec, dir: dir, cred: cred, acct: acct, runtimes: runtimes, ident: ident, model: model, lastText: "session started", job: &job, pod: pod, started: time.Now(), nodeID: sc.NodeID}
+	b.rec = b.newRecorder()
 	b.report(ctx, "session started: "+spec.Branch+" on "+modelName(model))
 	endRetry := func() {}
 	if retrying {
@@ -575,7 +608,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		b.report(ctx, note)
 	}
 	result, runErr := b.run(ctx, func(sctx context.Context, onProgress func(harness.Progress)) (harness.Result, error) {
-		res, err := r.Harness.Run(sctx, job, onProgress)
+		res, err := b.recordedRun(job, freshWhy, func() (harness.Result, error) { return r.Harness.Run(sctx, job, onProgress) })
 		if job.Resume != "" && sctx.Err() == nil && harness.IsUnknownSession(err) {
 			// the agent has no such session: fresh, once, with the failure
 			line := notResumedLine(label, notResumedUnknownAgent)
@@ -583,8 +616,8 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 			b.report(ctx, line)
 			endRetry()
 			endRetry = r.noteRetry(item.ID, "", true)
-			job.Resume, job.Prompt = "", freshPrompt
-			res, err = r.Harness.Run(sctx, job, onProgress)
+			job.Resume, job.Prompt = "", freshPrompt()
+			res, err = b.recordedRun(job, notResumedUnknownAgent, func() (harness.Result, error) { return r.Harness.Run(sctx, job, onProgress) })
 		}
 		return res, err
 	})
@@ -624,6 +657,9 @@ type buildRun struct {
 	// set while the session runs.
 	nodeID string
 	watch  *claimWatch
+	// rec writes the item's record.jsonl as the session goes
+	// (recordwrite.go).
+	rec *recorder
 	// lastHeard is when the session's stream last said something, in
 	// unix nanoseconds, for the starve check (starve.go).
 	lastHeard atomic.Int64
@@ -755,6 +791,7 @@ func (b *buildRun) run(ctx context.Context, start func(ctx context.Context, onPr
 		if p.CostUSD > 0 {
 			b.cost.observe(p.CostUSD)
 		}
+		b.rec.workCall(p.WorkCall)
 	})
 }
 
@@ -822,6 +859,9 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	}
 	if runErr != nil {
 		runErr = b.acct.RedactErr(runErr)
+		if _, ok := harness.AsUnavailable(runErr); ok {
+			reportFailure(r.Tripline, tripline.HarnessUnavailable, runErr, item, label, repoOf(b.res), gateway.RoleBuilder)
+		}
 		b.report(ctx, "harness error: "+runErr.Error())
 		return r.fail(ctx, item, runErr)
 	}
@@ -830,7 +870,9 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	if !result.Success {
 		b.report(ctx, "session ended without success: "+result.Text)
 		b.reportToolUse(ctx, result)
-		return r.fail(ctx, item, fmt.Errorf("session ended without success: %s", truncate(result.Text, 500)))
+		failed := fmt.Errorf("session ended without success: %s", truncate(result.Text, 500))
+		reportFailure(r.Tripline, tripline.SessionFailed, failed, item, label, repoOf(b.res), gateway.RoleBuilder)
+		return r.fail(ctx, item, failed)
 	}
 	b.report(ctx, result.Text)
 	b.reportToolUse(ctx, result)
@@ -1049,7 +1091,10 @@ func (r *Runner) AdoptItem(ctx context.Context, item gateway.WorkItem, s FoundSe
 	}
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
 	ctx = WithLockHolder(ctx, label)
-	spec := WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()}
+	spec, err := orgSpec(r.Roots, r.Scopes, item.OrgID, WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()})
+	if err != nil {
+		return r.fail(ctx, item, fmt.Errorf("workspace: %w", err))
+	}
 	// live on this node while this runs: no cleanup touches it (HoldWorkspace)
 	defer HoldWorkspace(spec.Dir())()
 	// the item's token on the checkout again: the session's pushes, and
@@ -1072,9 +1117,10 @@ func (r *Runner) AdoptItem(ctx context.Context, item gateway.WorkItem, s FoundSe
 	// session committed as, though this process did not start it
 	ident := identityFor(r.Cfg, tools.RoleFor(string(harness.KindBuild)), item, res.Goal)
 	b := &buildRun{r: r, item: item, res: res, label: label, spec: spec, dir: s.State.Workspace, cred: cred, runtimes: r.runtimes(), ident: ident, model: s.State.Model, lastText: "session adopted", sessionID: s.State.SessionID, nodeID: s.State.NodeID}
+	b.rec = b.newRecorder()
 	where := fmt.Sprintf("pid %d", s.State.PID)
 	attachCtx := func(c context.Context) context.Context { return c }
-	if pod := r.adoptedPod(s); pod != nil {
+	if pod := r.adoptedPod(s, item); pod != nil {
 		// the session's pod and HOME, kept past the agent's end for the
 		// validation in it, go once the build is handed in — unless this
 		// node lets go of the session in turn
@@ -1096,18 +1142,24 @@ func (r *Runner) AdoptItem(ctx context.Context, item gateway.WorkItem, s FoundSe
 // host session, a node with no sandbox, or a HOME already gone —
 // validation then opens a fresh session of its own (validator.start),
 // and Attach's end removes what is left.
-func (r *Runner) adoptedPod(s FoundSession) *SessionPod {
+func (r *Runner) adoptedPod(s FoundSession, item gateway.WorkItem) *SessionPod {
 	if !s.Sandboxed() || r.Sandbox == nil || s.State.Home == "" {
 		return nil
 	}
 	if _, err := os.Stat(s.State.Home); err != nil {
 		return nil
 	}
+	// the adopted session's own org's store, as its Open had (orgSandbox)
+	sb, err := orgSandbox(r.Sandbox, r.Roots, r.Scopes, item.OrgID)
+	if err != nil {
+		r.logf("item %s: adopted pod: package store: %v; validating in a fresh session", s.State.Label, err)
+		return nil
+	}
 	var sess *sandbox.Session
 	if s.standingPod() {
-		sess = r.Sandbox.Reattach(sandbox.Pod{Name: s.State.Pod}, s.State.Home, s.State.Label)
+		sess = sb.Reattach(sandbox.Pod{Name: s.State.Pod}, s.State.Home, s.State.Label)
 	} else {
-		sess = r.Sandbox.ReattachHome(s.State.Pod, s.State.Home, s.State.Label)
+		sess = sb.ReattachHome(s.State.Pod, s.State.Home, s.State.Label)
 	}
 	return &SessionPod{Session: sess, logf: r.logf}
 }

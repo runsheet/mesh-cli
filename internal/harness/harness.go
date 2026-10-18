@@ -6,6 +6,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
 	"time"
@@ -38,6 +39,11 @@ type Job struct {
 	Kind Kind
 	// Workspace is the checked-out repo the session runs in.
 	Workspace string
+	// KeptRoot is the kept-sessions dir of the job's org (node
+	// OrgRoots.Kept, ADR-034): a Codex session's note, output.jsonl and
+	// stderr.log are kept under it and its sweep reads it alone. Empty
+	// is Codex.WorkRoot/kept-sessions, a node serving one org.
+	KeptRoot string
 	// Prompt is the whole prompt (see BuildPrompt).
 	Prompt string
 	// MaxBudgetUSD caps the session's spend; 0 means the adapter's default.
@@ -112,8 +118,9 @@ type Job struct {
 	// adopt, and Run returns ctx.Err() at once; only the job's own
 	// Timeout stops it. The session directory is also left when the
 	// session ends, for the node to remove (RemoveSession) once it has
-	// handled the end. A host Claude session only: a sandboxed or Codex
-	// one still ends with its ctx. A ctx cancelled with a cause that Is
+	// handled the end. A host Claude session, and a sandboxed Claude or
+	// Codex one whose harness runs it detached (DetachSandboxed); a host
+	// Codex one still ends with its ctx. A ctx cancelled with a cause that Is
 	// ErrStopSession is no shutdown: the unit is stopped and killed as at
 	// any other end (StopRequested).
 	Outlive bool
@@ -161,6 +168,11 @@ type SessionMeta struct {
 	// Account is the account label the session runs on; empty takes the
 	// job's MESH_ACCOUNT.
 	Account string
+	// LoginCache is where a Codex login the session refreshed is kept
+	// for the next session on its credential (node.CodexLoginCache): a
+	// node that adopts the session writes a refreshed one there, as the
+	// account's Cleanup does for the node that started it.
+	LoginCache string
 	// TempDirs are the temporary dirs the session runs in (its
 	// CLAUDE_CONFIG_DIR, GH_CONFIG_DIR): RemoveSession removes them with
 	// the session directory, whichever node process ends it.
@@ -178,6 +190,20 @@ type Progress struct {
 	// RateLimit is the account's plan standing, when the session has
 	// just reported it.
 	RateLimit *RateLimit
+	// WorkCall is a mesh-work tool call (tools.IsWorkTool) the stream
+	// has just carried, one Progress per call and in the stream's order;
+	// such a Progress carries nothing else — no Text, cost or session id
+	// — so a reader of those never mistakes it for one.
+	WorkCall *WorkCall
+}
+
+// WorkCall is one mesh-work tool call as the stream carried it: the
+// tool's own name (mesh_progress, mesh_ask, …) and its input byte for
+// byte, never re-marshalled. Result.WorkCalls still keeps the last
+// input per tool.
+type WorkCall struct {
+	Tool  string
+	Input json.RawMessage
 }
 
 // Result is how the session ended.
@@ -232,7 +258,7 @@ type Result struct {
 	ToolCallIDs map[string][]string
 	// WorkCalls is the input of each hosted mesh-work tool the session
 	// called (tools.IsWorkTool: mesh_finish, mesh_fail, mesh_verdict,
-	// mesh_plan, mesh_progress), keyed by the tool's own name without
+	// mesh_plan, mesh_progress, mesh_ask), keyed by the tool's own name without
 	// its mcp__<server>__ prefix, the last call's input winning: a
 	// Claude tool_use block's input, a Codex mcp_tool_call's arguments.
 	// The node reads a session's end from it before the final message

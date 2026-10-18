@@ -292,10 +292,25 @@ type ItemCred struct {
 // failure, noted once through fb. A refusal is an error — an item the platform will not give a
 // token to is not run on the operator's login instead.
 func NewItemCred(ctx context.Context, gw Gateway, ws Workspacer, scopes Scopes, item gateway.WorkItem, spec WorkspaceSpec, fb *TokenFallback, logf func(string, ...any)) (*ItemCred, error) {
+	return NewItemCredAt(ctx, gw, ws, scopes, item, spec, fb, logf, nil)
+}
+
+// NewItemCredAt is NewItemCred with spec's checkout made first by
+// checkout (nil: none), on ctx carrying the issued token (OnItemToken; the
+// operator's own credentials on an old platform) and before Authorize
+// writes the token into it: a rebase's fresh worktree (ADR-028). A
+// checkout that cannot be made is a *WorkspaceError, as a token that
+// cannot be written is.
+func NewItemCredAt(ctx context.Context, gw Gateway, ws Workspacer, scopes Scopes, item gateway.WorkItem, spec WorkspaceSpec, fb *TokenFallback, logf func(string, ...any), checkout func(context.Context) error) (*ItemCred, error) {
 	sc, _ := scopes.ByOrg(item.OrgID)
 	tok, err := gw.IssueItemRepoToken(ctx, item.ID, sc.NodeID)
 	if gateway.IsUnsupported(err) {
 		fb.Note(item.ID, logf)
+		if checkout != nil {
+			if err := checkout(ctx); err != nil {
+				return nil, &WorkspaceError{Repo: spec.Repo, Path: spec.Dir(), Err: err, Checkout: true}
+			}
+		}
 		return nil, nil
 	}
 	if err != nil {
@@ -303,6 +318,13 @@ func NewItemCred(ctx context.Context, gw Gateway, ws Workspacer, scopes Scopes, 
 	}
 	if tok.Repository != "" && !strings.EqualFold(tok.Repository, spec.Repo) {
 		return nil, fmt.Errorf("github token: issued for %s, the item is on %s", tok.Repository, spec.Repo)
+	}
+	if checkout != nil {
+		if err := checkout(OnItemToken(ctx, ws, tok)); err != nil {
+			// the checkout is the node's to make: a lock, a disk, a
+			// shared clone that will not fetch — the node's condition
+			return nil, &WorkspaceError{Repo: spec.Repo, Path: spec.Dir(), Err: err, Checkout: true}
+		}
 	}
 	if err := ws.Authorize(ctx, spec, tok); err != nil {
 		// the platform issued the token; writing it into the checkout
@@ -324,9 +346,17 @@ type WorkspaceError struct {
 	Repo string // owner/name
 	Path string // the repo cache the token was written into
 	Err  error
+	// Checkout: the checkout itself could not be made (NewItemCredAt),
+	// before any token was written; Path is the checkout's.
+	Checkout bool
 }
 
-func (e *WorkspaceError) Error() string { return "github token: " + e.Err.Error() }
+func (e *WorkspaceError) Error() string {
+	if e.Checkout {
+		return "workspace: " + e.Err.Error()
+	}
+	return "github token: " + e.Err.Error()
+}
 func (e *WorkspaceError) Unwrap() error { return e.Err }
 
 // WorkspaceErrorOf is err's *WorkspaceError, or nil.

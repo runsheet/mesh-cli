@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 	"projectmesh.io/mesh-cli/internal/harness"
@@ -89,6 +90,13 @@ type retryCase struct {
 
 func runRetry(t *testing.T, repoFiles map[string]string, rec *ResumeRecord, transcript, unknown bool, turns ...map[string]string) *retryCase {
 	t.Helper()
+	return runRetryWith(t, repoFiles, rec, transcript, unknown, nil, turns...)
+}
+
+// runRetryWith is runRetry with before run on the runner and its
+// checkout's workspace just ahead of the claim.
+func runRetryWith(t *testing.T, repoFiles map[string]string, rec *ResumeRecord, transcript, unknown bool, before func(r *Runner, ws *gitWS), turns ...map[string]string) *retryCase {
+	t.Helper()
 	r, ws, ch, f, item, logs := validatingRunner(t, repoFiles, turns...)
 	h := &resumeHarness{commitHarness: ch, unknown: unknown}
 	r.Harness = h
@@ -124,6 +132,9 @@ func runRetry(t *testing.T, repoFiles map[string]string, rec *ResumeRecord, tran
 	}
 	item.Attempts, item.Acceptance = 1, retryAcceptance
 	c := &retryCase{r: r, h: h, f: f, logs: logs, dir: dir, base: gitRun(t, ws.origin, "rev-parse", "main")}
+	if before != nil {
+		before(r, ws)
+	}
 	c.runErr = r.RunItem(context.Background(), item)
 	return c
 }
@@ -314,5 +325,164 @@ func TestRetryValidatesTheResumedTurnsHead(t *testing.T) {
 	finish := c.f.CallsNamed("finishWorkItem")
 	if len(finish) != 1 || finish[0].Input["headSha"] != head {
 		t.Fatalf("finish = %v, want head %s", finish, head)
+	}
+}
+
+// (e) With Roots laid out for several orgs, the runner resolves each
+// item's resume store through its own org: a record Kept for an item
+// of org A is found by org A's store, and org B's store — the one the
+// runner resolves for an item of org B with the same item id — reports
+// it not found (ADR-034, a node serving several orgs keeps one
+// ResumeStore per org).
+func TestRunnerResumesStoreIsPerOrg(t *testing.T) {
+	mesh := filepath.Join(t.TempDir(), ".mesh")
+	set, err := NewOrgRootSet(mesh, []string{"acme", "grapevine"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{Roots: set, Scopes: Scopes{{ID: "org-a", Login: "acme"}, {ID: "org-b", Login: "grapevine"}}}
+
+	storeA := r.resumes("org-a")
+	if storeA == nil {
+		t.Fatal("org A: no resume store resolved")
+	}
+	rootsA, err := set.For("acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storeA.Dir != rootsA.Resumes {
+		t.Fatalf("org A's store dir = %s, want %s", storeA.Dir, rootsA.Resumes)
+	}
+	if err := storeA.Keep("item-1", ResumeRecord{SessionID: "s-1", Adapter: "claude-code", Worktree: "/w"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := storeA.Lookup("item-1"); !ok {
+		t.Fatal("org A's store does not find its own record")
+	}
+
+	storeB := r.resumes("org-b")
+	if storeB == nil {
+		t.Fatal("org B: no resume store resolved")
+	}
+	if storeB.Dir == storeA.Dir {
+		t.Fatalf("org A and org B resolved the same store dir %s", storeA.Dir)
+	}
+	if _, ok := storeB.Lookup("item-1"); ok {
+		t.Fatal("org B's store found org A's record")
+	}
+
+	// an org the node does not serve looks up and keeps nothing, never
+	// another org's roots in its place
+	if r.resumes("org-unknown") != nil {
+		t.Fatal("an unserved org resolved a resume store")
+	}
+}
+
+// twoCommitsWS is gitWS whose checkout already holds two commits past
+// main on the item's branch, as an earlier session left it.
+type twoCommitsWS struct{ *gitWS }
+
+func (w *twoCommitsWS) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
+	dir, err := w.gitWS.Prepare(ctx, spec)
+	if err != nil {
+		return "", err
+	}
+	for i, f := range []string{"api/first.go", "api/second.go"} {
+		writeFiles(w.t, dir, map[string]string{f: "package api\n"})
+		gitRun(w.t, dir, "add", "-A")
+		gitRun(w.t, dir, "commit", "--quiet", "-m", []string{"api: the first half", "api: the second half"}[i])
+	}
+	return dir, nil
+}
+
+// earlierRecord is five entries an earlier session left, oldest first.
+func earlierRecord() []RecordEntry {
+	at := time.Date(2026, 10, 17, 9, 0, 0, 0, time.UTC)
+	return []RecordEntry{
+		{At: at, Kind: "turn", Text: "start claude-code fresh"},
+		{At: at.Add(time.Minute), Kind: "note", Text: "wrote the first half in api/first.go"},
+		{At: at.Add(2 * time.Minute), Kind: "question", Text: "should the flag default on?"},
+		{At: at.Add(3 * time.Minute), Kind: "check", Text: "step unit exited 1\nFAIL TestRetryClause"},
+		{At: at.Add(4 * time.Minute), Kind: "note", Text: "state: done the first half; next TestRetryClause; open the flag"},
+	}
+}
+
+// A retry that cannot resume runs with the brief, then what earlier
+// sessions did (the record, oldest first), then what the branch holds
+// (its two commits), then the failure, and says so in node.log; a retry
+// that resumes is given neither section.
+func TestFreshRetryPromptCarriesTheRecord(t *testing.T) {
+	before := func(r *Runner, ws *gitWS) {
+		r.WS = &twoCommitsWS{ws}
+		for _, e := range earlierRecord() {
+			if err := r.State.Resumes().AppendRecord(item1, e); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	turn := map[string]string{"api/retry_test.go": "package api\n"}
+
+	t.Run("fresh", func(t *testing.T) {
+		c := runRetryWith(t, nil, nil, true, false, before, turn)
+		if c.runErr != nil {
+			t.Fatal(c.runErr)
+		}
+		jobs, _, _ := c.h.Jobs()
+		if len(jobs) != 1 || jobs[0].Resume != "" {
+			t.Fatalf("jobs = %d, want one fresh session", len(jobs))
+		}
+		p := jobs[0].Prompt
+		order := []string{"# Item 1: Write the failing test", "# What earlier sessions did"}
+		for _, e := range earlierRecord() {
+			order = append(order, e.At.Format(time.RFC3339)+" "+e.Kind+": "+e.Text)
+		}
+		order = append(order, "# What the branch holds", "api: the first half", "api: the second half", "api/second.go", recordContinueLine, "# The last attempt failed")
+		at := 0
+		for _, want := range order {
+			i := strings.Index(p[at:], want)
+			if i < 0 {
+				t.Fatalf("prompt lacks %q after offset %d:\n%s", want, at, p)
+			}
+			at += i + len(want)
+		}
+		for _, want := range []string{retryClause, retrySatisfy, retryAcceptance} {
+			if !strings.Contains(p[at:], want) {
+				t.Fatalf("the failure lacks %q:\n%s", want, p)
+			}
+		}
+		if want := "item ship-it/1: fresh session with the item's record (5 entries, 2 commits)"; !strings.Contains(c.logs.String(), want) {
+			t.Fatalf("log lacks %q:\n%s", want, c.logs.String())
+		}
+	})
+
+	t.Run("resumed", func(t *testing.T) {
+		c := runRetryWith(t, nil, keptRecord(), true, false, before, turn)
+		if c.runErr != nil {
+			t.Fatal(c.runErr)
+		}
+		jobs, _, _ := c.h.Jobs()
+		if len(jobs) != 1 || jobs[0].Resume != keptSession {
+			t.Fatalf("jobs = %d, want the kept session resumed", len(jobs))
+		}
+		for _, h := range []string{"# What earlier sessions did", "# What the branch holds"} {
+			if strings.Contains(jobs[0].Prompt, h) {
+				t.Fatalf("a resumed turn got %q:\n%s", h, jobs[0].Prompt)
+			}
+		}
+		if strings.Contains(c.logs.String(), "fresh session with") {
+			t.Fatalf("a resumed turn logged a fresh session:\n%s", c.logs.String())
+		}
+	})
+}
+
+// recordSections says how many older entries were dropped, and is
+// empty with neither a record nor a branch.
+func TestRecordSectionsDroppedAndEmpty(t *testing.T) {
+	if got := recordSections(freshContext{}); got != "" {
+		t.Fatalf("empty context rendered %q", got)
+	}
+	got := recordSections(freshContext{Entries: earlierRecord()[:1], Dropped: 3})
+	if !strings.Contains(got, "(3 older entries dropped to fit the record's budget)") || strings.Contains(got, "# What the branch holds") {
+		t.Fatalf("rendered:\n%s", got)
 	}
 }

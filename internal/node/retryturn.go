@@ -1,9 +1,12 @@
 package node
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
@@ -49,14 +52,101 @@ func retryAfterEvaluation(item gateway.WorkItem, latest gateway.PriorAttempt) (h
 }
 
 // freshRetryPrompt is a fresh session's prompt for a retry turn: the
-// build prompt, then the same one message a resumed session gets.
-func freshRetryPrompt(build string, turn harness.RetryTurn) string {
-	return build + "\n\n# The last attempt failed\n\n" + harness.RetryTurnPrompt(turn)
+// build prompt, what earlier sessions did and what the branch holds
+// (recordSections), then the same one message a resumed session gets.
+func freshRetryPrompt(build string, fc freshContext, turn harness.RetryTurn) string {
+	return build + recordSections(fc) + "\n\n# The last attempt failed\n\n" + harness.RetryTurnPrompt(turn)
 }
 
-// resumes is the node's resume store, or nil when the runner keeps no
-// run state.
-func (r *Runner) resumes() *ResumeStore {
+// freshContext is what a fresh session that cannot read its own
+// transcript is told of the item: its record's entries, clipped under
+// RecordBudget (Runner.itemRecord), and its branch's state
+// (BranchState). Every fresh fallback — a retry that cannot resume, and
+// an answered ask's — renders it the same way, by recordSections.
+type freshContext struct {
+	Entries []RecordEntry
+	Dropped int
+	Branch  BranchStateResult
+}
+
+// recordContinueLine is the one instruction after the two sections.
+const recordContinueLine = "Continue from the last entry above: do not redo what the commits already hold, and run the checks before any new work."
+
+// recordSections renders fc after the brief and before the failure:
+// `# What earlier sessions did`, the record's entries oldest first as
+// `<at> <kind>: <text>` (a line saying how many older entries were
+// dropped, when any were), then `# What the branch holds`, the commits
+// oldest first and the diff stat, then recordContinueLine. A section
+// with nothing in it is left out; with neither, it is "".
+func recordSections(fc freshContext) string {
+	var b strings.Builder
+	if len(fc.Entries) > 0 {
+		b.WriteString("\n\n# What earlier sessions did\n\n")
+		if fc.Dropped > 0 {
+			fmt.Fprintf(&b, "(%d older %s dropped to fit the record's budget)\n", fc.Dropped, plural(fc.Dropped, "entry", "entries"))
+		}
+		for _, e := range fc.Entries {
+			fmt.Fprintf(&b, "%s %s: %s\n", e.At.UTC().Format(time.RFC3339), e.Kind, e.Text)
+		}
+	}
+	stat := strings.TrimSpace(fc.Branch.DiffStat)
+	if len(fc.Branch.Commits) > 0 || stat != "" {
+		b.WriteString("\n\n# What the branch holds\n\n")
+		for _, c := range fc.Branch.Commits {
+			b.WriteString(c + "\n")
+		}
+		if stat != "" {
+			b.WriteString("\n" + stat + "\n")
+		}
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	return strings.TrimRight(b.String(), "\n") + "\n\n" + recordContinueLine
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
+// freshContextFor reads the item's record and its checkout's branch
+// state for a fresh session and logs what it was given: `item <label>:
+// fresh session with the item's record (N entries, M commits)`, else
+// `item <label>: fresh session with no record (<why>)`.
+func (r *Runner) freshContextFor(ctx context.Context, item gateway.WorkItem, label, dir, base, def string) freshContext {
+	var fc freshContext
+	entries, _, dropped, ok := r.itemRecord(ctx, item.OrgID, item.ID, label)
+	fc.Entries, fc.Dropped = entries, dropped
+	fc.Branch = r.BranchState(ctx, label, dir, base, def)
+	switch {
+	case len(entries) > 0:
+		r.logf("item %s: fresh session with the item's record (%d entries, %d commits)", label, len(entries), len(fc.Branch.Commits))
+	case ok:
+		r.logf("item %s: fresh session with no record (the record is empty; %d commits)", label, len(fc.Branch.Commits))
+	default:
+		r.logf("item %s: fresh session with no record (none on this node or the platform; %d commits)", label, len(fc.Branch.Commits))
+	}
+	return fc
+}
+
+// resumes is the resume store for an item of orgID: its own org's when
+// Roots is laid out (ADR-034) — a ResumeStore over roots.Resumes, so an
+// org never finds or keeps a record under another org's dir — else the
+// runner's own (Resumes, then State's), nil when neither is set. An
+// orgID Roots does not serve looks up and keeps nothing (the item would
+// already have failed at its workspace, orgSpec).
+func (r *Runner) resumes(orgID string) *ResumeStore {
+	if r.Roots != nil {
+		roots, err := r.Roots.ForOrgID(r.Scopes, orgID)
+		if err != nil {
+			return nil
+		}
+		s := ResumeStore{Dir: roots.Resumes}
+		return &s
+	}
 	if r.Resumes != nil {
 		return r.Resumes
 	}
@@ -95,8 +185,8 @@ func sessionConfigDir(acct *SessionAccount, pod *SessionPod, adapter string) str
 // this node, another adapter, another credential, a worktree that is not
 // this claim's checkout (ADR-028: one worktree per item), or a transcript
 // that does not restore.
-func (r *Runner) resumable(itemID, label, dir string, acct *SessionAccount, pod *SessionPod) (ResumeRecord, string) {
-	store := r.resumes()
+func (r *Runner) resumable(orgID, itemID, label, dir string, acct *SessionAccount, pod *SessionPod) (ResumeRecord, string) {
+	store := r.resumes(orgID)
 	if store == nil {
 		return ResumeRecord{}, notResumedNoRecord
 	}

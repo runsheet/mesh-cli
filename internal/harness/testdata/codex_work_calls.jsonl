@@ -1,0 +1,11 @@
+{"type":"thread.started","thread_id":"t-work"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"mcp_tool_call","server":"runsheet","tool":"mesh_progress","arguments":{"note": "the failing test is written",  "item_id":"eeeeeeee-1111-4111-8111-eeeeeeeeeeee"},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"runsheet","tool":"mesh_progress","arguments":{"note": "the failing test is written",  "item_id":"eeeeeeee-1111-4111-8111-eeeeeeeeeeee"},"result":{"content":[{"type":"text","text":"noted"}],"structured_content":null},"error":null,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"writing the parser"}}
+{"type":"item.completed","item":{"id":"item_2","type":"mcp_tool_call","server":"runsheet","tool":"mesh_document","arguments":{"project":"runsheet/mesh","slug":"agents"},"result":{"content":[{"type":"text","text":"# agents"}]},"error":null,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_3","type":"mcp_tool_call","server":"runsheet","tool":"mesh_progress","arguments":{"item_id":"eeeeeeee-1111-4111-8111-eeeeeeeeeeee","note":"parser emits é calls\nsecond line"},"result":{"content":[{"type":"text","text":"noted"}]},"error":null,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_4","type":"mcp_tool_call","server":"runsheet","tool":"mesh_ask","arguments":{ "item_id" : "eeeeeeee-1111-4111-8111-eeeeeeeeeeee", "question":"which fixture?" },"result":{"content":[{"type":"text","text":"asked"}]},"error":null,"status":"completed"}}
+{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":0,"output_tokens":50}}
+{"type":"item.completed","item":{"id":"item_5","type":"mcp_tool_call","server":"runsheet","tool":"mesh_progress","arguments":{"item_id":"eeeeeeee-1111-4111-8111-eeeeeeeeeeee","note":"state: done the parser; next the node; open none","extra":[1, 2]},"result":{"content":[{"type":"text","text":"noted"}]},"error":null,"status":"failed"}}
+{"type":"turn.completed","usage":{"input_tokens":2000,"cached_input_tokens":0,"output_tokens":90}}

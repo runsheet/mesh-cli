@@ -51,7 +51,7 @@ func turnCostUSD(model string, u streamUsage) float64 {
 // HandBackPrompt is the one turn a handed-back session is resumed with;
 // at is the job's HandBackAt.
 func HandBackPrompt(at float64) string {
-	return fmt.Sprintf("You have used %.0f%% of this session's budget with nothing committed. Commit what works now with a message naming what is done and what is not, run the tests once, and finish — do not start new work.", at*100)
+	return fmt.Sprintf("You have used %.0f%% of this session's budget with nothing committed. Commit what works now with a message naming what is done and what is not, run the tests once, and finish — do not start new work. Before you stop, leave a mesh_progress note that opens `state:` and names what is done, what is next and what is open.", at*100)
 }
 
 // ValidationRetryPrompt is the one more turn a build gets when a step of

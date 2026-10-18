@@ -372,7 +372,7 @@ func TestRequiredServiceFailingEvaluateAndRebase(t *testing.T) {
 	f.WorkItems[item1]["rebaseState"] = "claimed"
 	f.RebaseTokens = true
 	ws = &fakeWS{root: t.TempDir()}
-	writeServices(t, filepath.Join(ws.root, "ship-it", "1"), servicesYML)
+	writeServices(t, filepath.Join(ws.root, "ship-it", "1-rebase"), servicesYML)
 	seen = fakeAgent(rt, nil)
 	rb := &Rebaser{Credentials: testCreds(gateway.New(f.URL(), "rs_test")), GW: gateway.New(f.URL(), "rs_test"), Harness: &harness.ClaudeCode{Sandbox: sb}, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, Sandbox: sb}
 	if err := rb.Rebase(context.Background(), item); err == nil || seen.ran {
