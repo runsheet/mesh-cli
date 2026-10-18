@@ -516,6 +516,36 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `~/.mesh/node.shares`, printed by `mesh node status` as `ORG FLOOR
   HELD READY` (`sharesLines`) or `shares: none recorded` (ADR-023,
   Reporting).
+- **Each org has its own roots** (ADR-034,
+  `docs/adr/adr-034-each-org-has-its-own-roots.md`, amending ADR-028;
+  `internal/node/orgroots.go`): on a node serving several orgs each
+  org's work, repos, scratch, package store, kept sessions, resume
+  records, MCP data and pod HOMEs are under `~/.mesh/orgs/<org>/`
+  (`OrgRoots`, `OrgRootSet`, keyed by `Scope.Name()`, `ValidateOrgName`
+  and a case clash refused; one org keeps today's paths,
+  `SingleOrgRoots`), used when a session kind's `Roots` is set —
+  `orgSpec` (one clone per repo per org), `workRootFor`/
+  `workRootOfScope`, `scratchRootFor`, `orgSandbox`/`openOrgSessionPod`
+  and `openScopePod` (the org's stores), `keptRootFor`/
+  `keptRootOfScope` (`Job.KeptRoot`), `SweepKeptSessions` and the
+  quartermaster's `kept_sessions` check, `SweepResumes`; an unserved
+  org refused. A pod is confined to its org's root (`confineTo` →
+  `Sandbox.WithOrg`, `Session.CheckedMounts`: every mount resolved
+  inside it before a pod is made, else `*sandbox.MountOutsideOrgError`,
+  `ErrMountOutsideOrg`), plan and research included, a pod that cannot
+  start releasing the plan claim or handing in an empty research; a
+  multi-org node with no sandbox runs nothing on the host
+  (`HostFallback`, `sandbox_required`). A build's token file holds its
+  own mesh session's bearer (ADR-035,
+  `docs/adr/adr-035-a-session-reads-mesh-context-on-its-own-bearer.md`:
+  `SessionBearers.Open`, `TokenFiles.Bind`/`KeepSession`, under
+  `OrgRoots.MCP` on the host; no route on a multi-org node releases the
+  build, `MachineBearerRefusal`). `two_orgs_sandboxed_e2e_test.go`'s
+  `TestTwoOrgsSandboxedNodeNeitherOrgReadsTheOthersFiles` runs two
+  orgs' builds, plans and research on one sandboxed node and asserts
+  each session's mounts, kept root and token file are its own org's
+  and every mount of the other's tree is refused. `mesh node start`
+  does not set `Roots` yet.
 - **A failed check resumes the session that built it** (ADR-030,
   `docs/adr/adr-030-a-failed-check-resumes-the-session-that-built-it.md`):
   every build keeps its session in `ResumeStore` (`RunState.Resumes()`,

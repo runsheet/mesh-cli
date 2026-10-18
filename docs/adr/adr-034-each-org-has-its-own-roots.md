@@ -180,12 +180,60 @@ evaluator, and plan and research move into pods in the goal's item 4.
 `mesh node start` does not set `Roots` yet: until adoption
 (`FindSessions`), the claims dir, the live probe, the disk floor and the
 quartermaster's checks walk every org's Work, a node serving several
-orgs keeps the one `~/.mesh/work`. Kept sessions, resume records,
-package stores and MCP data are laid out in `OrgRoots` but still read
-from the node-wide paths; the pod mounts that keep one org's session out
-of another's tree are the goal's own later items. The shared tree cache
-of ADR-034 (served diff) reads blobs by sha from `Git.ReposRoot`'s
-clones and is content-addressed; it is not split here.
+orgs keeps the one `~/.mesh/work`. The shared tree cache of ADR-034
+(served diff) reads blobs by sha from `Git.ReposRoot`'s clones and is
+content-addressed; it is not split here.
+
+### What the goal's later items laid on it (amended 2026-10-18)
+
+With `Roots` set, the rest of each org's tree is used as well as laid
+out:
+
+- **Package stores** (item 7). Each org's sandboxed sessions mount and
+  name their own `~/.mesh/orgs/<org>/store/{pnpm,npm}`: `orgSandbox`
+  (`sandbox.WithStores`, a per-org copy of the node's `Sandbox`) and
+  `openOrgSessionPod`, used by build, evaluate, rebase, validation and
+  main-validation pods and an adopted build's reattach; plan and
+  research by `openScopePod`. One org, or nil `Roots`, keeps
+  `~/.mesh/store`; an unserved org opens no pod (`package store: org
+  roots: …`). `TestTwoOrgsSessionsInstallAgainstTheirOwnStore`.
+- **Kept sessions** (items 11, 12). `harness.Job.KeptRoot` is the org's
+  `OrgRoots.Kept` (`keptRootFor` by org id for build, evaluate and
+  rebase, `keptRootOfScope` for plan and research; an unserved org
+  refused; no roots `""`, the harness's `<work root>/kept-sessions`),
+  and the harness writes and sweeps a kept stream there.
+  `OrgRootSet.SweepKeptSessions` sweeps each org's Kept; the
+  quartermaster's fifth check, `kept_sessions` (`KeptSessionsCheck`),
+  runs it beside `<work root>/kept-sessions`.
+- **Resume records** (item 9). Kept, looked up and swept per org under
+  `OrgRoots.Resumes` (`OrgRootSet.SweepResumes`), each org's records
+  only.
+- **Plan and research in pods** (item 10). A plan and a research run in
+  their org's pod (`openScopePod`, opened before the harness); a pod
+  that cannot start releases the plan claim (`PodStartError`, no try
+  counted) or hands in an empty research, each held off the node for
+  `WorkspaceReleaseHold`; on a multi-org node with no sandbox both are
+  refused `sandbox_required` as a build is.
+- **MCP data** (item 5, ADR-035). A build's token file holds its own
+  mesh session's bearer, under `OrgRoots.MCP`'s
+  `sessions/<item>-<attempt>/` on the host or in the pod's HOME under
+  `OrgRoot.HomesDir`.
+
+`internal/node/two_orgs_sandboxed_e2e_test.go`
+(`TestTwoOrgsSandboxedNodeNeitherOrgReadsTheOthersFiles`, item 6) holds
+it together: one sandboxed node of an enterprise owner serving acme and
+beta runs a build of each at once, then a plan and a research of each,
+on the gatewaytest fake and the fake runtime. For every session it
+asserts the job carries a pod; its mounts are its own org's checkout,
+HOME, stores and — for a build's worktree — clone git dir, nothing
+under the other org's tree or the node-wide store; its `KeptRoot` and
+token file are its own org's; a build's token is its own mesh
+session's id token, the two orgs' different and neither the machine's
+(a plan's and a research's still the machine bearer, as ADR-035
+leaves them); and, from inside the session, `Session.Run` on the
+other org's work root, checkout, clone, kept sessions, pnpm store, npm
+cache, MCP dir, a token file there, its HOMEs and the node-wide store
+is each refused `ErrMountOutsideOrg` with no pod made.
 
 ## Consequences
 
