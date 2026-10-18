@@ -362,6 +362,11 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	if err != nil {
 		return r.fail(ctx, item, fmt.Errorf("workspace: %w", err))
 	}
+	// a node serving several orgs runs no session on the host, where it
+	// could read every org's files (ADR-034, Refusals)
+	if err := HostFallback(r.Sandbox, r.Scopes, item.OrgID, spec.Dir()); err != nil {
+		return r.releaseHostFallback(ctx, item, label, err)
+	}
 	// live on this node while this runs: no cleanup touches it (HoldWorkspace)
 	defer HoldWorkspace(spec.Dir())()
 	// the item's own GitHub token, on the checkout before it is cloned

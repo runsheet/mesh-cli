@@ -32,11 +32,16 @@ const (
 	// its user namespace refused, or no runtime to ask at all — never the
 	// agent's own command failing inside a pod that started fine.
 	RuntimeBroken EnvironmentKind = "runtime_broken"
+	// SandboxRequired is a node serving two or more orgs with no sandbox
+	// to run a session in (`sandbox: off`, or no runtime): a host session
+	// can read every org's files, so none is started (mesh-cli ADR-034,
+	// Refusals).
+	SandboxRequired EnvironmentKind = "sandbox_required"
 )
 
 // EnvironmentKinds is the closed set, in the order the ADR names them.
 func EnvironmentKinds() []EnvironmentKind {
-	return []EnvironmentKind{StepTimeout, ToolMissing, CredentialRefused, ImagePullRefused, RuntimeBroken}
+	return []EnvironmentKind{StepTimeout, ToolMissing, CredentialRefused, ImagePullRefused, RuntimeBroken, SandboxRequired}
 }
 
 // Valid says k is one of EnvironmentKinds.

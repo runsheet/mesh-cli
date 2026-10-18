@@ -104,6 +104,77 @@ node lacks. A node that goes from one org to two lays both out under
 `~/.mesh/orgs/`; what was under `~/.mesh/work` is left to finish there
 and to the sweep.
 
+### Refusals
+
+Laying the trees out apart is half of it; the other half is that a
+session of one org is never handed a path of another's. ADR-017's §2
+refuses a pod a mount of any other item's worktree; on a node serving
+several orgs the same refusal is drawn at the org's tree (item 3 of the
+goal).
+
+**A pod mounts nothing outside its org's root.** `sandbox.OrgRoot{Org,
+Path}` is the one tree a session may mount from — `Path` the org's
+`OrgRoots.Base`, `~/.mesh/orgs/<org>`. The node confines a session to
+it by its checkout (`orgRootOf(dir)`: the org whose `work` root holds
+the dir; `confineTo` → `Sandbox.WithOrg`), in `OpenSessionPod` — build,
+evaluate, rebase, a merge batch's candidate and a main validation — and
+in a validation that opens its own pod. A confined sandbox makes its
+sessions' HOMEs under `<org root>/homes` (`OrgRoot.HomesDir`, 0700),
+and `Session.Run`, `Session.StartDetached` and `Session.Exec` take their mounts from
+`Session.CheckedMounts`, which runs every source through
+`OrgRoot.Check(what, path)` **before a pod is made**:
+`filepath.EvalSymlinks` of the source must be the org's resolved root
+or under it. The first that is not refuses the session with a
+`*sandbox.MountOutsideOrgError` — `errors.Is(err,
+sandbox.ErrMountOutsideOrg)`, naming what it was, the path (and what it
+resolved to), the org and its root — and no pod, agent or other mount
+is made in its place. Refused, each by its own test in
+`internal/sandbox/orgroot_test.go`:
+
+| mount | refused when | test |
+| ----- | ------------ | ---- |
+| workspace | the checkout is outside the org's root (another org's work) | `TestConfinedSessionRefusesAWorkspaceOutsideTheOrgRoot` (Run and StartDetached start nothing) |
+| home | the session's HOME is outside it | `TestConfinedSessionRefusesAHomeOutsideTheOrgRoot` |
+| git common dir | a worktree in the org's work whose `.git` names a clone in another org's repos root | `TestConfinedSessionRefusesACommonDirInAnotherOrgsRepos` |
+| package store | a store dir of another org (`Config.Stores`) | `TestConfinedSessionRefusesAnotherOrgsStore` |
+| hooks | the checkout's hooks dir is outside it | `TestConfinedSessionRefusesAHooksDirOutsideTheOrgRoot` |
+| any, by a symlink | a path inside the root that is a symlink out of it — followed, and refused naming the link and where it resolves | `TestConfinedSessionRefusesASymlinkOutOfTheOrgRoot` |
+
+The worktree's own admin entry (`git dir`) and a detached agent's stream
+directories (`stream dir`) are checked the same way. A source that
+cannot be resolved is refused too. A checkout under today's single
+`~/.mesh/work` — a node serving one org — is confined by nothing
+(`TestUnconfinedSessionChecksNothing`, `TestOrgRootOfACheckout`). Not
+checked: a validation's shared cache (`RunSpec.Cache`: the Go build
+cache and the tree cache's read-only blobs, node-wide and
+content-addressed, ADR-034 served diff), split per org later if at all.
+
+**The host fallback refuses a second org.** A node with no sandbox —
+`sandbox: off`, or a mode left out on a machine whose runtime does not
+answer — runs sessions on the host as the node user, who can read every
+org's checkouts, clones, kept sessions, stores and MCP data. So a node
+serving two or more orgs (`len(Scopes) >= 2`) with no sandbox runs no
+build and no rebase: `HostFallback(sb, scopes, orgID, dir)` answers a
+`*HostFallbackError` (`errors.Is` `ErrHostServesSeveralOrgs`) naming the
+org, the checkout and every org served, kinded `sandbox_required`
+(`validate.SandboxRequired`, ADR-030's sixth kind), checked after the
+item's spec and before its token, checkout or session. A build is
+released (`ReleaseOnHostFallback`: `ReleaseWorkItem`, attempts
+unchanged, reason `sandbox_required: <refusal>`; a refused release
+fails it with the same reason) and held off the node for
+`WorkspaceReleaseHold`; a rebase fails back to its builder with the same
+reason. node.log says it once per run, `sandbox: off on a node serving
+N orgs (…); … refused; every session is handed back until the sandbox
+is on …`, each item's release one short line. A node serving one org
+runs on the host as before. `internal/node/orgsandbox_refusal_test.go`:
+`TestHostFallbackRefusesATwoOrgNodeWithSandboxOff`,
+`TestHostFallbackAllowsAOneOrgNode`,
+`TestRunItemOnATwoOrgNodeWithSandboxOffIsReleased` (no session, no
+checkout, released, held, said once) and
+`TestRunItemOnAOneOrgNodeWithSandboxOffRuns`. Evaluations, plans and
+research are not refused here: an evaluation cannot be released by its
+evaluator, and plan and research move into pods in the goal's item 4.
+
 ### What this item leaves to the goal's later items
 
 `mesh node start` does not set `Roots` yet: until adoption
