@@ -111,12 +111,15 @@ type Job struct {
 	Meta SessionMeta
 	// TokenDir, when set, is where a host session's runsheet token file
 	// goes in place of its own session directory: its org's MCP root
-	// (mesh-cli ADR-035). A pod's file stays in the pod's HOME, the only
-	// place the pod can read it.
+	// (mesh-cli ADR-035). A pod's file goes there too, or in a temporary
+	// dir of the node's: never in the pod, which reaches the bearer only
+	// through the node's relay endpoint (placePodRelay).
 	TokenDir string
 	// tokenFile is the session's runsheet token file once the
-	// harness placed it (placeMeshContext), for its state.json.
-	tokenFile string
+	// harness placed it (placeMeshContext), for its state.json; and, in a
+	// pod, relaySocket and relayURL are its relay endpoint's
+	// (placePodRelay).
+	tokenFile, relaySocket, relayURL string
 	// Outlive makes the session outlast the node process (mesh-cli ADR
 	// 009): a cancelled ctx — the node shutting down — leaves the unit
 	// running and its session directory in place for the next node to
