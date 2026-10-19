@@ -178,7 +178,8 @@ func TestCreatePodFallsBackWhenTheInspectFails(t *testing.T) {
 }
 
 // The agent's environment is built from the allow-list: the node's own
-// variables never reach it, nor any job variable outside the list.
+// variables never reach it, nor any job variable outside the list, nor
+// the item's GitHub token and gh config dir (HeldOutEnv).
 func TestAgentEnvIsTheAllowList(t *testing.T) {
 	t.Setenv("MESH_DECOY", "decoy-from-node")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "aws-secret")
@@ -207,18 +208,18 @@ func TestAgentEnvIsTheAllowList(t *testing.T) {
 		names = append(names, k)
 	}
 	sort.Strings(names)
-	want := []string{"CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR", "DISABLE_AUTOUPDATER", "GH_CONFIG_DIR", "GH_TOKEN", "HOME", "LANG", "MESH_ACCOUNT", "MESH_ITEM", "MESH_SESSION_KIND", "MESH_TOOL_LINEAR_API_KEY", "OPENAI_API_KEY", "PATH", "TERM", "TZ"}
+	want := []string{"CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR", "DISABLE_AUTOUPDATER", "HOME", "LANG", "MESH_ACCOUNT", "MESH_ITEM", "MESH_SESSION_KIND", "MESH_TOOL_LINEAR_API_KEY", "OPENAI_API_KEY", "PATH", "TERM", "TZ"}
 	if !slices.Equal(names, want) {
 		t.Fatalf("env names = %v\nwant %v", names, want)
 	}
-	if got["GH_TOKEN"] != "ghs_item" || got["HOME"] != sess.Home {
-		t.Fatalf("GH_TOKEN %q HOME %q", got["GH_TOKEN"], got["HOME"])
+	if got["HOME"] != sess.Home {
+		t.Fatalf("HOME %q", got["HOME"])
 	}
-	if got["GH_CONFIG_DIR"] != filepath.Join(sess.Home, ".config", "gh") || got["CLAUDE_CONFIG_DIR"] != filepath.Join(sess.Home, ".claude") {
+	if got["CLAUDE_CONFIG_DIR"] != filepath.Join(sess.Home, ".claude") {
 		t.Fatalf("config dirs must be under the temp HOME: %v", got)
 	}
 	for _, v := range got {
-		if strings.Contains(v, "decoy") || v == "aws-secret" || v == "ghp_operator_admin_org" {
+		if strings.Contains(v, "decoy") || v == "aws-secret" || v == "ghp_operator_admin_org" || v == "ghs_item" {
 			t.Fatalf("a node or decoy value leaked: %v", got)
 		}
 	}
@@ -239,7 +240,8 @@ func TestAgentEnvIsTheAllowList(t *testing.T) {
 			t.Fatalf("podman's own env passes %s on", k)
 		}
 	}
-	if v, _ := lastValue(penv, "GH_TOKEN"); v != "ghs_item" {
+	// neither the item's token nor the operator's reaches podman's env
+	if v, ok := lastValue(penv, "GH_TOKEN"); ok || v != "" {
 		t.Fatalf("podman env GH_TOKEN = %q", v)
 	}
 	// the container's HOME is podman's too, read by --env HOME; its store
