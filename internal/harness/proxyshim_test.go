@@ -96,7 +96,15 @@ func startProxyShim(t *testing.T, socket, name string) *relayProc {
 
 func listenUnix(t *testing.T, gw http.Handler) string {
 	t.Helper()
-	socket := filepath.Join(t.TempDir(), "proxy.sock")
+	// A short dir of its own, not t.TempDir(): nested under the test's
+	// own name, that can run past AF_UNIX's ~108-byte sun_path, as
+	// internal/sessionproxy's own proxy_test.go avoids the same way.
+	dir, err := os.MkdirTemp("", "sp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "proxy.sock")
 	ln, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)
