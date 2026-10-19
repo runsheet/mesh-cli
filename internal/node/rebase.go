@@ -192,6 +192,12 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	if err := r.WS.Identify(ctx, dir, ident); err != nil {
 		return fail(fmt.Errorf("workspace: %w", err))
 	}
+	// a conflict only in the repository's declared generated files is
+	// regenerated, with no account and no session (tryRegenerate); any
+	// other ends here and the session below runs as it always has
+	if done, err := r.tryRegenerate(ctx, rb, cred, dir, branch, spec.BaseRef); done {
+		return err
+	}
 	orgName := r.Scopes.NameOf(item.OrgID)
 	cx, err := FetchContext(ctx, r.GW, orgName, res.Project.Slug, ContextOptions{Budget: r.contextBudget(), Repos: []string{res.Repo.FullName()}, Checkouts: map[string]string{res.Repo.FullName(): dir}, Goal: res.Goal, Logf: r.logf})
 	if err != nil {
