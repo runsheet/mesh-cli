@@ -1070,7 +1070,16 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   unknown or unread subject's, a symlink or research/claims/node-slug;
   `ApplyWorkSweep` removes it, `sweep: removed <goal>/<seq> (<why>,
   <bytes>)` and a total, and the plan's `String()` is those lines (the
-  dry run). The start-up and hourly wiring is a later item.
+  dry run). It runs at start-up in `adoptSessions` right after
+  `SweepScopes` (the found sessions' subjects live), then hourly from
+  the loop (`Loop.WorkSweep`, `WorkSweepEvery`, default
+  `DefaultWorkSweepEvery`, an hour on `Loop.Now`, the first tick only
+  starting the clock; live `Loop.LiveSubjects()`;
+  `TestWorkSweepHourly`), and by hand as `mesh node sweep [--dry-run]`
+  (`internal/commands/nodesweep.go`: orgs from `MyOrgs`, live every
+  alive `.session` under the root, `node.AliveSessionSubjects`; a dry
+  run prints the lines and `sweep: dry run; nothing removed`); a failed
+  removal is logged and in the next pass's plan again.
 - **Held goals are a record** (`internal/node/held.go`, goal
   a-refused-plan-is-released-not-replanned): `HeldGoal{GoalID, Slug,
   Org, Kind, Reason, Since, Until}` is a goal this node holds off

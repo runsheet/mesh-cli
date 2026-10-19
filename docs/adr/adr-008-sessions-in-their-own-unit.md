@@ -305,9 +305,31 @@ removes it. The planning reads and removes nothing.
   clone is left for `forgetStaleRegistrations` and the quartermaster's
   `pruneGoneWorktrees`, which forget a gone, unlocked one. The plan's `String()` is exactly those lines: a dry run is
   `PlanWorkSweep` without `ApplyWorkSweep`.
-- **When.** Once at start-up after the scope sweep, then hourly, and by
-  hand as `mesh node sweep [--dry-run]` — wired by a later item of the
-  goal.
+- **When.** Once at start-up, in `mesh node start`'s `adoptSessions`
+  right after `SweepScopes` and before adoption, its live set the found
+  sessions' item, goal and direction ids; then hourly from the loop —
+  `Loop.WorkSweep` at the end of a tick once `Loop.WorkSweepEvery`
+  (`DefaultWorkSweepEvery`, an hour) has passed on `Loop.Now` since the
+  last, the first tick only starting the clock, so the first loop pass
+  is an hour after the start-up one and never two run within the hour
+  (`runWorkSweep`, `TestWorkSweepHourly`) — its live set
+  `Loop.LiveSubjects()`: `RunningIDs`, the evaluations, plans, research,
+  rebases and main validations running, and every `Adopted` subject.
+  Both log through the node's logger and keep the channel's
+  `<node-slug>`. A pass with nothing to remove logs nothing but what it
+  left.
+- **By hand.** `mesh node sweep` runs one pass on `~/.mesh/work` for
+  every org the credential belongs to (`MyOrgs`), its live set every
+  `.session` under the root whose state's pid is alive, whatever node
+  it names (`node.AliveSessionSubjects`; a sandboxed one counts as
+  alive), and prints the removal lines and the total to stdout, why an
+  entry was left to stderr. `mesh node sweep --dry-run` prints the same
+  lines, then `sweep: dry run; nothing removed`, and removes nothing
+  (`TestNodeSweepDryRunPrintsAndRemovesNothing`).
+- **A failed removal is retried.** It is logged `sweep: removing
+  <name>: <err>; left for the next pass` and, its subject still finished,
+  is in the next pass's plan again — the next hour's, or the next
+  start's.
 
 ## Consequences
 
