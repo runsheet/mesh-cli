@@ -1143,6 +1143,24 @@ days. sessions.log grows far faster, about 9 MB an hour
 `sessions.log.2` closed), so its 20 MB × 2 holds the last four to six
 hours of what sessions said.
 
+### The work sweep: finished workspaces go
+
+`~/.mesh/work` is swept by the platform's answer (ADR 008, The work
+sweep): an item's checkout, session dir and attestation copy once the
+item is merged, cancelled or superseded, or failed for over a week; a
+done or cancelled goal's whole directory; a goal's `plan/` once it is
+not planning; kept sessions past 14 days. Nothing a live or adopted
+session runs in, nothing the platform cannot answer for, no symlink.
+The node runs a pass at start-up, after the scope sweep, and then
+hourly, logging `sweep: removed <goal>/<seq> (<why>, <bytes>)` per
+removal and a total; a removal that fails is logged and retried next
+pass. To see what a pass would remove, or run one by hand:
+
+```sh
+mesh node sweep --dry-run   # print the lines and the total; remove nothing
+mesh node sweep             # remove them and print the same lines
+```
+
 ### Drain: take a machine out of service
 
 A node's host `claude -p` sessions run in their own units and outlive a

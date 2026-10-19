@@ -119,6 +119,15 @@ type Loop struct {
 	// the first tick and at most once an hour after (cachetrim.go); nil
 	// trims nothing.
 	CacheTrim *CacheTrim
+	// WorkSweep runs one pass of the work sweep (PlanWorkSweep and
+	// ApplyWorkSweep, mesh-cli ADR 008) at the end of a tick once
+	// WorkSweepEvery has passed since the last (runWorkSweep); nil
+	// sweeps nothing.
+	WorkSweep func(ctx context.Context)
+	// WorkSweepEvery is how often WorkSweep runs; 0 is
+	// DefaultWorkSweepEvery, an hour.
+	WorkSweepEvery time.Duration
+	workSweptAt    time.Time
 	// Findings is told the quartermaster's findings each time its checks
 	// run (optional: `mesh node start` leaves them in node.findings by
 	// RunState.WriteFindings, for `mesh node status`).
@@ -1302,6 +1311,7 @@ func (l *Loop) Tick(ctx context.Context) {
 			l.Shares(h.Orgs)
 		}
 	}
+	l.runWorkSweep(ctx)
 	if l.AfterTick != nil {
 		l.AfterTick(ctx)
 	}
