@@ -44,8 +44,20 @@ type SessionBearers struct {
 	Logf func(format string, args ...any)
 	// Now is the clock the id tokens' expiry is read on; nil is time.Now.
 	Now func() time.Time
+	// MachineUntilDPoP keeps a one-org node's sessions on the machine
+	// bearer after their mesh session opens: runsheet's /mcp takes a
+	// session token only DPoP-bound (runsheet ADR 064), which this node
+	// cannot present yet, so the session's id token as a Bearer leaves
+	// the runsheet server failed to start ("runsheet served, never
+	// called: failed"). The session is still opened and its first id
+	// token still minted, so a session the platform will not lease never
+	// starts. A node serving several orgs keeps its sessions' own tokens,
+	// since the machine bearer would cross orgs. Off once the relay signs
+	// its requests.
+	MachineUntilDPoP bool
 
-	fallbackOnce sync.Once
+	fallbackOnce  sync.Once
+	untilDPoPOnce sync.Once
 }
 
 // MachineBearerRefusal is the refusal of a build on a node serving
@@ -109,6 +121,12 @@ func (b *SessionBearers) Open(ctx context.Context, item gateway.WorkItem, nodeID
 	// not mint for never starts
 	if _, err := src(ctx); err != nil {
 		return noop, fmt.Errorf("%s: id token: %w", s, err)
+	}
+	if b.MachineUntilDPoP && b.orgs() <= 1 {
+		b.untilDPoPOnce.Do(func() {
+			b.logf("mesh sessions open, but /mcp takes their tokens only DPoP-bound (runsheet ADR 064): a session's runsheet reads on the node's bearer until the relay signs (one org served)")
+		})
+		return noop, nil
 	}
 	return b.Tokens.Bind(item.ID, item.Attempts, src), nil
 }
