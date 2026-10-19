@@ -1249,7 +1249,32 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `--force-with-lease=<branch>:origin/<branch>`
   (`TestRebaseRunsInAFreshCheckout`, `-tags e2e`, lands one with the
   item's checkout deleted and with it dangling;
-  `rebaseworktree_e2e_test.go` the method's own cases); the node
+  `rebaseworktree_e2e_test.go` the method's own cases). **A conflict
+  only in generated files is regenerated, not rebased by a session**
+  (`docs/adr/adr-038-a-generated-only-conflict-is-regenerated.md`;
+  runsheet ADR 061's rebase kind with harness none): `.runsheet/validate.yml`'s
+  `generated: {paths, generate, check, timeout}` (`validate.Config.Generated`,
+  `Declared()` when paths and generate are set, `Covers(path)` by the
+  suites' globs; paths without generate refused naming `generated`), and
+  `Rebaser.tryRegenerate` (`regenerate_rebase.go`), run after the
+  worktree and its token and before `FetchContext`, the pod, the
+  harness and `Credentials.Open`: the base fetched (`Git.FetchBase`),
+  `regenerateRebase` (`regenerate.go`) through the validation's runner
+  (`validator.start`: host, or a pod of the org's sandbox) rebases onto
+  `origin/<base>`, at each stop with every unmerged path generated takes
+  the base's side (`checkout --ours`, the rebase's swap), runs
+  `generate`, stages the generated paths and continues, then runs
+  `check` — `RegenRegenerated` only when every check passes; on it
+  `Git.PushRebased` (`--force-with-lease=<branch>:origin/<branch>`, the
+  item's token), `PushedHead`, the note `rebased <branch> onto <base> at
+  <sha> by regenerating <paths> (no session)`, `validateRebased` and
+  `FinishWorkItemRebase(item, head, paths, nil)` — no account, session
+  or cost; `RegenNotGenerated`, `RegenCheckFailed`, `RegenClean`, a
+  load, fetch or push error logged and noted `regenerate: <why>; a
+  rebase session instead`, the worktree reset to `origin/<branch>` and
+  cleaned, and the session below run unchanged
+  (`regenerate_e2e_test.go`'s `TestGeneratedConflictIsRegenerated`,
+  `TestNonGeneratedConflictFallsThrough`, `-tags e2e`). The node
   reads the pushed head back (`Workspacer.PushedHead`) and hands it in
   with `FinishWorkItemRebase`, or `FailWorkItemRebase` with the reason
   for *anything* else but `ErrNoCredential` (a wait: the claim lapses)

@@ -481,6 +481,29 @@ and leaves it for a node.
   refuses a second claimant, so two nodes never run one rebase; a
   refusal is the ordinary answer and is not logged as an error. A
   draining node claims none.
+- **Regenerated first.** Before any session, account or model, a
+  repository whose `.runsheet/validate.yml` declares `generated:` gets
+  the mechanical path (ADR-038, a generated-only conflict is
+  regenerated): the node rebases the branch onto its base itself, and
+  at each conflict confined to the declared `paths` takes the base's
+  side of each file, runs `generate`, then, once the rebase is done,
+  every `check` — on the host, or in a pod of the org's sandbox, never
+  the host on a sandboxed node. Only when every check passes is the
+  head pushed with `--force-with-lease=<branch>:origin/<branch>`,
+  attested and finished, the progress note reading `rebased <branch>
+  onto <base> at <sha> by regenerating <paths> (no session)`. A
+  conflict in any other path, a failing generate or check, or no
+  conflict at all says why in one line (`regenerate: <why>; a rebase
+  session instead`), puts the checkout back at `origin/<branch>` and
+  runs the session below unchanged.
+
+  ```yaml
+  generated:
+    paths: [platform/loomgen/**, platform/registry_gen.go]
+    generate: ["cd platform && go tool loom generate"]
+    check: ["cd platform && go tool loom generate --check", "go build ./...", "go vet ./..."]
+    timeout: 10m   # each command; 10m when left out
+  ```
 - **The session.** It works in the item's own checkout on the item's
   token: it checks out the branch, rebases it onto its base, resolves
   each conflict keeping both sides' intent, re-runs the item's
