@@ -194,6 +194,7 @@ var workItemOptional = []string{
 	"protectedFiles",
 	"protectedRulePaths",
 	"readyAt",
+	"statusAt",
 }
 
 // workItemFields is the selection of workItemRequired.
