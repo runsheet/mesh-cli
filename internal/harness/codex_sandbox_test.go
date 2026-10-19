@@ -176,12 +176,12 @@ func TestCodexRunsInTheSandbox(t *testing.T) {
 			names = append(names, n)
 		}
 	}
-	for _, want := range []string{"CODEX_HOME", "MESH_ACCOUNT", "MESH_ITEM", "MESH_SESSION_KIND", "GH_TOKEN", "MESH_TOOL_X_TOKEN", "GOMAXPROCS"} {
+	for _, want := range []string{"CODEX_HOME", "MESH_ACCOUNT", "MESH_ITEM", "MESH_SESSION_KIND", "MESH_TOOL_X_TOKEN", "GOMAXPROCS"} {
 		if !slices.Contains(names, want) {
 			t.Fatalf("--env %s missing from %v", want, names)
 		}
 	}
-	if slices.Contains(names, "NOT_ALLOWED") {
+	if slices.Contains(names, "NOT_ALLOWED") || slices.Contains(names, "GH_TOKEN") {
 		t.Fatalf("a variable off the allow-list reached the pod: %v", names)
 	}
 

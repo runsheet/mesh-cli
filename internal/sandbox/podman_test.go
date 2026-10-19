@@ -115,10 +115,14 @@ func TestAgentEnvIsPassedByName(t *testing.T) {
 			t.Errorf("--env %s is not in BaseEnv, AllowedEnv, MESH_TOOL_* or LimitEnv", name)
 		}
 	}
-	for _, want := range []string{"CODEX_HOME", "OPENAI_API_KEY", "MESH_ACCOUNT", "MESH_TOOL_FOO", "GH_TOKEN", "GOMAXPROCS", "OMP_NUM_THREADS", "MAKEFLAGS", "MESH_ITEM", "MESH_SESSION_KIND"} {
+	for _, want := range []string{"CODEX_HOME", "OPENAI_API_KEY", "MESH_ACCOUNT", "MESH_TOOL_FOO", "GOMAXPROCS", "OMP_NUM_THREADS", "MAKEFLAGS", "MESH_ITEM", "MESH_SESSION_KIND"} {
 		if !slices.Contains(names, want) {
 			t.Errorf("--env %s missing: %v", want, names)
 		}
+	}
+	// the job container holds no GitHub credential (HeldOutEnv)
+	if slices.Contains(names, "GH_TOKEN") {
+		t.Errorf("GH_TOKEN reached the pod: %v", names)
 	}
 	if slices.Contains(names, "NODE_SECRET") || strings.Contains(strings.Join(args, " "), "node-only") {
 		t.Errorf("NODE_SECRET reached the pod: %v", args)
@@ -152,10 +156,13 @@ func TestAgentEnvIsPassedByName(t *testing.T) {
 	if v, _ := lastValue(penv, "XDG_DATA_HOME"); v != "/home/node/.local/share" {
 		t.Errorf("podman env XDG_DATA_HOME = %q: podman's store must stay the node's", v)
 	}
-	for _, want := range []string{"OPENAI_API_KEY=sk-codex", "MESH_TOOL_FOO=foo-secret", "GH_TOKEN=ghs_item", "GOMAXPROCS=" + strconv.Itoa(int(math.Ceil(spec.Limits.CPUs)))} {
+	for _, want := range []string{"OPENAI_API_KEY=sk-codex", "MESH_TOOL_FOO=foo-secret", "GOMAXPROCS=" + strconv.Itoa(int(math.Ceil(spec.Limits.CPUs)))} {
 		if !slices.Contains(penv, want) {
 			t.Errorf("podman env lacks %s: %v", want, penv)
 		}
+	}
+	if slices.Contains(penv, "GH_TOKEN=ghs_item") {
+		t.Errorf("podman env carries the item's GitHub token: %v", penv)
 	}
 
 	codexHome, ok := lastValue(spec.Env, "CODEX_HOME")
