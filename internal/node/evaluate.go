@@ -46,6 +46,10 @@ type Evaluator struct {
 	BuildCache string
 	// MCP are the MCP servers the session gets (runsheet).
 	MCP map[string]any
+	// Proxies, when set, start each session's sessionproxy: every MCP
+	// server reached through one socket, no credential in the session
+	// (SessionTools.UseVia).
+	Proxies *SessionProxies
 	// MaxBudgetUSD caps the review session (3 by default).
 	MaxBudgetUSD float64
 	// Budgets is node.yaml's `budgets:` in force, read live (ADR 012,
@@ -423,9 +427,11 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 			e.Declines.Record(item.ID, st.Missing, runtimes, time.Now())
 			return fmt.Errorf("declined, %s", st.DeclineReason())
 		}
-		if err := st.UseTools(&job, e.MCP, acct); err != nil {
+		closeProxy, err := st.UseVia(e.Proxies, mcpRootFor(e.Roots, e.Scopes, item.OrgID), &job, e.MCP, acct)
+		if err != nil {
 			return fmt.Errorf("tools: %w", err)
 		}
+		defer closeProxy()
 		if !fam.codex {
 			break
 		}

@@ -79,6 +79,10 @@ type Runner struct {
 	BuildCache string
 	// MCP are the MCP servers every session gets (runsheet).
 	MCP map[string]any
+	// Proxies, when set, start each session's sessionproxy: every MCP
+	// server reached through one socket, no credential in the session
+	// (SessionTools.UseVia).
+	Proxies *SessionProxies
 	// MCPFunc, when set, is asked for them at every item instead: the
 	// node's machine access token expires within the hour, so a build
 	// started long after the node did must carry a bearer taken now
@@ -548,9 +552,11 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		}
 		return nil
 	}
-	if err := st.UseTools(&job, mcp, acct); err != nil {
+	closeProxy, err := st.UseVia(r.Proxies, mcpRootFor(r.Roots, r.Scopes, item.OrgID), &job, mcp, acct)
+	if err != nil {
 		return r.fail(ctx, item, fmt.Errorf("tools: %w", err))
 	}
+	defer closeProxy()
 	if len(st.Use) > 0 {
 		r.logf("item %s: tools %s", label, st.Names())
 	}

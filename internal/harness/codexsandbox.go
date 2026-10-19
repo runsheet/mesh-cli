@@ -154,6 +154,12 @@ func (c *Codex) prepareSandboxHome(job Job, sess *sandbox.Session) (*codexHome, 
 		// no placed home and no account: never the operator's own login
 		return fail(ErrNoIssuedCredential)
 	}
+	// every server the node proxied is reached through its socket,
+	// mounted alone (podProxied)
+	job, err := podProxied(job, sess)
+	if err != nil {
+		return fail(err)
+	}
 	if _, ok := meshContextRelay(job); ok && c.Tokens != nil {
 		// the pod has no mesh binary: the relay is RelayScript in its
 		// HOME, on a token file in the CODEX_HOME the node keeps fresh

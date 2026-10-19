@@ -93,6 +93,12 @@ func (c *Codex) preflightSandboxed(ctx context.Context, job Job) error {
 		if relay {
 			url = relayURL
 		}
+		// a proxied built-in is reached through the session's socket:
+		// listed by its shim, as a relay is, with no token file to check
+		_, _, proxied := ProxiedOf(srv)
+		if proxied {
+			url = "sessionproxy"
+		}
 		if url != "" {
 			// (1) the image's codex sees the server in the config it will read
 			var out bytes.Buffer
@@ -105,8 +111,8 @@ func (c *Codex) preflightSandboxed(ctx context.Context, job Job) error {
 			}
 			// (2) the server answers the session's relay, in the pod
 			switch {
-			case relay:
-				if err := c.podListTools(placed, home, exec, redact); err != nil {
+			case relay || proxied:
+				if err := c.podListTools(placed, home, exec, redact, proxied); err != nil {
 					return err
 				}
 			default:
@@ -143,12 +149,14 @@ func (c *Codex) preflightSandboxed(ctx context.Context, job Job) error {
 // MCP client's opening on its stdin — initialize,
 // notifications/initialized, tools/list — its answer to tools/list read
 // from its stdout, which must list at least one tool.
-func (c *Codex) podListTools(placed Job, home *codexHome, exec func([]string, string, *bytes.Buffer, *bytes.Buffer) error, redact func(string) string) error {
-	if home.tokenFile == "" {
-		return fmt.Errorf("%s relays on no token file", BuiltinMCP)
-	}
-	if tok, err := readTokenFile(home.tokenFile); err != nil || tok == "" {
-		return fmt.Errorf("%s's token file %s is missing or empty", BuiltinMCP, home.tokenFile)
+func (c *Codex) podListTools(placed Job, home *codexHome, exec func([]string, string, *bytes.Buffer, *bytes.Buffer) error, redact func(string) string, proxied bool) error {
+	if !proxied {
+		if home.tokenFile == "" {
+			return fmt.Errorf("%s relays on no token file", BuiltinMCP)
+		}
+		if tok, err := readTokenFile(home.tokenFile); err != nil || tok == "" {
+			return fmt.Errorf("%s's token file %s is missing or empty", BuiltinMCP, home.tokenFile)
+		}
 	}
 	srv, _ := placed.MCPServers[BuiltinMCP].(map[string]any)
 	command, _ := srv["command"].(string)
