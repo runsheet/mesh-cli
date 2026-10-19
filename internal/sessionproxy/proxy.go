@@ -46,7 +46,7 @@ var returned = []string{
 	"Mcp-Protocol-Version",
 }
 
-// Upstream is one server the proxy fronts: Remote or Runsheet.
+// Upstream is one server the proxy fronts: Remote, Runsheet or Local.
 type Upstream interface {
 	endpoint() string
 	// authorize sets the upstream's own credential on h; again is a
@@ -136,6 +136,7 @@ type Proxy struct {
 	mu        sync.Mutex
 	upstreams map[string]Upstream
 	secrets   []string
+	children  map[string]*child
 
 	srv  *http.Server
 	ln   net.Listener
@@ -160,10 +161,19 @@ func (p *Proxy) Add(name string, u Upstream) {
 		p.upstreams = map[string]Upstream{}
 	}
 	p.upstreams[name] = u
-	if r, ok := u.(Remote); ok {
+	switch r := u.(type) {
+	case Remote:
 		for _, v := range r.Headers {
 			p.rememberLocked(secretParts(v))
 		}
+	case Local:
+		for _, v := range r.Secrets {
+			p.rememberLocked([]string{strings.TrimSpace(v)})
+		}
+	}
+	if old, ok := p.children[name]; ok {
+		delete(p.children, name)
+		go old.close()
 	}
 }
 
@@ -247,8 +257,10 @@ func (p *Proxy) Listen(path string) error {
 	return nil
 }
 
-// Close stops serving and removes the socket.
+// Close stops serving, removes the socket and kills every local server
+// the proxy started, waiting for each to be reaped.
 func (p *Proxy) Close() error {
+	defer p.closeChildren()
 	p.mu.Lock()
 	srv, path := p.srv, p.path
 	p.srv, p.ln, p.path = nil, nil, ""
@@ -284,6 +296,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		body = b
+	}
+	if l, ok := u.(Local); ok {
+		p.serveLocal(w, req, name, l, body)
+		return
 	}
 	resp, err := p.forward(req, u, body, false)
 	if err == nil && resp.StatusCode == http.StatusUnauthorized && u.retries401() {
