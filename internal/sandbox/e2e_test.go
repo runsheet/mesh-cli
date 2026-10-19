@@ -96,6 +96,11 @@ func TestProbeSessionE2E(t *testing.T) {
 	if hostIP != "" {
 		script.WriteString(probe("hostip", fmt.Sprintf("curl -sS --max-time 5 telnet://%s:%d", hostIP, port)))
 	}
+	// the job container holds no GitHub credential (mesh-cli ADR-038):
+	// the item's ghs_ token the job's env carried is in neither its env
+	// nor any file of its HOME or workspace
+	script.WriteString(probe("envtoken", "env | grep -q ghs_"))
+	script.WriteString(probe("fstoken", "grep -rqs ghs_ \"$HOME\" "+ws))
 	script.WriteString("echo ENV; env | cut -d= -f1\n")
 
 	var out, errb bytes.Buffer
@@ -127,7 +132,7 @@ func TestProbeSessionE2E(t *testing.T) {
 			}
 		}
 	}
-	want := map[string]string{"gh": "FAIL", "ghdir": "FAIL", "token": "FAIL", "other": "FAIL", "docker": "FAIL", "https": "OK", "lan": "FAIL", "hostloop": "FAIL", "hostgw": "FAIL"}
+	want := map[string]string{"envtoken": "FAIL", "fstoken": "FAIL", "gh": "FAIL", "ghdir": "FAIL", "token": "FAIL", "other": "FAIL", "docker": "FAIL", "https": "OK", "lan": "FAIL", "hostloop": "FAIL", "hostgw": "FAIL"}
 	if hostIP != "" {
 		want["hostip"] = "FAIL"
 	}
@@ -149,6 +154,11 @@ func TestProbeSessionE2E(t *testing.T) {
 		}
 		if !slices.Contains(allowed, name) && !strings.HasPrefix(name, ToolEnvPrefix) {
 			t.Errorf("env holds %s, which is not allow-listed (all: %v)", name, env)
+		}
+	}
+	for _, name := range HeldOutEnv {
+		if slices.Contains(env, name) {
+			t.Errorf("the job container's env holds %s (HeldOutEnv)", name)
 		}
 	}
 	if slices.Contains(env, "MESH_DECOY") {

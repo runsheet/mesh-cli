@@ -191,7 +191,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `FinishWorkItem` — a push that fails fails the item `push <branch>:
   <err>` with no finish sent, and a refused finish is an error (ADR-023,
   finish by tool call, Decision 2 amended 2026-10-10). The push is
-  `Runner.pushBuild`: `ItemCred.ForPush` rewrites the checkout's helper
+  `Runner.pushBuild` (the finish step's fallback when the platform takes
+  no changeset, ADR-038): `ItemCred.ForPush` rewrites the checkout's
+  helper (an env-only cred, a sandboxed build's, writes nothing)
   with the build's own token (issued at claim, or its `Refresh`) just
   before `Workspacer.Push`, so a token written there since is never
   used; a push refused for its credential (`IsCredentialRefusal`, `Write
@@ -576,6 +578,52 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   each session's mounts, kept root and token file are its own org's
   and every mount of the other's tree is refused. `mesh node start`
   does not set `Roots` yet.
+- **A build is a session's ordered steps** (`internal/session`, ADR-038,
+  `docs/adr/adr-038-a-session-runs-as-ordered-steps.md`; runsheet
+  adr-061 §3–4, ADR 058 step 4): `session.Step{Name, Always, Run}`,
+  `Job`, `Run` → one `Record{Name, Started, Ended, Outcome, Err}` per
+  step — main steps in order, stopping at the first failure, `Always`
+  ones still run; `session.End(err)` ends the job without failing it
+  (`ended`, the rest `skipped`). `Runner.RunItem` runs `checkout`
+  (`PrepareWithRetry`, `Identify`, the context; sandboxed on the real
+  `Git`, `session.Checkout`'s check that no git config of the workspace
+  — `session.ConfigHolding` — names the token), `exchange`
+  (`StepExchange`: model, prompt input, `Credentials.Open`, the
+  session's bearer, tools and proxy), `pod` (`openOrgSessionPod`),
+  `run` (`StepRun`: the harness, then `buildTail.end`), `validate`
+  (`buildTail.validate`: ADR-014's validator), `finish`
+  (`buildTail.finish` over `session.Finish`) and `release`
+  (`StepRelease`, always: the validation, the session dir and every
+  hold, last first, as the defers were), each logged `item <label>:
+  step <n> <name>: <outcome> (<took>)[: <err>]` (`StepLine`,
+  `logSteps`); `afterBuild` runs an adopted build's tail the same way.
+  The credential boundary is the job container's edge: a sandboxed
+  build's `ItemCred` is env-only (`KeepOffCheckout`, `EnvOnly`: the
+  helper removed, `Refresh`/`Reissue`/`ForPush` write nothing,
+  `prepareWithRetry` on `OnItemToken`, `Reauthorize` clearing what it
+  rewrote), it gets no gh config dir or `SessionEnv`, `sandbox.HeldOutEnv`
+  keeps every GitHub variable out of a pod, and the bearer stays on the
+  node (`mcprelay.Serve`, the session proxy); a host session keeps the
+  helper and `GH_TOKEN`. The finish records a changeset from the node —
+  `git add --all`, `write-tree`, the objects differing from
+  `origin/<base>` (else `origin/<default>`) offered to
+  `ChangesetMissing`, the missing `PutChangesetObject`ed,
+  `RecordChangeset`, `FinishWorkItemChangeset` naming `changesetId`,
+  the validated commit's attestation uploaded first, logged `item
+  <label>: changeset <id> recorded (<n> path(s), <m> object(s)
+  uploaded); finished <branch> ($x)` — only when
+  `gateway.Client.TakesChangesets` (FinishWorkItemInput has
+  `changesetId`, kept `ScalingProbeEvery`), else `Finish.Push` is
+  `pushBuild` and `FinishPushed` attests and `FinishWorkItem`s as
+  before. `gatewaytest.Fake.Changesets` serves the routes
+  (`changeset.go`, `ChangesetsOf`, the item's `latestChangesetId`).
+  `session_steps_e2e_test.go`'s `TestBuildRunsAsSessionStepsE2E`
+  (`-tags e2e`) runs a build on a stand-in GitHub taking only its
+  `ghs_` token: seven records succeeded, no `ghs_` or bearer in the job
+  container's env or mounted files, a changeset recorded, nothing
+  pushed; `scripts/e2e-sandbox.sh` runs it as step 2c, and on podman
+  `TestProbeSessionE2E` and `TestSandboxedSessionsE2E` grep the pod for
+  `ghs_` and `mesh-session`.
 - **A failed check resumes the session that built it** (ADR-030,
   `docs/adr/adr-030-a-failed-check-resumes-the-session-that-built-it.md`):
   every build keeps its session in `ResumeStore` (`RunState.Resumes()`,
@@ -2078,7 +2126,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   node puts it on the checkout's own git credential helper (clearing the
   operator's `gh auth git-credential`) and gives the session `GH_TOKEN`
   and an empty, per-session `GH_CONFIG_DIR`, so the operator's gh login
-  is out of reach (adr-001-item-scoped-github-token). On a platform that
+  is out of reach (adr-001-item-scoped-github-token) — a host session;
+  a sandboxed build's job container gets neither, the token riding the
+  node's own git commands alone (ADR-038). On a platform that
   does not know the mutation the node falls back to the operator's own
   `gh`/`git` credentials and logs that once per run (`TokenFallback`) —
   the rollout is not a flag day; a refused token fails the item instead.

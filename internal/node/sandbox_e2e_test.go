@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -86,6 +87,12 @@ if exec 3<>/dev/tcp/127.0.0.1/%[1]d; then
   %[2]s
 fi
 echo "$MESH_SESSION_KIND $probe 127.0.0.1:%[1]d" >> "$PWD/.mesh-e2e-probe"
+# the job container holds no credential (ADR-038): no ghs_ token and no
+# session bearer in its env or under its HOME and workspace
+cred=none
+if env | grep -q -e ghs_ -e mesh-session; then cred=env; fi
+if grep -rqs -e ghs_ -e mesh-session "$HOME" "$PWD" --exclude=.mesh-e2e-probe --exclude=.mesh-e2e-agent; then cred=files; fi
+echo "$MESH_SESSION_KIND credential $cred" >> "$PWD/.mesh-e2e-probe"
 verdict=FAIL; [ "$probe" = OK ] && verdict=PASS
 services=$(tr '\t\n' '  ' 2>/dev/null < "$HOME/.mesh-services")
 echo '{"type":"system","subtype":"init","session_id":"e2e"}'
@@ -136,6 +143,10 @@ func TestSandboxedSessionsE2E(t *testing.T) {
 			h := &harness.ClaudeCode{Sandbox: sb, Stderr: os.Stderr}
 			r, ws, item, _ := runnerOnFake(t, f, h, nil)
 			r.Sandbox, r.Declines = sb, &Declines{}
+			// the item's own token, which never reaches the job container
+			f.GitHubTokens[item1] = map[string]any{"token": "ghs_sandboxE2EItemToken0123", "expiresAt": time.Now().Add(time.Hour).UTC().Format(time.RFC3339), "repository": "acme/widgets"}
+			logs := &syncBuf{}
+			r.Log = log.New(io.MultiWriter(logs, os.Stderr), "", 0)
 			dir := filepath.Join(ws.root, slug, "1")
 			copyFixture(t, tc.fixture, dir)
 			h.SandboxBinary = filepath.Join(dir, ".mesh-e2e-agent")
@@ -149,6 +160,13 @@ func TestSandboxedSessionsE2E(t *testing.T) {
 				t.Fatalf("build released: %+v", rel)
 			}
 			assertProbe(t, dir, "build", tc.port)
+			assertNoCredential(t, dir, "build")
+			// the build ran as the session's steps (ADR-038)
+			for i, name := range []string{"checkout", "exchange", "pod", "run", "validate", "finish", "release"} {
+				if want := fmt.Sprintf("step %d %s: succeeded", i+1, name); !strings.Contains(logs.String(), want) {
+					t.Errorf("node.log lacks %q", want)
+				}
+			}
 			assertNoPods(t, "mesh-"+slug+"-")
 
 			// its evaluation, on the same checkout
@@ -245,6 +263,19 @@ func assertProbe(t *testing.T, dir, kind string, port int) {
 	}
 	if want := fmt.Sprintf("%s OK 127.0.0.1:%d\n", kind, port); !strings.Contains(string(b), want) {
 		t.Fatalf("%s: from the agent's container: want %q, got\n%s", kind, want, b)
+	}
+}
+
+// assertNoCredential: the stub agent found neither ghs_ nor a session
+// bearer in its container's env or files.
+func assertNoCredential(t *testing.T, dir, kind string) {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, ".mesh-e2e-probe"))
+	if err != nil {
+		t.Fatalf("%s: the agent did not run: %v", kind, err)
+	}
+	if want := kind + " credential none\n"; !strings.Contains(string(b), want) {
+		t.Fatalf("%s: the job container held a credential: want %q, got\n%s", kind, want, b)
 	}
 }
 

@@ -19,7 +19,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/gitdata"
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
-	"projectmesh.io/mesh-cli/internal/session"
+	sessionsteps "projectmesh.io/mesh-cli/internal/session"
 	"projectmesh.io/mesh-cli/internal/tools"
 	"projectmesh.io/mesh-cli/internal/tripline"
 	"projectmesh.io/mesh-cli/internal/validate"
@@ -361,7 +361,7 @@ func (c *costReporter) delta() int {
 // that hands the item back — failed, released when GitHub refuses the
 // item's token through every retry (ReleaseOnCredential) or its
 // workspace cannot be prepared (ReleaseOnWorkspace, ADR-024), finished
-// already done — ends the job (session.End). A cancelled ctx (the
+// already done — ends the job (sessionsteps.End). A cancelled ctx (the
 // node's own shutdown) leaves the item as it is for a retry.
 func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	r.wireGitLogf()
@@ -402,7 +402,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	// ret is what RunItem answers, set by the step that ends the job;
 	// held are the release step's, run last first as defers were
 	var ret error
-	end := func(err error) error { ret = err; return session.End(err) }
+	end := func(err error) error { ret = err; return sessionsteps.End(err) }
 	var held []func()
 	hold := func(fn func()) { held = append(held, fn) }
 	endRetry := func() {}
@@ -425,7 +425,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		tail       *buildTail
 	)
 	sandboxed := r.Sandbox != nil
-	checkout := func(ctx context.Context, state *session.State) error {
+	checkout := func(ctx context.Context, state *sessionsteps.State) error {
 		prepare := func(ctx context.Context) (string, error) {
 			if sandboxed {
 				// a sandboxed build's job container mounts the checkout:
@@ -441,8 +441,8 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		if _, real := r.WS.(*Git); real && sandboxed && cred.Token() != nil {
 			tok := cred.Token()
 			// the checkout step proper: no git config of the workspace may
-			// name the token after it (session.Checkout)
-			err = session.Checkout(func(ctx context.Context, _ *gateway.GitHubToken) (string, error) { return prepare(ctx) }, tok).Run(ctx, state)
+			// name the token after it (sessionsteps.Checkout)
+			err = sessionsteps.Checkout(func(ctx context.Context, _ *gateway.GitHubToken) (string, error) { return prepare(ctx) }, tok).Run(ctx, state)
 			dir = state.WorkspaceDir
 		} else {
 			dir, err = prepare(ctx)
@@ -484,7 +484,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		return nil
 	}
 
-	exchange := func(ctx context.Context, state *session.State) error {
+	exchange := func(ctx context.Context, state *sessionsteps.State) error {
 		model = BuildModel(ctx, r.GW, item, r.Model)
 		budget, budgetSource := r.budgetWithSource(res.Goal, "build", model)
 		r.logf("item %s: build on %s, budget $%.2f (%s)", label, modelName(model), budget, budgetSource)
@@ -625,7 +625,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		return nil
 	}
 
-	podStep := func(ctx context.Context, state *session.State) error {
+	podStep := func(ctx context.Context, state *sessionsteps.State) error {
 		// the checkout's services, started in the session's pod before its
 		// agent; the pod and its sidecars go on every way out
 		var err error
@@ -658,7 +658,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		return nil
 	}
 
-	run := func(ctx context.Context, state *session.State) error {
+	run := func(ctx context.Context, state *sessionsteps.State) error {
 		r.toolResults(&job)
 		in.Services = pod.Prompt()
 		job.Prompt = harness.BuildPrompt(in)
@@ -730,14 +730,14 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		return tail.end(ctx)
 	}
 
-	steps := []session.Step{
-		{Name: session.CheckoutName, Run: checkout},
+	jobSteps := []sessionsteps.Step{
+		{Name: sessionsteps.CheckoutName, Run: checkout},
 		{Name: StepExchange, Run: exchange},
-		{Name: session.PodStepName, Run: podStep},
+		{Name: sessionsteps.PodStepName, Run: podStep},
 		{Name: StepRun, Run: run},
-		{Name: session.ValidateStepName, Run: func(ctx context.Context, _ *session.State) error { return tail.validate(ctx) }},
-		{Name: session.FinishStepName, Run: func(ctx context.Context, state *session.State) error { return tail.finish(ctx, state) }},
-		{Name: StepRelease, Always: true, Run: func(context.Context, *session.State) error {
+		{Name: sessionsteps.ValidateStepName, Run: func(ctx context.Context, _ *sessionsteps.State) error { return tail.validate(ctx) }},
+		{Name: sessionsteps.FinishStepName, Run: func(ctx context.Context, state *sessionsteps.State) error { return tail.finish(ctx, state) }},
+		{Name: StepRelease, Always: true, Run: func(context.Context, *sessionsteps.State) error {
 			if tail != nil {
 				tail.release()
 			}
@@ -747,7 +747,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 			return nil
 		}},
 	}
-	recs := session.Run(ctx, session.Job{Steps: steps}, &session.State{BaseRef: spec.BaseRef})
+	recs := sessionsteps.Run(ctx, sessionsteps.Job{Steps: jobSteps}, &sessionsteps.State{BaseRef: spec.BaseRef})
 	r.logSteps(label, recs)
 	if tail != nil && ret == nil {
 		ret = tail.ret
@@ -771,16 +771,16 @@ const (
 
 // logSteps logs each step's record, `item <label>: step <n> <name>:
 // <outcome> (<took>)[: <err>]`, a skipped step with no time.
-func (r *Runner) logSteps(label string, recs []session.Record) {
+func (r *Runner) logSteps(label string, recs []sessionsteps.Record) {
 	for i, rec := range recs {
 		r.logf("item %s: %s", label, StepLine(i+1, rec))
 	}
 }
 
 // StepLine is one step's record as the node logs it.
-func StepLine(n int, rec session.Record) string {
+func StepLine(n int, rec sessionsteps.Record) string {
 	line := fmt.Sprintf("step %d %s: %s", n, rec.Name, rec.Outcome)
-	if rec.Outcome != session.Skipped {
+	if rec.Outcome != sessionsteps.Skipped {
 		line += fmt.Sprintf(" (%s)", rec.Ended.Sub(rec.Started).Round(time.Millisecond))
 	}
 	if rec.Err != nil {
@@ -959,15 +959,15 @@ func (b *buildRun) run(ctx context.Context, start func(ctx context.Context, onPr
 
 // afterBuild is what follows a build session this process adopted
 // (AdoptItem): the tail of RunItem's steps — run's end, validate, finish
-// and release — run by session.Run and logged as RunItem's are.
+// and release — run by sessionsteps.Run and logged as RunItem's are.
 func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Result, runErr error) error {
 	t := &buildTail{r: r, b: b, result: result, runErr: runErr}
-	recs := session.Run(ctx, session.Job{Steps: []session.Step{
-		{Name: StepRun, Run: func(ctx context.Context, _ *session.State) error { return t.end(ctx) }},
-		{Name: session.ValidateStepName, Run: func(ctx context.Context, _ *session.State) error { return t.validate(ctx) }},
-		{Name: session.FinishStepName, Run: t.finish},
-		{Name: StepRelease, Always: true, Run: func(context.Context, *session.State) error { t.release(); return nil }},
-	}}, &session.State{WorkspaceDir: b.dir, BaseRef: b.spec.BaseRef})
+	recs := sessionsteps.Run(ctx, sessionsteps.Job{Steps: []sessionsteps.Step{
+		{Name: StepRun, Run: func(ctx context.Context, _ *sessionsteps.State) error { return t.end(ctx) }},
+		{Name: sessionsteps.ValidateStepName, Run: func(ctx context.Context, _ *sessionsteps.State) error { return t.validate(ctx) }},
+		{Name: sessionsteps.FinishStepName, Run: t.finish},
+		{Name: StepRelease, Always: true, Run: func(context.Context, *sessionsteps.State) error { t.release(); return nil }},
+	}}, &sessionsteps.State{WorkspaceDir: b.dir, BaseRef: b.spec.BaseRef})
 	r.logSteps(b.label, recs)
 	return t.ret
 }
@@ -1001,7 +1001,7 @@ type buildTail struct {
 // stop ends the job on err, which the build answers.
 func (t *buildTail) stop(err error) error {
 	t.ret = err
-	return session.End(err)
+	return sessionsteps.End(err)
 }
 
 // release lets go of what the tail held: the validation and the
@@ -1155,18 +1155,18 @@ func (t *buildTail) validate(ctx context.Context) error {
 	return nil
 }
 
-// finish hands the build in as session.Finish does: from the node,
+// finish hands the build in as sessionsteps.Finish does: from the node,
 // outside the job container, the workspace's tree recorded as a
 // changeset and the item finished on it when the platform holds
 // changesets — the attestation of the commit validated uploaded first —
 // else the node's own push on the item's token (pushBuild) and the
 // finish on the head it pushed, attested after the push.
-func (t *buildTail) finish(ctx context.Context, state *session.State) error {
+func (t *buildTail) finish(ctx context.Context, state *sessionsteps.State) error {
 	r, b, item, label := t.r, t.b, t.b.item, t.b.label
 	result := t.result
 	b.reportHandoff(ctx, result)
 	var pushErr error
-	f := &session.Finish{
+	f := &sessionsteps.Finish{
 		ItemID:      item.ID,
 		Branch:      b.spec.Branch,
 		BaseRef:     t.changesetBase(ctx),
@@ -1214,7 +1214,7 @@ func (t *buildTail) finish(ctx context.Context, state *session.State) error {
 	if err != nil {
 		return t.stop(fmt.Errorf("finish %s: %w", label, err))
 	}
-	fr, _ := state.Results[session.FinishStepName].(*session.FinishResult)
+	fr, _ := state.Results[sessionsteps.FinishStepName].(*sessionsteps.FinishResult)
 	switch {
 	case fr != nil && fr.Pushed:
 		r.logf("item %s: pushed %s; finished %s ($%.2f)", label, short(fr.HeadSHA), b.spec.Branch, result.CostUSD)
@@ -1229,7 +1229,7 @@ func (t *buildTail) finish(ctx context.Context, state *session.State) error {
 // (ADR-033) — the repository's default branch.
 func (t *buildTail) changesetBase(ctx context.Context) string {
 	base := "origin/" + strings.TrimPrefix(t.b.spec.BaseRef, "origin/")
-	if _, err := session.RunGit(ctx, t.b.dir, "rev-parse", "--verify", "--quiet", base+"^{tree}"); err == nil {
+	if _, err := sessionsteps.RunGit(ctx, t.b.dir, "rev-parse", "--verify", "--quiet", base+"^{tree}"); err == nil {
 		return base
 	}
 	return "origin/" + defaultBranchOf(t.b.res)
@@ -1238,7 +1238,7 @@ func (t *buildTail) changesetBase(ctx context.Context) string {
 // carriedChangesets is a ChangesetGateway whose changeset finish carries
 // the session's usage report as FinishWorkItem's does (SessionAccount.Carried).
 type carriedChangesets struct {
-	session.ChangesetGateway
+	sessionsteps.ChangesetGateway
 	carried func(error) error
 }
 
@@ -1249,7 +1249,7 @@ func (c *carriedChangesets) FinishWorkItemChangeset(ctx context.Context, itemID,
 // changesetGateway is a platform client that can say whether it holds
 // changesets; *gateway.Client is one.
 type changesetGateway interface {
-	session.ChangesetGateway
+	sessionsteps.ChangesetGateway
 	TakesChangesets(ctx context.Context) bool
 }
 

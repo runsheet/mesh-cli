@@ -277,6 +277,15 @@ the helper rewritten, so a long session does not lose its push. A token
 the platform refuses fails the item — it is not run on your login
 instead.
 
+**A sandboxed build's job container holds no GitHub credential**
+(docs/adr/adr-038-a-session-runs-as-ordered-steps.md). There the token
+is never written into the checkout the pod mounts: the node's own
+clone, fetch and push carry it on each git command's environment alone,
+the checkout step fails if any git config of the workspace names it,
+and neither `GH_TOKEN` nor `GH_CONFIG_DIR` reaches the pod
+(`sandbox.HeldOutEnv`), whose `gh` is signed out. A host session keeps
+the helper and `GH_TOKEN` above.
+
 The push is the node's, after the session, and it goes out on the
 build's own write token: just before it the node rewrites the
 checkout's helper with the token it was issued at claim (or that
@@ -1771,6 +1780,31 @@ proxy restarted on <socket> (<servers>)`). `scripts/e2e-sandbox.sh`
 proves it in a real pod (`TestSessionProxySandboxedE2E`,
 docs/e2e-sandbox.md).
 
+**A build is a session's ordered steps.** `internal/session` gives a
+build the shape of an Actions job (docs/adr/adr-038-a-session-runs-as-ordered-steps.md):
+`Runner.RunItem` runs `checkout` (the workspace, no credential left in a
+sandboxed one), `exchange` (the account, the session's bearer, its
+tools), `pod` (the job container and its services), `run` (the harness,
+its end read), `validate`, `finish` and `release` — always run, letting
+go of what the others held — in that order, the first failure skipping
+the rest but `release`. A step that hands the item back (released,
+failed, finished already done) ends the job without failing it. node.log
+carries one line per step once the build ends:
+
+```
+item ship-it/1: step 1 checkout: succeeded (95ms)
+item ship-it/1: step 4 run: succeeded (12m3s)
+item ship-it/1: step 6 finish: succeeded (1.2s)
+```
+
+The finish is the node's, outside the pod. When the platform takes a
+changeset (its `FinishWorkItemInput` has `changesetId`), the node writes
+the worktree's tree, uploads only the objects the platform lacks,
+records the changeset and finishes the item naming it — the platform
+makes the branch (`item <label>: changeset <id> recorded …; finished
+<branch>`). Otherwise it pushes on the item's token and finishes on the
+head it pushed, as before.
+
 **What the node reports.** Every tick the node looks on its `PATH` for
 the tool runtimes it can start — `npx`, `uvx`, `docker` — and the agent
 CLIs it has — `claude` (claude-code) and `codex` — and its heartbeat
@@ -2302,10 +2336,11 @@ run in one yet.
 - **Environment.** Built from an allow-list, never inherited:
   `PATH`, `HOME`, `LANG`, `TZ`, `TERM`, `CLAUDE_CONFIG_DIR`,
   `MESH_ITEM`, `MESH_SESSION_KIND`, `DISABLE_AUTOUPDATER=1`, and of what the node gave the
-  session: `GH_TOKEN`, `GH_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN` or
+  session: `CLAUDE_CODE_OAUTH_TOKEN` or
   `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CODEX_API_KEY`, `CODEX_HOME`
   (moved under the session's HOME),
-  `MESH_ACCOUNT` and the tool secrets `MESH_TOOL_*`. Values reach
+  `MESH_ACCOUNT` and the tool secrets `MESH_TOOL_*` — never `GH_TOKEN`,
+  `GH_CONFIG_DIR` or another GitHub token (`HeldOutEnv`, ADR-038). Values reach
   podman through its own environment (`--env NAME`), never its command
   line. A sandboxed session has no operator login to fall back on: it
   runs on the account the platform or node.yaml gives it.
