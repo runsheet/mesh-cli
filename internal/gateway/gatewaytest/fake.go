@@ -77,6 +77,16 @@ type Fake struct {
 	// route 404, a platform that predates it (meshsessions.go).
 	MeshSessions   map[string]*MeshSession
 	NoMeshSessions bool
+	// Changesets is a platform holding changesets (runsheet ADR 058, step
+	// 4): the /mesh/v1/items/{id}/changeset routes served (changeset.go)
+	// and FinishWorkItemInput taking `changesetId`. False, the routes
+	// answer 404 and a finish naming one is refused, as an older
+	// platform's would. ChangesetObjects are the objects uploaded, by
+	// "<type> <sha>"; RecordedChangesets the changesets recorded, by
+	// item id.
+	Changesets         bool
+	ChangesetObjects   map[string][]byte
+	RecordedChangesets map[string][]gateway.Changeset
 	// ItemBearers are further tokens the fake takes on GraphQL, beside
 	// Token: an item's claim-time token, as RecordValidationAttestation
 	// carries it (WithItemToken).
@@ -741,7 +751,11 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		fields := []any{}
-		for _, n := range append(actorInputFields[t], gateway.ActorField) {
+		names := append(actorInputFields[t], gateway.ActorField)
+		if t == "FinishWorkItemInput" && f.Changesets {
+			names = append(names, gateway.ChangesetIDField)
+		}
+		for _, n := range names {
 			if n == gateway.ActorField && f.NoActor {
 				continue
 			}
@@ -892,6 +906,10 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 				writeErrors(w, 200, fmt.Sprintf(`Variable "$in" got invalid value; Unknown field "actor" is not defined by type %q.`, t))
 				return
 			}
+		}
+		if _, ok := in[gateway.ChangesetIDField]; ok && m[2] == "finishWorkItem" && !f.Changesets {
+			writeErrors(w, 200, `Variable "$in" got invalid value; Unknown field "changesetId" is not defined by type "FinishWorkItemInput".`)
+			return
 		}
 		if m[2] == "finishWorkItem" && f.NoDescription {
 			if _, ok := in[gateway.DescriptionField]; ok {
@@ -1988,6 +2006,16 @@ func (f *Fake) apply(name string, in map[string]any) error {
 			return fmt.Errorf("item is %s, not running", item["status"])
 		}
 		switch {
+		case (outcome == "" || outcome == "built") && in[gateway.ChangesetIDField] != nil:
+			// the platform makes the branch from the recorded changeset
+			if in["branch"] == nil || in["branch"] == "" {
+				return fmt.Errorf("a built finish needs a branch")
+			}
+			cs, ok := f.changesetOf(id, fmt.Sprint(in[gateway.ChangesetIDField]))
+			if !ok {
+				return fmt.Errorf("no changeset %v recorded for the item", in[gateway.ChangesetIDField])
+			}
+			item["branch"], item["outcome"], item["latestChangesetId"], item["tree"] = in["branch"], "built", cs.ChangesetID, cs.Tree
 		case outcome == "" || outcome == "built":
 			if in["branch"] == nil || in["branch"] == "" {
 				return fmt.Errorf("a built finish needs a branch")
@@ -2447,6 +2475,10 @@ func camel(s string) string {
 func (f *Fake) mesh(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, gateway.MeshSessionsPath) {
 		f.meshSessions(w, r)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/mesh/v1/items/") {
+		f.changeset(w, r)
 		return
 	}
 	f.mu.Lock()

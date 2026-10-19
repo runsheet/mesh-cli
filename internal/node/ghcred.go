@@ -312,9 +312,53 @@ type ItemCred struct {
 	// a merge batch candidate's (NewBatchCred), whose renewals go by the
 	// batch's own form.
 	issue func(ctx context.Context) (*gateway.GitHubToken, error)
+	// envOnly: the token rides each git command the node runs
+	// (OnItemToken) and is never written into the checkout — a sandboxed
+	// build's, which its job container mounts (ADR-038, the credential
+	// boundary). Refresh, Reissue and ForPush only renew it, and
+	// Reauthorize clears the helper it had to write again.
+	envOnly bool
 
 	mu  sync.Mutex
 	tok *gateway.GitHubToken
+}
+
+// KeepOffCheckout makes c env-only (envOnly) and removes the helper
+// NewItemCred wrote into spec's checkout, so nothing under the workspace
+// a job container mounts holds the item's token: a sandboxed build's
+// checkout step and an adopted one's. Nil, the fallback, does nothing.
+func (c *ItemCred) KeepOffCheckout(ctx context.Context) error {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.envOnly = true
+	return clearCheckoutHelper(ctx, c.ws, c.spec)
+}
+
+// EnvOnly says whether c's token is kept off its checkout.
+func (c *ItemCred) EnvOnly() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.envOnly
+}
+
+// clearCheckoutHelper removes the item's credential helper from spec's
+// checkout (clearHelper) when ws is the node's Git; another Workspacer
+// writes no helper of its own there.
+func clearCheckoutHelper(ctx context.Context, ws Workspacer, spec WorkspaceSpec) error {
+	g, ok := ws.(*Git)
+	if !ok {
+		return nil
+	}
+	if _, err := os.Stat(spec.Dir()); err != nil {
+		return nil
+	}
+	return clearHelper(ctx, spec.Dir(), g.githubURL())
 }
 
 // NewItemCred asks for the item's token and configures the workspace
@@ -445,8 +489,10 @@ func (c *ItemCred) Refresh(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("refresh github token: %w", err)
 	}
-	if err := c.ws.Authorize(ctx, c.spec, tok); err != nil {
-		return fmt.Errorf("refresh github token: %w", err)
+	if !c.envOnly {
+		if err := c.ws.Authorize(ctx, c.spec, tok); err != nil {
+			return fmt.Errorf("refresh github token: %w", err)
+		}
 	}
 	c.tok = tok
 	return nil
@@ -462,7 +508,14 @@ func (c *ItemCred) Reauthorize(ctx context.Context) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.ws.Authorize(ctx, c.spec, c.tok)
+	if err := c.ws.Authorize(ctx, c.spec, c.tok); err != nil {
+		return err
+	}
+	if c.envOnly {
+		// Authorize rebuilt the worktree and wrote its helper again
+		return clearCheckoutHelper(ctx, c.ws, c.spec)
+	}
+	return nil
 }
 
 // Reissue asks the platform for a fresh token and rewrites the
@@ -478,8 +531,10 @@ func (c *ItemCred) Reissue(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("reissue github token: %w", err)
 	}
-	if err := c.ws.Authorize(ctx, c.spec, tok); err != nil {
-		return fmt.Errorf("reissue github token: %w", err)
+	if !c.envOnly {
+		if err := c.ws.Authorize(ctx, c.spec, tok); err != nil {
+			return fmt.Errorf("reissue github token: %w", err)
+		}
 	}
 	c.tok = tok
 	return nil
@@ -497,6 +552,10 @@ func (c *ItemCred) ForPush(ctx context.Context) (*gateway.GitHubToken, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	refreshErr := c.renewLocked(ctx)
+	if c.envOnly {
+		// the push runs on OnItemToken; nothing is written
+		return c.tok, refreshErr
+	}
 	if err := c.ws.Authorize(ctx, c.spec, c.tok); err != nil {
 		return c.tok, errors.Join(refreshErr, fmt.Errorf("github token for the push: %w", err))
 	}
@@ -744,7 +803,12 @@ func prepareWithRetry(ctx context.Context, ws Workspacer, spec WorkspaceSpec, cr
 		if repo == "" {
 			repo = spec.Repo
 		}
-		dir, err := ws.Prepare(ctx, spec)
+		pctx := ctx
+		if cred.EnvOnly() {
+			// the checkout's fetches on the token by the environment alone
+			pctx = OnItemToken(ctx, ws, tok)
+		}
+		dir, err := ws.Prepare(pctx, spec)
 		if err == nil {
 			if attempt > 0 {
 				logf("workspace %s: prepared on a re-issued token for %s (expires %s), attempt %d", spec.Dir(), repo, expiryText(tok.ExpiresAt), attempt+1)

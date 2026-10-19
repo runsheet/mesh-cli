@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -132,5 +133,34 @@ func TestStepsAllPassRunEveryStep(t *testing.T) {
 		if rec.Outcome != Succeeded {
 			t.Errorf("record %d (%s) outcome = %q, want %q", i, rec.Name, rec.Outcome, Succeeded)
 		}
+	}
+}
+
+func TestEndedStepSkipsTheRestButNotAlways(t *testing.T) {
+	var ran []string
+	step := func(name string, always bool, err error) Step {
+		return Step{Name: name, Always: always, Run: func(context.Context, *State) error {
+			ran = append(ran, name)
+			return err
+		}}
+	}
+	released := errors.New("released")
+	recs := Run(context.Background(), Job{Steps: []Step{
+		step("checkout", false, nil),
+		step("run", false, End(released)),
+		step("finish", false, nil),
+		step("release", true, nil),
+	}}, &State{})
+	if got := strings.Join(ran, ","); got != "checkout,run,release" {
+		t.Fatalf("ran %s", got)
+	}
+	want := []Outcome{Succeeded, Ended, Skipped, Succeeded}
+	for i, r := range recs {
+		if r.Outcome != want[i] {
+			t.Errorf("step %s: %s, want %s", r.Name, r.Outcome, want[i])
+		}
+	}
+	if recs[1].Err != released {
+		t.Errorf("ended step's err %v", recs[1].Err)
 	}
 }

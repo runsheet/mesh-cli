@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -25,9 +26,32 @@ const (
 	// Failed is a main step whose Run returned an error, or an always-run
 	// step whose Run returned an error.
 	Failed Outcome = "failed"
-	// Skipped is a main step never run because an earlier main step failed.
+	// Skipped is a main step never run because an earlier main step failed
+	// or ended the job.
 	Skipped Outcome = "skipped"
+	// Ended is a main step that brought the job to its end itself — the
+	// item released, failed by the node or finished already done — by
+	// returning End: the main steps after it are skipped, the always-run
+	// ones still run, and the record's Err is what End was given.
+	Ended Outcome = "ended"
 )
+
+// endError is a step's End.
+type endError struct{ err error }
+
+func (e *endError) Error() string {
+	if e.err == nil {
+		return "ended"
+	}
+	return e.err.Error()
+}
+
+func (e *endError) Unwrap() error { return e.err }
+
+// End is a step's way to end the job without failing it: Run records the
+// step Ended, carrying err (nil for none), and skips the main steps after
+// it.
+func End(err error) error { return &endError{err: err} }
 
 // Step is one unit of a Job. Always marks a step that runs whatever earlier
 // steps did — passed or failed — the way an Actions `post`/`if: always()`
@@ -71,7 +95,12 @@ func Run(ctx context.Context, job Job, state *State) []Record {
 		ended := time.Now()
 
 		outcome := Succeeded
-		if err != nil {
+		var end *endError
+		switch {
+		case errors.As(err, &end):
+			outcome, err = Ended, end.err
+			failed = true
+		case err != nil:
 			outcome = Failed
 			failed = true
 		}
