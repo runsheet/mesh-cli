@@ -1,5 +1,12 @@
 package harness
 
+import (
+	"fmt"
+	"path/filepath"
+
+	"projectmesh.io/mesh-cli/internal/sandbox"
+)
+
 // ProxyShimScriptName is the shim's file, beside its mcp.json, as
 // relayScriptName is for RelayScript.
 const ProxyShimScriptName = "mcp-proxy-shim.js"
@@ -13,6 +20,100 @@ const ProxyShimScriptName = "mcp-proxy-shim.js"
 // never reads it.
 func ProxiedServer(shimPath, socket, name string) map[string]any {
 	return map[string]any{"type": "stdio", "command": "node", "args": []string{shimPath, socket, name}}
+}
+
+// ProxyRelay is a host session's entry for server name of the
+// sessionproxy on socket: bin's RelayCommand in its --socket/--server
+// mode, no bearer, no token file. The node renders every proxied
+// server so (tools.ProxiedServers); a pod's harness turns each into
+// ProxiedServer (podProxied), since the pod has no mesh binary.
+func ProxyRelay(bin, socket, name string) map[string]any {
+	return map[string]any{"type": "stdio", "command": bin, "args": []string{RelayCommand, "--socket", socket, "--server", name}}
+}
+
+// ProxiedOf reads a ProxyRelay entry back: its socket and server name.
+func ProxiedOf(srv any) (socket, name string, ok bool) {
+	m, isMap := srv.(map[string]any)
+	if !isMap {
+		return "", "", false
+	}
+	args := stringArgs(m["args"])
+	if len(args) == 0 || args[0] != RelayCommand {
+		return "", "", false
+	}
+	for i := 1; i+1 < len(args); i++ {
+		switch args[i] {
+		case "--socket":
+			socket = args[i+1]
+		case "--server":
+			name = args[i+1]
+		}
+	}
+	return socket, name, socket != "" && name != ""
+}
+
+// RelayOf reads a MeshContextRelay entry back — the mesh binary it runs
+// and the gateway URL it relays to — for the node to proxy the built-in
+// instead.
+func RelayOf(srv any) (bin, url string, ok bool) {
+	url, _, ok = relayOf(srv)
+	if !ok {
+		return "", "", false
+	}
+	bin, _ = srv.(map[string]any)["command"].(string)
+	return bin, url, bin != ""
+}
+
+func stringArgs(a any) []string {
+	switch a := a.(type) {
+	case []string:
+		return a
+	case []any:
+		out := make([]string, 0, len(a))
+		for _, v := range a {
+			s, _ := v.(string)
+			out = append(out, s)
+		}
+		return out
+	}
+	return nil
+}
+
+// isProxied says whether any of the job's servers is a ProxyRelay.
+func isProxied(job Job) bool {
+	for _, srv := range job.MCPServers {
+		if _, _, ok := ProxiedOf(srv); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// podProxied is job with every ProxyRelay entry rewritten for sess's
+// pod: ProxiedServer on ProxyShimScript, written into the pod's HOME,
+// and each socket's directory mounted (Session.ShareProxyDir), which
+// also keeps every MESH_TOOL_* variable out of the pod. A job with no
+// proxied server is returned as it is.
+func podProxied(job Job, sess *sandbox.Session) (Job, error) {
+	if !isProxied(job) {
+		return job, nil
+	}
+	shim, err := sess.WriteFile(ProxyShimScriptName, ProxyShimScript())
+	if err != nil {
+		return job, fmt.Errorf("sessionproxy shim: %w", err)
+	}
+	out := make(map[string]any, len(job.MCPServers))
+	for name, srv := range job.MCPServers {
+		socket, server, ok := ProxiedOf(srv)
+		if !ok {
+			out[name] = srv
+			continue
+		}
+		sess.ShareProxyDir(filepath.Dir(socket))
+		out[name] = ProxiedServer(shim, socket, server)
+	}
+	job.MCPServers = out
+	return job, nil
 }
 
 // ProxyShimScript is a stdio MCP server, for a pod, that bridges to
