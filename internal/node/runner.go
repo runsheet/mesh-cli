@@ -79,6 +79,10 @@ type Runner struct {
 	BuildCache string
 	// MCP are the MCP servers every session gets (runsheet).
 	MCP map[string]any
+	// Proxies, when set, start each session's sessionproxy: every MCP
+	// server reached through one socket, no credential in the session
+	// (SessionTools.UseVia).
+	Proxies *SessionProxies
 	// MCPFunc, when set, is asked for them at every item instead: the
 	// node's machine access token expires within the hour, so a build
 	// started long after the node did must carry a bearer taken now
@@ -548,9 +552,11 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		}
 		return nil
 	}
-	if err := st.UseTools(&job, mcp, acct); err != nil {
+	closeProxy, err := st.UseVia(r.Proxies, mcpRootFor(r.Roots, r.Scopes, item.OrgID), &job, mcp, acct)
+	if err != nil {
 		return r.fail(ctx, item, fmt.Errorf("tools: %w", err))
 	}
+	defer closeProxy(ctx)
 	if len(st.Use) > 0 {
 		r.logf("item %s: tools %s", label, st.Names())
 	}
@@ -1162,6 +1168,10 @@ func (r *Runner) AdoptItem(ctx context.Context, item gateway.WorkItem, s FoundSe
 		r.logf("item %s: adopted session's own bearer: %v", label, err)
 	}
 	defer unbind()
+	// a proxied session's proxy died with the node that started it: one
+	// on the same socket, on the bearer just bound and the item's tools
+	endProxy := adoptProxy(ctx, r.Proxies, r.Credentials, r.mcp(ctx), tools.RoleFor(string(harness.KindBuild)), r.runtimes(), gateway.SessionRef{Kind: string(harness.KindBuild), ItemID: item.ID, GoalID: item.GoalID}, s, "item "+label, r.logf)
+	defer endProxy(ctx)
 	r.logf("item %s: adopted its %s session (%s, from byte %d)", label, s.Liveness(), where, s.State.Offset)
 	result, runErr := b.run(ctx, func(sctx context.Context, onProgress func(harness.Progress)) (harness.Result, error) {
 		return at.Attach(attachCtx(sctx), s.Dir, onProgress)

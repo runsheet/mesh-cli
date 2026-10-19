@@ -79,6 +79,13 @@ type State struct {
 	// the pod. Paths and a URL only.
 	RelaySocket string `json:"relaySocket,omitempty"`
 	RelayURL    string `json:"relayUrl,omitempty"`
+	// Proxy is the session's sessionproxy when its MCP servers are
+	// reached through one: the socket the agent dials and the servers it
+	// names, so the node that adopts the session starts a proxy on the
+	// same socket with each upstream rendered again from the item's tools
+	// and the session's bearer. A path and names only — never an
+	// upstream's URL, header, env or bearer.
+	Proxy *Proxy `json:"proxy,omitempty"`
 	// LoginFile is the auth.json a sandboxed Codex session's login was
 	// copied from, and LoginCache where a login it refreshed is kept for
 	// the next session on its credential: the node that ends the session
@@ -90,6 +97,16 @@ type State struct {
 	// Offset is the byte offset in output.jsonl up to which the node has
 	// read and reported, always at the end of a line.
 	Offset int64 `json:"offset"`
+}
+
+// Proxy is a session's sessionproxy as its state names it.
+type Proxy struct {
+	// Socket is the unix socket the session's MCP entries dial; the
+	// directory around it is the session's own (and a pod's mount).
+	Socket string `json:"socket"`
+	// Servers are the server names the session reaches through it,
+	// sorted.
+	Servers []string `json:"servers"`
 }
 
 // WriteState writes st to dir/state.json atomically: a temporary file

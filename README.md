@@ -1066,8 +1066,9 @@ never touches the shared clone. A workspace whose `.git/worktrees/<n>`
 has gone anyway is rebuilt for its branch at its recorded head, its
 files kept, and the step that found it — a `git remote set-url`, a
 prepare, the validation — runs once more, logged `workspace <dir>:
-worktree admin <path> gone; rebuilt for <branch> at <sha>`, nothing
-failed or released. A `.git/config.lock` older than five minutes that
+worktree <path> is gone; made again for <branch> at <sha>`, nothing
+failed or released; `scripts/stale-worktrees.sh` lists any stale
+checkout left under `~/.mesh/work`. A `.git/config.lock` older than five minutes that
 no git process holds is cleared before a config write. Every session installs
 against one pnpm store and one npm cache per node, `~/.mesh/store/pnpm`
 and `~/.mesh/store/npm` (ADR-028,
@@ -1744,6 +1745,32 @@ session's end is handled. A node that adopts a session keeps the file
 its `state.json` names — an older session's `mesh-context.token`
 included (docs/adr/adr-029-a-sessions-mcp-token-is-refreshed-by-the-node.md).
 
+**Every server goes through the session's proxy.** That relay and its
+token file are now only a rebase's, a channel session's and an older
+node's. A build, evaluation, plan or research session reaches runsheet
+and every console tool through its own proxy (`internal/sessionproxy`,
+docs/adr/adr-038-a-session-reaches-every-mcp-server-through-one-proxy.md):
+the node runs it on the host, serving `/mcp/<server>` on a 0600 unix
+socket alone in a directory under the session's org MCP root
+(`~/.mesh/mcp/px/<rand>/s` on a one-org node), and it holds every
+credential — the session's runsheet bearer in memory, asked per
+request; a remote tool's headers; a local tool's secret env, in the
+`npx`/`uvx`/`docker` child the proxy itself starts on the host. The
+agent's MCP config names only a shim that knows the socket and a server
+name — `mesh mcp-relay --socket <s> --server <name>` on the host, `node
+mcp-proxy-shim.js <s> <name>` in a pod — and a pod mounts the socket's
+directory and nothing else of it: no `runsheet.token`, no
+`MESH_TOOL_*`, no secret is in the agent's env, disk or config, so an
+agent that runs `env` or greps `/` finds none. When a server fails, the
+item's note names the proxy's own error — `tools: runsheet served,
+never called: sessionproxy: runsheet: POST <url> answered 503` — not
+the agent's bare `failed`. A session adopted after an upgrade keeps its
+socket path: `state.json` names the socket and the server names, never
+a secret, and the new node starts the proxy there again (`<label>:
+proxy restarted on <socket> (<servers>)`). `scripts/e2e-sandbox.sh`
+proves it in a real pod (`TestSessionProxySandboxedE2E`,
+docs/e2e-sandbox.md).
+
 **What the node reports.** Every tick the node looks on its `PATH` for
 the tool runtimes it can start — `npx`, `uvx`, `docker` — and the agent
 CLIs it has — `claude` (claude-code) and `codex` — and its heartbeat
@@ -1771,7 +1798,8 @@ unchanged. Each agent gets them in its own format:
   `config.toml` in the session's temporary `CODEX_HOME`, removed with it
   (`tools.WriteCodexConfig`, from `Job.Tools`).
 
-**Secrets in the environment only.** A secret header or env value is
+**Secrets in the environment only — without a proxy.** On a session
+the node does not proxy (above), a secret header or env value is
 written into the config as a variable — `${MESH_TOOL_<NAME>_<KEY>}` for
 Claude Code (a bearer as `Bearer ${…}`), `bearer_token_env_var`,
 `env_http_headers` or `env_vars` for Codex — and its value travels only

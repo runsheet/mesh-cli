@@ -1,5 +1,5 @@
 ---
-summary: The sandboxed-sessions e2e — scripts/e2e-sandbox.sh builds or pulls the node image through EnsureImage, runs the probe, sidecar and node-path e2e tests (a build and its evaluation on runsheet's Postgres and on a Redis fixture, no pod left after), the operator's live checklist on the mini, the image tools check (TestImageToolsE2E: node/npm with npm ci && npx tsc, Postgres, headless Chromium, with today's image's failing output), the Codex case (TestCodexEvaluationInAPodE2E: a runsheet evaluation on Codex in a pod from the node image on a credential from MESH_E2E_CODEX_AUTH or MESH_E2E_CODEX_API_KEY, its usage naming adapter codex and a gpt- model, no pod or HOME left; recorded 2026-10-17), and the check-then-remove-by-hand runbook for retiring latchkey-e2e-pg.
+summary: The sandboxed-sessions e2e — scripts/e2e-sandbox.sh builds or pulls the node image through EnsureImage, runs the probe, sidecar and node-path e2e tests (a build and its evaluation on runsheet's Postgres and on a Redis fixture, no pod left after), the operator's live checklist on the mini, the image tools check (TestImageToolsE2E: node/npm with npm ci && npx tsc, Postgres, headless Chromium, with today's image's failing output), the session proxy case (TestSessionProxySandboxedE2E, -tags e2e: a build's stub agent reaches runsheet, a remote and a local tool through the pod shim, each fake upstream on the host gets its credential from the proxy, and podman exec greps of the running agent container for mesh-session and each secret find nothing; ADR-038), the Codex case (TestCodexEvaluationInAPodE2E: a runsheet evaluation on Codex in a pod from the node image on a credential from MESH_E2E_CODEX_AUTH or MESH_E2E_CODEX_API_KEY, its usage naming adapter codex and a gpt- model, no pod or HOME left; recorded 2026-10-17), and the check-then-remove-by-hand runbook for retiring latchkey-e2e-pg.
 ---
 
 # The sandbox e2e
@@ -48,6 +48,7 @@ It runs, with `MESH_SANDBOX_E2E=1`, every `E2E` test of
 | `TestLocalOnlyImageE2E` | a session starts from a local-only image under an unresolvable registry name (`localOnlyImage` retags the node image as `mesh-local.invalid/…`) with no pull: the agent runs and podman's stderr has no `Trying to pull`, though the session's env sets its own `HOME` — podman keeps the node's (`podmanEnv`) |
 | `TestServicesSidecarsE2E` | the sandbox package alone: Postgres and Redis sidecars health-checked and reachable on 127.0.0.1, the pod gone after |
 | `TestSandboxedSessionsE2E` | the node's own path, for **a build (`Runner.RunItem`) and its evaluation (`Evaluator.Evaluate`)**: `OpenSessionPod` resolves the checkout's services, starts the sidecars, waits for their health checks; the ClaudeCode harness runs a stub agent in the pod (`ClaudeCode.SandboxBinary`) which reaches Postgres on 127.0.0.1:5432 (its SSLRequest answered) or Redis on 127.0.0.1:6379 (`PING` → `+PONG`) and says `VERDICT: PASS`; the evaluation is recorded passed; afterwards `podman pod ls` and `podman ps -a` hold nothing of the session and no session HOME is left |
+| `TestSessionProxySandboxedE2E` | `-tags e2e`, so run apart as the script's step 2b — see [The session proxy case](#the-session-proxy-case) |
 | `TestCodexEvaluationInAPodE2E` | run apart, as the script's step 3 — see [The Codex case](#the-codex-case) |
 
 `TestSandboxedSessionsE2E` runs twice, on the two fixtures in
@@ -117,6 +118,63 @@ leaves podman's `HOME=/home/node` and the container's on `--env HOME` —
 passes; the pull itself is unproven until a host with rootless podman
 runs `MESH_SANDBOX_ENSURE=skip scripts/e2e-sandbox.sh` (or the command
 above) and pastes its output here, in place of this paragraph.
+
+## The session proxy case
+
+Goal `a-session-reaches-every-mcp-server-through-one-proxy`, item 6
+([ADR-038](adr/adr-038-a-session-reaches-every-mcp-server-through-one-proxy.md)).
+`scripts/e2e-sandbox.sh`'s step 2b runs
+**`TestSessionProxySandboxedE2E`**
+(`internal/node/session_proxy_sandboxed_e2e_test.go`, build tag `e2e`,
+so step 2's untagged run never compiles it):
+
+```sh
+MESH_SANDBOX_E2E=1 go test -tags e2e -count=1 -v -run '^TestSessionProxySandboxedE2E$' ./internal/node
+```
+
+The node's own `Runner.RunItem` runs a build on podman with the node
+image (`MESH_SANDBOX_IMAGE`), its `SessionProxies` on, the item served a
+remote tool (`search`, a secret `Authorization` header) and a local one
+(`fs-tools`, a secret `FS_API_KEY`, `npx` faked on the test's `PATH`)
+beside the built-in runsheet, whose bearer is the build's own bound
+session bearer. The agent is a stub (`proxyStubAgent`, a Node script as
+`ClaudeCode.SandboxBinary`): it reads `--mcp-config`, starts each
+entry — the pod shim, `node <HOME>/mcp-proxy-shim.js <socket> <name>` —
+and speaks MCP on its stdio (initialize, initialized, one tools/call),
+then waits while the test greps its container, and ends in claude's
+stream-json with an init naming each server `connected` and a
+tool_use/tool_result per call. It passes when:
+
+- each of runsheet, search and fs-tools answered the agent through the
+  shim, and each fake upstream on the host received its credential from
+  the proxy — search its header, runsheet the session's bearer (never
+  the machine's), fs-tools its env in the child the proxy ran (printed
+  as `upstream <name> received its credential: …`);
+- `podman exec <agent> sh -c 'grep -rlF -f - / 2>/dev/null'`, the
+  pattern on stdin, found nothing for `mesh-session` and for each secret
+  (printed as `podman exec … <<< mesh-session: found nothing` and one
+  line per secret). The pattern rides stdin, not argv, because grep's
+  own `/proc/<pid>/cmdline` would hold it and match;
+- the build's notes and the node's log carry no `runsheet served,
+  never called` and no secret;
+- afterwards no pod or container `mesh-<slug>-…`, no proxy directory
+  under the MCP root and no session HOME is left.
+
+`TestAgentContainerHoldsNoCredential` checks the same over the fake
+runtime in every `go test ./...`.
+
+**Recorded run, 2026-10-19** (item 6's build session, on
+dl360-anythink inside its own build pod, Linux 6.8.0-146, x86_64).
+**Not run on podman:** the session's pod has no podman (`podman: command
+not found`) and no root to install it, so no real pod started. What was
+run there: `go vet -tags e2e ./internal/node/`; the test, which skips
+without `MESH_SANDBOX_E2E=1`; and the same stub agent, shim, proxy and
+fake upstreams with the agent run on the host by the fake runtime (a
+throwaway test, not kept) — every server answered through the shim
+(`fs key ok`, `runsheet answered`, `search answered`), search saw
+`Bearer <its secret>`, runsheet `Bearer <the session's bearer>`, and the
+note read `fs-tools ok, runsheet ok, search ok` with no `never called`.
+The first run with podman pastes its output here.
 
 ## The Codex case
 
