@@ -431,7 +431,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		if err != nil {
 			return fmt.Errorf("tools: %w", err)
 		}
-		defer closeProxy()
+		defer closeProxy(ctx)
 		if !fam.codex {
 			break
 		}
@@ -979,6 +979,8 @@ func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, 
 	}
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
 	ctx = WithLockHolder(ctx, label)
+	endProxy := adoptProxy(ctx, e.Proxies, e.Credentials, e.MCP, tools.RoleFor(string(harness.KindEvaluate)), e.runtimes(), gateway.SessionRef{Kind: string(harness.KindEvaluate), ItemID: item.ID, GoalID: item.GoalID}, s, "item "+label, e.logf)
+	defer endProxy(ctx)
 	e.logf("item %s: adopted its %s evaluation on %s (pid %d)", label, s.Liveness(), fam.logName(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
 	changed, cfg := e.touched(ctx, label, s.State.Workspace, res.BaseRef(), defaultBranchOf(res), item.Outcome == gateway.OutcomeAlreadyDone)

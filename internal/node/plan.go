@@ -920,7 +920,7 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, scope Scope, dir s
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, nil, 0, acct, fmt.Errorf("tools: %w", err)
 	}
-	defer closeProxy()
+	defer closeProxy(ctx)
 	if len(st.Use) > 0 {
 		p.logf("goal %s: tools %s", goal.Slug, st.Names())
 	}
@@ -1179,6 +1179,8 @@ func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope,
 		s.Remove()
 		return errNoAttach
 	}
+	endProxy := adoptProxy(ctx, p.Proxies, p.Credentials, p.MCP, tools.RoleFor(string(harness.KindPlan)), p.runtimes(), gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goal.ID}, s, "goal "+goal.Slug, p.logf)
+	defer endProxy(ctx)
 	p.logf("goal %s: adopted its %s planner session (pid %d)", goal.Slug, s.Liveness(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
 	gr, hasGoalRepo := goalRepo(goal, project, repos)

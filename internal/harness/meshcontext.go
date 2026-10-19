@@ -171,8 +171,12 @@ func (c *ClaudeCode) keepAdopted(st sessionunit.State) func(bool) {
 
 // keepAdoptedToken is keepAdopted for any harness: tokens keeps the
 // state's token file, a failure said on stderr as name's.
+//
+// A proxied session (st.Proxy) has no token file to keep: its bearer is
+// held in memory by the proxy the adopting node restarts on the state's
+// socket (node.SessionProxies.Adopt), so nothing is kept here.
 func keepAdoptedToken(tokens TokenKeeper, stderr io.Writer, name string, st sessionunit.State) func(bool) {
-	if st.TokenFile == "" || tokens == nil {
+	if st.TokenFile == "" || st.Proxy != nil || tokens == nil {
 		return func(bool) {}
 	}
 	meta := SessionMeta{NodeID: st.NodeID, ItemID: st.ItemID, GoalID: st.GoalID, DirectionID: st.DirectionID, Attempt: st.Attempt}

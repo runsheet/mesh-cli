@@ -316,7 +316,7 @@ func TestProxyErrorNamedInTheToolsNote(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer closeProxy()
+	defer closeProxy(context.Background())
 	socket, name, ok := harness.ProxiedOf(job.MCPServers[tools.Builtin])
 	if !ok || name != tools.Builtin {
 		t.Fatalf("runsheet is not proxied: %v", job.MCPServers)

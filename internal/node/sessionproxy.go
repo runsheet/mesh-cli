@@ -1,13 +1,17 @@
 package node
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
+	"projectmesh.io/mesh-cli/internal/sessionunit"
 	"projectmesh.io/mesh-cli/internal/tools"
 )
 
@@ -58,12 +62,32 @@ func (s *SessionProxy) Close() {
 	if s == nil {
 		return
 	}
-	if s.p != nil {
-		_ = s.p.Close()
-	}
+	s.Stop()
 	if s.Dir != "" {
 		os.RemoveAll(s.Dir)
 	}
+}
+
+// Stop stops the proxy and leaves its directory: a session detached for
+// the next node keeps dialling the socket's path — a pod's mount is the
+// directory itself — and the node that adopts it listens there again
+// (SessionProxies.Adopt).
+func (s *SessionProxy) Stop() {
+	if s == nil || s.p == nil {
+		return
+	}
+	_ = s.p.Close()
+}
+
+// End is the proxy's end with the session's ctx: Close, unless ctx is
+// done — the node shutting down with the session detached — when it is
+// only Stopped, its directory kept for the adopter (as unlessDetached).
+func (s *SessionProxy) End(ctx context.Context) {
+	if ctx.Err() != nil {
+		s.Stop()
+		return
+	}
+	s.Close()
 }
 
 // open starts a proxy for job's session under root (px.Root when ""),
@@ -90,6 +114,19 @@ func (px *SessionProxies) open(job *harness.Job, root, builtinURL string, specs 
 	if err != nil {
 		return nil, fmt.Errorf("sessionproxy: %w", err)
 	}
+	p := sessionproxy.New(upstreamsOf(specs, builtinURL, bearer))
+	p.Logf = px.Logf
+	sock := filepath.Join(dir, ProxySocketName)
+	if err := p.Listen(sock); err != nil {
+		os.RemoveAll(dir)
+		return nil, fmt.Errorf("sessionproxy: listen %s: %w", sock, err)
+	}
+	return &SessionProxy{Dir: dir, Socket: sock, p: p}, nil
+}
+
+// upstreamsOf is each spec as the proxy's upstream, the built-in on
+// builtinURL and bearer.
+func upstreamsOf(specs map[string]tools.UpstreamSpec, builtinURL string, bearer TokenSource) map[string]sessionproxy.Upstream {
 	ups := make(map[string]sessionproxy.Upstream, len(specs))
 	for name, sp := range specs {
 		switch {
@@ -101,14 +138,61 @@ func (px *SessionProxies) open(job *harness.Job, root, builtinURL string, specs 
 			ups[name] = sessionproxy.Remote{URL: sp.URL, Headers: sp.Headers}
 		}
 	}
-	p := sessionproxy.New(ups)
-	p.Logf = px.Logf
-	sock := filepath.Join(dir, ProxySocketName)
-	if err := p.Listen(sock); err != nil {
-		os.RemoveAll(dir)
-		return nil, fmt.Errorf("sessionproxy: listen %s: %w", sock, err)
+	return ups
+}
+
+// Adopt starts the proxy of a session another node process started
+// (mesh-cli ADR-009): on the socket its state names — the path the
+// agent's MCP entries still dial, a stale socket left by the node that
+// died removed first (sessionproxy.Listen) — fronting the servers the
+// state names, each upstream rendered again from use, the session's
+// tools as the claim-time read hands them to this node, and the
+// built-in's bearer from Bearer: for a build its own mesh session's,
+// re-bound by the adopter before this (ADR-035). A server the state
+// names that use no longer has is left out and named in missing: the
+// proxy answers it as no MCP server. Nil and no error when the state
+// names no proxy.
+func (px *SessionProxies) Adopt(st sessionunit.State, builtin map[string]any, use []tools.Tool) (sp *SessionProxy, missing []string, err error) {
+	if st.Proxy == nil || st.Proxy.Socket == "" {
+		return nil, nil, nil
 	}
-	return &SessionProxy{Dir: dir, Socket: sock, p: p}, nil
+	if px == nil || px.Bearer == nil {
+		return nil, nil, errors.New("sessionproxy: no bearer source")
+	}
+	_, url, ok := harness.RelayOf(builtin[tools.Builtin])
+	if !ok {
+		return nil, nil, errors.New("sessionproxy: no runsheet relay to proxy")
+	}
+	_, specs, err := tools.ProxiedServers(url, use, func(string) map[string]any { return nil })
+	if err != nil {
+		return nil, nil, err
+	}
+	named := make(map[string]tools.UpstreamSpec, len(st.Proxy.Servers))
+	for _, name := range st.Proxy.Servers {
+		spec, ok := specs[name]
+		if !ok {
+			missing = append(missing, name)
+			continue
+		}
+		named[name] = spec
+	}
+	meta := harness.SessionMeta{NodeID: st.NodeID, ItemID: st.ItemID, GoalID: st.GoalID, DirectionID: st.DirectionID, Attempt: st.Attempt}
+	bearer, err := px.Bearer(harness.Kind(st.Kind), meta)
+	if err != nil {
+		return nil, missing, err
+	}
+	dir := filepath.Dir(st.Proxy.Socket)
+	// a host session's path only needs to exist again; a pod's mount is
+	// the directory the old node kept (SessionProxy.Stop)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, missing, fmt.Errorf("sessionproxy: %w", err)
+	}
+	p := sessionproxy.New(upstreamsOf(named, url, bearer))
+	p.Logf = px.Logf
+	if err := p.Listen(st.Proxy.Socket); err != nil {
+		return nil, missing, fmt.Errorf("sessionproxy: listen %s: %w", st.Proxy.Socket, err)
+	}
+	return &SessionProxy{Dir: dir, Socket: st.Proxy.Socket, p: p}, missing, nil
 }
 
 // UseVia is UseTools through px: with a proxy, every server — the
@@ -117,11 +201,12 @@ func (px *SessionProxies) open(job *harness.Job, root, builtinURL string, specs 
 // starts for the session under root (its org's MCP root, else px.Root),
 // the job carrying no tool secret in its env and no tool for Codex to
 // render on its own; acct remembers the tools and the proxy's errors
-// for UseNote. The returned close stops the proxy at the session's end.
-// With no px, or a built-in that is no relay, it is UseTools and close
-// does nothing.
-func (st SessionTools) UseVia(px *SessionProxies, root string, job *harness.Job, builtin map[string]any, acct *SessionAccount) (func(), error) {
-	noop := func() {}
+// for UseNote. The returned end stops the proxy at the session's end
+// (SessionProxy.End: its directory kept when ctx is done, the session
+// detached for the node that adopts it). With no px, or a built-in that
+// is no relay, it is UseTools and end does nothing.
+func (st SessionTools) UseVia(px *SessionProxies, root string, job *harness.Job, builtin map[string]any, acct *SessionAccount) (func(context.Context), error) {
+	noop := func(context.Context) {}
 	bin, url, ok := harness.RelayOf(builtin[tools.Builtin])
 	if px == nil || !ok {
 		return noop, st.UseTools(job, builtin, acct)
@@ -155,7 +240,7 @@ func (st SessionTools) UseVia(px *SessionProxies, root string, job *harness.Job,
 	if acct != nil {
 		acct.used, acct.toolEnv, acct.proxy = st.Use, nil, sp
 	}
-	return sp.Close, nil
+	return sp.End, nil
 }
 
 // mcpRootFor is the MCP root of the org whose id is orgID when roots
@@ -181,4 +266,43 @@ func mcpRootOfScope(roots *OrgRootSet, scope Scope) string {
 		return ""
 	}
 	return r.MCP
+}
+
+// adoptProxy restarts an adopted session's proxy (SessionProxies.Adopt)
+// on the tools the claim-time read hands this node for ref, selected for
+// role and runtimes as the session's start selected them, and answers
+// the proxy's end, its directory kept should this node detach in turn. A
+// session whose state names no proxy, or a node with none, restarts
+// nothing. A failure is logged: the session runs on, its MCP calls
+// unanswered, rather than its build being lost.
+func adoptProxy(ctx context.Context, px *SessionProxies, creds *Credentials, builtin map[string]any, role string, runtimes []string, ref gateway.SessionRef, s FoundSession, label string, logf func(string, ...any)) func(context.Context) {
+	noop := func(context.Context) {}
+	if s.State.Proxy == nil {
+		return noop
+	}
+	if px == nil {
+		logf("%s: adopted session names a proxy at %s and this node runs none; its MCP servers go unanswered", label, s.State.Proxy.Socket)
+		return noop
+	}
+	var use []tools.Tool
+	if creds != nil && creds.GW != nil {
+		read, err := creds.GW.Session(ctx, ref, s.State.NodeID)
+		switch {
+		case err != nil && !gateway.IsUnsupported(err):
+			logf("%s: adopted proxy: tools: %v; proxying runsheet alone", label, err)
+		case read != nil:
+			use = SelectTools(builtin, read.Tools, role, runtimes).Use
+		}
+	}
+	sp, missing, err := px.Adopt(s.State, builtin, use)
+	if err != nil {
+		logf("%s: adopted proxy: %v", label, err)
+		return noop
+	}
+	line := fmt.Sprintf("%s: proxy restarted on %s (%s)", label, sp.Socket, strings.Join(s.State.Proxy.Servers, ", "))
+	if len(missing) > 0 {
+		line += "; no longer served: " + strings.Join(missing, ", ")
+	}
+	logf("%s", line)
+	return sp.End
 }
