@@ -309,7 +309,7 @@ func (c *ClaudeCode) runHost(ctx context.Context, job Job, onProgress func(Progr
 			os.RemoveAll(dir)
 		}
 	}()
-	job, _, releaseToken, err := placeMeshContext(job, c.Tokens, dir, false, "")
+	job, _, releaseToken, err := placeMeshContext(job, c.Tokens, dir)
 	if err != nil {
 		return Result{}, fmt.Errorf("harness claude-code: runsheet token: %w", err)
 	}
@@ -689,6 +689,7 @@ func (job Job) state(runner string, h sessionunit.Handle, harness string) sessio
 		Harness: harness, Runner: runner, PID: h.PID, Unit: h.UnitName, Workspace: job.Workspace,
 		StartedAt: time.Now().UTC(), TimeoutSeconds: int(job.Timeout / time.Second), MaxBudgetUSD: job.MaxBudgetUSD,
 		TempDirs: job.Meta.TempDirs, TokenFile: job.tokenFile, LoginCache: job.Meta.LoginCache,
+		RelaySocket: job.relaySocket, RelayURL: job.relayURL,
 		Proxy: ProxyStateOf(job.MCPServers),
 	}
 }
@@ -736,11 +737,12 @@ func (c *ClaudeCode) runSandboxed(ctx context.Context, job Job, onProgress func(
 		}
 		if _, ok := meshContextRelay(job); ok && c.Tokens != nil {
 			// the pod has no mesh binary: the relay is RelayScript in
-			// its HOME, on a token file there the node keeps fresh
+			// its HOME, on the node's endpoint there, which holds the
+			// bearer the pod never sees
 			if _, err = sess.WriteFile(relayScriptName, RelayScript()); err != nil {
 				return Result{}, fmt.Errorf("harness claude-code: runsheet relay: %w", err)
 			}
-			if job, _, releaseToken, err = placeMeshContext(job, c.Tokens, sess.Home, true, mcpPath); err != nil {
+			if job, releaseToken, err = placePodRelay(job, c.Tokens, sess.Home); err != nil {
 				return Result{}, fmt.Errorf("harness claude-code: runsheet token: %w", err)
 			}
 		}

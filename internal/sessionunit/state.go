@@ -72,6 +72,13 @@ type State struct {
 	// relay reads per request (mesh-cli ADR-029): the path a later node
 	// keeps fresh when it adopts the session. A path only.
 	TokenFile string `json:"tokenFile,omitempty"`
+	// RelaySocket is a pod session's relay endpoint, the unix socket in
+	// its HOME the node serves its runsheet relay on, and RelayURL where
+	// the endpoint forwards to: a later node serves it again from
+	// TokenFile when it adopts the session, so the bearer never enters
+	// the pod. Paths and a URL only.
+	RelaySocket string `json:"relaySocket,omitempty"`
+	RelayURL    string `json:"relayUrl,omitempty"`
 	// Proxy is the session's sessionproxy when its MCP servers are
 	// reached through one: the socket the agent dials and the servers it
 	// names, so the node that adopts the session starts a proxy on the

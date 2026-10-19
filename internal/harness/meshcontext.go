@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
+	"projectmesh.io/mesh-cli/internal/mcprelay"
 	"projectmesh.io/mesh-cli/internal/sessionunit"
 )
 
@@ -107,14 +109,14 @@ func withServer(servers map[string]any, name string, srv map[string]any) map[str
 // file in dir and has keeper keep it, returning the servers as the
 // session runs them, the file's path and its release. Servers whose
 // built-in is not a relay, or no keeper, come back as they are, with no
-// path and a release that does nothing. pod names the relay as a pod
-// runs it: RelayScript beside mcpPath. The channel session places its
-// own (internal/channel); a harness's job, placeMeshContext.
-func PlaceMeshContext(servers map[string]any, keeper TokenKeeper, dir string, pod bool, mcpPath string) (map[string]any, string, func(bool), error) {
-	return placeRelay(servers, keeper, dir, pod, mcpPath, func(path string) (func(bool), error) { return keeper.Keep(path) })
+// path and a release that does nothing. The channel session places its
+// own (internal/channel); a harness's job, placeMeshContext, and a pod
+// session's, placePodRelay.
+func PlaceMeshContext(servers map[string]any, keeper TokenKeeper, dir string) (map[string]any, string, func(bool), error) {
+	return placeRelay(servers, keeper, dir, func(path string) (func(bool), error) { return keeper.Keep(path) })
 }
 
-func placeRelay(servers map[string]any, keeper TokenKeeper, dir string, pod bool, mcpPath string, keep func(path string) (func(bool), error)) (map[string]any, string, func(bool), error) {
+func placeRelay(servers map[string]any, keeper TokenKeeper, dir string, keep func(path string) (func(bool), error)) (map[string]any, string, func(bool), error) {
 	noop := func(bool) {}
 	srv, _ := servers[BuiltinMCP].(map[string]any)
 	url, _, ok := relayOf(srv)
@@ -127,28 +129,94 @@ func placeRelay(servers map[string]any, keeper TokenKeeper, dir string, pod bool
 		return servers, "", noop, err
 	}
 	bin, _ := srv["command"].(string)
-	next := MeshContextRelay(bin, url, path)
-	if pod {
-		next = sandboxRelayServer(mcpPath, url, path)
-	}
-	return withServer(servers, BuiltinMCP, next), path, release, nil
+	return withServer(servers, BuiltinMCP, MeshContextRelay(bin, url, path)), path, release, nil
 }
 
-// placeMeshContext is PlaceMeshContext on a job's servers, the file
-// named on the job for its state.json: on the host in job.TokenDir when
-// the node named one, and kept from the job's own session's bearer by a
+// placeMeshContext is PlaceMeshContext on a host job's servers, the file
+// named on the job for its state.json: in job.TokenDir when the node
+// named one, and kept from the job's own session's bearer by a
 // SessionTokenKeeper (mesh-cli ADR-035).
-func placeMeshContext(job Job, keeper TokenKeeper, dir string, pod bool, mcpPath string) (Job, string, func(bool), error) {
-	if job.TokenDir != "" && !pod {
+func placeMeshContext(job Job, keeper TokenKeeper, dir string) (Job, string, func(bool), error) {
+	if job.TokenDir != "" {
 		dir = job.TokenDir
 	}
 	keep := func(path string) (func(bool), error) { return keepToken(keeper, path, job.Kind, job.Meta) }
-	servers, path, release, err := placeRelay(job.MCPServers, keeper, dir, pod, mcpPath, keep)
+	servers, path, release, err := placeRelay(job.MCPServers, keeper, dir, keep)
 	if err != nil {
 		return job, "", release, err
 	}
 	job.MCPServers, job.tokenFile = servers, path
 	return job, path, release, nil
+}
+
+// relayDirPrefix names the temporary dir of the node's a pod session's
+// token file goes in when the node named no TokenDir: a mesh-session-*
+// dir, so the start-up sweep removes one no found session names.
+const relayDirPrefix = "mesh-session-relay-"
+
+// placePodRelay is the runsheet relay of a pod session whose HOME is
+// home: the token file kept on the node — in job.TokenDir, else a
+// temporary dir of the node's, never under home — the node's endpoint
+// serving it on RelaySocketName in home (mcprelay.Serve), and the
+// servers naming RelayScript in home on that socket. The pod holds the
+// socket's path and nothing of the bearer. The release closes the
+// endpoint and releases the file, removing the temporary dir with it
+// when remove is set; a detach (remove false) leaves the file for the
+// node that adopts the session, which serves the socket again
+// (keepAdoptedToken). A job whose built-in is not a relay, or no
+// keeper, comes back as it is.
+func placePodRelay(job Job, keeper TokenKeeper, home string) (Job, func(bool), error) {
+	noop := func(bool) {}
+	url, ok := meshContextRelay(job)
+	if !ok || keeper == nil {
+		return job, noop, nil
+	}
+	dir, made := job.TokenDir, false
+	if dir == "" {
+		d, err := os.MkdirTemp("", relayDirPrefix)
+		if err != nil {
+			return job, noop, err
+		}
+		dir, made = d, true
+	}
+	path := filepath.Join(dir, TokenFileName)
+	releaseFile, err := keepToken(keeper, path, job.Kind, job.Meta)
+	if err != nil {
+		if made {
+			os.RemoveAll(dir)
+		}
+		return job, noop, err
+	}
+	sock := filepath.Join(home, RelaySocketName)
+	ep, err := mcprelay.Serve(sock, url, path, nil)
+	if err != nil {
+		releaseFile(true)
+		if made {
+			os.RemoveAll(dir)
+		}
+		return job, noop, err
+	}
+	release := podRelayRelease(ep, releaseFile, path)
+	job.MCPServers = withServer(job.MCPServers, BuiltinMCP, sandboxRelayServer(filepath.Join(home, relayScriptName), sock))
+	job.tokenFile, job.relaySocket, job.relayURL = path, sock, url
+	return job, release, nil
+}
+
+// podRelayRelease closes ep and releases the token file at path, its
+// temporary dir removed with it on a removing release.
+func podRelayRelease(ep *mcprelay.Endpoint, releaseFile func(bool), path string) func(bool) {
+	var once sync.Once
+	return func(remove bool) {
+		once.Do(func() {
+			if ep != nil {
+				_ = ep.Close()
+			}
+			releaseFile(remove)
+			if dir := filepath.Dir(path); remove && strings.HasPrefix(filepath.Base(dir), relayDirPrefix) {
+				os.RemoveAll(dir)
+			}
+		})
+	}
 }
 
 // readTokenFile is the bearer in a relay's token file, trimmed.
@@ -170,7 +238,9 @@ func (c *ClaudeCode) keepAdopted(st sessionunit.State) func(bool) {
 }
 
 // keepAdoptedToken is keepAdopted for any harness: tokens keeps the
-// state's token file, a failure said on stderr as name's.
+// state's token file, a failure said on stderr as name's. A pod
+// session's relay endpoint (the state's RelaySocket) is served again on
+// that file, as the node that started it served it.
 //
 // A proxied session (st.Proxy) has no token file to keep: its bearer is
 // held in memory by the proxy the adopting node restarts on the state's
@@ -187,5 +257,12 @@ func keepAdoptedToken(tokens TokenKeeper, stderr io.Writer, name string, st sess
 		}
 		return func(bool) {}
 	}
-	return release
+	if st.RelaySocket == "" || st.RelayURL == "" {
+		return release
+	}
+	ep, err := mcprelay.Serve(st.RelaySocket, st.RelayURL, st.TokenFile, nil)
+	if err != nil && stderr != nil {
+		fmt.Fprintf(stderr, "harness %s: attach: runsheet relay endpoint: %v\n", name, err)
+	}
+	return podRelayRelease(ep, release, st.TokenFile)
 }

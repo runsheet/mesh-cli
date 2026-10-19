@@ -113,8 +113,8 @@ func (c *Codex) runSandboxed(ctx context.Context, job Job, onProgress func(Progr
 // issued credential's auth.json) copied in and written back when Codex
 // refreshed it, else Account's plan login copied likewise or its API key
 // in the env only — and config.toml renders the job's MCP servers, the
-// runsheet relay as RelayScript in the HOME on a token file in the
-// CODEX_HOME. The HOME is the session's: Close removes it, so the home
+// runsheet relay as RelayScript in the HOME on the node's relay
+// endpoint (placePodRelay), its token file on the node. The HOME is the session's: Close removes it, so the home
 // is never owned here.
 func (c *Codex) prepareSandboxHome(job Job, sess *sandbox.Session) (*codexHome, []string, Job, error) {
 	dir := sess.CodexHome()
@@ -162,16 +162,16 @@ func (c *Codex) prepareSandboxHome(job Job, sess *sandbox.Session) (*codexHome, 
 	}
 	if _, ok := meshContextRelay(job); ok && c.Tokens != nil {
 		// the pod has no mesh binary: the relay is RelayScript in its
-		// HOME, on a token file in the CODEX_HOME the node keeps fresh
-		script, err := sess.WriteFile(relayScriptName, RelayScript())
-		if err != nil {
+		// HOME, on the node's endpoint there, which holds the bearer the
+		// pod never sees
+		if _, err := sess.WriteFile(relayScriptName, RelayScript()); err != nil {
 			return fail(fmt.Errorf("runsheet relay: %w", err))
 		}
-		var path string
-		if job, path, h.releaseToken, err = placeMeshContext(job, c.Tokens, dir, true, script); err != nil {
+		var err error
+		if job, h.releaseToken, err = placePodRelay(job, c.Tokens, sess.Home); err != nil {
 			return fail(fmt.Errorf("runsheet token: %w", err))
 		}
-		h.tokenFile = path
+		h.tokenFile, h.relaySocket, h.relayURL = job.tokenFile, job.relaySocket, job.relayURL
 	}
 	cfg, cfgEnv, err := codexConfig(job, prov)
 	if err != nil {

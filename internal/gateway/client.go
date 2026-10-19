@@ -209,7 +209,10 @@ type Client struct {
 	// payload's `scopes` element type was last found to take `shares`
 	// (see takesScopeShares).
 	scopeSharesSchema holdingProbe
-	Now               func() time.Time
+	// changesetSchema is whether the gateway's FinishWorkItemInput was
+	// last found to take `changesetId` (see FinishWorkItemChangeset).
+	changesetSchema holdingProbe
+	Now             func() time.Time
 }
 
 // New returns a client for baseURL (scheme+host, no trailing slash) with

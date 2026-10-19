@@ -176,12 +176,12 @@ func TestCodexRunsInTheSandbox(t *testing.T) {
 			names = append(names, n)
 		}
 	}
-	for _, want := range []string{"CODEX_HOME", "MESH_ACCOUNT", "MESH_ITEM", "MESH_SESSION_KIND", "GH_TOKEN", "MESH_TOOL_X_TOKEN", "GOMAXPROCS"} {
+	for _, want := range []string{"CODEX_HOME", "MESH_ACCOUNT", "MESH_ITEM", "MESH_SESSION_KIND", "MESH_TOOL_X_TOKEN", "GOMAXPROCS"} {
 		if !slices.Contains(names, want) {
 			t.Fatalf("--env %s missing from %v", want, names)
 		}
 	}
-	if slices.Contains(names, "NOT_ALLOWED") {
+	if slices.Contains(names, "NOT_ALLOWED") || slices.Contains(names, "GH_TOKEN") {
 		t.Fatalf("a variable off the allow-list reached the pod: %v", names)
 	}
 
@@ -195,13 +195,14 @@ func TestCodexRunsInTheSandbox(t *testing.T) {
 	if strings.Contains(log.String(), codexSecret) || !strings.Contains(log.String(), Redacted) {
 		t.Fatalf("the log is not redacted: %q", log.String())
 	}
-	// the credential is a file in the HOME, the bearer a token file there
+	// the credential is a file in the HOME; the bearer stays on the node,
+	// the relay naming its endpoint's socket in the HOME
 	if string(files["auth.json"]) != auth {
 		t.Fatalf("auth.json in CODEX_HOME = %q", files["auth.json"])
 	}
 	cfg := string(files["config.toml"])
 	if !strings.Contains(cfg, "[mcp_servers.runsheet]") || !strings.Contains(cfg, filepath.Join(home, relayScriptName)) ||
-		!strings.Contains(cfg, filepath.Join(codexHome, TokenFileName)) || strings.Contains(cfg, bearerPrefix) {
+		!strings.Contains(cfg, filepath.Join(home, RelaySocketName)) || strings.Contains(cfg, TokenFileName) || strings.Contains(cfg, bearerPrefix) {
 		t.Fatalf("config.toml = %s", cfg)
 	}
 	if _, err := os.Stat(home); !os.IsNotExist(err) {

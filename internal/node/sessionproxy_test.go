@@ -344,13 +344,13 @@ func TestProxyDirMountedAndToolEnvDropped(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sess.Close()
-	env := []string{"MESH_TOOL_SEARCH_AUTHORIZATION=" + searchSecret, "GH_TOKEN=ghs_x"}
+	env := []string{"MESH_TOOL_SEARCH_AUTHORIZATION=" + searchSecret, "MESH_ACCOUNT=acct-x"}
 	if e := strings.Join(sess.Env(env), "\n"); !strings.Contains(e, searchSecret) {
 		t.Fatalf("an unproxied session's tool variable is dropped: %s", e)
 	}
 	dir := t.TempDir()
 	sess.ShareProxyDir(dir)
-	if e := strings.Join(sess.Env(env), "\n"); strings.Contains(e, "MESH_TOOL_") || !strings.Contains(e, "GH_TOKEN=ghs_x") {
+	if e := strings.Join(sess.Env(env), "\n"); strings.Contains(e, "MESH_TOOL_") || !strings.Contains(e, "MESH_ACCOUNT=acct-x") {
 		t.Fatalf("proxied env = %s", e)
 	}
 	ws := t.TempDir()

@@ -316,7 +316,7 @@ func TestSessionStarted50MinutesBeforeRotationFinishesAfterIt(t *testing.T) {
 	tokens := &TokenFiles{Token: b.Token, Ticker: clock.Ticker}
 
 	sessionDir := filepath.Join(t.TempDir(), "goal", "3.session")
-	servers, path, release, err := harness.PlaceMeshContext(MeshContextMCP("mesh", f.URL()), tokens, sessionDir, false, "")
+	servers, path, release, err := harness.PlaceMeshContext(MeshContextMCP("mesh", f.URL()), tokens, sessionDir)
 	if err != nil {
 		t.Fatal(err)
 	}

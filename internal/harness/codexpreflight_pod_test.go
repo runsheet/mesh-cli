@@ -19,17 +19,17 @@ import (
 // preflightPodAgent is a fake pod's containers as a Codex session's preflight and
 // run use them: `codex mcp get` answers, the runsheet relay (node) answers
 // an MCP opening on its stdio — or refuses auth with refuse — the sandbox
-// probe binds, and `codex exec` streams a verdict. Every token file the
-// relay was named must exist when it runs.
+// probe binds, and `codex exec` streams a verdict. The relay is named the
+// node's endpoint socket, which must be there when it runs.
 func preflightPodAgent(t *testing.T, refuse bool) func(context.Context, sandbox.AgentSpec) (sandbox.Exit, error) {
 	return func(_ context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
 		cmd := spec.Command
 		switch {
 		case len(cmd) >= 4 && cmd[0] == "codex" && cmd[1] == "mcp" && cmd[2] == "get":
 			fmt.Fprintf(spec.Stdout, "%s\n  enabled: true\n", cmd[3])
-		case len(cmd) == 4 && cmd[0] == "node":
-			if _, err := os.Stat(cmd[3]); err != nil {
-				t.Errorf("the relay's token file is not there: %v", err)
+		case len(cmd) == 3 && cmd[0] == "node":
+			if fi, err := os.Lstat(cmd[2]); err != nil || fi.Mode()&os.ModeSocket == 0 {
+				t.Errorf("the relay's endpoint socket is not there: %v", err)
 			}
 			sc := bufio.NewScanner(spec.Stdin)
 			for sc.Scan() {
@@ -122,7 +122,7 @@ func TestCodexPreflightRunsInTheSessionsPod(t *testing.T) {
 		cmd  []string
 	}{
 		{sandbox.ExecName(pod, 1), []string{"codex", "mcp", "get", BuiltinMCP}},
-		{sandbox.ExecName(pod, 2), []string{"node", filepath.Join(sess.Home, relayScriptName), relayURL, filepath.Join(sess.CodexHome(), TokenFileName)}},
+		{sandbox.ExecName(pod, 2), []string{"node", filepath.Join(sess.Home, relayScriptName), filepath.Join(sess.Home, RelaySocketName)}},
 		{sandbox.ExecName(pod, 3), append([]string{"codex"}, SandboxProbe(PodProbeLoopback)...)},
 		{sandbox.AgentName(pod), append([]string{"codex"}, c.Args(job)...)},
 	}
