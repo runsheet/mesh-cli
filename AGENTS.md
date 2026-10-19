@@ -1941,6 +1941,47 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   to fetch`) and its usage report carries `contextBytes`, dropped for a
   platform without the field (`ErrNoContextUsage`, said once per run;
   docs/adr/adr-016).
+- **A session reaches every MCP server through one proxy** (ADR-038,
+  `docs/adr/adr-038-a-session-reaches-every-mcp-server-through-one-proxy.md`,
+  amending ADR-029 and ADR-035; for a node's sessions it supersedes
+  mesh-specs ADR 006 decision 2, secrets in env only — that repo's
+  amendment owed): `internal/sessionproxy`'s `Proxy` serves
+  streamable-HTTP MCP at `/mcp/<server>` on a 0600 unix socket
+  (`Listen`, a stale socket removed first) with one upstream per server
+  — `Remote{URL, Headers}` (the headers the proxy holds; a client's
+  Authorization never forwarded), `Runsheet{URL, Bearer}` (asked per
+  request, in memory, a 401 re-asked and retried once) and
+  `Local{Command, Args, Env, Secrets}` (a local tool run by the proxy
+  on the host, lazily, restarted once with initialize replayed, its
+  secrets in the child's env alone, ids of the proxy's own, its process
+  group killed on `Close`) — `Mcp-Session-Id` carried, event streams
+  relayed, every reply, error, log line and child stderr masked, each
+  server's `FirstError` kept. `tools.ProxiedServers` renders every
+  server as a shim entry and returns the `UpstreamSpec`s apart; a host
+  session's entry is `harness.ProxyRelay` (`mesh mcp-relay --socket
+  <s> --server <name>`, no token file), a pod's `harness.ProxiedServer`
+  (`node <HOME>/mcp-proxy-shim.js <s> <name>`, `ProxyShimScript`,
+  rewritten by `podProxied`). `SessionTools.UseVia` with the node's
+  `SessionProxies` (`internal/node/sessionproxy.go`; `mesh node start`'s
+  `newSessionProxies`) opens it for build, evaluation, plan and
+  research at `<org MCP root>/px/<rand>/s` (`ProxySocketName`), the
+  runsheet bearer from `TokenFiles.Source`; the pod mounts the socket's
+  directory alone (`Session.ShareProxyDir`, no `MESH_TOOL_*` admitted),
+  no `runsheet.token` is written, and `SessionProxy.End` stops it with
+  the session. `UseNote` names the proxy's error for a failed server
+  (`runsheet served, never called: sessionproxy: runsheet: POST <url>
+  answered 503`). state.json's `proxy {socket, servers}`
+  (`sessionunit.Proxy`, `harness.ProxyStateOf`) names no secret; a
+  detaching node `Stop`s the proxy and keeps its dir, and the adopter
+  restarts it on the same socket (`SessionProxies.Adopt`, `adoptProxy`,
+  logged `<label>: proxy restarted on <socket> (<servers>)`);
+  `keepAdoptedToken` keeps no file for it. Rebase and channel sessions
+  keep the relay on its token file (ADR-029). `TestAgentContainerHoldsNoCredential`
+  checks it on the fake runtime; `session_proxy_sandboxed_e2e_test.go`'s
+  `TestSessionProxySandboxedE2E` (`-tags e2e`, `MESH_SANDBOX_E2E=1`,
+  `scripts/e2e-sandbox.sh` step 2b) in a real pod: each fake upstream
+  gets its credential and `podman exec` greps for `mesh-session` and
+  each secret find nothing.
 - Costs: each session's `total_cost_usd` is reported to the platform per
   item (`ReportWorkItemProgress`, `EvaluateWorkItem`, `PlanGoal`).
   Priced tool calls are tool usage records: the harness counts each
