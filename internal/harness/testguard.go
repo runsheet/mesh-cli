@@ -33,6 +33,13 @@ var cmdStatementSepRE = regexp.MustCompile(`&&|\|\||;|\||[()]`)
 // background is refused, whole-suite or not.
 var testCommandRE = regexp.MustCompile(`\bgo\s+test\b|\b(npm|yarn|pnpm)\s+(run\s+)?test\b|\bmake\s+test\b|\bpytest\b|\bjest\b|\bmocha\b|\bcargo\s+test\b|\bmvn\s+test\b|\bgradle\s+test\b`)
 
+// TestGuardCommand is the PreToolUse hook command a build session's
+// settings run on every Bash call (ADR-038): bin (the mesh binary,
+// quoted for the shell) `test-guard --hook`.
+func TestGuardCommand(bin string) string {
+	return shellQuote(bin) + " test-guard --hook"
+}
+
 // TestGuardHook is the PreToolUse hook's answer to hookInput, Claude
 // Code's JSON for a Bash call (TrimHook's same input shape): a
 // whole-suite test run — `go test ./...` with any flags, inside

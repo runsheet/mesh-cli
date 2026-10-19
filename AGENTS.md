@@ -1527,6 +1527,23 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   the first 60% and last 40% of the cap (`TrimToolResult`) — and every
   build session `MAX_MCP_OUTPUT_TOKENS` and `BASH_MAX_OUTPUT_LENGTH`
   (`ToolResultsEnv`). Channel mode gets neither; a sandboxed one the env.
+  **A builder tests what it touched** (ADR-038,
+  `docs/adr/adr-038-a-builder-tests-what-it-touched.md`): beside the
+  trim, on the same Bash matcher, a host build's settings run the test
+  guard (`BuildSessionSettings`, `harness.TestGuardCommand`: `mesh
+  test-guard --hook`, `internal/commands/testguard.go`), set whatever
+  `max_kb` says — `harness.TestGuardHook` denies a whole-suite run (`go
+  test ./...` in any statement, `cd x && …`, a bare `npm test`/`make
+  test`/`pytest`; a scoped `./internal/foo/...` runs) and any test
+  command with `run_in_background`, its reason naming the
+  `.runsheet/validate.yml` suites the merge-base diff selects
+  (`validate.Select`), else a generic one; an unreadable input lets the
+  call run. Only `Runner.toolResults` sets it: evaluate, plan and rebase
+  sessions run whole suites when their acceptance asks. `BuildPrompt`'s
+  `# Test what you touched` (`testWhatYouTouched`, before `# Services`)
+  says test the packages you touched in the foreground, never `go test
+  ./...` — the rule alone in a pod, which has no mesh binary
+  (`TestGuardHookOnBuildNotEvaluate`, `TestBuildPromptTestsWhatItTouched`).
 - **The hand-back** (`internal/harness/handback.go`, adr-012
   Hand-back): a host build's turns are priced by tier (`listPrices`,
   dated); past `Job.HandBackAt` (the runner's

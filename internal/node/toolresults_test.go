@@ -80,13 +80,18 @@ func TestBuildSessionTrimsToolResults(t *testing.T) {
 		{"tool_results: {max_kb: 0}", "", "", ""},
 	} {
 		job, args := buildJob(t, c.yml)
-		hooks := bashHooks(t, args)
-		if c.hook == "" {
-			if len(hooks) != 0 || job.Settings != nil {
-				t.Errorf("%q: hooks %v, settings %v; want none", c.yml, hooks, job.Settings)
+		var trims []string
+		for _, h := range bashHooks(t, args) {
+			if strings.Contains(h, "tool-trim") {
+				trims = append(trims, h)
 			}
-		} else if len(hooks) != 1 || !strings.Contains(hooks[0], c.hook) {
-			t.Errorf("%q: Bash hooks %v, want one naming %q", c.yml, hooks, c.hook)
+		}
+		if c.hook == "" {
+			if len(trims) != 0 {
+				t.Errorf("%q: trim hooks %v; want none", c.yml, trims)
+			}
+		} else if len(trims) != 1 || !strings.Contains(trims[0], c.hook) {
+			t.Errorf("%q: Bash trim hooks %v, want one naming %q", c.yml, trims, c.hook)
 		}
 		for k, want := range map[string]string{"MAX_MCP_OUTPUT_TOKENS": c.mcp, "BASH_MAX_OUTPUT_LENGTH": c.bash} {
 			got, ok := envOf(job.Env, k)

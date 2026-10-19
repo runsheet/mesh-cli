@@ -167,3 +167,20 @@ func TestParseAlreadyDone(t *testing.T) {
 		}
 	}
 }
+
+// A build prompt tells the builder to test what it touched: never `go
+// test ./...`, never a background test run waited on (ADR-038).
+func TestBuildPromptTestsWhatItTouched(t *testing.T) {
+	p := BuildPrompt(PromptInput{Title: "x", Repo: "acme/widgets", Branch: "b", BaseRef: "main"})
+	for _, want := range []string{
+		"# Test what you touched",
+		"Run the tests of the packages you touched",
+		"never `go test ./...`",
+		"`.runsheet/validate.yml`'s suites in validation",
+		"Never put tests in the background and wait on them: run them in the foreground",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("build prompt lacks %q:\n%s", want, p)
+		}
+	}
+}

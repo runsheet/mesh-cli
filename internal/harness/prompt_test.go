@@ -583,7 +583,10 @@ func TestPromptsCarryTheServicesLine(t *testing.T) {
 	if want := "## Acceptance (the goal)\n\ntests pass\n\n# Check main first\n\n"; !strings.Contains(build, want) {
 		t.Errorf("build prompt lacks\n%s\n---\n%s", want, build)
 	}
-	if want := "If only part of it is there, build the rest.\n\n# Services\n\n" + line + "\n\n# Rules\n\n1. Read the repository's own instructions"; !strings.Contains(build, want) {
+	if want := "If only part of it is there, build the rest.\n\n# Test what you touched\n\n"; !strings.Contains(build, want) {
+		t.Errorf("build prompt lacks\n%s\n---\n%s", want, build)
+	}
+	if want := "test guard refuses a whole-suite or backgrounded test run.\n\n# Services\n\n" + line + "\n\n# Rules\n\n1. Read the repository's own instructions"; !strings.Contains(build, want) {
 		t.Errorf("build prompt lacks\n%s\n---\n%s", want, build)
 	}
 	eval := EvaluatePrompt(EvaluateInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main", Services: line})

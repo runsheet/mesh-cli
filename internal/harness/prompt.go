@@ -148,6 +148,7 @@ func BuildPrompt(in PromptInput) string {
 		fmt.Fprintf(&b, "## Acceptance (the goal)\n\n%s\n\n", strings.TrimSpace(in.GoalAcceptance))
 	}
 	checkMainFirst(&b, in)
+	b.WriteString(testWhatYouTouched)
 	servicesSection(&b, in.Services)
 	b.WriteString("# Rules\n\n")
 	if in.ContextDir != "" {
@@ -172,6 +173,15 @@ func BuildPrompt(in PromptInput) string {
 	finishByToolCall(&b, in)
 	return b.String()
 }
+
+// testWhatYouTouched is the builder's testing rule (ADR-038): the
+// packages it touched, in the foreground, never the whole suite —
+// the node's validation runs validate.yml's suites after the build. On
+// the host the test guard refuses what it forbids; in a pod, where no
+// mesh binary runs the guard, this is the rule alone.
+const testWhatYouTouched = "# Test what you touched\n\n" +
+	"Run the tests of the packages you touched — `go test ./internal/<pkg>/` for each, or the acceptance's own command — never `go test ./...` or any other whole-suite run: the node runs `.runsheet/validate.yml`'s suites in validation after you finish. " +
+	"Never put tests in the background and wait on them: run them in the foreground, read the result and keep working on it. On the host the node's test guard refuses a whole-suite or backgrounded test run.\n\n"
 
 // finishByToolCall tells the builder to end by calling the hosted
 // mesh_finish tool (mesh-cli ADR-023): the call is the finish, and the
