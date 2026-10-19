@@ -2,8 +2,10 @@ package node
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"text/template"
@@ -31,6 +33,44 @@ import (
 
 // ServiceLabel names the service to launchd and systemd.
 const ServiceLabel = "io.projectmesh.mesh-node"
+
+// SafeKillMode is the KillMode a systemd unit must have for the node's
+// sandboxed sessions to outlive it: every pod's conmon runs in the
+// service's cgroup, so systemd's default, control-group, kills them all on
+// a restart or a self-update's exit. The unit RenderSystemdUnit writes says
+// it; a unit written by hand may not (dl360, 2026-10-19: two build sessions
+// ended with the node on a restart).
+const SafeKillMode = "process"
+
+// SystemdKillMode is the KillMode of the node's systemd --user unit as
+// systemd has it loaded, and whether a loaded unit answered at all: run
+// executes a command and returns its output (nil runs it).
+func SystemdKillMode(ctx context.Context, run func(ctx context.Context, name string, args ...string) ([]byte, error)) (string, bool) {
+	if run == nil {
+		run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			return exec.CommandContext(ctx, name, args...).Output()
+		}
+	}
+	unit := ServiceLabel + ".service"
+	b, err := run(ctx, "systemctl", "--user", "show", unit, "-p", "LoadState", "-p", "KillMode")
+	if err != nil {
+		return "", false
+	}
+	var load, mode string
+	for _, line := range strings.Split(string(b), "\n") {
+		k, v, _ := strings.Cut(strings.TrimSpace(line), "=")
+		switch k {
+		case "LoadState":
+			load = v
+		case "KillMode":
+			mode = v
+		}
+	}
+	if load != "loaded" || mode == "" {
+		return "", false
+	}
+	return mode, true
+}
 
 // ServiceSpec is what the service runs.
 type ServiceSpec struct {

@@ -1,37 +1,45 @@
 package harness
 
-import "path/filepath"
-
 // relayScriptName is the runsheet relay's script in a pod, beside its
 // mcp.json: the pod has no mesh binary and no route to the host, but the
 // node image carries Node for claude.
 const relayScriptName = "runsheet-relay.js"
 
-// sandboxRelayServer is runsheet in a pod whose mcp.json is mcpPath:
-// node running RelayScript, written beside it, relaying to url on the
-// bearer it reads from tokenFile per request. The token rides no command
-// line and no config: only the file's path does.
-func sandboxRelayServer(mcpPath, url, tokenFile string) map[string]any {
-	return map[string]any{"type": "stdio", "command": "node", "args": []string{filepath.Join(filepath.Dir(mcpPath), relayScriptName), url, tokenFile}}
+// RelaySocketName is the socket in a pod session's HOME the node serves
+// the runsheet relay's endpoint on (mcprelay.Serve): the pod reaches the
+// node through its HOME's mount, and the bearer stays on the node.
+const RelaySocketName = "runsheet.sock"
+
+// sandboxRelayServer is runsheet in a pod: node running RelayScript at
+// script, relaying to the node's endpoint on socket, which adds the
+// bearer (mcprelay.Endpoint). No token, token file or Authorization
+// header rides it: only the socket's path does.
+func sandboxRelayServer(script, socket string) map[string]any {
+	return map[string]any{"type": "stdio", "command": "node", "args": []string{script, socket}}
 }
 
 // RelayScript is `mesh mcp-relay` as a Node script, for a pod: a
-// newline-delimited JSON-RPC stdio MCP server that POSTs each message to
-// the URL in argv[2] with the bearer read fresh from the file in argv[3]
-// per request, so a token the node rotates into that file reaches a
-// session that started before the rotation. The Mcp-Session-Id the
-// server hands out is carried; a JSON or event-stream reply is written
-// to stdout a message per line. A 401 re-reads the file and retries once;
-// a 404 (or a 400 naming the session) on a session the server forgot
-// re-sends the client's own initialize and initialized and retries once;
-// a missing or empty token file is a JSON-RPC error on the request.
-// Messages are sent one at a time, in the order they arrive.
+// newline-delimited JSON-RPC stdio MCP server that POSTs each message
+// over the unix socket in argv[2] — the node's relay endpoint, which
+// puts the bearer of the moment on it, so the pod never holds one. The
+// Mcp-Session-Id the server hands out is carried; a JSON or event-stream
+// reply is written to stdout a message per line. A 401 is retried once
+// (the endpoint re-reads its token file); a 404 (or a 400 naming the
+// session) on a session the server forgot re-sends the client's own
+// initialize and initialized and retries once; any other refusal,
+// the endpoint's own for a missing token included, is a JSON-RPC error
+// on the request. Messages are sent one at a time, in the order they
+// arrive.
 func RelayScript() []byte {
 	return []byte(`// mesh: the runsheet relay; written per session.
 "use strict";
-const fs = require("fs");
-const url = process.argv[2];
-const tokenFile = process.argv[3];
+const http = require("http");
+const path = require("path");
+const socketFile = process.argv[2];
+// the socket is reached from its own directory: a path past sun_path's
+// 108 bytes still connects
+process.chdir(path.dirname(socketFile));
+const socketPath = path.basename(socketFile);
 let sessionId = "";
 let initMsg = null;
 let initializedMsg = null;
@@ -39,21 +47,34 @@ let initializedMsg = null;
 const out = (m) => process.stdout.write(JSON.stringify(m) + "\n");
 const rpcError = (id, message) => out({ jsonrpc: "2.0", id, error: { code: -32000, message } });
 
-function token() {
-  let t = "";
-  try { t = fs.readFileSync(tokenFile, "utf8").trim(); } catch (e) {}
-  if (!t) throw new Error("runsheet relay: token file " + tokenFile + " is missing or empty");
-  return t;
-}
-
+// post sends msg to the node's endpoint; its answer is {status, ok,
+// headers, body}, body the IncomingMessage still to read.
 function post(msg) {
   const headers = {
     "Content-Type": "application/json",
     "Accept": "application/json, text/event-stream",
-    "Authorization": "Bearer " + token(),
   };
   if (sessionId) headers["Mcp-Session-Id"] = sessionId;
-  return fetch(url, { method: "POST", headers, body: JSON.stringify(msg) });
+  const data = JSON.stringify(msg);
+  return new Promise((resolve, reject) => {
+    const req = http.request({ socketPath, path: "/mcp", method: "POST", headers }, (res) => {
+      resolve({
+        status: res.statusCode,
+        ok: res.statusCode >= 200 && res.statusCode < 300,
+        headers: { get: (k) => res.headers[k.toLowerCase()] || null },
+        body: res,
+      });
+    });
+    req.on("error", (e) => reject(new Error("runsheet relay: endpoint " + socketFile + ": " + e.message)));
+    req.end(data);
+  });
+}
+
+async function text(res) {
+  let s = "";
+  res.body.setEncoding("utf8");
+  for await (const chunk of res.body) s += chunk;
+  return s;
 }
 
 // relay writes a reply's messages to stdout, or, with quiet, drops them.
@@ -62,8 +83,6 @@ async function relay(res, quiet) {
   if (sid) sessionId = sid;
   const type = res.headers.get("content-type") || "";
   if (type.includes("text/event-stream")) {
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
     let buf = "", data = [];
     const line = (l) => {
       if (l.endsWith("\r")) l = l.slice(0, -1);
@@ -74,10 +93,9 @@ async function relay(res, quiet) {
         data.push(l.slice(5).replace(/^ /, ""));
       }
     };
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
+    res.body.setEncoding("utf8");
+    for await (const chunk of res.body) {
+      buf += chunk;
       let i;
       while ((i = buf.indexOf("\n")) >= 0) { line(buf.slice(0, i)); buf = buf.slice(i + 1); }
     }
@@ -85,8 +103,8 @@ async function relay(res, quiet) {
     line("");
     return;
   }
-  const text = await res.text();
-  if (text.trim()) emit(text, quiet);
+  const t = await text(res);
+  if (t.trim()) emit(t, quiet);
 }
 
 function emit(text, quiet) {
@@ -113,11 +131,12 @@ async function reinitialize() {
   if (initializedMsg) await relay(await send(initializedMsg), true);
 }
 
-// send posts msg, re-reading the token and retrying once on a 401.
+// send posts msg, retrying once on a 401: the endpoint reads its token
+// file again.
 async function send(msg) {
   let res = await post(msg);
   if (res.status === 401) {
-    await res.text().catch(() => {});
+    await text(res).catch(() => {});
     res = await post(msg);
   }
   return res;
@@ -131,14 +150,14 @@ async function handle(msg) {
   try {
     let res = await send(msg);
     if (!answered(res)) {
-      let body = await res.text().catch(() => "");
+      let body = await text(res).catch(() => "");
       if (msg.method !== "initialize" && forgotten(res, body)) {
         await reinitialize();
         res = await send(msg);
-        if (!answered(res)) body = await res.text().catch(() => "");
+        if (!answered(res)) body = await text(res).catch(() => "");
       }
       if (!answered(res)) {
-        if (request) rpcError(id, "runsheet relay: " + url + " answered " + res.status + ": " + body.slice(0, 200));
+        if (request) rpcError(id, "runsheet relay: " + socketFile + " answered " + res.status + ": " + body.slice(0, 200));
         return;
       }
     }

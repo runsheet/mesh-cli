@@ -72,6 +72,13 @@ type State struct {
 	// relay reads per request (mesh-cli ADR-029): the path a later node
 	// keeps fresh when it adopts the session. A path only.
 	TokenFile string `json:"tokenFile,omitempty"`
+	// RelaySocket is a pod session's relay endpoint, the unix socket in
+	// its HOME the node serves its runsheet relay on, and RelayURL where
+	// the endpoint forwards to: a later node serves it again from
+	// TokenFile when it adopts the session, so the bearer never enters
+	// the pod. Paths and a URL only.
+	RelaySocket string `json:"relaySocket,omitempty"`
+	RelayURL    string `json:"relayUrl,omitempty"`
 	// LoginFile is the auth.json a sandboxed Codex session's login was
 	// copied from, and LoginCache where a login it refreshed is kept for
 	// the next session on its credential: the node that ends the session
