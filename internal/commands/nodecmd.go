@@ -2247,6 +2247,21 @@ func adoptSessions(ctx context.Context, gw *gateway.Client, cfg *node.Config, h 
 			logger.Printf("sweep: %d leaked scope(s) stopped", n)
 		}
 	}
+	// The work sweep (ADR 008): once now, the found sessions' subjects
+	// live, then hourly from the loop on what it runs and adopted
+	startLive := map[string]bool{}
+	for _, f := range found {
+		for _, id := range []string{f.State.ItemID, f.State.GoalID, f.State.DirectionID} {
+			if id != "" {
+				startLive[id] = true
+			}
+		}
+	}
+	keep := []string{cfg.Slug} // the channel session's <node-slug> dir
+	nodeWorkSweep(ctx, gw, workRoot, loop.CurrentScopes(), startLive, keep, sessionSandbox, logger.Printf)
+	loop.WorkSweep = func(ctx context.Context) {
+		nodeWorkSweep(ctx, gw, workRoot, loop.CurrentScopes(), loop.LiveSubjects(), keep, sessionSandbox, logger.Printf)
+	}
 	if len(found) == 0 {
 		return nil
 	}
