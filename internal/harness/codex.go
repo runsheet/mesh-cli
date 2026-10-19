@@ -526,6 +526,9 @@ type codexHome struct {
 	// releaseToken stops keeping it (placeMeshContext); close removes it.
 	tokenFile    string
 	releaseToken func(remove bool)
+	// relaySocket and relayURL are a pod session's relay endpoint
+	// (placePodRelay), for its state.json.
+	relaySocket, relayURL string
 }
 
 // prepareHome makes the session's CODEX_HOME. When job.Env carries
@@ -654,7 +657,7 @@ func jobCodexHome(env []string) string {
 // placeToken puts the job's runsheet relay on a token file in the
 // home, kept by keeper, and returns the job as config.toml renders it.
 func (h *codexHome) placeToken(job Job, keeper TokenKeeper) (Job, error) {
-	job, path, release, err := placeMeshContext(job, keeper, h.dir, false, "")
+	job, path, release, err := placeMeshContext(job, keeper, h.dir)
 	if err != nil {
 		return job, fmt.Errorf("runsheet token: %w", err)
 	}

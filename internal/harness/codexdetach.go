@@ -68,6 +68,7 @@ func (c *Codex) runDetached(ctx context.Context, job Job, sess *sandbox.Session,
 	st := job.state(sessionunit.SandboxRunner, sessionunit.Handle{UnitName: agent.Name}, c.Name())
 	st.Pod, st.Container, st.Home = agent.Pod.Name, agent.Name, sess.Home
 	st.TokenFile, st.LoginFile = home.tokenFile, home.login
+	st.RelaySocket, st.RelayURL = home.relaySocket, home.relayURL
 	end := &unitEnd{h: sessionunit.Handle{UnitName: agent.Name}, agent: &podAgent{
 		rt: sess.Runtime(), sess: sess, name: agent.Name, started: st.StartedAt,
 		timeout: job.Timeout, stderr: filepath.Join(dir, sessionunit.StderrFile),
