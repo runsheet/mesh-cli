@@ -1215,7 +1215,7 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 	sessionTokens = &node.TokenFiles{Token: gw.Bearer, Logf: logger.Printf, MultiOrg: func() bool { return loop.ServedOrgs() > 1 }}
 	// a build's runsheet reads on its own mesh session's bearer, never
 	// the machine's that reads every served org's (ADR-035)
-	sessionBearers = &node.SessionBearers{GW: gw, Tokens: sessionTokens, Audience: node.MeshMCPURL(gw.BaseURL), Orgs: loop.ServedOrgs, Logf: logger.Printf}
+	sessionBearers = &node.SessionBearers{GW: gw, Tokens: sessionTokens, Audience: node.MeshMCPURL(gw.BaseURL), Orgs: loop.ServedOrgs, Logf: logger.Printf, MachineUntilDPoP: true}
 	// every build, evaluation, plan and research reaches its MCP servers
 	// through its own sessionproxy, the bearer and the tools' secrets
 	// held on the host, none of it in the session's pod
