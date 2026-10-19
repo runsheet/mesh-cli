@@ -72,6 +72,70 @@ func ClaudeCode(builtin map[string]any, tools []Tool) (servers map[string]any, e
 	return servers, env, nil
 }
 
+// UpstreamSpec is what sessionproxy reaches one server on — a remote
+// tool's URL and every header (plain and secret alike, since the proxy,
+// never the agent, reads them), a local tool's command, args, env and
+// secret env, or the built-in's URL alone (Transport ""). The node turns
+// one into a sessionproxy.Upstream (Remote, Local or Runsheet); tools
+// does not import that package, to stay the leaf its own doc comment
+// says it is.
+type UpstreamSpec struct {
+	Transport string
+	URL       string
+	Headers   map[string]string
+	Command   string
+	Args      []string
+	Env       map[string]string
+	Secrets   map[string]string
+}
+
+// ProxiedServers is a session's mcpServers when it reaches every server
+// through sessionproxy instead of directly (mesh-cli goal
+// a-session-reaches-every-mcp-server-through-one-proxy): the built-in
+// and every tool become one shim entry each, from shim(name) —
+// harness.ProxiedServer in a pod, `mesh mcp-relay --socket/--server` on
+// a host — which names a socket and a server, nothing else; alongside,
+// the UpstreamSpec each is reached on, which does carry every secret.
+// No MESH_TOOL_* and no secret value is in servers: there is nothing
+// for the session's environment to hold, since a shim's argv is the
+// socket and the name alone. Existing non-proxied rendering (ClaudeCode,
+// CodexConfig) is unchanged; this is additive until the node switches
+// over (item 4 of the same goal).
+func ProxiedServers(builtinURL string, toolsIn []Tool, shim func(name string) map[string]any) (servers map[string]any, upstreams map[string]UpstreamSpec, err error) {
+	if err := check(toolsIn, map[string]bool{Builtin: true}); err != nil {
+		return nil, nil, err
+	}
+	servers = map[string]any{Builtin: shim(Builtin)}
+	upstreams = map[string]UpstreamSpec{Builtin: {URL: builtinURL}}
+	for _, t := range toolsIn {
+		servers[t.Name] = shim(t.Name)
+		spec := UpstreamSpec{Transport: t.Transport, URL: t.URL, Command: t.Command, Args: append([]string(nil), t.Args...)}
+		switch t.Transport {
+		case Remote:
+			headers := make(map[string]string, len(t.Headers)+len(t.Secrets))
+			for k, v := range t.Headers {
+				headers[k] = v
+			}
+			for k, v := range t.Secrets {
+				headers[k] = v
+			}
+			spec.Headers = headers
+		case Local:
+			env := make(map[string]string, len(t.Env))
+			for k, v := range t.Env {
+				env[k] = v
+			}
+			secrets := make(map[string]string, len(t.Secrets))
+			for k, v := range t.Secrets {
+				secrets[k] = v
+			}
+			spec.Env, spec.Secrets = env, secrets
+		}
+		upstreams[t.Name] = spec
+	}
+	return servers, upstreams, nil
+}
+
 // CodexApproval is every rendered server's default_tools_approval_mode.
 // `codex exec` runs with approval policy never, and under `--sandbox
 // workspace-write` it refuses an MCP call that would need approval
