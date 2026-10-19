@@ -2035,7 +2035,7 @@ type secondOpinion struct {
 // codex, or no issued Codex account: the node evaluates as before. Every session's whole event stream and stderr
 // are kept under workRoot/kept-sessions for harness.KeepSessionOutput
 // (docs/adr/adr-005-codex-second-opinion.md, "Amendment, 2026-09-28:
-// the stream is kept 24 hours").
+// the stream is kept 24 hours"; 14 days since ADR-008's work sweep).
 func codexSecondOpinion(cfg *node.Config, loop *node.Loop, workRoot string, logger *log.Logger) secondOpinion {
 	ctx, cancel := context.WithTimeout(context.Background(), codexImageCheckTimeout)
 	defer cancel()

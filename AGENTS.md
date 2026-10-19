@@ -1059,6 +1059,18 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   node`. It replaces the dl360's `/etc/cron.d/mesh-tmp-clean` and
   `/etc/cron.hourly/mesh-home-sweep`. `quartermaster_e2e_test.go`
   (`-tags e2e`) runs a node full of leftovers end to end.
+- **The work sweep** (`internal/node/worksweep.go`, ADR-008 The work
+  sweep): `PlanWorkSweep(ctx, gw, root, orgIDs, LiveSessions{IDs, Keep,
+  Sandbox}, now, logf)` judges `~/.mesh/work` by each org's `Goals` and
+  each goal's `GoalWorkItems` — an item's `<seq>`, `.session` and
+  `.attestation.json` once merged, cancelled or superseded, or failed
+  past `FailedWorkspaceKeep` (7 days of `StatusAt`); a done or cancelled
+  goal's whole dir; `plan/` once not planning; `kept-sessions/` past
+  `harness.KeepSessionOutput` (14 days) — never a live session's, an
+  unknown or unread subject's, a symlink or research/claims/node-slug;
+  `ApplyWorkSweep` removes it, `sweep: removed <goal>/<seq> (<why>,
+  <bytes>)` and a total, and the plan's `String()` is those lines (the
+  dry run). The start-up and hourly wiring is a later item.
 - **Held goals are a record** (`internal/node/held.go`, goal
   a-refused-plan-is-released-not-replanned): `HeldGoal{GoalID, Slug,
   Org, Kind, Reason, Since, Until}` is a goal this node holds off

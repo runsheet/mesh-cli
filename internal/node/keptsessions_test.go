@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sessionunit"
 )
 
@@ -45,7 +46,7 @@ func twoOrgsKept(t *testing.T, now time.Time) (roots *OrgRootSet, expired, young
 		if err != nil {
 			t.Fatal(err)
 		}
-		expired = append(expired, mkKeptSession(t, r.Kept, org+"-old", now.Add(-25*time.Hour)))
+		expired = append(expired, mkKeptSession(t, r.Kept, org+"-old", now.Add(-harness.KeepSessionOutput-time.Hour)))
 		young = append(young, mkKeptSession(t, r.Kept, org+"-young", now.Add(-time.Hour)))
 	}
 	return roots, expired, young
@@ -88,7 +89,7 @@ func TestKeptSessionsCheckSweepsEveryOrgAndTheWorkRoot(t *testing.T) {
 	now := time.Now()
 	roots, expired, young := twoOrgsKept(t, now)
 	work := t.TempDir()
-	expired = append(expired, mkKeptSession(t, filepath.Join(work, "kept-sessions"), "old", now.Add(-25*time.Hour)))
+	expired = append(expired, mkKeptSession(t, filepath.Join(work, "kept-sessions"), "old", now.Add(-harness.KeepSessionOutput-time.Hour)))
 	young = append(young, mkKeptSession(t, filepath.Join(work, "kept-sessions"), "young", now.Add(-time.Hour)))
 
 	check := KeptSessionsCheck(func() *OrgRootSet { return roots }, work)

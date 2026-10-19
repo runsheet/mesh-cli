@@ -247,6 +247,68 @@ kill: one `Kill` per unit, whichever end comes first, its report kept.
   drop of a session whose kind has no adopter.
 - Sandboxed and Codex sessions are not in a unit and report nothing.
 
+## The work sweep
+
+Amended 2026-10-19 (goal `the-node-sweeps-finished-workspaces`, the
+mesh-cli half of runsheet goal `a-finished-items-workspace-is-deleted`).
+The start-up sweep stops leaked scopes and touches no files; nothing
+deleted a workspace, and the mini's `~/.mesh/work` held 144 goal
+directories, 54 GB, on a disk 81% full. `node.PlanWorkSweep(ctx, gw,
+root, orgIDs, live, now, logf)` (`internal/node/worksweep.go`) judges
+every entry under the work root by the platform's answer — each served
+org's `Goals`, slug to goal, then each present goal's `GoalWorkItems`,
+seq to item — and returns a `WorkSweepPlan`; `node.ApplyWorkSweep`
+removes it. The planning reads and removes nothing.
+
+- **The layout it knows** (never guessed): `<goal-slug>/<seq>` an
+  item's checkout, `<seq>.session` its session dir,
+  `<seq>.attestation.json` its attestation copy, `<seq>-eval` and
+  `<seq>-rebase` (and their `.session`) its evaluation's and rebase's
+  checkouts, `<goal-slug>/plan` (and `plan.session`) the plan,
+  `<goal-slug>/0` the goal doc's checkout (it goes with its goal), and
+  `kept-sessions/<name>`. Any other name in a goal directory is left,
+  logged `not a layout the sweep knows`.
+- **What is swept.** An item's entries once the item is `merged`,
+  `cancelled` or `superseded`; a `failed` item's once `now − statusAt`
+  is over 7 days (`FailedWorkspaceKeep`; `WorkItem.StatusAt`); the
+  whole `<goal>/` once the goal is `done` or `cancelled`; `<goal>/plan`
+  once the goal is not `planning`; a kept session older than
+  `harness.KeepSessionOutput`, now 14 days. Every other item status —
+  `review`, `claimed`, `running`, `evaluating`, `held`, `ready`, … —
+  keeps: a rework, a rebase or an answered question resumes in it.
+- **What is never swept.** A directory whose sibling `.session`
+  state's process (a sandboxed one's container) is alive, or whose
+  subject is in `LiveSessions.IDs` — the loop's running and adopted
+  item and goal ids — even when the platform calls its item merged; a
+  finished goal's directory while any of its sessions is alive or its
+  ids live. A slug no served org's goals have, or a seq the goal has no
+  item for: `sweep: <path> left, unknown to the platform`. An org whose
+  `Goals` errs, or a goal whose `GoalWorkItems` errs: `unread`, nothing
+  of it judged (an outage is not a leak; a slug unknown while an org is
+  unread is left as unread). A failed item with no `statusAt` (an older
+  platform): kept, logged once per pass. Dot dirs (`.claims`,
+  `.scratch`, `.locks`, `.plans`), `merge-batches`,
+  `main-validations`, a `<project-slug>/research/…` tree and
+  `LiveSessions.Keep` (the channel's `<node-slug>`): skipped silently.
+  A symlink is Lstat'ed, logged `a symlink (not followed)` and left;
+  nothing is removed through one, and a path that does not resolve
+  under the root is left.
+- **The log lines.** One per removal, `sweep: removed <goal>/<seq>
+  (<why>, <bytes>)` — why the platform's answer (`item 3 merged`, `item
+  4 failed 8d ago`, `goal done`, `goal running, not planning`, `kept
+  15d, past 14d`), bytes the Lstat sizes under it, no symlink followed
+  — then `sweep: removed <n> entries, <bytes> freed`. A removal that
+  fails is logged `sweep: removing <goal>/<seq>: <err>; left for the
+  next pass`. A removal is `RemoveScratch` (RemoveAll, then once more
+  with every directory made writable), not `Git.RemoveWorkspace`: a
+  removed worktree's `.git/worktrees/<n>` registration in the shared
+  clone is left for `forgetStaleRegistrations` and the quartermaster's
+  `pruneGoneWorktrees`, which forget a gone, unlocked one. The plan's `String()` is exactly those lines: a dry run is
+  `PlanWorkSweep` without `ApplyWorkSweep`.
+- **When.** Once at start-up after the scope sweep, then hourly, and by
+  hand as `mesh node sweep [--dry-run]` — wired by a later item of the
+  goal.
+
 ## Consequences
 
 - Stopping the node process no longer ends a host session; the next

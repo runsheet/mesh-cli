@@ -629,7 +629,7 @@ func TestSweepKeptSessions(t *testing.T) {
 		}
 		return dir
 	}
-	old := mkKept("old-1", now.Add(-25*time.Hour))
+	old := mkKept("old-1", now.Add(-KeepSessionOutput-time.Hour))
 	young := mkKept("young-1", now.Add(-1*time.Hour))
 	if err := SweepKeptSessions(filepath.Join(root, keptSessionsDir), now); err != nil {
 		t.Fatal(err)
