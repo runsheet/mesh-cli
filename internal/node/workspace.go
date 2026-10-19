@@ -175,6 +175,44 @@ func (g *Git) Authorize(ctx context.Context, spec WorkspaceSpec, tok *gateway.Gi
 	if tok == nil || !tokenShape.MatchString(tok.Token) {
 		return fmt.Errorf("github token: missing or malformed")
 	}
+	if err := g.originOnToken(ctx, spec, tok); err != nil {
+		return err
+	}
+	return WriteCredentialHelper(ctx, spec.Dir(), g.githubURL(), tok)
+}
+
+// Checkout is the session's checkout step on the node (runsheet
+// adr-061 §3, the session's ordered steps): spec's workspace prepared —
+// made, fetched and checked out as Prepare does — on tok by each git
+// command's environment alone (withGitToken), never a config file.
+// Origin is left the repo's plain https URL with no credential helper
+// of the checkout's own, one an earlier Authorize wrote removed, so
+// nothing under the workspace — its .git/config, a worktree's
+// config.worktree, the shared clone's config — holds the token the
+// job's container would mount. A push or fetch the node runs later
+// takes the token per command, by OnItemToken.
+func (g *Git) Checkout(ctx context.Context, spec WorkspaceSpec, tok *gateway.GitHubToken) (string, error) {
+	if tok == nil || !tokenShape.MatchString(tok.Token) {
+		return "", fmt.Errorf("github token: missing or malformed")
+	}
+	if err := g.originOnToken(ctx, spec, tok); err != nil {
+		return "", err
+	}
+	dir, err := g.Prepare(withGitToken(ctx, g.githubURL(), tok), spec)
+	if err != nil {
+		return "", err
+	}
+	if err := clearHelper(ctx, dir, g.githubURL()); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// originOnToken is Authorize's half that writes no credential: spec's
+// checkout made when Prepare would make it a worktree (the shared clone
+// cloned or fetched on tok by the environment) or an empty clone, and
+// origin set to the repo's https URL.
+func (g *Git) originOnToken(ctx context.Context, spec WorkspaceSpec, tok *gateway.GitHubToken) error {
 	dir := spec.Dir()
 	origin := g.githubURL() + "/" + spec.Repo + ".git"
 	// a worktree whose .git/worktrees/<n> is gone fails every git command
@@ -216,7 +254,7 @@ func (g *Git) Authorize(ctx context.Context, spec WorkspaceSpec, tok *gateway.Gi
 	}); err != nil {
 		return err
 	}
-	return WriteCredentialHelper(ctx, dir, g.githubURL(), tok)
+	return nil
 }
 
 // sharedOrigin makes the shared clone's origin, seen from the worktree

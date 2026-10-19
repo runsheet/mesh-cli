@@ -97,6 +97,37 @@ func writeHelper(ctx context.Context, dir, base, helper string) error {
 	return gitConfig("--add", key, helper)
 }
 
+// clearHelper removes every credential helper the checkout in dir set
+// for base in its own config — a full clone's .git/config, a worktree's
+// config.worktree — as writeHelper wrote it; nothing set is nothing to
+// do. The shared clone's config is never touched: no helper goes there.
+func clearHelper(ctx context.Context, dir, base string) error {
+	key := "credential." + strings.TrimRight(base, "/") + ".helper"
+	scope := "--local"
+	if isWorktree(dir) {
+		// a worktree's --local is the shared clone's config, where no
+		// helper is written; its own is config.worktree, there only with
+		// extensions.worktreeConfig
+		get := exec.CommandContext(ctx, "git", "config", "--local", "--type=bool", "--get", "extensions.worktreeConfig")
+		get.Dir = dir
+		if out, err := get.Output(); err != nil || strings.TrimSpace(string(out)) != "true" {
+			return nil
+		}
+		scope = "--worktree"
+	}
+	cmd := exec.CommandContext(ctx, "git", "config", scope, "--unset-all", key)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		// exit 5: nothing set
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && ee.ExitCode() == 5 {
+			return nil
+		}
+		return fmt.Errorf("git config --unset-all %s: %w: %s", key, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // ensureWorktreeConfig makes sure the shared clone of the worktree dir
 // has extensions.worktreeConfig, so `git config --worktree` writes the
 // worktree's own config.worktree. addWorktree enables it under the
