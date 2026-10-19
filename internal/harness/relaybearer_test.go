@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"projectmesh.io/mesh-cli/internal/sandbox"
 )
@@ -49,8 +51,17 @@ func (g *bearerGateway) last() string {
 // relay does, with no Authorization of its own.
 func callSocket(t *testing.T, sock string) {
 	t.Helper()
-	c := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		return (&net.Dialer{}).DialContext(ctx, "unix", sock)
+	// dialled through its directory's descriptor, as the pod's relay
+	// reaches it from its directory: the path may be past sun_path's
+	// limit (a long TMPDIR)
+	dir, err := os.Open(filepath.Dir(sock))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+	addr := fmt.Sprintf("/proc/self/fd/%d/%s", dir.Fd(), filepath.Base(sock))
+	c := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", addr)
 	}}}
 	resp, err := c.Post("http://runsheet/mcp", "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`))
 	if err != nil {
@@ -108,47 +119,73 @@ func TestRelayBearerStaysOnTheNode(t *testing.T) {
 		f, sb := detachedFake(t)
 		k := &rotatingKeeper{}
 		ws := t.TempDir()
-		ran := false
+		// the agent hands its pod's view to the test's own goroutine and
+		// waits for the checks there: a Fatal in the agent's goroutine
+		// would end it alone and leave Run waiting on it
+		type podView struct {
+			command, env []string
+			config       string
+		}
+		views := make(chan podView, 1)
+		checked := make(chan struct{})
 		f.Agent = func(ctx context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
 			for i, a := range spec.Command {
 				if a == "--mcp-config" && i+1 < len(spec.Command) {
-					noBearer(t, "the pod's command line", strings.Join(spec.Command, " "))
-					for _, kv := range spec.Env {
-						noBearer(t, "the pod's env", kv)
+					views <- podView{command: spec.Command, env: spec.Env, config: spec.Command[i+1]}
+					select {
+					case <-checked:
+					case <-ctx.Done():
 					}
-					home := filepath.Dir(spec.Command[i+1])
-					ran = true
-					noBearerUnder(t, "the pod's HOME", home)
-					noBearerUnder(t, "the workspace", ws)
-					cfg, err := os.ReadFile(spec.Command[i+1])
-					if err != nil {
-						t.Fatal(err)
-					}
-					var m struct {
-						MCPServers map[string]struct {
-							Args []string `json:"args"`
-						} `json:"mcpServers"`
-					}
-					if err := json.Unmarshal(cfg, &m); err != nil {
-						t.Fatal(err)
-					}
-					args := m.MCPServers[BuiltinMCP].Args
-					sock := filepath.Join(home, RelaySocketName)
-					if len(args) != 2 || args[1] != sock {
-						t.Fatalf("pod runsheet args %v, want the script on %s", args, sock)
-					}
-					assertCallsCarryTheBearer(t, g, sock, k.keptPaths())
 				}
 			}
 			spec.Stdout.Write([]byte(evInit + "\n" + evResult + "\n"))
 			return sandbox.Exit{}, nil
 		}
-		res, err := (&ClaudeCode{Sandbox: sb, Tokens: k}).Run(context.Background(), Job{Kind: KindBuild, Label: "g/1", Workspace: ws, Prompt: "p", MCPServers: servers()}, nil)
-		if err != nil || !res.Success {
-			t.Fatalf("run = %+v, %v", res, err)
+		type outcome struct {
+			res Result
+			err error
 		}
-		if !ran {
-			t.Fatal("the agent never ran with an mcp config")
+		done := make(chan outcome, 1)
+		go func() {
+			res, err := (&ClaudeCode{Sandbox: sb, Tokens: k}).Run(context.Background(), Job{Kind: KindBuild, Label: "g/1", Workspace: ws, Prompt: "p", MCPServers: servers()}, nil)
+			done <- outcome{res, err}
+		}()
+		var v podView
+		select {
+		case v = <-views:
+		case o := <-done:
+			t.Fatalf("the agent never ran with an mcp config: %+v, %v", o.res, o.err)
+		}
+		func() {
+			defer close(checked)
+			noBearer(t, "the pod's command line", strings.Join(v.command, " "))
+			for _, kv := range v.env {
+				noBearer(t, "the pod's env", kv)
+			}
+			home := filepath.Dir(v.config)
+			noBearerUnder(t, "the pod's HOME", home)
+			noBearerUnder(t, "the workspace", ws)
+			cfg, err := os.ReadFile(v.config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var m struct {
+				MCPServers map[string]struct {
+					Args []string `json:"args"`
+				} `json:"mcpServers"`
+			}
+			if err := json.Unmarshal(cfg, &m); err != nil {
+				t.Fatal(err)
+			}
+			args := m.MCPServers[BuiltinMCP].Args
+			sock := filepath.Join(home, RelaySocketName)
+			if len(args) != 2 || args[1] != sock {
+				t.Fatalf("pod runsheet args %v, want the script on %s", args, sock)
+			}
+			assertCallsCarryTheBearer(t, g, sock, k.keptPaths())
+		}()
+		if o := <-done; o.err != nil || !o.res.Success {
+			t.Fatalf("run = %+v, %v", o.res, o.err)
 		}
 	})
 

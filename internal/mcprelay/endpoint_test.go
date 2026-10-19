@@ -40,7 +40,7 @@ func TestRelayBearerStaysOnTheNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	// a path past sun_path's limit still serves
-	long := filepath.Join(dir, strings.Repeat("d", 110-len(dir)))
+	long := filepath.Join(dir, strings.Repeat("d", max(1, 110-len(dir))))
 	if err := os.MkdirAll(long, 0o700); err != nil {
 		t.Fatal(err)
 	}
