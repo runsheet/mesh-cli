@@ -245,17 +245,7 @@ func (r *Relay) do(ctx context.Context, body []byte, session string) (*http.Resp
 
 // token is the file's contents, trimmed: a missing or empty file is an
 // error naming it.
-func (r *Relay) token() (string, error) {
-	b, err := os.ReadFile(r.TokenFile)
-	if err != nil {
-		return "", fmt.Errorf("token file %s: %w", r.TokenFile, err)
-	}
-	tok := strings.TrimSpace(string(b))
-	if tok == "" {
-		return "", fmt.Errorf("token file %s is empty", r.TokenFile)
-	}
-	return tok, nil
-}
+func (r *Relay) token() (string, error) { return readToken(r.TokenFile) }
 
 // reply reads the server's answer: a status error, nothing (202), a
 // JSON body, or an event stream whose every message is relayed.

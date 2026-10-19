@@ -19,8 +19,8 @@ func (k *sessionKeeper) KeepSession(path string, kind Kind, meta SessionMeta) (f
 }
 
 // A job naming a TokenDir has its host token file there — its org's MCP
-// root — kept by a SessionTokenKeeper for that job's own session; a pod
-// keeps its file in its HOME, still for its own session (ADR-035).
+// root — kept by a SessionTokenKeeper for that job's own session; a pod's
+// file is there too, never in its HOME, still for its own session (ADR-035).
 func TestPlaceMeshContextKeepsTheJobsOwnSessionInItsTokenDir(t *testing.T) {
 	k := &sessionKeeper{}
 	tokenDir := filepath.Join(t.TempDir(), "orgs", "acme", "mcp", "sessions", "item-1")
@@ -29,7 +29,7 @@ func TestPlaceMeshContextKeepsTheJobsOwnSessionInItsTokenDir(t *testing.T) {
 	}
 	meta := SessionMeta{NodeID: "n", ItemID: "item", Attempt: 1}
 	job := Job{Kind: KindBuild, MCPServers: relayServers(), TokenDir: tokenDir, Meta: meta}
-	job, path, release, err := placeMeshContext(job, k, t.TempDir(), false, "")
+	job, path, release, err := placeMeshContext(job, k, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,12 +46,12 @@ func TestPlaceMeshContextKeepsTheJobsOwnSessionInItsTokenDir(t *testing.T) {
 
 	home := t.TempDir()
 	job = Job{Kind: KindBuild, MCPServers: relayServers(), TokenDir: tokenDir, Meta: meta}
-	_, path, release2, err := placeMeshContext(job, k, home, true, filepath.Join(home, "mcp.json"))
+	job, release2, err := placePodRelay(job, k, home)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer release2(true)
-	if filepath.Dir(path) != home || len(k.metas) != 2 {
-		t.Fatalf("pod token file %q, want it in the pod's HOME %s", path, home)
+	if job.tokenFile != filepath.Join(tokenDir, TokenFileName) || len(k.metas) != 2 {
+		t.Fatalf("pod token file %q, want it in the node's %s, never the pod's HOME", job.tokenFile, tokenDir)
 	}
 }

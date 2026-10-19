@@ -1741,9 +1741,11 @@ func MeshMCPURL(gatewayURL string) string {
 // operator may on the node's bearer of the moment, never one that
 // rotated under it (mesh-cli ADR-029). The entry names no token file
 // and carries no bearer: the harness puts the session's own file in
-// its directory — `<workdir>.session/`, the pod's HOME (where the relay
-// is harness.RelayScript), a Codex session's CODEX_HOME — and the
-// node's TokenFiles keeps it fresh until the session's end is handled.
+// its directory — `<workdir>.session/`, a Codex session's CODEX_HOME;
+// for a pod, a dir of the node's, the pod's relay (harness.RelayScript)
+// reaching it only through the node's endpoint socket in its HOME — and
+// the node's TokenFiles keeps it fresh until the session's end is
+// handled.
 func MeshContextMCP(bin, gatewayURL string) map[string]any {
 	if gatewayURL == "" {
 		return nil
