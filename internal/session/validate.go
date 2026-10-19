@@ -197,7 +197,7 @@ func gitChangedPaths(ctx context.Context, dir, base string) ([]string, error) {
 	if base == "" {
 		return nil, errors.New("no base ref on the session")
 	}
-	out, err := git(ctx, dir, "diff", "--name-only", base+"...HEAD")
+	out, err := runGit(ctx, dir, "diff", "--name-only", base+"...HEAD")
 	if err != nil {
 		return nil, err
 	}
@@ -211,10 +211,10 @@ func gitChangedPaths(ctx context.Context, dir, base string) ([]string, error) {
 }
 
 func gitHead(ctx context.Context, dir string) (string, error) {
-	return git(ctx, dir, "rev-parse", "HEAD")
+	return runGit(ctx, dir, "rev-parse", "HEAD")
 }
 
-func git(ctx context.Context, dir string, args ...string) (string, error) {
+func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer

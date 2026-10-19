@@ -56,9 +56,12 @@ The restart: under systemd --user, ` + "`systemctl --user restart " + node.Servi
 ` + "`launchctl kickstart -k`" + `; a node no service runs is sent SIGHUP (its pid is
 in ~/.mesh/node.pid) and execs the new binary itself.
 
-A sandboxed node's sessions end with it (their pod is not yet their
-unit): upgrade refuses one unless --force; ` + "`mesh node update`" + ` drains it
-first. Drain (` + "`mesh node drain`" + `) stays for taking a machine out of service.`,
+A sandboxed node is no different, as its self-update is not: each
+session's agent runs detached in its pod. The pods' conmon processes run
+in the service's cgroup, so the unit must say KillMode=process (` + "`mesh node install`" + `
+writes it); upgrade refuses a sandboxed node whose unit says otherwise,
+unless --force, and names the fix. Drain (` + "`mesh node drain`" + `) stays for
+taking a machine out of service.`,
 	Args:         cobra.NoArgs,
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -98,6 +101,9 @@ type nodeUpgrade struct {
 	Sandboxed func() bool
 	// Service restarts the node.
 	Service nodeRestarter
+	// KillMode is the node's systemd unit's KillMode and whether such a
+	// unit is loaded; nil is no unit (launchd, or a node no service runs).
+	KillMode func(context.Context) (string, bool)
 	// ConfirmWithin is node.yaml's update.confirm_within, as the output
 	// names it; zero is selfupdate.DefaultConfirmWithin.
 	ConfirmWithin time.Duration
@@ -132,6 +138,7 @@ func defaultNodeUpgrade(out io.Writer) (*nodeUpgrade, error) {
 		Image:         ensureNodeImage,
 		Sandboxed:     nodeSandboxed,
 		Service:       hostService{},
+		KillMode:      hostKillMode,
 		Out:           out,
 	}, nil
 }
@@ -146,7 +153,13 @@ func (u *nodeUpgrade) run(ctx context.Context, want, binary string, force bool) 
 		return errors.New("--version and --binary are either-or")
 	}
 	if u.Sandboxed != nil && u.Sandboxed() && !force {
-		return errors.New("this node runs its sessions in sandboxes, which end with it: `mesh node update` drains it first, or --force restarts it now and ends them")
+		// a sandboxed session's pod outlives the node when its unit signals
+		// the node alone (KillMode=process); under systemd's default every
+		// pod's conmon is in the service's cgroup and dies with it
+		if mode, managed := u.killMode(ctx); managed && mode != node.SafeKillMode {
+			return fmt.Errorf("this node's unit has KillMode=%s, which ends its sandboxed sessions with it: add KillMode=%s under [Service] in %s and run `systemctl --user daemon-reload` (`mesh node install` writes it), or `mesh node update` drains it first, or --force restarts it now and ends them",
+				mode, node.SafeKillMode, node.SystemdUnitPath("~"))
+		}
 	}
 	var bin []byte
 	if binary != "" {
@@ -216,6 +229,23 @@ func (u *nodeUpgrade) run(ctx context.Context, want, binary string, force bool) 
 		"A binary that cannot run, or cannot confirm inside the window on %d starts, is rolled back to %s and ~/.mesh/update.json says why.\n",
 		within, node.ServiceLog("~"), selfupdate.MaxStarts, selfupdate.PrevPath(exe))
 	return nil
+}
+
+// killMode is the node's unit's KillMode, when a systemd unit runs it.
+func (u *nodeUpgrade) killMode(ctx context.Context) (string, bool) {
+	if u.KillMode == nil {
+		return "", false
+	}
+	return u.KillMode(ctx)
+}
+
+// hostKillMode is the KillMode of this machine's node unit under systemd
+// --user; elsewhere there is none.
+func hostKillMode(ctx context.Context) (string, bool) {
+	if runtime.GOOS != "linux" {
+		return "", false
+	}
+	return node.SystemdKillMode(ctx, nil)
 }
 
 func (u *nodeUpgrade) goos() string {

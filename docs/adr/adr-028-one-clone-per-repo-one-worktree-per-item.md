@@ -1,5 +1,5 @@
 ---
-summary: A node keeps one clone per repo at ~/.mesh/repos/<owner>/<name>, cloned and fetched under the per-repo lock, and makes each new item's ~/.mesh/work/<goal>/<seq> a git worktree of it on its own per-worktree token; evaluation, goal-doc, plan and research checkouts stay clones of their own; a rebase gets a fresh detached worktree of its own at <goal>/<seq>-rebase, never the item's build checkout; sessions install against one pnpm store and one npm cache per node under ~/.mesh/store; every worktree is locked while its item is live and nothing runs a blanket `git worktree prune`, RemoveWorkspace refusing a live dir and removing only a finished worktree and its own registration, never the clone; a worktree whose .git/worktrees/<n> is gone is rebuilt for its branch at its recorded head and the step retried, never failed or released; a full clone from before is used until swept.
+summary: A node keeps one clone per repo at ~/.mesh/repos/<owner>/<name>, cloned and fetched under the per-repo lock, and makes each new item's ~/.mesh/work/<goal>/<seq> a git worktree of it on its own per-worktree token; evaluation, goal-doc, plan and research checkouts stay clones of their own; a rebase gets a fresh detached worktree of its own at <goal>/<seq>-rebase, never the item's build checkout; sessions install against one pnpm store and one npm cache per node under ~/.mesh/store; every worktree is locked while its item is live and nothing runs a blanket `git worktree prune`, RemoveWorkspace refusing a live dir and removing only a finished worktree and its own registration, never the clone; a worktree whose .git/worktrees/<n> is gone is made again for its branch at its recorded head and the step retried, never failed or released, any other stale checkout removed and made again, scripts/stale-worktrees.sh the reading; a full clone from before is used until swept.
 status: accepted
 ---
 
@@ -73,6 +73,36 @@ A rework of the same item reuses its worktree: Prepare finds `.git`
 there and fetches and checks out in place, keeping a local branch that
 is the pushed one or ahead of it (its unpushed commits survive; the push
 still fast-forwards). It never adds a second worktree for an item.
+
+**Amended 2026-10-19, goal
+`a-checkout-whose-worktree-is-gone-is-made-again`:** a stale worktree is
+made again, never fetched into. A checkout whose `.git` file names a
+gitdir that no longer exists — its `.git/worktrees/<n>` dropped by a
+prune, or its whole shared clone gone (`staleWorktree`) — answers every
+git command `fatal: not a git repository`, and on dl360 on 2026-10-15 a
+rework's `git fetch` there failed the item. Prepare and Authorize look
+before any git command: a worktree whose clone is still there and whose
+admin dir alone is gone is rebuilt in place (`RebuildWorktree`, below,
+its files kept); anything else stale is removed (`removeStale`) and the
+checkout made again as a new one — `addWorktree`, which forgets any
+registration still naming the path, else a clone of its own — logged
+`workspace <dir>: worktree <gitdir> is gone; made again`. And every item
+worktree is locked while its item is live, a reused one included: a
+rework's or an adopted item's worktree that an older node added unlocked
+is locked by the Prepare or Authorize that reuses it
+(`TestPreparedWorktreeListsAsLocked`,
+`TestPrepareLocksAReusedUnlockedWorktree`), so a `git worktree prune` run while its directory is out of
+view — a pod that mounts no sibling, a directory moved aside — leaves
+its registration (`prune_e2e_test.go`). `TestStaleWorktreeIsMadeAgainE2E`
+(`internal/node/staleworktree_e2e_test.go`, `-tags e2e`) runs both on
+one node: item 1 built, pushed and finished as a worktree; its
+registration removed from the clone between attempts; item 2's locked
+worktree surviving a prune with its directory hidden; the rework made
+again, its session committing on top of the pushed head, pushed,
+finished and evaluated passing, with no `not a git repository` in the
+log. `scripts/stale-worktrees.sh [<work root>]` is the reading on a
+node: one `<checkout> -> <gitdir>` line per stale checkout, nothing on a
+healthy node, exit 0.
 
 ### Per-worktree tokens
 
@@ -221,7 +251,15 @@ rebasing here — and a path under the repos root. A worktree (its `.git`
 a file) is unlocked, removed by `git worktree remove --force` and its
 own `.git/worktrees/<n>` removed if git left it, in its shared clone
 under the repo's lock (`removeWorktree`) — no other registration is
-touched. A full clone goes by `os.RemoveAll`; a directory already gone,
+touched. The unlock comes first, before the remove and before any
+forgetting of a registration: git refuses to remove a locked worktree,
+and a prune leaves a locked registration, so a finished item's own lock
+would otherwise keep its registration and its branch held after its
+directory went (amended 2026-10-19, goal
+`a-checkout-whose-worktree-is-gone-is-made-again`; a locked worktree's
+registration is cleared whether its directory is present or already
+gone, `TestRemoveWorkspaceClearsALockedWorktree`,
+`TestRemoveWorkspaceClearsALockedRegistrationWhoseDirIsGone`). A full clone goes by `os.RemoveAll`; a directory already gone,
 or half-removed by an interrupted sweep, is removed and its own
 registration forgotten by whichever clone under the repos root still
 names it (`registrationsNaming`, `forgetRegistrations`), so its branch
@@ -256,8 +294,9 @@ grapevine eight narrow re-plans of an item whose code was fine.
    left as they were;
 4. the worktree is locked as `addWorktree` locks one.
 
-It logs `workspace <dir>: worktree admin <path> gone; rebuilt for
-<branch> at <sha>`. A checkout that is no worktree of the shared clone —
+It logs `workspace <dir>: worktree <path> is gone; made again for
+<branch> at <sha>` (until 2026-10-19 `worktree admin <path> gone;
+rebuilt for <branch> at <sha>`). A checkout that is no worktree of the shared clone —
 an evaluation's `<seq>-eval`, a plan's — is removed whole, for the
 Prepare after it to clone again.
 
