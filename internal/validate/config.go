@@ -22,9 +22,40 @@ var ErrNoValidation = errors.New("validate: no .runsheet/validate.yml")
 const DefaultTimeout = 10 * time.Minute
 
 // Config is a repository's declared validation: its suites, in the
-// file's order.
+// file's order, and its generated block, if it has one.
 type Config struct {
-	Steps []Step
+	Steps     []Step
+	Generated Generated
+}
+
+// Generated is a repository's declared generated paths and how to
+// regenerate and check them (goal
+// a-generated-file-conflict-is-regenerated-not-rebased-by-hand): a
+// rebase conflict confined to Paths can be resolved by checking out
+// the other side's files, running Generate, then Check, with no
+// session.
+type Generated struct {
+	// Paths are repo-relative globs naming the files Generate produces
+	// and Check verifies ("**" allowed, as Match allows).
+	Paths []string
+	// Generate are the commands that regenerate Paths, run in order.
+	Generate []string
+	// Check are the commands that verify Paths are up to date, run in
+	// order after Generate.
+	Check []string
+	// Timeout applies to each command; DefaultTimeout when left out.
+	Timeout time.Duration
+}
+
+// Declared reports whether the repository declares a generated block:
+// both Paths and Generate are non-empty.
+func (g Generated) Declared() bool {
+	return len(g.Paths) > 0 && len(g.Generate) > 0
+}
+
+// Covers reports whether path matches one of Paths.
+func (g Generated) Covers(path string) bool {
+	return MatchAny(g.Paths, path)
 }
 
 // Suite is the platform's name for a step (runsheet ADR 032,
@@ -80,11 +111,20 @@ type Step struct {
 }
 
 // rawConfig is the file: `suites:`, the platform's key, or `steps:`,
-// the deprecated alias of the same shape an older file still uses.
-// Unknown keys are ignored.
+// the deprecated alias of the same shape an older file still uses,
+// plus an optional top-level `generated:` block. Unknown keys are
+// ignored.
 type rawConfig struct {
-	Suites []rawStep `yaml:"suites"`
-	Steps  []rawStep `yaml:"steps"`
+	Suites    []rawStep    `yaml:"suites"`
+	Steps     []rawStep    `yaml:"steps"`
+	Generated rawGenerated `yaml:"generated"`
+}
+
+type rawGenerated struct {
+	Paths    []string `yaml:"paths"`
+	Generate []string `yaml:"generate"`
+	Check    []string `yaml:"check"`
+	Timeout  string   `yaml:"timeout"`
 }
 
 type rawStep struct {
@@ -123,7 +163,10 @@ func Load(dir string) (Config, error) {
 // not a glob is an error, as the platform's Parse refuses them; a suite
 // with no kind is let through for an old `steps:` file. Names, kinds,
 // commands and paths are trimmed and paths deduplicated, as the
-// platform's are, so the hash reads what it reads.
+// platform's are, so the hash reads what it reads. A `generated` block
+// with paths but no generate commands, or a path that is not a glob, is
+// an error naming the `generated` field; a file with no `generated`
+// block parses to a zero Generated.
 func Parse(data []byte) (Config, error) {
 	var raw rawConfig
 	if err := yaml.Unmarshal(data, &raw); err != nil {
@@ -174,7 +217,39 @@ func Parse(data []byte) (Config, error) {
 		}
 		cfg.Steps = append(cfg.Steps, step)
 	}
+	generated, err := parseGenerated(raw.Generated)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Generated = generated
 	return cfg, nil
+}
+
+// parseGenerated reads the `generated:` block: paths cleaned and
+// checked as a suite's are, generate and check commands trimmed in
+// order. Paths with no generate commands is refused, naming the field.
+func parseGenerated(raw rawGenerated) (Generated, error) {
+	paths, err := cleanPaths(raw.Paths)
+	if err != nil {
+		return Generated{}, fmt.Errorf("generated: %w", err)
+	}
+	g := Generated{
+		Paths:    paths,
+		Generate: trimmed(raw.Generate),
+		Check:    trimmed(raw.Check),
+		Timeout:  DefaultTimeout,
+	}
+	if len(g.Paths) > 0 && len(g.Generate) == 0 {
+		return Generated{}, fmt.Errorf("generated: paths is set but generate has no commands")
+	}
+	if raw.Timeout != "" {
+		d, err := time.ParseDuration(raw.Timeout)
+		if err != nil {
+			return Generated{}, fmt.Errorf("generated: timeout: %w", err)
+		}
+		g.Timeout = d
+	}
+	return g, nil
 }
 
 // trimmed is ss trimmed, the empty and repeated ones dropped.

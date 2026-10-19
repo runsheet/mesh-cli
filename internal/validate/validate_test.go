@@ -163,6 +163,88 @@ func TestLoadRefusesWhatThePlatformRefuses(t *testing.T) {
 	}
 }
 
+// The goal's example `generated:` block parses into Config.Generated:
+// paths, generate and check commands, in order.
+func TestParseGenerated(t *testing.T) {
+	yml := `suites:
+  - name: vet
+    command: go vet ./...
+generated:
+  paths: [platform/loomgen/**, platform/registry_gen.go, "gateway/**/*_gen.go"]
+  generate:
+    - "cd platform && go tool loom generate"
+    - "cd platform && go generate ./registry.go"
+  check:
+    - "cd platform && go tool loom generate --check"
+    - "go build ./..."
+    - "go vet ./..."
+`
+	cfg, err := Parse([]byte(yml))
+	if err != nil {
+		t.Fatalf("Parse() err = %v", err)
+	}
+	want := Generated{
+		Paths:    []string{"platform/loomgen/**", "platform/registry_gen.go", "gateway/**/*_gen.go"},
+		Generate: []string{"cd platform && go tool loom generate", "cd platform && go generate ./registry.go"},
+		Check:    []string{"cd platform && go tool loom generate --check", "go build ./...", "go vet ./..."},
+		Timeout:  DefaultTimeout,
+	}
+	if !reflect.DeepEqual(cfg.Generated, want) {
+		t.Fatalf("Parse().Generated =\n %+v\nwant\n %+v", cfg.Generated, want)
+	}
+
+	// A file with no generated block parses to a zero Generated.
+	plain, err := Parse([]byte("suites:\n  - name: vet\n    command: go vet ./...\n"))
+	if err != nil {
+		t.Fatalf("Parse() err = %v", err)
+	}
+	if plain.Generated.Declared() {
+		t.Fatalf("Parse() with no generated block: Declared() = true, want false")
+	}
+
+	// A timeout applies to each command.
+	timed, err := Parse([]byte(yml + "  timeout: 20m\n"))
+	if err != nil {
+		t.Fatalf("Parse() err = %v", err)
+	}
+	if timed.Generated.Timeout != 20*time.Minute {
+		t.Fatalf("Generated.Timeout = %v, want 20m", timed.Generated.Timeout)
+	}
+
+	// Paths without generate commands is refused.
+	if _, err := Parse([]byte("generated:\n  paths: [a/**]\n")); err == nil {
+		t.Fatalf("paths with no generate: parsed")
+	} else if !strings.Contains(err.Error(), "generated") {
+		t.Fatalf("paths with no generate: err = %v, want it to name generated", err)
+	}
+
+	// A bad glob is refused, naming the field.
+	if _, err := Parse([]byte("generated:\n  paths: [../up]\n  generate: [\"x\"]\n")); err == nil {
+		t.Fatalf("bad glob: parsed")
+	} else if !strings.Contains(err.Error(), "generated") {
+		t.Fatalf("bad glob: err = %v, want it to name generated", err)
+	}
+}
+
+// Covers matches a declared path against Generated.Paths the same way
+// a suite's Paths match a changed file.
+func TestGeneratedCovers(t *testing.T) {
+	g := Generated{
+		Paths:    []string{"platform/loomgen/**", "platform/registry_gen.go", "gateway/**/*_gen.go"},
+		Generate: []string{"cd platform && go tool loom generate"},
+	}
+	for path, want := range map[string]bool{
+		"platform/loomgen/a/b.go":  true,
+		"gateway/x/y_gen.go":       true,
+		"platform/registry_gen.go": true,
+		"cmd/runsheet/main.go":     false,
+	} {
+		if got := g.Covers(path); got != want {
+			t.Errorf("Covers(%q) = %v, want %v", path, got, want)
+		}
+	}
+}
+
 // A suite with no paths is affected by every change, as the platform's
 // Affected has it — `always` or not; one with paths only by a match.
 func TestSelectTakesASuiteWithNoPathsForAnyChange(t *testing.T) {
