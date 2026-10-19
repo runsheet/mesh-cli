@@ -3,8 +3,10 @@ package harness
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 
 	"projectmesh.io/mesh-cli/internal/sandbox"
+	"projectmesh.io/mesh-cli/internal/sessionunit"
 )
 
 // ProxyShimScriptName is the shim's file, beside its mcp.json, as
@@ -50,6 +52,45 @@ func ProxiedOf(srv any) (socket, name string, ok bool) {
 		}
 	}
 	return socket, name, socket != "" && name != ""
+}
+
+// shimOf reads a ProxiedServer entry back: its socket and server name.
+func shimOf(srv any) (socket, name string, ok bool) {
+	m, isMap := srv.(map[string]any)
+	if !isMap || m["command"] != "node" {
+		return "", "", false
+	}
+	args := stringArgs(m["args"])
+	if len(args) != 3 || filepath.Base(args[0]) != ProxyShimScriptName {
+		return "", "", false
+	}
+	return args[1], args[2], args[1] != "" && args[2] != ""
+}
+
+// ProxyStateOf is what a session's state.json says of its sessionproxy:
+// the socket its proxied entries dial — a host's ProxyRelay or a pod's
+// ProxiedServer — and their server names, sorted; nil when none is
+// proxied. Names and a path only: what the node that adopts the session
+// needs to start a proxy on the same socket (mesh-cli ADR-009).
+func ProxyStateOf(servers map[string]any) *sessionunit.Proxy {
+	var p *sessionunit.Proxy
+	for _, srv := range servers {
+		socket, name, ok := ProxiedOf(srv)
+		if !ok {
+			socket, name, ok = shimOf(srv)
+		}
+		if !ok {
+			continue
+		}
+		if p == nil {
+			p = &sessionunit.Proxy{Socket: socket}
+		}
+		p.Servers = append(p.Servers, name)
+	}
+	if p != nil {
+		sort.Strings(p.Servers)
+	}
+	return p
 }
 
 // RelayOf reads a MeshContextRelay entry back — the mesh binary it runs

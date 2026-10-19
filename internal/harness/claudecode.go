@@ -690,6 +690,7 @@ func (job Job) state(runner string, h sessionunit.Handle, harness string) sessio
 		StartedAt: time.Now().UTC(), TimeoutSeconds: int(job.Timeout / time.Second), MaxBudgetUSD: job.MaxBudgetUSD,
 		TempDirs: job.Meta.TempDirs, TokenFile: job.tokenFile, LoginCache: job.Meta.LoginCache,
 		RelaySocket: job.relaySocket, RelayURL: job.relayURL,
+		Proxy: ProxyStateOf(job.MCPServers),
 	}
 }
 

@@ -298,7 +298,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	if err != nil {
 		return d.emptyResearch(ctx, direction, project, scope, fmt.Errorf("tools: %w", err), "tools: "+err.Error())
 	}
-	defer closeProxy()
+	defer closeProxy(ctx)
 	label := project.Slug + "/" + direction.Slug
 	if len(st.Use) > 0 {
 		d.logf("%s: tools %s", label, st.Names())
@@ -588,6 +588,8 @@ func (d *Director) AdoptResearch(ctx context.Context, direction gateway.Directio
 		s.Remove()
 		return errNoAttach
 	}
+	endProxy := adoptProxy(ctx, d.Proxies, d.Credentials, d.MCP, tools.RoleFor(string(harness.KindResearch)), d.runtimes(), gateway.SessionRef{Kind: string(harness.KindResearch), DirectionID: direction.ID}, s, project.Slug+"/"+direction.Slug, d.logf)
+	defer endProxy(ctx)
 	d.logf("%s/%s: adopted its %s research session (pid %d)", project.Slug, direction.Slug, s.Liveness(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
 	return d.handIn(ctx, direction, project, scope, s.State.Workspace, nil, result, err)
