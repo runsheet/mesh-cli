@@ -931,6 +931,9 @@ type WorkItem struct {
 	// ReadyAt is when the item last became ready (RFC 3339); empty from
 	// an older platform. The claim order breaks ties on it (ADR-017).
 	ReadyAt string `json:"readyAt"`
+	// StatusAt is when the item's status last changed (RFC 3339); empty
+	// from a platform that has none.
+	StatusAt string `json:"statusAt"`
 	// Evaluation is the evaluator's notes on the last finished branch;
 	// EvaluationPassed its verdict. A ready item with attempts > 0 and an
 	// evaluation is a retry: the builder reads why the last one failed.
