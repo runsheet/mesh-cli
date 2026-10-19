@@ -42,6 +42,10 @@ type Planner struct {
 	// the tools attached for the planner role are rendered beside it
 	// (SelectTools, trd §3 Tools).
 	MCP map[string]any
+	// Proxies, when set, start each session's sessionproxy: every MCP
+	// server reached through one socket, no credential in the session
+	// (SessionTools.UseVia).
+	Proxies *SessionProxies
 	// Runtimes are the tool runtimes the node has now (Loop.ToolRuntimes;
 	// nil: none), which a local tool needs to start.
 	Runtimes func() []string
@@ -912,9 +916,11 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, scope Scope, dir s
 	}
 	defer unlessDetached(ctx, func() { RemoveScratch(scratch) })
 	acct.Apply(&job)
-	if err := st.UseTools(&job, p.MCP, acct); err != nil {
+	closeProxy, err := st.UseVia(p.Proxies, mcpRootOfScope(p.Roots, scope), &job, p.MCP, acct)
+	if err != nil {
 		return nil, nil, nil, nil, nil, nil, nil, 0, acct, fmt.Errorf("tools: %w", err)
 	}
+	defer closeProxy(ctx)
 	if len(st.Use) > 0 {
 		p.logf("goal %s: tools %s", goal.Slug, st.Names())
 	}
@@ -1173,6 +1179,8 @@ func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope,
 		s.Remove()
 		return errNoAttach
 	}
+	endProxy := adoptProxy(ctx, p.Proxies, p.Credentials, p.MCP, tools.RoleFor(string(harness.KindPlan)), p.runtimes(), gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goal.ID}, s, "goal "+goal.Slug, p.logf)
+	defer endProxy(ctx)
 	p.logf("goal %s: adopted its %s planner session (pid %d)", goal.Slug, s.Liveness(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
 	gr, hasGoalRepo := goalRepo(goal, project, repos)

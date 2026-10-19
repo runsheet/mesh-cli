@@ -151,3 +151,17 @@ kept file refreshes from its own source alone. The machine bearer stays
 the source of every other session kind's file, and of a build's on a
 one-org node whose platform opens no mesh sessions; a node serving
 several orgs on such a platform releases the build instead.
+
+## Amendment 2026-10-19: a session's bearer lives in its proxy
+
+Goal `a-session-reaches-every-mcp-server-through-one-proxy`,
+[ADR-038](adr-038-a-session-reaches-every-mcp-server-through-one-proxy.md).
+A build, evaluation, plan or research session on a node with
+`SessionProxies` reaches runsheet through its own sessionproxy on the
+host, whose `Runsheet` upstream asks the bearer — the session's bound
+mesh session bearer for a build, else the machine's
+(`TokenFiles.Source`) — per request and holds it in memory: no
+`runsheet.token` is written for it, in the pod's HOME or anywhere else,
+and its state.json names the proxy's socket rather than a token file.
+The token file, its rewrite and its keeping on adoption stay for rebase
+and channel sessions and for a session an older node started.

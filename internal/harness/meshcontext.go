@@ -241,8 +241,12 @@ func (c *ClaudeCode) keepAdopted(st sessionunit.State) func(bool) {
 // state's token file, a failure said on stderr as name's. A pod
 // session's relay endpoint (the state's RelaySocket) is served again on
 // that file, as the node that started it served it.
+//
+// A proxied session (st.Proxy) has no token file to keep: its bearer is
+// held in memory by the proxy the adopting node restarts on the state's
+// socket (node.SessionProxies.Adopt), so nothing is kept here.
 func keepAdoptedToken(tokens TokenKeeper, stderr io.Writer, name string, st sessionunit.State) func(bool) {
-	if st.TokenFile == "" || tokens == nil {
+	if st.TokenFile == "" || st.Proxy != nil || tokens == nil {
 		return func(bool) {}
 	}
 	meta := SessionMeta{NodeID: st.NodeID, ItemID: st.ItemID, GoalID: st.GoalID, DirectionID: st.DirectionID, Attempt: st.Attempt}

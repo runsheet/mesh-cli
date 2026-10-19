@@ -52,6 +52,10 @@ type Director struct {
 	// the tools attached for the director role are rendered beside it
 	// (SelectTools, trd §3 Tools).
 	MCP map[string]any
+	// Proxies, when set, start each session's sessionproxy: every MCP
+	// server reached through one socket, no credential in the session
+	// (SessionTools.UseVia).
+	Proxies *SessionProxies
 	// Runtimes are the tool runtimes the node has now (Loop.ToolRuntimes;
 	// nil: none), which a local tool needs to start.
 	Runtimes func() []string
@@ -290,9 +294,11 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	defer unlessDetached(ctx, func() { RemoveScratch(scratch) })
 	acct.SetContextBytes(written.Bytes)
 	acct.Apply(&job)
-	if err := st.UseTools(&job, d.MCP, acct); err != nil {
+	closeProxy, err := st.UseVia(d.Proxies, mcpRootOfScope(d.Roots, scope), &job, d.MCP, acct)
+	if err != nil {
 		return d.emptyResearch(ctx, direction, project, scope, fmt.Errorf("tools: %w", err), "tools: "+err.Error())
 	}
+	defer closeProxy(ctx)
 	label := project.Slug + "/" + direction.Slug
 	if len(st.Use) > 0 {
 		d.logf("%s: tools %s", label, st.Names())
@@ -582,6 +588,8 @@ func (d *Director) AdoptResearch(ctx context.Context, direction gateway.Directio
 		s.Remove()
 		return errNoAttach
 	}
+	endProxy := adoptProxy(ctx, d.Proxies, d.Credentials, d.MCP, tools.RoleFor(string(harness.KindResearch)), d.runtimes(), gateway.SessionRef{Kind: string(harness.KindResearch), DirectionID: direction.ID}, s, project.Slug+"/"+direction.Slug, d.logf)
+	defer endProxy(ctx)
 	d.logf("%s/%s: adopted its %s research session (pid %d)", project.Slug, direction.Slug, s.Liveness(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
 	return d.handIn(ctx, direction, project, scope, s.State.Workspace, nil, result, err)

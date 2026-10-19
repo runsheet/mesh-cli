@@ -1216,6 +1216,10 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 	// a build's runsheet reads on its own mesh session's bearer, never
 	// the machine's that reads every served org's (ADR-035)
 	sessionBearers = &node.SessionBearers{GW: gw, Tokens: sessionTokens, Audience: node.MeshMCPURL(gw.BaseURL), Orgs: loop.ServedOrgs, Logf: logger.Printf}
+	// every build, evaluation, plan and research reaches its MCP servers
+	// through its own sessionproxy, the bearer and the tools' secrets
+	// held on the host, none of it in the session's pod
+	sessionProxies = newSessionProxies(logger.Printf)
 	loop.NoCredential = &node.NoCredentials{Log: logger, Now: loop.Now}
 	accounts := &node.Credentials{GW: gw, Limits: loop.Limits, Thresholds: loop.Thresholds, Known: known, NoCredential: loop.NoCredential, Log: logger}
 	// the quartermaster keeps the node fit from every tick, poll and
@@ -1294,7 +1298,7 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 		rs := st.Resumes()
 		resumes = &rs
 	}
-	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return meshContextMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, BatchFallback: &node.TokenFallback{}, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, RuntimeBroken: loop.NoteRuntimeBroken, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Sandbox: sessionSandbox, MeshBinary: meshBinary(), State: state, Notices: validationNotices, Machine: loop.Machine, Host: loop.HostThresholds, RetryTurns: loop.NoteRetryTurn, Resumes: resumes, Tripline: loop.Tripline, Bearers: sessionBearers, Log: logger}
+	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return meshContextMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, BatchFallback: &node.TokenFallback{}, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, RuntimeBroken: loop.NoteRuntimeBroken, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Sandbox: sessionSandbox, MeshBinary: meshBinary(), State: state, Notices: validationNotices, Machine: loop.Machine, Host: loop.HostThresholds, RetryTurns: loop.NoteRetryTurn, Resumes: resumes, Tripline: loop.Tripline, Bearers: sessionBearers, Proxies: sessionProxies, Log: logger}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		r := *runner
 		r.Scopes = loop.CurrentScopes() // an org served since start is known to its build
@@ -1953,6 +1957,21 @@ var sessionTokens *node.TokenFiles
 // bearer (node.SessionBearers, ADR-035): set beside sessionTokens.
 var sessionBearers *node.SessionBearers
 
+// sessionProxies starts each session's sessionproxy (node.SessionProxies):
+// set beside sessionTokens; nil proxies nothing.
+var sessionProxies *node.SessionProxies
+
+// newSessionProxies is the node's SessionProxies on sessionTokens'
+// bearers, their sockets under ~/.mesh/mcp unless the session's org has
+// an MCP root of its own; nil without sessionTokens or a home.
+func newSessionProxies(logf func(string, ...any)) *node.SessionProxies {
+	home, err := os.UserHomeDir()
+	if sessionTokens == nil || err != nil {
+		return nil
+	}
+	return &node.SessionProxies{Bearer: sessionTokens.Source, Root: node.SingleOrgRoots(filepath.Join(home, ".mesh")).MCP, Logf: logf}
+}
+
 // tokenKeeper is sessionTokens as a harness's TokenKeeper, nil (never a
 // nil pointer in an interface) when there is none.
 func tokenKeeper() harness.TokenKeeper {
@@ -2035,7 +2054,7 @@ type secondOpinion struct {
 // codex, or no issued Codex account: the node evaluates as before. Every session's whole event stream and stderr
 // are kept under workRoot/kept-sessions for harness.KeepSessionOutput
 // (docs/adr/adr-005-codex-second-opinion.md, "Amendment, 2026-09-28:
-// the stream is kept 24 hours").
+// the stream is kept 24 hours"; 14 days since ADR-008's work sweep).
 func codexSecondOpinion(cfg *node.Config, loop *node.Loop, workRoot string, logger *log.Logger) secondOpinion {
 	ctx, cancel := context.WithTimeout(context.Background(), codexImageCheckTimeout)
 	defer cancel()
@@ -2197,7 +2216,7 @@ func researchWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, loop 
 }
 
 func evaluator(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, second secondOpinion, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) *node.Evaluator {
-	return &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: loop.CurrentScopes(), WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Sandbox: sessionSandbox, Tripline: loop.Tripline, Log: logger,
+	return &node.Evaluator{GW: gw, Proxies: sessionProxies, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: loop.CurrentScopes(), WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Sandbox: sessionSandbox, Tripline: loop.Tripline, Log: logger,
 		Codex: second.h, CodexPreflight: second.preflight, CodexModel: cfg.Codex.CodexModel, CodexAccounts: second.accounts, Waits: second.waits, Blind: second.blind, NoVerdict: second.noVerdict, Splits: &node.OncePer{}, LeftRunning: second.left, Limits: second.limits, Thresholds: second.thresholds}
 }
 
@@ -2210,11 +2229,11 @@ func rebaser(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harnes
 }
 
 func planner(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, workRoot string, accounts *node.Credentials, logger *log.Logger) *node.Planner {
-	return &node.Planner{GW: gw, Harness: h, Sandbox: sessionSandbox, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodePlanBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.PlanModel(), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Log: logger}
+	return &node.Planner{GW: gw, Proxies: sessionProxies, Harness: h, Sandbox: sessionSandbox, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodePlanBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.PlanModel(), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Log: logger}
 }
 
 func director(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, workRoot string, accounts *node.Credentials, logger *log.Logger) *node.Director {
-	return &node.Director{GW: gw, Harness: h, Sandbox: sessionSandbox, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeResearchBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("research"), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Log: logger}
+	return &node.Director{GW: gw, Proxies: sessionProxies, Harness: h, Sandbox: sessionSandbox, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeResearchBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("research"), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Log: logger}
 }
 
 // adoptSessions takes up, before the first claim, every session under the

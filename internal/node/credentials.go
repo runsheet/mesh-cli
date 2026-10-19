@@ -164,6 +164,9 @@ type SessionAccount struct {
 	// used are the tools rendered for the session (SessionTools.Use), whose
 	// priced calls Finish reports.
 	used []tools.Tool
+	// proxy is the session's sessionproxy (SessionTools.UseVia), whose
+	// first error per server UseNote names
+	proxy *SessionProxy
 }
 
 // Open is the account a claimed session on adapter (Adapter of its
@@ -721,7 +724,7 @@ func (s *SessionAccount) UseNote(res harness.Result) string {
 	if s == nil {
 		return ""
 	}
-	return SessionTools{Use: s.used}.UseNote(res, s.Redact)
+	return SessionTools{Use: s.used, ProxyError: s.proxy.FirstError}.UseNote(res, s.Redact)
 }
 
 // mergeToolCalls is rows with more folded in by tool — calls, errors

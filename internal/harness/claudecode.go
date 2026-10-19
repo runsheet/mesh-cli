@@ -690,6 +690,7 @@ func (job Job) state(runner string, h sessionunit.Handle, harness string) sessio
 		StartedAt: time.Now().UTC(), TimeoutSeconds: int(job.Timeout / time.Second), MaxBudgetUSD: job.MaxBudgetUSD,
 		TempDirs: job.Meta.TempDirs, TokenFile: job.tokenFile, LoginCache: job.Meta.LoginCache,
 		RelaySocket: job.relaySocket, RelayURL: job.relayURL,
+		Proxy: ProxyStateOf(job.MCPServers),
 	}
 }
 
@@ -723,6 +724,12 @@ func (c *ClaudeCode) runSandboxed(ctx context.Context, job Job, onProgress func(
 	}()
 	if len(job.MCPServers) > 0 {
 		mcpPath = filepath.Join(sess.Home, "mcp.json")
+		// every server the node proxied is reached through its socket,
+		// mounted alone: no bearer, no token file, no tool secret in the
+		// pod
+		if job, err = podProxied(job, sess); err != nil {
+			return Result{}, fmt.Errorf("harness claude-code: %w", err)
+		}
 		if nodeFinishes(job) {
 			if _, err = sess.WriteFile(workScriptName, WorkScript()); err != nil {
 				return Result{}, fmt.Errorf("harness claude-code: work tools: %w", err)
