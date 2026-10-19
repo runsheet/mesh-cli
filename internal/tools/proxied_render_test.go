@@ -53,7 +53,7 @@ func TestProxiedServersRendersShimsForEveryToolAndTheBuiltin(t *testing.T) {
 	}
 
 	fsTools := upstreams["fs-tools"]
-	if fsTools.Transport != Local || fsTools.Command != "@example/fs-mcp" || !reflect.DeepEqual(fsTools.Args, []string{"--root", "."}) {
+	if fsTools.Transport != Local || fsTools.Command != Npx || !reflect.DeepEqual(fsTools.Args, []string{"-y", "@example/fs-mcp", "--root", "."}) {
 		t.Fatalf("fs-tools upstream = %+v", fsTools)
 	}
 	if !reflect.DeepEqual(fsTools.Env, map[string]string{"LOG_LEVEL": "warn"}) ||
