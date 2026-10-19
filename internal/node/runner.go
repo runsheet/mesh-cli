@@ -222,8 +222,11 @@ func NewServedDiffCache(cfg *Config, logf func(string, ...any)) (*SharedCache, e
 
 // toolResults bounds the job's tool results by node.yaml's
 // tool_results (trd §3 Tool results): the CLI's limits on its env and,
-// for a session on the host, the Bash hook in its settings — the pod has
-// no mesh binary to run it.
+// for a session on the host, the Bash hooks in its settings — the trim
+// and the test guard (ADR-038, BuildSessionSettings). The pod has no
+// mesh binary to run either, so a sandboxed build has the env and the
+// build prompt's testing rule alone. Only a build calls it: the guard
+// is never an evaluation's, a plan's or a rebase's.
 func (r *Runner) toolResults(job *harness.Job) {
 	kb := DefaultToolResultsKB
 	if r.Cfg != nil {
@@ -235,7 +238,7 @@ func (r *Runner) toolResults(job *harness.Job) {
 		if bin == "" {
 			bin = "mesh"
 		}
-		job.Settings = ToolTrimSettings(bin, kb)
+		job.Settings = BuildSessionSettings(bin, kb)
 	}
 }
 

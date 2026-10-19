@@ -59,8 +59,8 @@ func TestSessionSettingsCarryNoCoAuthor(t *testing.T) {
 			t.Errorf("sandboxed %v: attribution = %v, want commit \"\", pr \"\", sessionUrl false", sandboxed, s["attribution"])
 		}
 		hooks := bashHooks(t, args)
-		if !sandboxed && (len(hooks) != 1 || !strings.Contains(hooks[0], "mesh tool-trim --max-kb 16")) {
-			t.Errorf("host build: Bash hooks %v, want the tool-trim hook", hooks)
+		if !sandboxed && (len(hooks) != 2 || !strings.Contains(hooks[1], "mesh tool-trim --max-kb 16")) {
+			t.Errorf("host build: Bash hooks %v, want the test guard and the tool-trim hook", hooks)
 		}
 		if sandboxed && len(hooks) != 0 {
 			t.Errorf("sandboxed build: Bash hooks %v, want none (no mesh binary in the pod)", hooks)

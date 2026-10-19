@@ -376,6 +376,31 @@ func ToolTrimSettings(bin string, maxKB int) map[string]any {
 	}}
 }
 
+// BuildSessionSettings are a host build session's Claude Code settings
+// (trd §3 Tool results, ADR-038): ToolTrimSettings' trim hook when
+// maxKB is set, and beside it on the same Bash matcher the test guard,
+// `<bin> test-guard --hook` (harness.TestGuardHook), which refuses a
+// whole-suite or backgrounded test run whatever the cap — the guard is
+// a build's alone; evaluate, plan and rebase sessions run whole suites
+// when their acceptance asks.
+func BuildSessionSettings(bin string, maxKB int) map[string]any {
+	hooks := []any{map[string]any{
+		"type":    "command",
+		"command": harness.TestGuardCommand(bin),
+		"timeout": 10,
+	}}
+	if trim := ToolTrimSettings(bin, maxKB); trim != nil {
+		m := trim["hooks"].(map[string]any)["PreToolUse"].([]any)[0].(map[string]any)
+		hooks = append(hooks, m["hooks"].([]any)...)
+	}
+	return map[string]any{"hooks": map[string]any{
+		"PreToolUse": []any{map[string]any{
+			"matcher": "Bash",
+			"hooks":   hooks,
+		}},
+	}}
+}
+
 // ToolResultsEnv is what the session's environment carries for a cap
 // of maxKB, so what the hook does not see is bounded by the CLI too:
 // BASH_MAX_OUTPUT_LENGTH in characters (the cap), MAX_MCP_OUTPUT_TOKENS
