@@ -32,6 +32,10 @@ import (
 // work root for checkouts or sessions takes it for one.
 const ScratchDirName = ".scratch"
 
+// scratchSubjectLen is how much of a run's subject its scratch dir's
+// name keeps: an item id's first eight characters, as a person reads it.
+const scratchSubjectLen = 8
+
 // ScratchRoot is <workRoot>/.scratch; with workRoot "" it is under the
 // node's own WorkRoot (~/.mesh/work/.scratch).
 func ScratchRoot(workRoot string) (string, error) {
@@ -57,8 +61,13 @@ func BuildCacheDir() (string, error) {
 }
 
 // MakeScratch makes a fresh directory for one run under root,
-// <root>/<kind>-<subject>-<rand> (validate-<item>-1a2b3c4d), root made
-// if missing.
+// <root>/<kind>-<subject>-<rand> (validate-847dc509-1a2b3c4d), root made
+// if missing. The subject is cut to its first scratchSubjectLen
+// characters: the name only has to say whose run it is, and every byte
+// of it is a byte less for whatever a step nests under its TMPDIR — a
+// Unix socket's whole path must fit in 107 bytes, and a test Postgres's
+// under validate-<36-char item id>-… did not (latchkey conformance,
+// 2026-10-18).
 func MakeScratch(root, kind, subject string) (string, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return "", fmt.Errorf("scratch root: %w", err)
@@ -69,6 +78,9 @@ func MakeScratch(root, kind, subject string) (string, error) {
 	}
 	name := kind
 	if s := Slugify(subject); s != "" {
+		if len(s) > scratchSubjectLen {
+			s = strings.TrimRight(s[:scratchSubjectLen], "-")
+		}
 		name += "-" + s
 	}
 	dir := filepath.Join(root, name+"-"+hex.EncodeToString(b[:]))

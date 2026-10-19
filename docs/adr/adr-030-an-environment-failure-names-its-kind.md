@@ -283,3 +283,28 @@ node's condition, as `runtime_broken` is. mesh-cli ADR-034's Refusals
 (`docs/adr/adr-034-each-org-has-its-own-roots.md`) is the decision;
 `HostFallbackError.EnvironmentKind()` carries the kind.
 
+
+## Amendment 2026-10-19: `environment_unavailable` — a step that says it could not provision
+
+A step that exits **75** (sysexits `EX_TEMPFAIL`) carries
+`environment_unavailable`. It is the one kind a repo chooses: its own
+setup script exits 75 when what the tests need would not start, and every
+other failure of that script (a test failing, a test skipped that must
+run, a budget blown) keeps exiting 1, a code verdict. Latchkey's
+`scripts/testenv.sh` is the first (latchkeyid/latchkey#560): on
+2026-10-18 its test Postgres could not create its socket under the node's
+scratch, exited 1, and mcp-sign-in items 7 and 12 failed and re-planned
+for the node's fault. The platform reads exit 75 and `exited 75` as an
+environment failure too (runsheet/runsheet#4691), so a node on an older
+mesh-cli parks the item the same way.
+
+The same failure showed the scratch name was too long for what a step
+nests under it: `validate-<36-char item id>-<rand>` left a Postgres
+socket at 127 bytes, over the 107 a Unix socket path may have. A run's
+scratch now keeps its subject's first eight characters
+(`validate-847dc509-1a2b3c4d`). It stays under the node's work root, not
+`/tmp`, which hardened hosts mount noexec or refuse writes to.
+
+Tests: `TestEnvironmentKindOfEachFailure` (exit 75 is
+`environment_unavailable`), `TestMakeScratchNameIsShort` (the name, and a
+test Postgres socket under the usual work root within 107 bytes).
