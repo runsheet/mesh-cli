@@ -18,7 +18,12 @@ import (
 // sessionunit.Dir(job.Workspace) until harness.RemoveSession; a Codex
 // session is not Outlive and has no such directory of its own
 // (adr-005), so without this nothing of what Codex said survived it.
-const KeepSessionOutput = 24 * time.Hour
+// Fourteen days, not one (goal the-node-sweeps-finished-workspaces):
+// a kept stream is read when an item is looked into after the fact,
+// often days later, and 171 of them on the mini came to 98 MB; the
+// node's work sweep (internal/node/worksweep.go, ADR-008 The work
+// sweep) removes what is older.
+const KeepSessionOutput = 14 * 24 * time.Hour
 
 // keptSessionsDir is kept-sessions' name under a work root.
 const keptSessionsDir = "kept-sessions"
@@ -127,6 +132,17 @@ func SweepKeptSessions(dir string, now time.Time) error {
 		}
 	}
 	return nil
+}
+
+// KeptSessionStartedAt is when the kept session in dir started, by the
+// same reading SweepKeptSessions judges it on: its note's StartedAt,
+// else the directory's own modification time (zero when neither reads).
+func KeptSessionStartedAt(dir string) time.Time {
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return time.Time{}
+	}
+	return keptSessionAge(dir, fs.FileInfoToDirEntry(info))
 }
 
 // keptSessionAge is when a kept session started: its note's StartedAt,
