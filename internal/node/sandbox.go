@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -156,6 +157,13 @@ func OpenSandbox(ctx context.Context, c SandboxConfig, rt sandbox.Runtime, versi
 	}
 	if logf != nil {
 		logf("sandbox: on — %s, image %s, agent %g cpus / %s / %d pids", ver, cfg.Image, cfg.Limits.CPUs, cfg.Limits.Memory, cfg.Limits.Pids)
+		// under systemd (INVOCATION_ID set), a unit whose KillMode is not
+		// process kills every pod with the node on a restart or self-update
+		if os.Getenv("INVOCATION_ID") != "" {
+			if mode, ok := SystemdKillMode(ctx, nil); ok && mode != SafeKillMode {
+				logf("sandbox: WARNING the service's unit has KillMode=%s: a restart or a self-update ends every running session with the node; add KillMode=%s under [Service] in %s and run systemctl --user daemon-reload", mode, SafeKillMode, SystemdUnitPath("~"))
+			}
+		}
 	}
 	return &sandbox.Sandbox{Runtime: rt, Config: cfg, Logf: logf}, &gateway.SandboxInfo{Mode: SandboxOn, Runtime: ver, Image: cfg.Image}, nil
 }

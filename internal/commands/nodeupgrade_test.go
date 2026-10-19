@@ -173,13 +173,17 @@ func TestNodeUpgradeReleaseSwapsAndRestartsWithoutDraining(t *testing.T) {
 	}
 }
 
-// A sandboxed node's sessions would end with it: refused unless --force.
-func TestNodeUpgradeRefusesASandboxedNode(t *testing.T) {
+// A sandboxed node whose unit kills its cgroup (systemd's default
+// KillMode=control-group) would end its sessions with it: refused, naming
+// the fix, unless --force.
+func TestNodeUpgradeRefusesASandboxedNodeWhoseUnitKillsItsPods(t *testing.T) {
 	noDrain(t)
 	u, f, svc := upgradeFixture(t)
 	u.Sandboxed = func() bool { return true }
+	u.KillMode = func(context.Context) (string, bool) { return "control-group", true }
 	bin := fakeBinary(t, "mesh v9.9.9")
-	if err := u.run(context.Background(), "", bin, false); err == nil || !strings.Contains(err.Error(), "mesh node update") {
+	err := u.run(context.Background(), "", bin, false)
+	if err == nil || !strings.Contains(err.Error(), "KillMode=control-group") || !strings.Contains(err.Error(), "KillMode=process") {
 		t.Fatalf("err = %v", err)
 	}
 	f.unchanged(t)
@@ -188,6 +192,31 @@ func TestNodeUpgradeRefusesASandboxedNode(t *testing.T) {
 	}
 	if err := u.run(context.Background(), "", bin, true); err != nil || len(svc.calls) != 1 {
 		t.Fatalf("--force: %v, restarts %q", err, svc.calls)
+	}
+}
+
+// A sandboxed node whose unit signals the node alone (KillMode=process)
+// hot-swaps as its self-update does: its pods outlive it and the new
+// process adopts them, with no drain and no --force.
+func TestNodeUpgradeHotSwapsASandboxedNodeWithKillModeProcess(t *testing.T) {
+	noDrain(t)
+	u, _, svc := upgradeFixture(t)
+	u.Sandboxed = func() bool { return true }
+	u.KillMode = func(context.Context) (string, bool) { return "process", true }
+	if err := u.run(context.Background(), "", fakeBinary(t, "mesh v9.9.9"), false); err != nil || len(svc.calls) != 1 {
+		t.Fatalf("err %v, restarts %q", err, svc.calls)
+	}
+}
+
+// With no systemd unit (launchd, or a node no service runs) nothing
+// kills the pods' cgroup, so a sandboxed node is upgraded.
+func TestNodeUpgradeASandboxedNodeWithNoUnit(t *testing.T) {
+	noDrain(t)
+	u, _, svc := upgradeFixture(t)
+	u.Sandboxed = func() bool { return true }
+	u.KillMode = func(context.Context) (string, bool) { return "", false }
+	if err := u.run(context.Background(), "", fakeBinary(t, "mesh v9.9.9"), false); err != nil || len(svc.calls) != 1 {
+		t.Fatalf("err %v, restarts %q", err, svc.calls)
 	}
 }
 
