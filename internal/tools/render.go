@@ -74,7 +74,8 @@ func ClaudeCode(builtin map[string]any, tools []Tool) (servers map[string]any, e
 
 // UpstreamSpec is what sessionproxy reaches one server on — a remote
 // tool's URL and every header (plain and secret alike, since the proxy,
-// never the agent, reads them), a local tool's command, args, env and
+// never the agent, reads them), a local tool's launch by its runtime
+// (npx -y <package> …, uvx, docker run), its env and
 // secret env, or the built-in's URL alone (Transport ""). The node turns
 // one into a sessionproxy.Upstream (Remote, Local or Runsheet); tools
 // does not import that package, to stay the leaf its own doc comment
@@ -109,7 +110,7 @@ func ProxiedServers(builtinURL string, toolsIn []Tool, shim func(name string) ma
 	upstreams = map[string]UpstreamSpec{Builtin: {URL: builtinURL}}
 	for _, t := range toolsIn {
 		servers[t.Name] = shim(t.Name)
-		spec := UpstreamSpec{Transport: t.Transport, URL: t.URL, Command: t.Command, Args: append([]string(nil), t.Args...)}
+		spec := UpstreamSpec{Transport: t.Transport, URL: t.URL}
 		switch t.Transport {
 		case Remote:
 			headers := make(map[string]string, len(t.Headers)+len(t.Secrets))
@@ -130,6 +131,9 @@ func ProxiedServers(builtinURL string, toolsIn []Tool, shim func(name string) ma
 				secrets[k] = v
 			}
 			spec.Env, spec.Secrets = env, secrets
+			// the runtime's own launch, as ClaudeCode renders it: npx -y
+			// <package>, uvx <package>, docker run -i --rm -e …
+			spec.Command, spec.Args = localArgs(t, envKeys(t))
 		}
 		upstreams[t.Name] = spec
 	}
