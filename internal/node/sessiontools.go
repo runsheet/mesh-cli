@@ -25,6 +25,11 @@ type SessionTools struct {
 	Use     []tools.Tool
 	Omitted []tools.Omission
 	Missing []tools.Omission
+	// ProxyError, when set, is the session proxy's first error for a
+	// server (SessionProxy.FirstError): UseNote names it in place of
+	// what the agent's MCP client said, which for a server the proxy
+	// could not reach is only that it failed.
+	ProxyError func(name string) string
 }
 
 // SelectTools is tools.Select for the session's role and the node's
@@ -80,10 +85,18 @@ func (st SessionTools) OmittedNote() string {
 // no other server errored. The error text goes through redact (the
 // account's Redact) and has every value of every served tool's
 // secrets, headers and env taken out too, so no key or header can
-// leak, and is capped at 200 characters.
+// leak, and is capped at 200 characters. A server the session's proxy
+// answered an error for is named by that error (ProxyError) — "runsheet
+// served, never called: sessionproxy: runsheet: …" — not by the
+// agent's bare "failed".
 func (st SessionTools) UseNote(res harness.Result, redact func(string) string) string {
 	var notes []string
 	errored := func(name, msg string, calls int, redactValues func(string) string) {
+		if st.ProxyError != nil {
+			if perr := st.ProxyError(name); perr != "" {
+				msg = perr
+			}
+		}
 		if redact != nil {
 			msg = redact(msg)
 		}
@@ -102,6 +115,8 @@ func (st SessionTools) UseNote(res harness.Result, redact func(string) string) s
 		switch {
 		case stat != nil && stat.FirstError != "":
 			errored(t.Name, stat.FirstError, calls, func(m string) string { return redactToolValues(m, t) })
+		case calls == 0 && st.ProxyError != nil && st.ProxyError(t.Name) != "":
+			errored(t.Name, "", calls, func(m string) string { return redactToolValues(m, t) })
 		case calls == 0:
 			notes = append(notes, t.Name+" served, never called")
 		}

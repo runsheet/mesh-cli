@@ -29,3 +29,27 @@ func TestStateNamesASandboxedSessionsPod(t *testing.T) {
 		}
 	}
 }
+
+// A proxied session's state names its proxy's socket and servers, and
+// reads them back; a session with none writes no proxy at all.
+func TestProxyStateRoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	in := State{Kind: "build", Runner: "detached", Proxy: &Proxy{Socket: "/m/px/1/s", Servers: []string{"runsheet", "search"}}}
+	if err := WriteState(dir, in); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadState(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Proxy == nil || got.Proxy.Socket != in.Proxy.Socket || strings.Join(got.Proxy.Servers, ",") != "runsheet,search" {
+		t.Fatalf("proxy = %+v", got.Proxy)
+	}
+	if err := WriteState(dir, State{Kind: "build", Runner: "detached"}); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, StateFile))
+	if strings.Contains(string(b), "proxy") {
+		t.Errorf("an unproxied state names a proxy:\n%s", b)
+	}
+}

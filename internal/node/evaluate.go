@@ -46,6 +46,10 @@ type Evaluator struct {
 	BuildCache string
 	// MCP are the MCP servers the session gets (runsheet).
 	MCP map[string]any
+	// Proxies, when set, start each session's sessionproxy: every MCP
+	// server reached through one socket, no credential in the session
+	// (SessionTools.UseVia).
+	Proxies *SessionProxies
 	// MaxBudgetUSD caps the review session (3 by default).
 	MaxBudgetUSD float64
 	// Budgets is node.yaml's `budgets:` in force, read live (ADR 012,
@@ -423,9 +427,11 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 			e.Declines.Record(item.ID, st.Missing, runtimes, time.Now())
 			return fmt.Errorf("declined, %s", st.DeclineReason())
 		}
-		if err := st.UseTools(&job, e.MCP, acct); err != nil {
+		closeProxy, err := st.UseVia(e.Proxies, mcpRootFor(e.Roots, e.Scopes, item.OrgID), &job, e.MCP, acct)
+		if err != nil {
 			return fmt.Errorf("tools: %w", err)
 		}
+		defer closeProxy(ctx)
 		if !fam.codex {
 			break
 		}
@@ -973,6 +979,8 @@ func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, 
 	}
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
 	ctx = WithLockHolder(ctx, label)
+	endProxy := adoptProxy(ctx, e.Proxies, e.Credentials, e.MCP, tools.RoleFor(string(harness.KindEvaluate)), e.runtimes(), gateway.SessionRef{Kind: string(harness.KindEvaluate), ItemID: item.ID, GoalID: item.GoalID}, s, "item "+label, e.logf)
+	defer endProxy(ctx)
 	e.logf("item %s: adopted its %s evaluation on %s (pid %d)", label, s.Liveness(), fam.logName(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
 	changed, cfg := e.touched(ctx, label, s.State.Workspace, res.BaseRef(), defaultBranchOf(res), item.Outcome == gateway.OutcomeAlreadyDone)

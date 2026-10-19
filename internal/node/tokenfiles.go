@@ -141,6 +141,43 @@ func (t *TokenFiles) KeepSession(path string, kind harness.Kind, meta harness.Se
 	return t.keep(path, src, key)
 }
 
+// Source is the bearer KeepSession would keep a file from for the
+// session kind and meta name, held in memory rather than written: the
+// bound session's (Bind), else the machine's (Token) — refused, as
+// KeepSession refuses it, to a build of a node serving several orgs. A
+// session's sessionproxy reaches runsheet on it, so no token file is
+// written anywhere its pod mounts (mesh-cli goal
+// a-session-reaches-every-mcp-server-through-one-proxy). The bound
+// source is read through on every call, so an unbind (the session's
+// end) stops it giving a bearer.
+func (t *TokenFiles) Source(kind harness.Kind, meta harness.SessionMeta) (TokenSource, error) {
+	if t == nil {
+		return nil, errors.New("no token source")
+	}
+	key := sessionKey{meta.ItemID, meta.Attempt}
+	t.mu.Lock()
+	_, bound := t.sessions[key]
+	t.mu.Unlock()
+	if bound && meta.ItemID != "" {
+		return func(ctx context.Context) (string, error) {
+			t.mu.Lock()
+			src := t.sessions[key]
+			t.mu.Unlock()
+			if src == nil {
+				return unboundSource(ctx)
+			}
+			return src(ctx)
+		}, nil
+	}
+	if kind == harness.KindBuild && t.MultiOrg != nil && t.MultiOrg() {
+		return nil, fmt.Errorf("item %s: no mesh session bearer bound: %w", meta.ItemID, ErrMachineBearerRefused)
+	}
+	if t.Token == nil {
+		return nil, errors.New("no token source")
+	}
+	return t.Token, nil
+}
+
 // Keep implements harness.TokenKeeper: path kept from the machine
 // bearer, Token.
 func (t *TokenFiles) Keep(path string) (func(remove bool), error) {

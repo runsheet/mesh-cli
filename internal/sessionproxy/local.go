@@ -452,6 +452,7 @@ func (p *Proxy) serveLocal(w http.ResponseWriter, req *http.Request, name string
 func (c *child) fail(w http.ResponseWriter, err error) {
 	msg := c.p.mask(err.Error())
 	c.p.logf("sessionproxy: %s: %s", c.name, msg)
+	c.p.noteError(c.name, fmt.Sprintf("sessionproxy: %s: %s", c.name, msg))
 	writeError(w, http.StatusBadGateway, -32603, fmt.Sprintf("sessionproxy: %s: %s", c.name, msg))
 }
 
