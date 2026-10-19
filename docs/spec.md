@@ -103,6 +103,20 @@ MCP results and anything the hook misses are bounded by the CLI too. A
 sandboxed session gets the environment only; channel-mode sessions get
 neither.
 
+Beside the trim, on the same Bash matcher, a host build session runs the
+test guard (ADR-038, `docs/adr/adr-038-a-builder-tests-what-it-touched.md`):
+`mesh test-guard --hook` (`harness.TestGuardHook`) denies a whole-suite
+test run — `go test ./...` with any flags in any statement of the
+command, a bare `npm test`/`make test`/`pytest` — and any test command
+run in the background, its reason naming the `.runsheet/validate.yml`
+suites the branch's changed files select, else a generic one. The guard
+is set whatever `max_kb` says (`BuildSessionSettings`), for builds only:
+evaluate, plan and rebase sessions run whole suites when their
+acceptance asks. The build prompt's `# Test what you touched` says the
+same — test the packages you touched, in the foreground — and is the
+rule alone for a sandboxed build, whose pod has no mesh binary to run
+the guard.
+
 ## API direction
 
 Recommended backend architecture:
