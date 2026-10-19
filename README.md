@@ -1066,8 +1066,9 @@ never touches the shared clone. A workspace whose `.git/worktrees/<n>`
 has gone anyway is rebuilt for its branch at its recorded head, its
 files kept, and the step that found it — a `git remote set-url`, a
 prepare, the validation — runs once more, logged `workspace <dir>:
-worktree admin <path> gone; rebuilt for <branch> at <sha>`, nothing
-failed or released. A `.git/config.lock` older than five minutes that
+worktree <path> is gone; made again for <branch> at <sha>`, nothing
+failed or released; `scripts/stale-worktrees.sh` lists any stale
+checkout left under `~/.mesh/work`. A `.git/config.lock` older than five minutes that
 no git process holds is cleared before a config write. Every session installs
 against one pnpm store and one npm cache per node, `~/.mesh/store/pnpm`
 and `~/.mesh/store/npm` (ADR-028,

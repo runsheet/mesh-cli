@@ -282,14 +282,25 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `refs/heads/<branch>`, else `origin/<branch>`, else
   `WorkspaceSpec.Head`) under the lost admin's name, moves its `.git`
   in, `git worktree repair`, a mixed `git reset` (the files left) and
-  the lock, logged `workspace <dir>: worktree admin <path> gone;
-  rebuilt for <branch> at <sha>` (an own-clone checkout, `-eval`,
-  removed for Prepare to clone again); Prepare and Authorize check
+  the lock, logged `workspace <dir>: worktree <path> is gone; made
+  again for <branch> at <sha>` (an own-clone checkout, `-eval`,
+  removed for Prepare to clone again; any other stale checkout —
+  `staleWorktree`, its clone gone too — removed by `removeStale`,
+  `workspace <dir>: worktree <gitdir> is gone; made again`, and made
+  as a new one); Prepare and Authorize check
   first, and `PrepareWithRetry` and the validation run
   (`rebuildAndRetry` on `IsWorktreeAdminGone`) rebuild once, re-write
   the token's helper (`ItemCred.Reauthorize`) and retry once
   (`TestWorkspaceWithMissingWorktreeAdminIsRebuilt`; ADR-028's
-  amendments 2026-10-17) — its evaluation's
+  amendments 2026-10-17 and 2026-10-19);
+  `internal/node/staleworktree_e2e_test.go`'s
+  `TestStaleWorktreeIsMadeAgainE2E` (`-tags e2e`) removes a built
+  item's registration between attempts and prunes while a second
+  item's locked worktree is hidden, and sees the second survive and the
+  rework made again, committing on its pushed head, pushed and
+  evaluated with no `not a git repository` in the log;
+  `scripts/stale-worktrees.sh [<work root>]` lists a node's stale
+  checkouts, `<checkout> -> <gitdir>`, nothing when there are none — its evaluation's
   at `<goal>/<seq>-eval` (`EvalWorkspaceSpec`, the same Root, ADR-027),
   a clone of its own, as are the goal doc's `<goal>/0` on the base and
   plan and research checkouts (`Git.sharedClone` returns ""), so an

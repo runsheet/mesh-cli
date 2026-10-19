@@ -37,4 +37,5 @@ rebasedHeadSha
 repoId
 seq
 status
+statusAt?
 title
