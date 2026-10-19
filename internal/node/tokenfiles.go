@@ -11,6 +11,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/auth"
 	"projectmesh.io/mesh-cli/internal/crash"
+	"projectmesh.io/mesh-cli/internal/harness"
 )
 
 // TokenRefreshEvery is how often TokenFiles asks for the bearer and
@@ -42,31 +43,122 @@ type TokenFiles struct {
 	Ticker func(every time.Duration) (<-chan time.Time, func())
 	// Logf, when set, hears a refresh that failed.
 	Logf func(format string, args ...any)
+	// MultiOrg, when set and true, says the node serves several orgs: a
+	// build session with no bearer of its own bound (Bind) is refused
+	// the machine bearer, which reads every served org's MCP data
+	// (mesh-cli ADR-035).
+	MultiOrg func() bool
 
-	mu    sync.Mutex
-	files map[string]*keptToken
+	mu       sync.Mutex
+	files    map[string]*keptToken
+	sessions map[sessionKey]TokenSource
 }
 
-// keptToken is one kept file: the bearer last written and its refresher.
+// TokenSource answers a bearer for a token file.
+type TokenSource func(ctx context.Context) (string, error)
+
+// sessionKey names one claim: its item and the attempts it was claimed at.
+type sessionKey struct {
+	item    string
+	attempt int
+}
+
+// ErrMachineBearerRefused is KeepSession's refusal of the machine
+// bearer to a build of a node serving several orgs (ADR-035).
+var ErrMachineBearerRefused = errors.New("a node serving several orgs gives no session the machine bearer")
+
+// keptToken is one kept file: the bearer last written, its source and
+// its refresher.
 type keptToken struct {
 	written string
-	stop    chan struct{}
-	done    chan struct{}
+	src     TokenSource
+	// bound is the claim whose bearer src is; zero for the machine's.
+	bound sessionKey
+	stop  chan struct{}
+	done  chan struct{}
 }
 
-// Keep implements harness.TokenKeeper.
+// Bind makes src the bearer of the session of item's claim at attempt —
+// its own mesh session's (ADR-035) — for every file KeepSession keeps
+// for it from now on. The returned unbind clears it: the session's
+// bearer is forgotten, and a file still kept for it stops refreshing.
+func (t *TokenFiles) Bind(item string, attempt int, src TokenSource) (unbind func()) {
+	key := sessionKey{item, attempt}
+	t.mu.Lock()
+	if t.sessions == nil {
+		t.sessions = map[sessionKey]TokenSource{}
+	}
+	t.sessions[key] = src
+	t.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			t.mu.Lock()
+			delete(t.sessions, key)
+			for _, k := range t.files {
+				if k.bound == key {
+					k.src = unboundSource
+				}
+			}
+			t.mu.Unlock()
+		})
+	}
+}
+
+// Bound says whether a session bearer is bound for item's claim at
+// attempt.
+func (t *TokenFiles) Bound(item string, attempt int) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.sessions[sessionKey{item, attempt}] != nil
+}
+
+// unboundSource is a file's source once its session's bearer was
+// cleared: no bearer, so the file is never rewritten with another.
+func unboundSource(context.Context) (string, error) {
+	return "", errors.New("the session's bearer was cleared")
+}
+
+// KeepSession implements harness.SessionTokenKeeper: path is kept from
+// the bearer bound for meta's claim (Bind) when there is one; else a
+// build of a node serving several orgs is refused
+// (ErrMachineBearerRefused), and any other session is kept from the
+// machine bearer as Keep keeps it.
+func (t *TokenFiles) KeepSession(path string, kind harness.Kind, meta harness.SessionMeta) (func(remove bool), error) {
+	if t == nil {
+		return nil, errors.New("no token source")
+	}
+	key := sessionKey{meta.ItemID, meta.Attempt}
+	t.mu.Lock()
+	src := t.sessions[key]
+	t.mu.Unlock()
+	if src == nil || meta.ItemID == "" {
+		if kind == harness.KindBuild && t.MultiOrg != nil && t.MultiOrg() {
+			return nil, fmt.Errorf("item %s: no mesh session bearer bound: %w", meta.ItemID, ErrMachineBearerRefused)
+		}
+		return t.Keep(path)
+	}
+	return t.keep(path, src, key)
+}
+
+// Keep implements harness.TokenKeeper: path kept from the machine
+// bearer, Token.
 func (t *TokenFiles) Keep(path string) (func(remove bool), error) {
 	if t == nil || t.Token == nil {
 		return nil, errors.New("no token source")
 	}
-	tok, err := t.token()
+	return t.keep(path, t.Token, sessionKey{})
+}
+
+func (t *TokenFiles) keep(path string, src TokenSource, bound sessionKey) (func(remove bool), error) {
+	tok, err := sourceToken(src)
 	if err != nil {
 		return nil, err
 	}
 	if err := writeTokenFile(path, tok, true); err != nil {
 		return nil, err
 	}
-	k := &keptToken{written: tok, stop: make(chan struct{}), done: make(chan struct{})}
+	k := &keptToken{written: tok, src: src, bound: bound, stop: make(chan struct{}), done: make(chan struct{})}
 	t.mu.Lock()
 	if t.files == nil {
 		t.files = map[string]*keptToken{}
@@ -117,22 +209,42 @@ func (t *TokenFiles) kept(path string) bool {
 	return t.files[path] != nil
 }
 
-// Refresh asks for the bearer once and rewrites every kept file it
-// changed for: what each file's ticker does every Every.
+// Refresh asks each kept file's source for its bearer once and
+// rewrites every file whose bearer changed: what each file's ticker
+// does every Every. A file is only ever rewritten from its own source —
+// a session's bearer never lands in another session's file.
 func (t *TokenFiles) Refresh() error {
-	tok, err := t.token()
+	t.mu.Lock()
+	paths := make(map[string]*keptToken, len(t.files))
+	for p, k := range t.files {
+		paths[p] = k
+	}
+	t.mu.Unlock()
+	var errs []error
+	for path, k := range paths {
+		if err := t.refreshOne(path, k); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// refreshOne asks k's source for its bearer and rewrites path if it
+// changed and path is still k's.
+func (t *TokenFiles) refreshOne(path string, k *keptToken) error {
+	t.mu.Lock()
+	src := k.src
+	t.mu.Unlock()
+	tok, err := sourceToken(src)
 	if err != nil {
 		return err
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	var errs []error
-	for path, k := range t.files {
-		if err := t.rewrite(path, k, tok); err != nil {
-			errs = append(errs, err)
-		}
+	if t.files[path] != k {
+		return nil
 	}
-	return errors.Join(errs...)
+	return t.rewrite(path, k, tok)
 }
 
 // rewrite writes tok at path unless it is already what the file holds.
@@ -158,14 +270,7 @@ func (t *TokenFiles) refresh(path string, k *keptToken, ticks <-chan time.Time, 
 			return
 		case <-ticks:
 		}
-		tok, err := t.token()
-		if err == nil {
-			t.mu.Lock()
-			if t.files[path] == k {
-				err = t.rewrite(path, k, tok)
-			}
-			t.mu.Unlock()
-		}
+		err := t.refreshOne(path, k)
 		if err != nil && t.Logf != nil {
 			t.Logf("runsheet token %s: refresh: %v", path, err)
 		}
@@ -180,10 +285,11 @@ func (t *TokenFiles) ticker(every time.Duration) (<-chan time.Time, func()) {
 	return tick.C, tick.Stop
 }
 
-func (t *TokenFiles) token() (string, error) {
+// sourceToken asks src for its bearer, under a 30-second limit.
+func sourceToken(src TokenSource) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	tok, err := t.Token(ctx)
+	tok, err := src(ctx)
 	if err != nil {
 		return "", err
 	}

@@ -202,7 +202,12 @@ func mountDepth(m Mount) int {
 // agentArgs are the agent's `podman run` flags up to its image: mode is
 // -i (attached) or -d (detached).
 func agentArgs(mode string, pod Pod, spec AgentSpec, mounts []Mount) []string {
-	args := []string{"run", mode, "--pod", pod.Name, "--name", spec.Name,
+	// --init: catatonit is PID 1 and reaps orphans. Without it the
+	// harness is PID 1, never reaps, and every orphaned child stays a
+	// zombie holding a pid until --pids-limit refuses the next fork — a
+	// node test suite left 7,840 zombie gits in one pod (2026-10-18,
+	// a-checkout-whose-worktree-is-gone-is-made-again/1, three attempts).
+	args := []string{"run", mode, "--init", "--pod", pod.Name, "--name", spec.Name,
 		"--cap-drop", "all", "--security-opt", "no-new-privileges",
 		"--pull", "missing", "--unsetenv-all"}
 	args = append(args, LimitArgs(spec.Limits)...)

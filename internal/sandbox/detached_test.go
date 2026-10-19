@@ -365,3 +365,19 @@ func TestWaitAgent(t *testing.T) {
 		t.Fatalf("cancelled: %v", err)
 	}
 }
+
+// An agent container runs with --init, attached or detached: catatonit is
+// PID 1 and reaps orphans, which the harness as PID 1 never does. On
+// dl360 (2026-10-19) 200 orphaned children under node as PID 1 left 200
+// zombies and none under --init; a node test suite's left 7,840 zombie
+// gits and exhausted --pids-limit.
+func TestAgentArgsRunAnInit(t *testing.T) {
+	spec := AgentSpec{Name: "mesh-p-0-agent", Image: "ghcr.io/runsheet/mesh-node:v1", Command: []string{"claude"},
+		Limits: Limits{Pids: 8192}}
+	pod := Pod{Name: "mesh-p-0"}
+	for name, args := range map[string][]string{"detached": StartAgentArgs(pod, spec), "attached": AgentRunArgs(pod, spec)} {
+		if !slices.Contains(args, "--init") {
+			t.Errorf("%s agent args carry no --init: %v", name, args)
+		}
+	}
+}

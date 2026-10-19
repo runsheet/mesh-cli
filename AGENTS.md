@@ -459,7 +459,26 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   judgement` once per error; while low `Loop.DiskFindings()` is one
   critical `disk_low` Finding (subject the path, bytes the free space)
   for the quartermaster's report once its loop wiring folds it in;
-  `disklow_e2e_test.go`'s `TestDiskLowE2E` runs it on `Loop.Run`. **Capacity counts the live sessions** (ADR-029,
+  `disklow_e2e_test.go`'s `TestDiskLowE2E` runs it on `Loop.Run`.
+  **A node short of memory claims nothing** (ADR-037,
+  `docs/adr/adr-037-a-node-short-of-memory-claims-nothing.md`,
+  `internal/node/memfloor.go`): node.yaml's `host: {min_free_memory}`
+  (`HostConfig.MinFreeMemory`: a size, `32g`/`512m`/`1024k`/bytes, or a
+  share of `MemTotal`, `15%`; `HostConfig.MemoryFloor(total)` in bytes,
+  `MinFreeMemory` when left out or a share's total is unread; a zero,
+  a share at 0 or ≥100, or anything unreadable refused at load naming
+  `host.min_free_memory`; reloaded with `host:`, logged `host:
+  min_free_memory <old> → <new>`). While set, `Loop.memFloor` reads
+  `Loop.Machine` every tick after `diskFloor` and, at or under the floor
+  (`MachineReading.ShortOfMemoryAt`, `MemTotal` now read beside
+  `MemAvailable`), skips every claim path as a low disk does, logging
+  `memory_low: <free> free <= floor <floor>; claiming nothing` and
+  `memory ok: <free> free > floor <floor>; claiming again` once per
+  crossing, a critical `memory_low` Finding while low
+  (`Loop.MemoryFindings`). `Scaler`/`AccountsScaler.Host` (set from
+  `HostThresholds` before each `Target`) judge the `low memory` growth
+  cap by the same floor. Left out, the floor does not run and ADR-004's
+  2 GiB growth cap is unchanged. **Capacity counts the live sessions** (ADR-029,
   `internal/node/liveproc.go`): `Loop.Live` (`LiveProbe{Systemctl,
   Root, Find, SweepEvery}`) counts the build sessions alive on the host
   each tick — active `mesh-session-build-*` scopes, else
@@ -516,6 +535,36 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `~/.mesh/node.shares`, printed by `mesh node status` as `ORG FLOOR
   HELD READY` (`sharesLines`) or `shares: none recorded` (ADR-023,
   Reporting).
+- **Each org has its own roots** (ADR-034,
+  `docs/adr/adr-034-each-org-has-its-own-roots.md`, amending ADR-028;
+  `internal/node/orgroots.go`): on a node serving several orgs each
+  org's work, repos, scratch, package store, kept sessions, resume
+  records, MCP data and pod HOMEs are under `~/.mesh/orgs/<org>/`
+  (`OrgRoots`, `OrgRootSet`, keyed by `Scope.Name()`, `ValidateOrgName`
+  and a case clash refused; one org keeps today's paths,
+  `SingleOrgRoots`), used when a session kind's `Roots` is set —
+  `orgSpec` (one clone per repo per org), `workRootFor`/
+  `workRootOfScope`, `scratchRootFor`, `orgSandbox`/`openOrgSessionPod`
+  and `openScopePod` (the org's stores), `keptRootFor`/
+  `keptRootOfScope` (`Job.KeptRoot`), `SweepKeptSessions` and the
+  quartermaster's `kept_sessions` check, `SweepResumes`; an unserved
+  org refused. A pod is confined to its org's root (`confineTo` →
+  `Sandbox.WithOrg`, `Session.CheckedMounts`: every mount resolved
+  inside it before a pod is made, else `*sandbox.MountOutsideOrgError`,
+  `ErrMountOutsideOrg`), plan and research included, a pod that cannot
+  start releasing the plan claim or handing in an empty research; a
+  multi-org node with no sandbox runs nothing on the host
+  (`HostFallback`, `sandbox_required`). A build's token file holds its
+  own mesh session's bearer (ADR-035,
+  `docs/adr/adr-035-a-session-reads-mesh-context-on-its-own-bearer.md`:
+  `SessionBearers.Open`, `TokenFiles.Bind`/`KeepSession`, under
+  `OrgRoots.MCP` on the host; no route on a multi-org node releases the
+  build, `MachineBearerRefusal`). `two_orgs_sandboxed_e2e_test.go`'s
+  `TestTwoOrgsSandboxedNodeNeitherOrgReadsTheOthersFiles` runs two
+  orgs' builds, plans and research on one sandboxed node and asserts
+  each session's mounts, kept root and token file are its own org's
+  and every mount of the other's tree is refused. `mesh node start`
+  does not set `Roots` yet.
 - **A failed check resumes the session that built it** (ADR-030,
   `docs/adr/adr-030-a-failed-check-resumes-the-session-that-built-it.md`):
   every build keeps its session in `ResumeStore` (`RunState.Resumes()`,

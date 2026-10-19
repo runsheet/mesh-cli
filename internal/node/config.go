@@ -480,6 +480,13 @@ type HostConfig struct {
 	// stops it and releases its item (starve.go). Default
 	// DefaultStarveAfter, well inside the platform's 45-minute stall.
 	StarveAfter time.Duration `yaml:"starve_after,omitempty"`
+	// MinFreeMemory is host.min_free_memory: the memory available
+	// (/proc/meminfo's MemAvailable) at or under which the node claims
+	// nothing new of any kind and its scalers grow no further (ADR-037).
+	// A size — `32g`, `512m`, `1024k`, or bytes — or a share of the
+	// machine's memory, `15%`. Left out, the scalers alone cap growth at
+	// MinFreeMemory (2 GiB) and nothing else stops a claim, as before.
+	MinFreeMemory string `yaml:"min_free_memory,omitempty"`
 }
 
 // Effective is h with each zero field at its default; OverloadCPUSomeAvg60
@@ -532,7 +539,64 @@ func (h HostConfig) Validate() error {
 	if h.StarveAfter < 0 {
 		return errors.New("host.starve_after: cannot be negative")
 	}
+	if _, _, err := parseMemoryFloor(h.MinFreeMemory); err != nil {
+		return fmt.Errorf("host.min_free_memory: %w", err)
+	}
 	return nil
+}
+
+// MemoryFloor is host.min_free_memory in bytes on a machine of total
+// bytes: a size as given, a percentage of total, or MinFreeMemory when
+// left out — and when a percentage cannot be judged because total is
+// unknown (0). An invalid value, which Validate refuses at load, is
+// MinFreeMemory too.
+func (h HostConfig) MemoryFloor(total uint64) uint64 {
+	n, pct, err := parseMemoryFloor(h.MinFreeMemory)
+	switch {
+	case err != nil || (n == 0 && pct == 0):
+		return MinFreeMemory
+	case pct > 0:
+		if total == 0 {
+			return MinFreeMemory
+		}
+		return uint64(float64(total) * pct / 100)
+	}
+	return n
+}
+
+// parseMemoryFloor reads host.min_free_memory: "" is unset (0, 0); `15%`
+// is a share in (0, 100); `32g`, `32G`, `32gb`, `512m`, `1024k` or a
+// bare byte count is a size. A size of 0 is refused: it would never
+// stop a claim, which leaving the key out says better.
+func parseMemoryFloor(s string) (bytes uint64, pct float64, err error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, 0, nil
+	}
+	if p, ok := strings.CutSuffix(s, "%"); ok {
+		v, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
+		if err != nil || v <= 0 || v >= 100 {
+			return 0, 0, fmt.Errorf("%q: want a percentage above 0 and under 100", s)
+		}
+		return 0, v, nil
+	}
+	num := strings.TrimSuffix(strings.ToLower(s), "b")
+	shift := 0
+	switch {
+	case strings.HasSuffix(num, "k"):
+		shift, num = 10, strings.TrimSuffix(num, "k")
+	case strings.HasSuffix(num, "m"):
+		shift, num = 20, strings.TrimSuffix(num, "m")
+	case strings.HasSuffix(num, "g"):
+		shift, num = 30, strings.TrimSuffix(num, "g")
+	case strings.HasSuffix(num, "t"):
+		shift, num = 40, strings.TrimSuffix(num, "t")
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(num), 64)
+	if err != nil || v <= 0 {
+		return 0, 0, fmt.Errorf("%q: want a size such as 32g or 512m, or a share such as 15%%", s)
+	}
+	return uint64(v * float64(uint64(1)<<shift)), 0, nil
 }
 
 // DefaultDiskFreeMinGB is disk.free_min_gb's default: under 10 GiB free

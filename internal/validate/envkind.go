@@ -20,6 +20,11 @@ const (
 	// ToolMissing is a step whose command was not found: exit 127, the
 	// shell's own (`tsc` with no node_modules).
 	ToolMissing EnvironmentKind = "tool_missing"
+	// EnvironmentUnavailable is a step that says it could not provision
+	// what it needs: exit 75, sysexits EX_TEMPFAIL — a test Postgres or
+	// browser that would not start (latchkey's scripts/testenv.sh), as
+	// opposed to the tests it would have run failing.
+	EnvironmentUnavailable EnvironmentKind = "environment_unavailable"
 	// CredentialRefused is git or gh refused by GitHub on the item's
 	// credential: a fetch, a clone or a push.
 	CredentialRefused EnvironmentKind = "credential_refused"
@@ -32,11 +37,16 @@ const (
 	// its user namespace refused, or no runtime to ask at all — never the
 	// agent's own command failing inside a pod that started fine.
 	RuntimeBroken EnvironmentKind = "runtime_broken"
+	// SandboxRequired is a node serving two or more orgs with no sandbox
+	// to run a session in (`sandbox: off`, or no runtime): a host session
+	// can read every org's files, so none is started (mesh-cli ADR-034,
+	// Refusals).
+	SandboxRequired EnvironmentKind = "sandbox_required"
 )
 
 // EnvironmentKinds is the closed set, in the order the ADR names them.
 func EnvironmentKinds() []EnvironmentKind {
-	return []EnvironmentKind{StepTimeout, ToolMissing, CredentialRefused, ImagePullRefused, RuntimeBroken}
+	return []EnvironmentKind{StepTimeout, ToolMissing, EnvironmentUnavailable, CredentialRefused, ImagePullRefused, RuntimeBroken, SandboxRequired}
 }
 
 // Valid says k is one of EnvironmentKinds.
@@ -142,7 +152,7 @@ func IsRuntimeBroken(text string) bool {
 // the validator's own error, first — a kind it carries (Kinded), else an
 // image pull's refusal, else a credential refusal, else the runtime
 // itself broken, each by its words — then the step's exit: 124
-// step_timeout, 127 tool_missing, podman's 125 with a refused pull in
+// step_timeout, 127 tool_missing, 75 environment_unavailable, podman's 125 with a refused pull in
 // its output image_pull_refused, else runtime_broken when the output
 // names the runtime itself. Every other non-zero exit, and exit 0, is a
 // code verdict: no kind. A pull refused stays image_pull_refused; a
@@ -168,6 +178,8 @@ func EnvironmentKindOf(step StepResult, err error) EnvironmentKind {
 		return StepTimeout
 	case 127:
 		return ToolMissing
+	case 75:
+		return EnvironmentUnavailable
 	case podmanExit:
 		switch {
 		case IsImagePullRefusal(step.Output):

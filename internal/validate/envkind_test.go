@@ -37,6 +37,7 @@ func TestEnvironmentKindOfEachFailure(t *testing.T) {
 	}{
 		{"exit 124", scriptedRunner{code: 124}, StepTimeout},
 		{"exit 127", scriptedRunner{code: 127, output: "sh: 1: tsc: not found"}, ToolMissing},
+		{"exit 75", scriptedRunner{code: 75, output: "testenv: postgres: did not start\ntime-conformance: scripts/testenv.sh could not provision the environment"}, EnvironmentUnavailable},
 		{"credential refusal", scriptedRunner{code: -1, err: credErr}, CredentialRefused},
 		{"image pull refusal", scriptedRunner{code: -1, err: pullErr}, ImagePullRefused},
 		{"podman could not pull", scriptedRunner{code: 125, output: "Trying to pull ghcr.io/runsheet/mesh-node:dev...\nError: initializing source docker://ghcr.io/runsheet/mesh-node:dev: reading manifest dev in ghcr.io/runsheet/mesh-node: denied"}, ImagePullRefused},

@@ -1,7 +1,9 @@
 package node
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log"
 	"os"
@@ -13,6 +15,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 )
 
 // A goal in planning gets the planner: the project's repos fetched
@@ -686,5 +689,130 @@ func TestReplanReportsBothSessionsOnce(t *testing.T) {
 	// one record, the carrier's, on the goal's label: the carried one is in it
 	if recs := loggedUsage(t, logs.String()); len(recs) != 1 || recs[0].Label != "goal ship-it" || recs[0].Kind != "plan" || recs[0].Report.ListCostCents != 86 {
 		t.Errorf("usage records = %+v:\n%s", recs, logs.String())
+	}
+}
+
+// twoOrgRoots lays out acme's and beta's roots under a temp ~/.mesh.
+func twoOrgRoots(t *testing.T) *OrgRootSet {
+	t.Helper()
+	roots, err := NewOrgRootSet(filepath.Join(t.TempDir(), ".mesh"), []string{"acme", "beta"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return roots
+}
+
+// assertUnderOrg fails unless job's workspace, context dir and
+// GH_CONFIG_DIR lie under the org's root.
+func assertUnderOrg(t *testing.T, job harness.Job, root string) {
+	t.Helper()
+	if job.Session == nil {
+		t.Fatalf("%s: no pod on a sandboxed node", job.Label)
+	}
+	if !underDir(job.Workspace, root) {
+		t.Fatalf("workspace %s not under %s", job.Workspace, root)
+	}
+	cx := filepath.Join(job.Workspace, ContextDir)
+	if _, err := os.Stat(filepath.Join(cx, "INDEX.md")); err != nil || !underDir(cx, root) {
+		t.Fatalf("context dir %s (under %s): %v", cx, root, err)
+	}
+	gh := envValue(job.Env, "GH_CONFIG_DIR")
+	if gh == "" || !underDir(gh, root) {
+		t.Fatalf("GH_CONFIG_DIR %q not under %s", gh, root)
+	}
+	if home := job.Session.Home; !underDir(home, root) {
+		t.Fatalf("pod HOME %s not under %s", home, root)
+	}
+}
+
+// On a sandboxed node serving two orgs a plan runs in its goal's org's
+// pod: the job carries the pod, and its workspace, context dir and gh
+// config dir lie under that org's root (ADR-034).
+func TestPlanOnASandboxedNodeRunsInItsOrgsPod(t *testing.T) {
+	f := widgetsAlone(t)
+	var logs bytes.Buffer
+	pl, _, _, cfg := planTokenPlanner(f, t, &logs)
+	h := &podGuardHarness{t: t, fakeHarness: fakeHarness{text: planTokenJSON}}
+	pl.Harness, pl.Sandbox, pl.Roots = h, nodeStoresSandbox(t), twoOrgRoots(t)
+	if err := pl.Plan(context.Background(), shipIt(), scopesOf(cfg)[0]); err != nil {
+		t.Fatalf("plan: %v\n%s", err, logs.String())
+	}
+	if len(h.jobs) != 1 {
+		t.Fatalf("jobs = %d", len(h.jobs))
+	}
+	acme, _ := pl.Roots.For("acme")
+	assertUnderOrg(t, h.jobs[0], acme.Base)
+	if pods := pl.Sandbox.Runtime.(*sandbox.Fake).Pods; len(pods) != 1 {
+		t.Fatalf("pods created = %d, want 1 before the harness", len(pods))
+	}
+}
+
+// A sandboxed node whose pod does not start releases the plan claim
+// with the reason, counts no try, holds the goal off the node, and never
+// calls the harness — not on the host either.
+func TestPlanPodStartFailureReleasesThePlanClaim(t *testing.T) {
+	f := widgetsAlone(t)
+	var logs bytes.Buffer
+	pl, _, _, cfg := planTokenPlanner(f, t, &logs)
+	h := &podGuardHarness{t: t, fakeHarness: fakeHarness{text: planTokenJSON}}
+	sb := nodeStoresSandbox(t)
+	sb.Runtime.(*sandbox.Fake).CreatePodErr = errors.New("pod create: no space left on device")
+	pl.Harness, pl.Sandbox, pl.Roots, pl.Declines = h, sb, twoOrgRoots(t), &Declines{}
+	err := pl.Plan(context.Background(), shipIt(), scopesOf(cfg)[0])
+	if _, ok := PodStartErrorOf(err); !ok {
+		t.Fatalf("err = %v, want a PodStartError", err)
+	}
+	rel := f.CallsNamed("releasePlan")
+	if len(rel) != 1 || rel[0].Input["aggregateId"] != goalID || !strings.Contains(rel[0].Input["note"].(string), "no space left on device") {
+		t.Fatalf("releasePlan calls = %+v\n%s", rel, logs.String())
+	}
+	if len(h.jobs) != 0 || h.unsandboxed != 0 {
+		t.Fatalf("harness called %d times (%d unsandboxed)", len(h.jobs), h.unsandboxed)
+	}
+	if pl.attempts[goalID] != 0 {
+		t.Fatalf("attempts = %d, want 0", pl.attempts[goalID])
+	}
+	if !pl.Declines.Holds(goalID, nil, time.Now()) {
+		t.Fatal("goal not held off this node")
+	}
+}
+
+// A two-org node with no sandbox will not plan on the host: the claim
+// is released sandbox_required and no session runs.
+func TestPlanOnATwoOrgNodeWithSandboxOffIsReleased(t *testing.T) {
+	f := widgetsAlone(t)
+	var logs bytes.Buffer
+	pl, _, h, cfg := planTokenPlanner(f, t, &logs)
+	pl.Roots, pl.Declines = twoOrgRoots(t), &Declines{}
+	err := pl.Plan(context.Background(), shipIt(), scopesOf(cfg)[0])
+	if !errors.Is(err, ErrHostServesSeveralOrgs) {
+		t.Fatalf("err = %v", err)
+	}
+	rel := f.CallsNamed("releasePlan")
+	if len(rel) != 1 || !strings.HasPrefix(rel[0].Input["note"].(string), SandboxRequiredPrefix) {
+		t.Fatalf("releasePlan calls = %+v", rel)
+	}
+	if len(h.jobs) != 0 {
+		t.Fatal("a plan ran on the host")
+	}
+}
+
+// An unsandboxed node serving one org plans on the host as before: no
+// pod, the gh config dir in the system temp dir.
+func TestPlanOnAnUnsandboxedOneOrgNodeRunsOnTheHost(t *testing.T) {
+	f := widgetsAlone(t)
+	var logs bytes.Buffer
+	pl, ws, h, cfg := planTokenPlanner(f, t, &logs)
+	if err := pl.Plan(context.Background(), shipIt(), scopesOf(cfg)[0]); err != nil {
+		t.Fatalf("plan: %v\n%s", err, logs.String())
+	}
+	if len(h.jobs) != 1 || h.jobs[0].Session != nil {
+		t.Fatalf("jobs = %+v", h.jobs)
+	}
+	if h.jobs[0].Workspace != PlanDir(ws.root, "ship-it") {
+		t.Fatalf("workspace %s", h.jobs[0].Workspace)
+	}
+	if gh := envValue(h.jobs[0].Env, "GH_CONFIG_DIR"); !underDir(gh, os.TempDir()) {
+		t.Fatalf("GH_CONFIG_DIR %q", gh)
 	}
 }

@@ -1072,7 +1072,9 @@ no git process holds is cleared before a config write. Every session installs
 against one pnpm store and one npm cache per node, `~/.mesh/store/pnpm`
 and `~/.mesh/store/npm` (ADR-028,
 `docs/adr/adr-028-one-clone-per-repo-one-worktree-per-item.md`, after
-mesh-specs ADR 017). Every `gh repo clone` and `git fetch` of one repo on the node runs
+mesh-specs ADR 017). A node serving several orgs keeps all of this per
+org, under `~/.mesh/orgs/<org>/` — one clone per repo *per org* — see
+[Several orgs on one node](#several-orgs-on-one-node). Every `gh repo clone` and `git fetch` of one repo on the node runs
 under a per-repo lock, a process-wide mutex plus an exclusive `flock` on
 `~/.mesh/work/.locks/<owner>--<name>.lock`, released before any checkout,
 so two sessions (or two node processes) fetching one repo at once never
@@ -1438,8 +1440,8 @@ out a target from the same windows the node reads for its limits:
 3. **Slots** per window: the affordable rate / the burn per slot.
 4. **The target** is the smaller of the two, clamped to `[min, max]`,
    and capped by **free memory**: when it is 2 GB or less (CI runs on
-   the same machine), the node grows no further than the sessions it
-   already runs. The machine's load and temperature are [the
+   the same machine), or at or under `host.min_free_memory` when that is
+   set, the node grows no further than the sessions it already runs. The machine's load and temperature are [the
    back-off's](#backing-off-a-hot-host), a layer over this target.
 
 The capacity in force moves toward the target **one step at a time, at
@@ -1555,6 +1557,7 @@ host:
   overload_per_core: 1.0    # default; past it a silent session is starved, not failed
   overload_cpu_some_avg60: 70  # optional, %; /proc/pressure/cpu's some avg60 (0 or absent: not judged)
   starve_after: 15m         # default; how long a build may say nothing on an overloaded host
+  min_free_memory: 32g      # optional; 32g, 512m or 15% — free memory at or under it claims nothing (ADR-037)
 ```
 
 Each left out, or set to 0, takes its default (`overload_cpu_some_avg60`
@@ -1666,6 +1669,37 @@ disk ok: /home/chris/.mesh/work 40.0GiB free >= floor 10.0GiB; claiming again
 ```
 
 Free space and the next tick claims again; no restart is needed.
+
+### A node short of memory claims nothing
+
+`host.min_free_memory` in `~/.mesh/node.yaml` sets the memory available
+(`/proc/meminfo`'s `MemAvailable`) at or under which this node claims
+nothing (ADR-037) — a size, `32g`, `512m`, `1024k` or bytes, or a share
+of the machine's memory, `15%`:
+
+```yaml
+host:
+  min_free_memory: 32g
+```
+
+A zero, a percentage of 0 or 100 and more, or anything else unreadable is
+refused at start naming `host.min_free_memory`. Read again every tick, a
+change logged once — `host: min_free_memory (none) → 32g`. While it is
+set, every tick before any claim the node reads its memory; at or under
+the floor it claims nothing of **any** kind, as on a full disk, while
+what already runs runs on, and says so once as it crosses:
+
+```
+memory_low: 20.0GiB free <= floor 32.0GiB; claiming nothing
+memory ok: 100.0GiB free > floor 32.0GiB; claiming again
+```
+
+The ranged scalers take the same floor for their growth cap. Left out,
+nothing changes: the scalers alone hold growth at 2 GB free and a fixed
+`capacity:` is not affected by memory. A host whose sessions run in
+large pods — dl360 runs twenty at up to 32g each on 251 GB — sets a
+floor at least one pod's size, so a claim never starts a session the
+memory cannot hold.
 
 ### Capacity counts live sessions
 
@@ -2227,7 +2261,9 @@ run in one yet.
   [Node image](#node-image)). Its `PATH` is
   `/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`
   and it must carry `nft` for the network rules.
-- **Mounts.** Exactly two: the item's workspace, read-write at its own
+- **Mounts.** On a node serving several orgs, only what lies inside
+  the session's own org's tree (see
+  [Several orgs on one node](#several-orgs-on-one-node)). Otherwise: the item's workspace, read-write at its own
   path, and a fresh temporary HOME (removed after the session) holding
   the `--mcp-config` file, `CLAUDE_CONFIG_DIR` (`$HOME/.claude`), an
   empty `GH_CONFIG_DIR` (`$HOME/.config/gh`) and a `.gitconfig` with the
@@ -2322,6 +2358,88 @@ a bare `--env NAME` (ADR-007, Env by name). `TestLocalOnlyImageE2E`
 checks it on a real pod: a session starts from an image only the local
 store holds, under a registry name that cannot resolve, and podman
 never tries to pull it.
+
+### Several orgs on one node
+
+A node may serve several orgs (an `owner: enterprise` or `owner:
+person` registration, the orgs `orgs:` lets through). Their sessions
+share a machine and nothing else: each org has its own tree and every
+session is held inside its own (ADR-034,
+[`docs/adr/adr-034-each-org-has-its-own-roots.md`](docs/adr/adr-034-each-org-has-its-own-roots.md);
+ADR-035,
+[`docs/adr/adr-035-a-session-reads-mesh-context-on-its-own-bearer.md`](docs/adr/adr-035-a-session-reads-mesh-context-on-its-own-bearer.md)).
+
+**Per-org roots.** Each served org's directories are laid out under
+`~/.mesh/orgs/<org>/` (`OrgRoots`, keyed by the org's login, else its
+slug; a name that is not one path segment, or two that differ only in
+case, is refused):
+
+| root | path |
+|------|------|
+| checkouts (work) | `~/.mesh/orgs/<org>/work/<goal>/<seq>`, `…/<seq>-eval`, plan and research checkouts |
+| shared clones | `~/.mesh/orgs/<org>/repos/<owner>/<name>` — a repo two orgs reach is two clones |
+| scratch | `~/.mesh/orgs/<org>/work/.scratch` |
+| package store | `~/.mesh/orgs/<org>/store/{pnpm,npm}` |
+| kept sessions | `~/.mesh/orgs/<org>/work/kept-sessions` |
+| resume records | `~/.mesh/orgs/<org>/resume` |
+| MCP data | `~/.mesh/orgs/<org>/mcp` (a build's token file under `mcp/sessions/<item>-<attempt>/`) |
+| pod HOMEs | `~/.mesh/orgs/<org>/homes` (0700) |
+
+An org's worktree is only ever made from its own org's clone, its
+sessions install against its own store, its kept streams, resume
+records and token files land in its own tree, and the quartermaster's
+`kept_sessions` check and the resume sweep walk each org's tree for
+that org's records alone. An item, plan or research of an org the node
+does not serve is refused at its workspace, never given another org's
+roots. A node serving **one** org keeps today's paths — `~/.mesh/work`,
+`~/.mesh/repos`, `~/.mesh/store`, `~/.mesh/resume` — and nothing is
+moved.
+
+**The refusals.** A session's pod is confined to its org's root: every
+mount — the checkout, the HOME, a worktree's git common dir and admin
+entry, the package stores, the hooks, a detached agent's stream dirs —
+must resolve, symlinks followed, inside `~/.mesh/orgs/<org>/`, checked
+before any pod is made. The first that does not refuses the whole
+session with `sandbox: <what> <path> is outside org <org>'s root
+<root>; refused` (`ErrMountOutsideOrg`) and nothing starts: another org's checkout,
+clone, kept sessions, package store or MCP token file, the node-wide
+`~/.mesh/store`, or a symlink out of the tree. Build, evaluate, rebase,
+merge-batch and main validations, **plans and research** all run in
+their org's pod; a plan whose pod cannot start releases its plan claim
+(no try counted) and a research hands in an empty one, each held off
+the node for ten minutes. With no sandbox (`sandbox: off`, or no
+podman) a node serving two or more orgs runs nothing on the host — the
+node user can read every org's tree — and says why once per run,
+`sandbox_required: …`: a build is released (no attempt charged), a
+rebase failed back to its builder, a plan's claim released and a
+research handed in empty.
+
+**Session bearers.** A build's runsheet token file holds the id token
+of its own mesh session — opened by the node (`POST
+/mesh/v1/sessions`, runsheet ADR 056) for the item's claim, narrowed by
+`/mcp` to its project and refused once the claim ends — never the
+node's machine bearer, which reads every served org's MCP data. The
+file is 0600 in the pod's HOME (a host session's under its org's
+`mcp/sessions/`), refreshed from that session alone and removed with
+it. A platform without the route refuses a build on a node serving
+several orgs (released, named, `… gives no session the machine
+bearer`); a one-org node falls back to the machine bearer, said once.
+Evaluations, rebases, plans and research still read on the machine
+bearer until the platform opens sessions for them (ADR-035, What this
+leaves).
+
+`internal/node/two_orgs_sandboxed_e2e_test.go`
+(`go test ./internal/node -run TwoOrgs`) runs it end to end on the
+gatewaytest fake and the fake runtime: an enterprise owner's node
+serving acme and beta builds one item of each at once, then plans and
+researches for each; every session ran in a pod, its mounts are its
+own org's checkout, clone, stores and HOME alone, its kept-sessions
+root and token file its own org's, a build's token its own mesh
+session's, and from inside each session a mount of the other org's
+checkout, clone, kept sessions, package store or MCP data is refused
+with no pod made. `mesh node start` does not yet hand the session kinds
+their org roots (`Roots`); until it does a multi-org node keeps the
+one `~/.mesh/work` and its pods are confined by nothing.
 
 ### Node image
 

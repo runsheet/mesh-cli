@@ -28,6 +28,25 @@ type TokenKeeper interface {
 	Keep(path string) (release func(remove bool), err error)
 }
 
+// SessionTokenKeeper is a TokenKeeper that keeps a session's file from
+// that session's own bearer when it has one (mesh-cli ADR-035): the
+// harness names the session — its kind and who it is for — and the
+// keeper chooses the bearer, or refuses one it will not hand that
+// session. A keeper without it keeps every file from one bearer.
+type SessionTokenKeeper interface {
+	TokenKeeper
+	KeepSession(path string, kind Kind, meta SessionMeta) (release func(remove bool), err error)
+}
+
+// keepToken keeps path for the session kind and meta name, by
+// KeepSession when keeper has it.
+func keepToken(keeper TokenKeeper, path string, kind Kind, meta SessionMeta) (func(bool), error) {
+	if sk, ok := keeper.(SessionTokenKeeper); ok {
+		return sk.KeepSession(path, kind, meta)
+	}
+	return keeper.Keep(path)
+}
+
 // MeshContextRelay is the runsheet server a session runs on the
 // host: bin's RelayCommand to url on the bearer in tokenFile. The node
 // renders it with tokenFile empty; the harness names the session's own
@@ -92,6 +111,10 @@ func withServer(servers map[string]any, name string, srv map[string]any) map[str
 // runs it: RelayScript beside mcpPath. The channel session places its
 // own (internal/channel); a harness's job, placeMeshContext.
 func PlaceMeshContext(servers map[string]any, keeper TokenKeeper, dir string, pod bool, mcpPath string) (map[string]any, string, func(bool), error) {
+	return placeRelay(servers, keeper, dir, pod, mcpPath, func(path string) (func(bool), error) { return keeper.Keep(path) })
+}
+
+func placeRelay(servers map[string]any, keeper TokenKeeper, dir string, pod bool, mcpPath string, keep func(path string) (func(bool), error)) (map[string]any, string, func(bool), error) {
 	noop := func(bool) {}
 	srv, _ := servers[BuiltinMCP].(map[string]any)
 	url, _, ok := relayOf(srv)
@@ -99,7 +122,7 @@ func PlaceMeshContext(servers map[string]any, keeper TokenKeeper, dir string, po
 		return servers, "", noop, nil
 	}
 	path := filepath.Join(dir, TokenFileName)
-	release, err := keeper.Keep(path)
+	release, err := keep(path)
 	if err != nil {
 		return servers, "", noop, err
 	}
@@ -112,9 +135,15 @@ func PlaceMeshContext(servers map[string]any, keeper TokenKeeper, dir string, po
 }
 
 // placeMeshContext is PlaceMeshContext on a job's servers, the file
-// named on the job for its state.json.
+// named on the job for its state.json: on the host in job.TokenDir when
+// the node named one, and kept from the job's own session's bearer by a
+// SessionTokenKeeper (mesh-cli ADR-035).
 func placeMeshContext(job Job, keeper TokenKeeper, dir string, pod bool, mcpPath string) (Job, string, func(bool), error) {
-	servers, path, release, err := PlaceMeshContext(job.MCPServers, keeper, dir, pod, mcpPath)
+	if job.TokenDir != "" && !pod {
+		dir = job.TokenDir
+	}
+	keep := func(path string) (func(bool), error) { return keepToken(keeper, path, job.Kind, job.Meta) }
+	servers, path, release, err := placeRelay(job.MCPServers, keeper, dir, pod, mcpPath, keep)
 	if err != nil {
 		return job, "", release, err
 	}
@@ -133,7 +162,8 @@ func readTokenFile(path string) (string, error) {
 
 // keepAdopted keeps the token file an adopted session's state names
 // fresh, as the node that started it did (ADR-009's amendment): the
-// adopting node's bearer from now on. A state with none, or a harness
+// adopting node's bearer from now on — the session's own, by
+// KeepSession, when the node bound one (ADR-035). A state with none, or a harness
 // with no keeper, keeps nothing.
 func (c *ClaudeCode) keepAdopted(st sessionunit.State) func(bool) {
 	return keepAdoptedToken(c.Tokens, c.Stderr, c.Name(), st)
@@ -145,7 +175,8 @@ func keepAdoptedToken(tokens TokenKeeper, stderr io.Writer, name string, st sess
 	if st.TokenFile == "" || tokens == nil {
 		return func(bool) {}
 	}
-	release, err := tokens.Keep(st.TokenFile)
+	meta := SessionMeta{NodeID: st.NodeID, ItemID: st.ItemID, GoalID: st.GoalID, DirectionID: st.DirectionID, Attempt: st.Attempt}
+	release, err := keepToken(tokens, st.TokenFile, Kind(st.Kind), meta)
 	if err != nil {
 		if stderr != nil {
 			fmt.Fprintf(stderr, "harness %s: attach: runsheet token: %v\n", name, err)

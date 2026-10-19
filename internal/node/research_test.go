@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 )
 
 // A live direction gets a research session on the tick: the claim
@@ -811,5 +813,45 @@ func TestResearchUnreadablePitchesHandsInEmpty(t *testing.T) {
 	}
 	if held, _ := f.Directions[dirID]["researchNodeId"].(string); held != "" {
 		t.Fatalf("the claim is let go: %q", held)
+	}
+}
+
+// On a sandboxed node serving two orgs a research runs in its org's
+// pod: the job carries the pod, and its workspace, context dir and gh
+// config dir lie under that org's root (ADR-034).
+func TestResearchOnASandboxedNodeRunsInItsOrgsPod(t *testing.T) {
+	_, d, _, _, cfg, logs := researchTokenSeed(t)
+	h := &podGuardHarness{t: t, fakeHarness: fakeHarness{text: "```json\n{\"goals\": []}\n```"}}
+	d.Harness, d.Sandbox, d.Roots = h, nodeStoresSandbox(t), twoOrgRoots(t)
+	if err := d.Research(context.Background(), overnight(dirID, "overnight"), researchProject(), scopesOf(cfg)[0]); err != nil {
+		t.Fatalf("research: %v\n%s", err, logs.String())
+	}
+	if len(h.jobs) != 1 {
+		t.Fatalf("jobs = %d\n%s", len(h.jobs), logs.String())
+	}
+	acme, _ := d.Roots.For("acme")
+	assertUnderOrg(t, h.jobs[0], acme.Base)
+}
+
+// A research whose pod does not start hands in an empty research, so
+// the direction is not left claimed, and never runs a session.
+func TestResearchPodStartFailureHandsInAnEmptyResearch(t *testing.T) {
+	f, d, _, _, cfg, logs := researchTokenSeed(t)
+	h := &podGuardHarness{t: t}
+	sb := nodeStoresSandbox(t)
+	sb.Runtime.(*sandbox.Fake).CreatePodErr = errors.New("pod create: no space left on device")
+	d.Harness, d.Sandbox, d.Roots, d.Declines = h, sb, twoOrgRoots(t), &Declines{}
+	if err := d.Research(context.Background(), overnight(dirID, "overnight"), researchProject(), scopesOf(cfg)[0]); err != nil {
+		t.Fatalf("research: %v\n%s", err, logs.String())
+	}
+	if len(h.jobs) != 0 {
+		t.Fatal("a session ran")
+	}
+	calls := f.CallsNamed("recordDirectionResearch")
+	if len(calls) != 1 || !strings.Contains(fmt.Sprint(calls[0].Input["notes"]), "no space left on device") {
+		t.Fatalf("hand-in: %+v", calls)
+	}
+	if !d.Declines.Holds(dirID, nil, time.Now()) {
+		t.Fatal("direction not held off this node")
 	}
 }

@@ -607,10 +607,15 @@ func reportingStatusLine(cfg *node.Config) string {
 // hostConfigLine is `mesh node status`'s `host:` line: the thresholds
 // node.yaml's `host:` block is in force with, defaults applied
 // (HostConfig.Effective), so what judges the host hot is visible beside
-// its reading on the node row (adr-004's amendment 2026-10-03).
+// its reading on the node row (adr-004's amendment 2026-10-03), and the
+// memory floor when node.yaml sets one (ADR-037).
 func hostConfigLine(h node.HostConfig) string {
 	h = h.Effective()
-	return fmt.Sprintf("host: load_per_core_max %s, package_temp_max_c %s", hostStatusNum(h.LoadPerCoreMax), hostStatusNum(h.PackageTempMaxC))
+	line := fmt.Sprintf("host: load_per_core_max %s, package_temp_max_c %s", hostStatusNum(h.LoadPerCoreMax), hostStatusNum(h.PackageTempMaxC))
+	if h.MinFreeMemory != "" {
+		line += ", min_free_memory " + h.MinFreeMemory
+	}
+	return line
 }
 
 // hostStatusNum is a host: threshold as hostConfigLine shows it: "1.5",
@@ -1207,7 +1212,10 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 	node.SetRepoLockLogf(logger.Printf)
 	// every session's runsheet relays on a token file kept fresh
 	// from the node's rotating bearer (ADR-029)
-	sessionTokens = &node.TokenFiles{Token: gw.Bearer, Logf: logger.Printf}
+	sessionTokens = &node.TokenFiles{Token: gw.Bearer, Logf: logger.Printf, MultiOrg: func() bool { return loop.ServedOrgs() > 1 }}
+	// a build's runsheet reads on its own mesh session's bearer, never
+	// the machine's that reads every served org's (ADR-035)
+	sessionBearers = &node.SessionBearers{GW: gw, Tokens: sessionTokens, Audience: node.MeshMCPURL(gw.BaseURL), Orgs: loop.ServedOrgs, Logf: logger.Printf}
 	loop.NoCredential = &node.NoCredentials{Log: logger, Now: loop.Now}
 	accounts := &node.Credentials{GW: gw, Limits: loop.Limits, Thresholds: loop.Thresholds, Known: known, NoCredential: loop.NoCredential, Log: logger}
 	// the quartermaster keeps the node fit from every tick, poll and
@@ -1286,7 +1294,7 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 		rs := st.Resumes()
 		resumes = &rs
 	}
-	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return meshContextMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, BatchFallback: &node.TokenFallback{}, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, RuntimeBroken: loop.NoteRuntimeBroken, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Sandbox: sessionSandbox, MeshBinary: meshBinary(), State: state, Notices: validationNotices, Machine: loop.Machine, Host: loop.HostThresholds, RetryTurns: loop.NoteRetryTurn, Resumes: resumes, Tripline: loop.Tripline, Log: logger}
+	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return meshContextMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, BatchFallback: &node.TokenFallback{}, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, RuntimeBroken: loop.NoteRuntimeBroken, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Sandbox: sessionSandbox, MeshBinary: meshBinary(), State: state, Notices: validationNotices, Machine: loop.Machine, Host: loop.HostThresholds, RetryTurns: loop.NoteRetryTurn, Resumes: resumes, Tripline: loop.Tripline, Bearers: sessionBearers, Log: logger}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		r := *runner
 		r.Scopes = loop.CurrentScopes() // an org served since start is known to its build
@@ -1699,7 +1707,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	// one per node: the evaluations of every tick and the adopted ones
 	// share what has been said once per item
 	second := codexSecondOpinion(cfg, loop, workRoot, logger)
-	found := adoptSessions(ctx, gw, cfg, oneShot, second, loop, &node.Runner{GW: gw, Harness: oneShot, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, RuntimeBroken: loop.NoteRuntimeBroken, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Machine: loop.Machine, Host: loop.HostThresholds, Tripline: loop.Tripline, Log: logger}, workRoot, fallback, accounts, logger)
+	found := adoptSessions(ctx, gw, cfg, oneShot, second, loop, &node.Runner{GW: gw, Harness: oneShot, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, RuntimeBroken: loop.NoteRuntimeBroken, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Machine: loop.Machine, Host: loop.HostThresholds, Tripline: loop.Tripline, Bearers: sessionBearers, Log: logger}, workRoot, fallback, accounts, logger)
 	node.SweepSandbox(ctx, sessionSandbox, found, logger.Printf)
 	sweepScratch(workRoot, found, logger)
 	loop.Evaluate = evaluateWith(gw, cfg, observed(loop, logger), second, loop, workRoot, fallback, accounts, logger)
@@ -1940,6 +1948,10 @@ func meshContextMCP(ctx context.Context, gw *gateway.Client) map[string]any {
 // the node's bearer (node.TokenFiles, ADR-029): set by `mesh node start`
 // once the platform client is made; nil writes none.
 var sessionTokens *node.TokenFiles
+
+// sessionBearers opens each build's mesh session for its own runsheet
+// bearer (node.SessionBearers, ADR-035): set beside sessionTokens.
+var sessionBearers *node.SessionBearers
 
 // tokenKeeper is sessionTokens as a harness's TokenKeeper, nil (never a
 // nil pointer in an interface) when there is none.

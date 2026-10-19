@@ -45,6 +45,9 @@ func OpenSessionPod(ctx context.Context, sb *sandbox.Sandbox, dir, label string,
 	if sb == nil {
 		return nil, nil
 	}
+	// a checkout under one org's tree gets a pod confined to it: every
+	// mount outside it refused (ADR-034, Refusals)
+	sb = confineTo(sb, dir)
 	sess, err := sb.Open(label, string(kind), git)
 	if err != nil {
 		return nil, err
