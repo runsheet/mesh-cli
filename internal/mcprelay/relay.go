@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -24,15 +25,33 @@ import (
 // longest event-stream line it reads from the server.
 const MaxMessage = 16 << 20
 
+// SocketPrefix is the path every server is served under on a
+// sessionproxy socket, mirroring internal/sessionproxy's Prefix: a
+// relay in Socket mode names its server at SocketPrefix + Server.
+// mcprelay does not import sessionproxy (which imports this package)
+// to keep the two from cycling.
+const SocketPrefix = "/mcp/"
+
 // Relay relays newline-delimited JSON-RPC from a stdio MCP client to an
-// HTTP MCP server.
+// HTTP MCP server — the gateway's /mcp on a bearer (URL, TokenFile), or
+// one upstream of a sessionproxy on a unix socket (Socket, Server),
+// never both.
 type Relay struct {
 	// URL is the server's MCP endpoint, e.g. https://api.runsheet.dev/mcp.
 	URL string
-	// TokenFile holds the bearer, read and trimmed on every request.
+	// TokenFile holds the bearer, read and trimmed on every request. Not
+	// read, and no Authorization header sent, when empty — Socket mode's
+	// case: the proxy adds whatever credential each upstream needs, and
+	// the session reaching it never does.
 	TokenFile string
+	// Socket is a sessionproxy's unix socket; Server is the upstream's
+	// name there, reached at SocketPrefix + Server. Set together,
+	// instead of URL and TokenFile.
+	Socket string
+	Server string
 	// HTTP is the client; a plain one with no timeout when nil, since a
-	// tool call may stream for as long as it runs.
+	// tool call may stream for as long as it runs. On Socket, its
+	// Transport dials the socket regardless of what HTTP names.
 	HTTP *http.Client
 	// Stderr takes what the relay cannot answer on stdout; os.Stderr
 	// when nil.
@@ -226,21 +245,37 @@ func (r *Relay) postLocked(ctx context.Context, body []byte, session string, rel
 }
 
 func (r *Relay) do(ctx context.Context, body []byte, session string) (*http.Response, error) {
-	tok, err := r.token()
+	var bearer string
+	if r.TokenFile != "" {
+		tok, err := r.token()
+		if err != nil {
+			return nil, err
+		}
+		bearer = tok
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.endpoint(), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.URL, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
-	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	if session != "" {
 		req.Header.Set("Mcp-Session-Id", session)
 	}
 	return r.client().Do(req)
+}
+
+// endpoint is the URL a request goes to: r.URL, or, on a socket, a
+// fixed host over it — the socket alone decides where the request
+// lands, so the host in the URL is never read.
+func (r *Relay) endpoint() string {
+	if r.Socket != "" {
+		return "http://unix" + SocketPrefix + r.Server
+	}
+	return r.URL
 }
 
 // token is the file's contents, trimmed: a missing or empty file is an
@@ -324,6 +359,13 @@ func errorReply(id json.RawMessage, err error) []byte {
 func (r *Relay) client() *http.Client {
 	if r.HTTP != nil {
 		return r.HTTP
+	}
+	if r.Socket != "" {
+		return &http.Client{Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", r.Socket)
+			},
+		}}
 	}
 	return &http.Client{}
 }
