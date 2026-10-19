@@ -148,10 +148,15 @@ func ensureWorktreeConfig(ctx context.Context, dir string) error {
 }
 
 // isWorktree reports whether dir is a git worktree — its .git a file
-// naming the clone's — rather than a clone of its own.
+// naming the clone's — rather than a clone of its own. A stale one, its
+// gitdir or its clone gone (staleWorktree), is no worktree: git refuses
+// every command there.
 func isWorktree(dir string) bool {
-	fi, err := os.Stat(filepath.Join(dir, ".git"))
-	return err == nil && !fi.IsDir()
+	if !hasGitFile(dir) {
+		return false
+	}
+	_, stale := staleWorktree(dir)
+	return !stale
 }
 
 type gitTokenKey struct{}

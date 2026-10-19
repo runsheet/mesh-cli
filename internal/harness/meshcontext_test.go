@@ -153,7 +153,7 @@ func TestClaudeHostMeshContextIsTheRelayOnASessionTokenFile(t *testing.T) {
 	}
 
 	// the command line: a stdio relay naming the file, no bearer
-	job, path, release, err := placeMeshContext(Job{Kind: KindBuild, MCPServers: relayServers()}, k, t.TempDir(), false, "")
+	job, path, release, err := placeMeshContext(Job{Kind: KindBuild, MCPServers: relayServers()}, k, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,21 +174,27 @@ func TestClaudeHostMeshContextIsTheRelayOnASessionTokenFile(t *testing.T) {
 }
 
 // A pod's runsheet is RelayScript in its HOME — the pod has no mesh
-// binary — on the token file in that HOME, the mcp.json naming the file
-// and never the bearer; the file goes when the session ends.
-func TestClaudePodMeshContextIsTheRelayScriptOnAHomeTokenFile(t *testing.T) {
+// binary — on the node's relay endpoint, a socket in that HOME; the
+// token file stays on the node, never in the HOME, the mcp.json naming
+// the socket and never the bearer or the file; the file and the socket
+// go when the session ends.
+func TestClaudePodMeshContextIsTheRelayScriptOnTheNodesSocket(t *testing.T) {
 	f, sb := detachedFake(t)
 	k := &rotatingKeeper{}
-	var cfg, script, tok []byte
+	var cfg, script []byte
 	var command []string
+	var home string
+	var sockMode os.FileMode
 	f.Agent = func(ctx context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
 		command = spec.Command
 		for i, a := range spec.Command {
 			if a == "--mcp-config" && i+1 < len(spec.Command) {
-				home := filepath.Dir(spec.Command[i+1])
+				home = filepath.Dir(spec.Command[i+1])
 				cfg, _ = os.ReadFile(spec.Command[i+1])
 				script, _ = os.ReadFile(filepath.Join(home, relayScriptName))
-				tok, _ = os.ReadFile(filepath.Join(home, TokenFileName))
+				if fi, err := os.Lstat(filepath.Join(home, RelaySocketName)); err == nil {
+					sockMode = fi.Mode()
+				}
 			}
 		}
 		spec.Stdout.Write([]byte(evInit + "\n" + evResult + "\n"))
@@ -213,22 +219,28 @@ func TestClaudePodMeshContextIsTheRelayScriptOnAHomeTokenFile(t *testing.T) {
 	}
 	srv := m.MCPServers[BuiltinMCP]
 	paths := k.keptPaths()
-	if len(paths) != 1 || filepath.Base(paths[0]) != TokenFileName {
-		t.Fatalf("kept %v", paths)
+	if len(paths) != 1 || filepath.Base(paths[0]) != TokenFileName || strings.HasPrefix(paths[0], home) {
+		t.Fatalf("kept %v, want one token file outside the pod's HOME %s", paths, home)
 	}
-	home := filepath.Dir(paths[0])
+	sock := filepath.Join(home, RelaySocketName)
 	if srv.Type != "stdio" || srv.Command != "node" ||
-		!slices.Equal(srv.Args, []string{filepath.Join(home, relayScriptName), relayURL, paths[0]}) {
+		!slices.Equal(srv.Args, []string{filepath.Join(home, relayScriptName), sock}) {
 		t.Fatalf("pod runsheet = %+v", srv)
+	}
+	if strings.Contains(string(cfg), paths[0]) || strings.Contains(string(cfg), TokenFileName) {
+		t.Fatalf("the pod's mcp.json names the token file: %s", cfg)
 	}
 	if _, ok := m.MCPServers[NodeWorkMCP]; !ok {
 		t.Fatalf("a pod build lost its own work tools: %s", cfg)
 	}
-	if string(script) != string(RelayScript()) || !strings.HasPrefix(string(tok), bearerPrefix) {
-		t.Fatalf("relay script %d bytes, token %q", len(script), tok)
+	if string(script) != string(RelayScript()) || sockMode&os.ModeSocket == 0 {
+		t.Fatalf("relay script %d bytes, socket mode %v", len(script), sockMode)
 	}
 	if remove, ok := k.releasedAs(paths[0]); !ok || !remove {
 		t.Fatalf("released %v (remove %v)", ok, remove)
+	}
+	if _, err := os.Stat(filepath.Dir(paths[0])); !os.IsNotExist(err) {
+		t.Fatalf("the token file's dir left after the session: %v", err)
 	}
 }
 
@@ -346,7 +358,7 @@ default_tools_approval_mode = "approve"
 	}
 
 	// CodexMCPConfig on the placed servers: the same stdio table
-	servers, _, release, err := PlaceMeshContext(relayServers(), k, t.TempDir(), false, "")
+	servers, _, release, err := PlaceMeshContext(relayServers(), k, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,12 +373,12 @@ default_tools_approval_mode = "approve"
 // harness with no keeper run as they came.
 func TestPlaceMeshContextLeavesOtherEntries(t *testing.T) {
 	httpSrv := map[string]any{BuiltinMCP: map[string]any{"type": "http", "url": relayURL}}
-	got, path, release, err := PlaceMeshContext(httpSrv, &rotatingKeeper{}, t.TempDir(), false, "")
+	got, path, release, err := PlaceMeshContext(httpSrv, &rotatingKeeper{}, t.TempDir())
 	release(true)
 	if err != nil || path != "" || got[BuiltinMCP].(map[string]any)["type"] != "http" {
 		t.Fatalf("http entry placed: %v %q %v", got, path, err)
 	}
-	got, path, release, err = PlaceMeshContext(relayServers(), nil, t.TempDir(), false, "")
+	got, path, release, err = PlaceMeshContext(relayServers(), nil, t.TempDir())
 	release(true)
 	if err != nil || path != "" {
 		t.Fatalf("no keeper placed %q, %v", path, err)
@@ -382,12 +394,22 @@ func TestPlaceMeshContextLeavesOtherEntries(t *testing.T) {
 type sabotageKeeper struct {
 	rotatingKeeper
 	blocks string
+	// homes, when set, is where the pods' HOMEs are made: blocks is made
+	// in each of them, since a pod's token file is not in its HOME.
+	homes string
 }
 
 func (k *sabotageKeeper) Keep(path string) (func(bool), error) {
 	release, err := k.rotatingKeeper.Keep(path)
-	if err == nil {
-		os.MkdirAll(filepath.Join(filepath.Dir(path), k.blocks), 0o700)
+	if err != nil {
+		return release, err
+	}
+	dirs := []string{filepath.Dir(path)}
+	if k.homes != "" {
+		dirs, _ = filepath.Glob(filepath.Join(k.homes, sandbox.HomePrefix+"*"))
+	}
+	for _, d := range dirs {
+		os.MkdirAll(filepath.Join(d, k.blocks), 0o700)
 	}
 	return release, err
 }
@@ -398,7 +420,7 @@ func (k *sabotageKeeper) Keep(path string) (func(bool), error) {
 // session that never ran.
 func TestTokenKeeperReleasedOnAFailedStart(t *testing.T) {
 	_, sb := detachedFake(t)
-	k := &sabotageKeeper{blocks: "mcp.json"}
+	k := &sabotageKeeper{blocks: "mcp.json", homes: sb.TempDir}
 	_, err := (&ClaudeCode{Sandbox: sb, Tokens: k}).Run(context.Background(), Job{Kind: KindBuild, Label: "g/1", Workspace: t.TempDir(), Prompt: "p", MCPServers: relayServers()}, nil)
 	if err == nil || !strings.Contains(err.Error(), "mcp config") {
 		t.Fatalf("pod run = %v, want the mcp config's failure", err)
@@ -409,6 +431,9 @@ func TestTokenKeeperReleasedOnAFailedStart(t *testing.T) {
 	}
 	if remove, ok := k.releasedAs(paths[0]); !ok || !remove {
 		t.Fatalf("pod start failed: released %v (remove %v)", ok, remove)
+	}
+	if _, err := os.Stat(paths[0]); !os.IsNotExist(err) {
+		t.Fatalf("token file left after a failed pod start: %v", err)
 	}
 
 	home := t.TempDir()

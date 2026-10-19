@@ -220,6 +220,9 @@ func (g *Git) originOnToken(ctx context.Context, spec WorkspaceSpec, tok *gatewa
 	if err := g.RebuildWorktree(ctx, spec); err != nil {
 		return err
 	}
+	if err := g.removeStale(dir); err != nil {
+		return err
+	}
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil && g.sharedClone(spec) != "" {
 		tctx := withGitToken(ctx, g.githubURL(), tok)
 		if _, err := g.addWorktree(tctx, g.lockRoot(spec.Root, dir), RepoLockKey(spec.Repo), g.sharedClone(spec), spec); err != nil {
@@ -373,6 +376,9 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 	dir := spec.Dir()
 	root, key := g.lockRoot(spec.Root, dir), RepoLockKey(spec.Repo)
 	if err := g.RebuildWorktree(ctx, spec); err != nil {
+		return "", err
+	}
+	if err := g.removeStale(dir); err != nil {
 		return "", err
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
@@ -813,6 +819,75 @@ func worktreeClone(dir string) string {
 	return filepath.Dir(common)
 }
 
+// hasGitFile reports whether dir's `.git` is a file — a worktree's,
+// live or stale — rather than a directory or nothing.
+func hasGitFile(dir string) bool {
+	fi, err := os.Stat(filepath.Join(dir, ".git"))
+	return err == nil && !fi.IsDir()
+}
+
+// gitFileTarget is the gitdir dir's `.git` file names, made absolute, or
+// "" when `.git` is no file or names none.
+func gitFileTarget(dir string) string {
+	if !hasGitFile(dir) {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(dir, ".git"))
+	if err != nil {
+		return ""
+	}
+	gitdir, ok := strings.CutPrefix(strings.TrimSpace(string(b)), "gitdir:")
+	if !ok {
+		return ""
+	}
+	gitdir = strings.TrimSpace(gitdir)
+	if !filepath.IsAbs(gitdir) {
+		gitdir = filepath.Join(dir, gitdir)
+	}
+	return filepath.Clean(gitdir)
+}
+
+// staleWorktree reports a checkout at dir whose `.git` is a file naming
+// a gitdir that no longer exists, or a .git/worktrees/<n> whose clone is
+// gone: no checkout is here, though `.git` exists, and every git command
+// in it fails `fatal: not a git repository`. It returns the gitdir the
+// file names.
+func staleWorktree(dir string) (gitdir string, ok bool) {
+	gitdir = gitFileTarget(dir)
+	if gitdir == "" {
+		return "", false
+	}
+	if _, err := os.Stat(gitdir); os.IsNotExist(err) {
+		return gitdir, true
+	}
+	if worktreeAdmin(dir) != "" && worktreeClone(dir) == "" {
+		return gitdir, true
+	}
+	return "", false
+}
+
+// removeStale removes the checkout at dir when it is a stale worktree
+// (staleWorktree), so the caller finds no `.git` and makes it again — a
+// worktree by addWorktree, which forgets any registration still naming
+// dir, else a clone of its own. A stale worktree whose clone is still
+// there and whose admin dir alone is gone is RebuildWorktree's, which
+// keeps its files; what is left here has no clone, or no admin dir
+// shape, to rebuild from. Logged `workspace <dir>: worktree <gitdir> is
+// gone; made again`.
+func (g *Git) removeStale(dir string) error {
+	gitdir, ok := staleWorktree(dir)
+	if !ok {
+		return nil
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("workspace %s: worktree %s is gone; remove: %w", dir, gitdir, err)
+	}
+	if g.Logf != nil {
+		g.Logf("workspace %s: worktree %s is gone; made again", dir, gitdir)
+	}
+	return nil
+}
+
 // worktreeAdminGone reports a worktree at dir whose `.git` file names an
 // admin dir — <clone>/.git/worktrees/<n> — that no longer exists while
 // its shared clone does: every git command there fails `fatal: not a
@@ -820,7 +895,7 @@ func worktreeClone(dir string) string {
 // admin dir the file names; ok is false for a full clone, a healthy
 // worktree, or one whose clone is gone too.
 func worktreeAdminGone(dir string) (clone, admin string, ok bool) {
-	if !isWorktree(dir) {
+	if !hasGitFile(dir) {
 		return "", "", false
 	}
 	admin = worktreeAdmin(dir)
@@ -866,7 +941,7 @@ type worktreeRebuilder interface {
 // is rebuilt; and locks it as addWorktree does. A checkout that is no
 // worktree of the shared clone (an evaluation's <seq>-eval, a plan's) is
 // removed whole, for the Prepare after it to make again. Logged
-// `workspace <dir>: worktree admin <path> gone; rebuilt for <branch> at
+// `workspace <dir>: worktree <path> is gone; made again for <branch> at
 // <sha>`.
 func (g *Git) RebuildWorktree(ctx context.Context, spec WorkspaceSpec) error {
 	dir := spec.Dir()
@@ -875,13 +950,8 @@ func (g *Git) RebuildWorktree(ctx context.Context, spec WorkspaceSpec) error {
 		return nil
 	}
 	if g.sharedClone(spec) == "" {
-		if err := os.RemoveAll(dir); err != nil {
-			return fmt.Errorf("workspace %s: worktree admin %s gone; remove: %w", dir, admin, err)
-		}
-		if g.Logf != nil {
-			g.Logf("workspace %s: worktree admin %s gone; removed, prepared again", dir, admin)
-		}
-		return nil
+		// no worktree spec: removed, and cloned again as a new checkout
+		return g.removeStale(dir)
 	}
 	key := RepoLockKey(spec.Repo)
 	if spec.Repo == "" {
@@ -943,7 +1013,7 @@ func (g *Git) RebuildWorktree(ctx context.Context, spec WorkspaceSpec) error {
 		return err
 	}
 	if g.Logf != nil {
-		g.Logf("workspace %s: worktree admin %s gone; rebuilt for %s at %s", dir, admin, branch, sha)
+		g.Logf("workspace %s: worktree %s is gone; made again for %s at %s", dir, admin, branch, sha)
 	}
 	return nil
 }
@@ -1185,6 +1255,9 @@ func (g *Git) EnsureMergeBase(ctx context.Context, dir, base string) error {
 // Fetch implements Workspacer.
 func (g *Git) Fetch(ctx context.Context, repo, dir string) error {
 	root, key := g.lockRoot("", dir), RepoLockKey(repo)
+	if err := g.removeStale(dir); err != nil {
+		return err
+	}
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 			return err
@@ -1779,9 +1852,11 @@ func MeshMCPURL(gatewayURL string) string {
 // operator may on the node's bearer of the moment, never one that
 // rotated under it (mesh-cli ADR-029). The entry names no token file
 // and carries no bearer: the harness puts the session's own file in
-// its directory — `<workdir>.session/`, the pod's HOME (where the relay
-// is harness.RelayScript), a Codex session's CODEX_HOME — and the
-// node's TokenFiles keeps it fresh until the session's end is handled.
+// its directory — `<workdir>.session/`, a Codex session's CODEX_HOME;
+// for a pod, a dir of the node's, the pod's relay (harness.RelayScript)
+// reaching it only through the node's endpoint socket in its HOME — and
+// the node's TokenFiles keeps it fresh until the session's end is
+// handled.
 func MeshContextMCP(bin, gatewayURL string) map[string]any {
 	if gatewayURL == "" {
 		return nil

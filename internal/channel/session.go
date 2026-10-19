@@ -295,7 +295,7 @@ func (s *Session) once(ctx context.Context, bin, workRoot string) error {
 		return fmt.Errorf("runsheet token dir: %w", err)
 	}
 	defer os.RemoveAll(tokDir)
-	servers, _, release, err := harness.PlaceMeshContext(s.mcp(), s.Tokens, tokDir, false, "")
+	servers, _, release, err := harness.PlaceMeshContext(s.mcp(), s.Tokens, tokDir)
 	if err != nil {
 		return fmt.Errorf("runsheet token: %w", err)
 	}

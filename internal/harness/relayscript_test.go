@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/mcprelay"
 )
 
 // relayGateway is a fake /mcp: it accepts one bearer at a time, hands out
@@ -80,7 +82,8 @@ func writeRelayReply(w http.ResponseWriter, sse bool, m any) {
 	w.Write(b)
 }
 
-// relayProc is RelayScript running under node against a gateway.
+// relayProc is RelayScript running under node against the node's relay
+// endpoint, which forwards to a gateway on the bearer in a token file.
 type relayProc struct {
 	t     *testing.T
 	in    io.WriteCloser
@@ -93,12 +96,23 @@ func startRelay(t *testing.T, url, tokenFile string) *relayProc {
 	if err != nil {
 		t.Skip("node is not on PATH; RelayScript runs under node, so this test needs it")
 	}
-	dir := t.TempDir()
+	// a socket path past sun_path's 108 bytes: the endpoint binds it by
+	// its directory and the script reaches it from there
+	dir := filepath.Join(t.TempDir(), strings.Repeat("d", 100))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	script := filepath.Join(dir, relayScriptName)
 	if err := os.WriteFile(script, RelayScript(), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(nodeBin, script, url, tokenFile)
+	sock := filepath.Join(dir, RelaySocketName)
+	ep, err := mcprelay.Serve(sock, url, tokenFile, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ep.Close() })
+	cmd := exec.Command(nodeBin, script, sock)
 	in, _ := cmd.StdinPipe()
 	outPipe, _ := cmd.StdoutPipe()
 	cmd.Stderr = os.Stderr
@@ -257,7 +271,7 @@ func TestRelayScriptEmptyTokenFile(t *testing.T) {
 	p.send(callProgress(2))
 	r := p.reply()
 	e, ok := r["error"].(map[string]any)
-	if r["id"] != float64(2) || !ok || !strings.Contains(fmt.Sprint(e["message"]), "missing or empty") {
+	if r["id"] != float64(2) || !ok || !strings.Contains(fmt.Sprint(e["message"]), "is empty") {
 		t.Fatalf("empty token file: %v", r)
 	}
 
@@ -270,9 +284,9 @@ func TestRelayScriptEmptyTokenFile(t *testing.T) {
 }
 
 func TestRelayServerInPod(t *testing.T) {
-	got := sandboxRelayServer("/tmp/mesh-home-x/mcp.json", "https://api.runsheet.dev/mcp", "/tmp/mesh-home-x/mcp-token")
+	got := sandboxRelayServer("/tmp/mesh-home-x/"+relayScriptName, "/tmp/mesh-home-x/"+RelaySocketName)
 	args, _ := got["args"].([]string)
-	if got["command"] != "node" || len(args) != 3 || args[0] != "/tmp/mesh-home-x/"+relayScriptName || args[1] != "https://api.runsheet.dev/mcp" || args[2] != "/tmp/mesh-home-x/mcp-token" {
+	if got["command"] != "node" || len(args) != 2 || args[0] != "/tmp/mesh-home-x/"+relayScriptName || args[1] != "/tmp/mesh-home-x/"+RelaySocketName {
 		t.Fatalf("sandboxRelayServer = %v", got)
 	}
 }
