@@ -282,8 +282,8 @@ func TestTwoOrgsSandboxedNodeNeitherOrgReadsTheOthersFiles(t *testing.T) {
 		// the stand-in agent commits nothing; its build is finished as one
 		// that did (a done session with nothing committed is failed)
 		HasCommit: func(string, string) bool { return true },
-		Bearers: &SessionBearers{GW: gw, Tokens: tf, Audience: MeshMCPURL(f.URL()), Orgs: func() int { return len(scopes) }, Logf: logger.Printf},
-		Inspect: func(context.Context, string, ...string) ([]byte, error) { return []byte("sha256:abc\n"), nil }, Log: logger}
+		Bearers:   &SessionBearers{GW: gw, Tokens: tf, Audience: MeshMCPURL(f.URL()), Orgs: func() int { return len(scopes) }, Logf: logger.Printf},
+		Inspect:   func(context.Context, string, ...string) ([]byte, error) { return []byte("sha256:abc\n"), nil }, Log: logger}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
