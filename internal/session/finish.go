@@ -52,6 +52,7 @@ type Finish struct {
 	Usage             *gateway.UsageReport
 	Description       string
 
+	// Gateway is the platform's changeset half; nil takes Push.
 	Gateway ChangesetGateway
 	// Git runs git on the node; nil is the git binary in the workspace.
 	Git GitFunc
@@ -94,7 +95,16 @@ func (f *Finish) Run(ctx context.Context, state *State) error {
 		return errors.New("finish: no workspace")
 	}
 	if f.Gateway == nil {
-		return errors.New("finish: no gateway")
+		// no changeset gateway at all: the node's push, as a platform
+		// without the routes gets
+		res, err := f.push(ctx, state.WorkspaceDir, errors.New("no changeset gateway"))
+		if res != nil {
+			if state.Results == nil {
+				state.Results = map[string]any{}
+			}
+			state.Results[FinishStepName] = res
+		}
+		return err
 	}
 	base := f.BaseRef
 	if base == "" {

@@ -19,6 +19,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/gitdata"
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
+	sessionsteps "projectmesh.io/mesh-cli/internal/session"
 	"projectmesh.io/mesh-cli/internal/tools"
 	"projectmesh.io/mesh-cli/internal/tripline"
 	"projectmesh.io/mesh-cli/internal/validate"
@@ -351,12 +352,20 @@ func (c *costReporter) delta() int {
 	return d
 }
 
-// RunItem is the whole of one claimed item: resolve, workspace, context,
-// session, progress, push, finish — or fail, or release it when GitHub
-// refuses the item's token through every retry (ReleaseOnCredential) or
-// its workspace cannot be prepared (ReleaseOnWorkspace, ADR-024). A
-// cancelled ctx (the node's own shutdown) leaves the item as it is for a
-// retry.
+// RunItem is the whole of one claimed item, run as a session's ordered
+// steps (ADR-038, runsheet adr-061 §3): resolve and the item's token
+// before the job, then checkout (the workspace on the node, with no
+// credential left in a sandboxed one), exchange (the account, the
+// session's bearer, its tools), pod (the job container and its
+// services), run (the harness, and its end read), validate, finish (a
+// changeset, or the node's push on an older platform) and release,
+// always run, which lets go of what the earlier steps held. Each step's
+// record is logged `item <label>: step <n> <name>: <outcome>`. A step
+// that hands the item back — failed, released when GitHub refuses the
+// item's token through every retry (ReleaseOnCredential) or its
+// workspace cannot be prepared (ReleaseOnWorkspace, ADR-024), finished
+// already done — ends the job (sessionsteps.End). A cancelled ctx (the
+// node's own shutdown) leaves the item as it is for a retry.
 func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	r.wireGitLogf()
 	// every command the build sends acts as its builder (ADR-015)
@@ -390,276 +399,397 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	if err != nil {
 		return r.fail(ctx, item, err)
 	}
-	dir, err := PrepareWithRetry(ctx, r.WS, spec, cred, r.logf)
-	if ce := (*CredentialError)(nil); errors.As(err, &ce) {
-		sc, _ := r.Scopes.ByOrg(item.OrgID)
-		return ReleaseOnCredential(ctx, r.GW, item.ID, sc.NodeID, ce, r.logf)
-	}
-	// a workspace that cannot be prepared is the node's condition, not
-	// the item's: the claim is released with the error, never failed
-	// (ADR-024, a workspace failure releases the claim)
 	nodeID := func() string { sc, _ := r.Scopes.ByOrg(item.OrgID); return sc.NodeID }
-	if err != nil {
-		return r.releaseWorkspace(ctx, item.ID, label, nodeID(), err)
-	}
-	// the session commits as its agent with the pairers' trailers, never
-	// as the node's owner (ADR-024)
-	ident := identityFor(r.Cfg, tools.RoleFor(string(harness.KindBuild)), item, res.Goal)
-	if err := r.WS.Identify(ctx, dir, ident); err != nil {
-		return r.releaseWorkspace(ctx, item.ID, label, nodeID(), err)
-	}
+	sc, _ := r.Scopes.ByOrg(item.OrgID)
 
-	orgName := r.Scopes.NameOf(item.OrgID)
-	cx, err := FetchContext(ctx, r.GW, orgName, res.Project.Slug, ContextOptions{Budget: r.contextBudget(), Repos: []string{res.Repo.FullName()}, Checkouts: map[string]string{res.Repo.FullName(): dir}, Goal: res.Goal, Logf: r.logf})
-	if err != nil {
-		r.logf("item %s: context unavailable: %v", label, err)
-		cx = &Context{}
-	}
-	files, written, err := WriteContext(dir, cx)
-	if err != nil {
-		return r.releaseWorkspace(ctx, item.ID, label, nodeID(), fmt.Errorf("write context: %w", err))
-	}
-	r.logf("item %s: %s", label, written.Line())
-	if w := written.TargetWarning(); w != "" {
-		r.logf("item %s: %s", label, w)
-	}
-	contextDir := ""
-	if len(files) > 0 || len(cx.Index) > 0 || cx.Live != nil {
-		contextDir = ContextDir
-	}
+	// ret is what RunItem answers, set by the step that ends the job;
+	// held are the release step's, run last first as defers were
+	var ret error
+	end := func(err error) error { ret = err; return sessionsteps.End(err) }
+	var held []func()
+	hold := func(fn func()) { held = append(held, fn) }
+	endRetry := func() {}
+	defer func() { endRetry() }()
 
-	model := BuildModel(ctx, r.GW, item, r.Model)
-	budget, budgetSource := r.budgetWithSource(res.Goal, "build", model)
-	r.logf("item %s: build on %s, budget $%.2f (%s)", label, modelName(model), budget, budgetSource)
-
-	// the clauses the last evaluation failed, so the retry works through a
-	// list instead of mining them out of Evaluation's prose. Unread records
-	// are not fatal: the build runs on the prose alone, as it did before.
-	var failed []harness.FailedClause
-	latest := gateway.PriorAttempt{}
-	if item.Attempts > 0 {
-		was, err := r.GW.WorkItemPriorAttempts(ctx, item.ID)
-		if err != nil {
-			r.logf("item %s: earlier evaluations unread, building on the notes alone: %v", label, err)
+	var (
+		dir        string
+		ident      Identity
+		files      []string
+		written    ContextWritten
+		contextDir string
+		job        harness.Job
+		in         harness.PromptInput
+		latest     gateway.PriorAttempt
+		model      string
+		acct       *SessionAccount
+		runtimes   []string
+		st         SessionTools
+		pod        *SessionPod
+		tail       *buildTail
+	)
+	sandboxed := r.Sandbox != nil
+	checkout := func(ctx context.Context, state *sessionsteps.State) error {
+		prepare := func(ctx context.Context) (string, error) {
+			if sandboxed {
+				// a sandboxed build's job container mounts the checkout:
+				// its token rides each git command the node runs, never a
+				// config the container could read (ADR-038)
+				if err := cred.KeepOffCheckout(ctx); err != nil {
+					return "", err
+				}
+			}
+			return PrepareWithRetry(ctx, r.WS, spec, cred, r.logf)
 		}
-		for _, p := range was {
-			if p.Attempt >= latest.Attempt {
-				latest = p
+		var err error
+		if _, real := r.WS.(*Git); real && sandboxed && cred.Token() != nil {
+			tok := cred.Token()
+			// the checkout step proper: no git config of the workspace may
+			// name the token after it (sessionsteps.Checkout)
+			err = sessionsteps.Checkout(func(ctx context.Context, _ *gateway.GitHubToken) (string, error) { return prepare(ctx) }, tok).Run(ctx, state)
+			dir = state.WorkspaceDir
+		} else {
+			dir, err = prepare(ctx)
+			state.WorkspaceDir = dir
+		}
+		if ce := (*CredentialError)(nil); errors.As(err, &ce) {
+			return end(ReleaseOnCredential(ctx, r.GW, item.ID, sc.NodeID, ce, r.logf))
+		}
+		// a workspace that cannot be prepared is the node's condition, not
+		// the item's: the claim is released with the error, never failed
+		// (ADR-024, a workspace failure releases the claim)
+		if err != nil {
+			return end(r.releaseWorkspace(ctx, item.ID, label, nodeID(), err))
+		}
+		// the session commits as its agent with the pairers' trailers, never
+		// as the node's owner (ADR-024)
+		ident = identityFor(r.Cfg, tools.RoleFor(string(harness.KindBuild)), item, res.Goal)
+		if err := r.WS.Identify(ctx, dir, ident); err != nil {
+			return end(r.releaseWorkspace(ctx, item.ID, label, nodeID(), err))
+		}
+
+		orgName := r.Scopes.NameOf(item.OrgID)
+		cx, err := FetchContext(ctx, r.GW, orgName, res.Project.Slug, ContextOptions{Budget: r.contextBudget(), Repos: []string{res.Repo.FullName()}, Checkouts: map[string]string{res.Repo.FullName(): dir}, Goal: res.Goal, Logf: r.logf})
+		if err != nil {
+			r.logf("item %s: context unavailable: %v", label, err)
+			cx = &Context{}
+		}
+		files, written, err = WriteContext(dir, cx)
+		if err != nil {
+			return end(r.releaseWorkspace(ctx, item.ID, label, nodeID(), fmt.Errorf("write context: %w", err)))
+		}
+		r.logf("item %s: %s", label, written.Line())
+		if w := written.TargetWarning(); w != "" {
+			r.logf("item %s: %s", label, w)
+		}
+		if len(files) > 0 || len(cx.Index) > 0 || cx.Live != nil {
+			contextDir = ContextDir
+		}
+		return nil
+	}
+
+	exchange := func(ctx context.Context, state *sessionsteps.State) error {
+		model = BuildModel(ctx, r.GW, item, r.Model)
+		budget, budgetSource := r.budgetWithSource(res.Goal, "build", model)
+		r.logf("item %s: build on %s, budget $%.2f (%s)", label, modelName(model), budget, budgetSource)
+
+		// the clauses the last evaluation failed, so the retry works through a
+		// list instead of mining them out of Evaluation's prose. Unread records
+		// are not fatal: the build runs on the prose alone, as it did before.
+		var failed []harness.FailedClause
+		if item.Attempts > 0 {
+			was, err := r.GW.WorkItemPriorAttempts(ctx, item.ID)
+			if err != nil {
+				r.logf("item %s: earlier evaluations unread, building on the notes alone: %v", label, err)
+			}
+			for _, p := range was {
+				if p.Attempt >= latest.Attempt {
+					latest = p
+				}
+			}
+			for _, c := range latest.Clauses {
+				failed = append(failed, harness.FailedClause{Clause: c.Clause, Satisfy: c.Satisfy})
 			}
 		}
-		for _, c := range latest.Clauses {
-			failed = append(failed, harness.FailedClause{Clause: c.Clause, Satisfy: c.Satisfy})
+		mcp := r.mcp(ctx)
+		orgName := r.Scopes.NameOf(item.OrgID)
+		in = harness.PromptInput{
+			GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalStatement: res.Goal.Statement, GoalAcceptance: res.Goal.Acceptance,
+			Seq: item.Seq, ItemID: item.ID, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
+			Repo: res.Repo.FullName(), Branch: spec.Branch, BaseRef: spec.BaseRef, ContextDir: contextDir, ContextFiles: files,
+			Attempts: item.Attempts, Evaluation: item.Evaluation, FailedClauses: failed, Project: orgName + "/" + res.Project.Slug, MeshContext: len(mcp) > 0,
+			LastSession: r.State.LastSession(item.ID),
+			FoldNotes:   r.foldNotes(ctx, item, label),
 		}
-	}
-	mcp := r.mcp(ctx)
-	in := harness.PromptInput{
-		GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalStatement: res.Goal.Statement, GoalAcceptance: res.Goal.Acceptance,
-		Seq: item.Seq, ItemID: item.ID, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
-		Repo: res.Repo.FullName(), Branch: spec.Branch, BaseRef: spec.BaseRef, ContextDir: contextDir, ContextFiles: files,
-		Attempts: item.Attempts, Evaluation: item.Evaluation, FailedClauses: failed, Project: orgName + "/" + res.Project.Slug, MeshContext: len(mcp) > 0,
-		LastSession: r.State.LastSession(item.ID),
-		FoldNotes:   r.foldNotes(ctx, item, label),
-	}
-	kept, err := keptRootFor(r.Roots, r.Scopes, item.OrgID)
-	if err != nil {
-		return err
-	}
-	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, MaxBudgetUSD: budget, Label: label, MCPServers: mcp, Model: model, KeptRoot: kept}
-	// past 60% of its budget with nothing committed the session is handed
-	// back for one commit-and-finish turn (ADR 012 Hand-back)
-	job.HandBackAt = harness.DefaultHandBackAt
-	job.HasCommit = r.hasCommit(dir, spec.BaseRef)
-	if tok := cred.Token(); tok != nil {
-		ghDir, err := NewGHConfigDir()
+		kept, err := keptRootFor(r.Roots, r.Scopes, item.OrgID)
 		if err != nil {
-			return r.fail(ctx, item, fmt.Errorf("gh config dir: %w", err))
+			return end(err)
 		}
-		// a session left running for the next node keeps its dirs: the
-		// node that ends it removes them (TempDirs)
-		defer unlessDetached(ctx, func() { os.RemoveAll(ghDir) })
-		job.Env = SessionEnv(tok, ghDir)
-	}
-	// the session's own scratch as its TMPDIR, gone with the session
-	// (sessionScratch); a detached one's by the node that ends it
-	scratchRoot, err := scratchRootFor(r.Roots, r.Scopes, item.OrgID, r.WorkRoot)
-	if err != nil {
-		return r.fail(ctx, item, err)
-	}
-	scratch, err := sessionScratch(r.Sandbox, scratchRoot, r.BuildCache, harness.KindBuild, item.ID, &job)
-	if err != nil {
-		return r.fail(ctx, item, err)
-	}
-	defer unlessDetached(ctx, func() { RemoveScratch(scratch) })
-	ident.Apply(&job)
-	sc, _ := r.Scopes.ByOrg(item.OrgID)
-	acct, err := r.Credentials.Open(withSubject(ctx, sc, cmp.Or(res.Project.ID, item.ProjectID), res.Project.Slug), gateway.SessionRef{Kind: string(harness.KindBuild), ItemID: item.ID, GoalID: item.GoalID}, sc.NodeID, Adapter(r.Harness))
-	if nc, ok := NoCredentialOf(err); ok {
-		// nothing issued for the adapter: the item waits, never on the
-		// machine's own login; the reason is said once for the goal
-		// (NoCredentials.Say), not on every release
-		r.logf("item %s: no credential for %s; released", label, nc.Adapter)
-		if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, "accounts: "+nc.Error()); rerr != nil {
-			r.logf("item %s: release: %v", label, rerr)
+		job = harness.Job{Kind: harness.KindBuild, Workspace: dir, MaxBudgetUSD: budget, Label: label, MCPServers: mcp, Model: model, KeptRoot: kept}
+		// past 60% of its budget with nothing committed the session is handed
+		// back for one commit-and-finish turn (ADR 012 Hand-back)
+		job.HandBackAt = harness.DefaultHandBackAt
+		job.HasCommit = r.hasCommit(dir, spec.BaseRef)
+		if tok := cred.Token(); tok != nil && !sandboxed {
+			// a host session's gh on the item's token alone; a job
+			// container gets neither (sandbox.HeldOutEnv): the node
+			// fetches and pushes for it (ADR-038)
+			ghDir, err := NewGHConfigDir()
+			if err != nil {
+				return end(r.fail(ctx, item, fmt.Errorf("gh config dir: %w", err)))
+			}
+			// a session left running for the next node keeps its dirs: the
+			// node that ends it removes them (TempDirs)
+			hold(func() { unlessDetached(ctx, func() { os.RemoveAll(ghDir) }) })
+			job.Env = SessionEnv(tok, ghDir)
 		}
-		return nil
-	}
-	if errors.Is(err, ErrNoAccount) {
-		// no issued account has headroom: the item waits, not fails; an
-		// ErrNoHeadroom's reason is said once for the goal
-		// (NoCredentials.NoteHeadroom), not on every release
-		if nh, ok := NoHeadroomOf(err); ok {
-			r.logf("item %s: no issued %s credential has headroom; released", label, nh.Adapter)
-		} else {
-			r.logf("item %s: %v; released", label, err)
+		// the session's own scratch as its TMPDIR, gone with the session
+		// (sessionScratch); a detached one's by the node that ends it
+		scratchRoot, err := scratchRootFor(r.Roots, r.Scopes, item.OrgID, r.WorkRoot)
+		if err != nil {
+			return end(r.fail(ctx, item, err))
 		}
-		if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, "accounts: "+err.Error()); rerr != nil {
-			r.logf("item %s: release: %v", label, rerr)
+		scratch, err := sessionScratch(r.Sandbox, scratchRoot, r.BuildCache, harness.KindBuild, item.ID, &job)
+		if err != nil {
+			return end(r.fail(ctx, item, err))
 		}
-		return nil
-	}
-	if err != nil {
-		return r.fail(ctx, item, err)
-	}
-	defer unlessDetached(ctx, acct.Cleanup)
-	acct.SetContextBytes(written.Bytes)
-	acct.SetLabel("item "+label, string(harness.KindBuild))
-	acct.Apply(&job)
-	job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts, TempDirs: sessionTempDirs(job, acct)}
-	// the session's runsheet reads on its own mesh session's bearer, its
-	// token file under its org's MCP root, never the machine's bearer
-	// on a node serving several orgs (ADR-035)
-	unbind, err := r.bindSessionBearer(ctx, item, sc.NodeID, &job)
-	if err != nil {
-		reason := err.Error()
-		r.logf("item %s: %s; released", label, reason)
-		if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason); rerr != nil {
-			r.logf("item %s: release: %v", label, rerr)
+		hold(func() { unlessDetached(ctx, func() { RemoveScratch(scratch) }) })
+		ident.Apply(&job)
+		acct, err = r.Credentials.Open(withSubject(ctx, sc, cmp.Or(res.Project.ID, item.ProjectID), res.Project.Slug), gateway.SessionRef{Kind: string(harness.KindBuild), ItemID: item.ID, GoalID: item.GoalID}, sc.NodeID, Adapter(r.Harness))
+		if nc, ok := NoCredentialOf(err); ok {
+			// nothing issued for the adapter: the item waits, never on the
+			// machine's own login; the reason is said once for the goal
+			// (NoCredentials.Say), not on every release
+			r.logf("item %s: no credential for %s; released", label, nc.Adapter)
+			if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, "accounts: "+nc.Error()); rerr != nil {
+				r.logf("item %s: release: %v", label, rerr)
+			}
+			return end(nil)
 		}
-		return nil
-	}
-	defer unbind()
-	if job.TokenDir != "" {
-		tokenDir := job.TokenDir
-		defer unlessDetached(ctx, func() { RemoveTokenDir(tokenDir) })
-	}
-	// the item's tools, beside the built-in runsheet: a required one this
-	// node cannot start hands the item back for a node that can
-	runtimes := r.runtimes()
-	st := SelectTools(mcp, acct.Tools, tools.RoleFor(string(harness.KindBuild)), runtimes)
-	if len(st.Missing) > 0 {
-		reason := st.DeclineReason()
-		r.Declines.Record(item.ID, st.Missing, runtimes, time.Now())
-		r.logf("item %s: declined, %s; released", label, reason)
-		if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason); rerr != nil {
-			r.logf("item %s: release: %v", label, rerr)
+		if errors.Is(err, ErrNoAccount) {
+			// no issued account has headroom: the item waits, not fails; an
+			// ErrNoHeadroom's reason is said once for the goal
+			// (NoCredentials.NoteHeadroom), not on every release
+			if nh, ok := NoHeadroomOf(err); ok {
+				r.logf("item %s: no issued %s credential has headroom; released", label, nh.Adapter)
+			} else {
+				r.logf("item %s: %v; released", label, err)
+			}
+			if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, "accounts: "+err.Error()); rerr != nil {
+				r.logf("item %s: release: %v", label, rerr)
+			}
+			return end(nil)
 		}
-		return nil
-	}
-	closeProxy, err := st.UseVia(r.Proxies, mcpRootFor(r.Roots, r.Scopes, item.OrgID), &job, mcp, acct)
-	if err != nil {
-		return r.fail(ctx, item, fmt.Errorf("tools: %w", err))
-	}
-	defer closeProxy(ctx)
-	if len(st.Use) > 0 {
-		r.logf("item %s: tools %s", label, st.Names())
-	}
-	// the checkout's services, started in the session's pod before its
-	// agent; the pod and its sidecars go on every way out
-	pod, err := openOrgSessionPod(ctx, r.Sandbox, r.Roots, r.Scopes, item.OrgID, dir, label, harness.KindBuild, ident.Sandbox(dir), r.logf)
-	// a session the harness detached at the node's shutdown runs on in
-	// its pod, its services and HOME (Session.Detach makes this Close
-	// nothing): the node that adopts it removes them
-	defer pod.Close()
-	if re := RuntimeErrorOf(err); re != nil {
-		// the runtime itself cannot start the pod: the node's condition,
-		// handed back, never an attempt charged (ADR-030)
-		return r.releaseRuntime(ctx, item, label, re)
-	}
-	if err != nil {
-		return r.fail(ctx, item, fmt.Errorf("services: %w", err))
-	}
-	if _, failed := pod.RequiredFailure(); failed {
-		// a required service that does not come up hands the item back,
-		// and no agent starts
-		reason := pod.ReleaseReason()
-		r.Declines.Record(item.ID, pod.Declined(), runtimes, time.Now())
-		r.logf("item %s: %s; released", label, reason)
-		if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason); rerr != nil {
-			r.logf("item %s: release: %v", label, rerr)
+		if err != nil {
+			return end(r.fail(ctx, item, err))
+		}
+		hold(func() { unlessDetached(ctx, acct.Cleanup) })
+		acct.SetContextBytes(written.Bytes)
+		acct.SetLabel("item "+label, string(harness.KindBuild))
+		acct.Apply(&job)
+		job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts, TempDirs: sessionTempDirs(job, acct)}
+		// the session's runsheet reads on its own mesh session's bearer, its
+		// token file under its org's MCP root, never the machine's bearer
+		// on a node serving several orgs (ADR-035)
+		unbind, err := r.bindSessionBearer(ctx, item, sc.NodeID, &job)
+		if err != nil {
+			reason := err.Error()
+			r.logf("item %s: %s; released", label, reason)
+			if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason); rerr != nil {
+				r.logf("item %s: release: %v", label, rerr)
+			}
+			return end(nil)
+		}
+		hold(unbind)
+		if job.TokenDir != "" {
+			tokenDir := job.TokenDir
+			hold(func() { unlessDetached(ctx, func() { RemoveTokenDir(tokenDir) }) })
+		}
+		// the item's tools, beside the built-in runsheet: a required one this
+		// node cannot start hands the item back for a node that can
+		runtimes = r.runtimes()
+		st = SelectTools(mcp, acct.Tools, tools.RoleFor(string(harness.KindBuild)), runtimes)
+		if len(st.Missing) > 0 {
+			reason := st.DeclineReason()
+			r.Declines.Record(item.ID, st.Missing, runtimes, time.Now())
+			r.logf("item %s: declined, %s; released", label, reason)
+			if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason); rerr != nil {
+				r.logf("item %s: release: %v", label, rerr)
+			}
+			return end(nil)
+		}
+		closeProxy, err := st.UseVia(r.Proxies, mcpRootFor(r.Roots, r.Scopes, item.OrgID), &job, mcp, acct)
+		if err != nil {
+			return end(r.fail(ctx, item, fmt.Errorf("tools: %w", err)))
+		}
+		hold(func() { closeProxy(ctx) })
+		if len(st.Use) > 0 {
+			r.logf("item %s: tools %s", label, st.Names())
 		}
 		return nil
-	}
-	pod.Apply(&job)
-	r.toolResults(&job)
-	in.Services = pod.Prompt()
-	job.Prompt = harness.BuildPrompt(in)
-	// a retry after a failed evaluation is the next turn of the session
-	// that built the item when this node kept it, else a fresh session
-	// told the same failure, saying why
-	turn, retrying := retryAfterEvaluation(item, latest)
-	// a fresh session — one that cannot resume, or whose resume the agent
-	// refuses — is told the item's record and branch state besides
-	// (freshRetryPrompt); a resumed one has them in its transcript
-	buildPrompt, notResumed, freshWhy := job.Prompt, "", ""
-	freshPrompt := func() string {
-		fc := r.freshContextFor(ctx, item, label, dir, spec.BaseRef, defaultBranchOf(res))
-		return freshRetryPrompt(buildPrompt, fc, turn)
-	}
-	if retrying {
-		turn.Branch = spec.Branch
-		turn.HeadSHA, _ = gitHead(ctx, dir)
-		turn.ChangedPaths = r.retryChangedPaths(ctx, label, dir, spec.BaseRef, defaultBranchOf(res))
-		rec, why := r.resumable(item.OrgID, item.ID, label, dir, acct, pod)
-		if why == "" {
-			job.Resume = rec.SessionID
-			job.Prompt = harness.RetryTurnPrompt(turn)
-			r.logf("item %s: resuming session %s with the failure", label, rec.SessionID)
-		} else {
-			notResumed, freshWhy = notResumedLine(label, why), why
-			job.Prompt = freshPrompt()
-		}
 	}
 
-	// the session outlives this process: a restart adopts it (ADR 009)
-	job.Outlive = true
-	b := &buildRun{r: r, item: item, res: res, label: label, spec: spec, dir: dir, cred: cred, acct: acct, runtimes: runtimes, ident: ident, model: model, lastText: "session started", job: &job, pod: pod, started: time.Now(), nodeID: sc.NodeID}
-	b.rec = b.newRecorder()
-	b.report(ctx, "session started: "+spec.Branch+" on "+modelName(model))
-	endRetry := func() {}
-	if retrying {
-		endRetry = r.noteRetry(item.ID, job.Resume, job.Resume == "")
-	}
-	defer func() { endRetry() }()
-	if notResumed != "" {
-		r.logf("%s", notResumed)
-		b.report(ctx, notResumed)
-	}
-	if note := st.OmittedNote(); note != "" {
-		r.logf("item %s: %s", label, note)
-		b.report(ctx, note)
-	}
-	if note := pod.MissingNote(); note != "" {
-		r.logf("item %s: %s", label, note)
-		b.report(ctx, note)
-	}
-	result, runErr := b.run(ctx, func(sctx context.Context, onProgress func(harness.Progress)) (harness.Result, error) {
-		res, err := b.recordedRun(job, freshWhy, func() (harness.Result, error) { return r.Harness.Run(sctx, job, onProgress) })
-		if job.Resume != "" && sctx.Err() == nil && harness.IsUnknownSession(err) {
-			// the agent has no such session: fresh, once, with the failure
-			line := notResumedLine(label, notResumedUnknownAgent)
-			r.logf("%s", line)
-			b.report(ctx, line)
-			endRetry()
-			endRetry = r.noteRetry(item.ID, "", true)
-			job.Resume, job.Prompt = "", freshPrompt()
-			res, err = b.recordedRun(job, notResumedUnknownAgent, func() (harness.Result, error) { return r.Harness.Run(sctx, job, onProgress) })
+	podStep := func(ctx context.Context, state *sessionsteps.State) error {
+		// the checkout's services, started in the session's pod before its
+		// agent; the pod and its sidecars go on every way out
+		var err error
+		pod, err = openOrgSessionPod(ctx, r.Sandbox, r.Roots, r.Scopes, item.OrgID, dir, label, harness.KindBuild, ident.Sandbox(dir), r.logf)
+		// a session the harness detached at the node's shutdown runs on in
+		// its pod, its services and HOME (Session.Detach makes this Close
+		// nothing): the node that adopts it removes them
+		hold(pod.Close)
+		if re := RuntimeErrorOf(err); re != nil {
+			// the runtime itself cannot start the pod: the node's condition,
+			// handed back, never an attempt charged (ADR-030)
+			return end(r.releaseRuntime(ctx, item, label, re))
 		}
-		return res, err
-	})
-	// the usage report rides the finish (afterBuild); Finish logs it when
-	// nothing carried it
-	defer acct.Finish(ctx, result)
-	return r.afterBuild(ctx, b, result, runErr)
+		if err != nil {
+			return end(r.fail(ctx, item, fmt.Errorf("services: %w", err)))
+		}
+		if _, failed := pod.RequiredFailure(); failed {
+			// a required service that does not come up hands the item back,
+			// and no agent starts
+			reason := pod.ReleaseReason()
+			r.Declines.Record(item.ID, pod.Declined(), runtimes, time.Now())
+			r.logf("item %s: %s; released", label, reason)
+			if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason); rerr != nil {
+				r.logf("item %s: release: %v", label, rerr)
+			}
+			return end(nil)
+		}
+		pod.Apply(&job)
+		state.Pod = pod
+		return nil
+	}
+
+	run := func(ctx context.Context, state *sessionsteps.State) error {
+		r.toolResults(&job)
+		in.Services = pod.Prompt()
+		job.Prompt = harness.BuildPrompt(in)
+		// a retry after a failed evaluation is the next turn of the session
+		// that built the item when this node kept it, else a fresh session
+		// told the same failure, saying why
+		turn, retrying := retryAfterEvaluation(item, latest)
+		// a fresh session — one that cannot resume, or whose resume the agent
+		// refuses — is told the item's record and branch state besides
+		// (freshRetryPrompt); a resumed one has them in its transcript
+		buildPrompt, notResumed, freshWhy := job.Prompt, "", ""
+		freshPrompt := func() string {
+			fc := r.freshContextFor(ctx, item, label, dir, spec.BaseRef, defaultBranchOf(res))
+			return freshRetryPrompt(buildPrompt, fc, turn)
+		}
+		if retrying {
+			turn.Branch = spec.Branch
+			turn.HeadSHA, _ = gitHead(ctx, dir)
+			turn.ChangedPaths = r.retryChangedPaths(ctx, label, dir, spec.BaseRef, defaultBranchOf(res))
+			rec, why := r.resumable(item.OrgID, item.ID, label, dir, acct, pod)
+			if why == "" {
+				job.Resume = rec.SessionID
+				job.Prompt = harness.RetryTurnPrompt(turn)
+				r.logf("item %s: resuming session %s with the failure", label, rec.SessionID)
+			} else {
+				notResumed, freshWhy = notResumedLine(label, why), why
+				job.Prompt = freshPrompt()
+			}
+		}
+
+		// the session outlives this process: a restart adopts it (ADR 009)
+		job.Outlive = true
+		b := &buildRun{r: r, item: item, res: res, label: label, spec: spec, dir: dir, cred: cred, acct: acct, runtimes: runtimes, ident: ident, model: model, lastText: "session started", job: &job, pod: pod, started: time.Now(), nodeID: sc.NodeID}
+		b.rec = b.newRecorder()
+		b.report(ctx, "session started: "+spec.Branch+" on "+modelName(model))
+		if retrying {
+			endRetry = r.noteRetry(item.ID, job.Resume, job.Resume == "")
+		}
+		if notResumed != "" {
+			r.logf("%s", notResumed)
+			b.report(ctx, notResumed)
+		}
+		if note := st.OmittedNote(); note != "" {
+			r.logf("item %s: %s", label, note)
+			b.report(ctx, note)
+		}
+		if note := pod.MissingNote(); note != "" {
+			r.logf("item %s: %s", label, note)
+			b.report(ctx, note)
+		}
+		result, runErr := b.run(ctx, func(sctx context.Context, onProgress func(harness.Progress)) (harness.Result, error) {
+			res, err := b.recordedRun(job, freshWhy, func() (harness.Result, error) { return r.Harness.Run(sctx, job, onProgress) })
+			if job.Resume != "" && sctx.Err() == nil && harness.IsUnknownSession(err) {
+				// the agent has no such session: fresh, once, with the failure
+				line := notResumedLine(label, notResumedUnknownAgent)
+				r.logf("%s", line)
+				b.report(ctx, line)
+				endRetry()
+				endRetry = r.noteRetry(item.ID, "", true)
+				job.Resume, job.Prompt = "", freshPrompt()
+				res, err = b.recordedRun(job, notResumedUnknownAgent, func() (harness.Result, error) { return r.Harness.Run(sctx, job, onProgress) })
+			}
+			return res, err
+		})
+		// the usage report rides the finish; Finish logs it when nothing
+		// carried it, as the release step's last
+		hold(func() { acct.Finish(ctx, result) })
+		tail = &buildTail{r: r, b: b, result: result, runErr: runErr}
+		return tail.end(ctx)
+	}
+
+	jobSteps := []sessionsteps.Step{
+		{Name: sessionsteps.CheckoutName, Run: checkout},
+		{Name: StepExchange, Run: exchange},
+		{Name: sessionsteps.PodStepName, Run: podStep},
+		{Name: StepRun, Run: run},
+		{Name: sessionsteps.ValidateStepName, Run: func(ctx context.Context, _ *sessionsteps.State) error { return tail.validate(ctx) }},
+		{Name: sessionsteps.FinishStepName, Run: func(ctx context.Context, state *sessionsteps.State) error { return tail.finish(ctx, state) }},
+		{Name: StepRelease, Always: true, Run: func(context.Context, *sessionsteps.State) error {
+			if tail != nil {
+				tail.release()
+			}
+			for i := len(held) - 1; i >= 0; i-- {
+				held[i]()
+			}
+			return nil
+		}},
+	}
+	recs := sessionsteps.Run(ctx, sessionsteps.Job{Steps: jobSteps}, &sessionsteps.State{BaseRef: spec.BaseRef})
+	r.logSteps(label, recs)
+	if tail != nil && ret == nil {
+		ret = tail.ret
+	}
+	return ret
+}
+
+// The node's own step names, beside the session package's checkout, pod,
+// validate and finish (ADR-038).
+const (
+	// StepExchange opens what the session runs on: its account, its own
+	// mesh session's bearer, its tools.
+	StepExchange = "exchange"
+	// StepRun runs the harness and reads the session's end.
+	StepRun = "run"
+	// StepRelease, always run, lets go of what the earlier steps held:
+	// the session dir, the validation's pod, the proxy, the bearer, the
+	// account, the scratch, the pod.
+	StepRelease = "release"
+)
+
+// logSteps logs each step's record, `item <label>: step <n> <name>:
+// <outcome> (<took>)[: <err>]`, a skipped step with no time.
+func (r *Runner) logSteps(label string, recs []sessionsteps.Record) {
+	for i, rec := range recs {
+		r.logf("item %s: %s", label, StepLine(i+1, rec))
+	}
+}
+
+// StepLine is one step's record as the node logs it.
+func StepLine(n int, rec sessionsteps.Record) string {
+	line := fmt.Sprintf("step %d %s: %s", n, rec.Name, rec.Outcome)
+	if rec.Outcome != sessionsteps.Skipped {
+		line += fmt.Sprintf(" (%s)", rec.Ended.Sub(rec.Started).Round(time.Millisecond))
+	}
+	if rec.Err != nil {
+		line += ": " + truncate(rec.Err.Error(), 300)
+	}
+	return line
 }
 
 // buildRun is one build session as its tail needs it, whether this
@@ -830,18 +960,68 @@ func (b *buildRun) run(ctx context.Context, start func(ctx context.Context, onPr
 	})
 }
 
-// afterBuild is what follows a build session, however this process came
-// to hold it: the item released on a sandbox limit, failed on an error
-// or an unsuccessful end, finished already done (no push: main holds the
-// work), or pushed and finished — in that order: the finish is the
-// node's alone (the session's mesh_finish lands on the node's own
-// server and records nothing), handed in only on the head Push
-// returned, and a push that fails is the item's failure with no finish
-// sent, the branch left for a retry (ADR-023 Decision 2). A cancelled ctx — the
-// node shutting down — leaves the item and its still-running session
-// for the next node to adopt. Once the item is finished or failed the
-// session directory goes.
+// afterBuild is what follows a build session this process adopted
+// (AdoptItem): the tail of RunItem's steps — run's end, validate, finish
+// and release — run by sessionsteps.Run and logged as RunItem's are.
 func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Result, runErr error) error {
+	t := &buildTail{r: r, b: b, result: result, runErr: runErr}
+	recs := sessionsteps.Run(ctx, sessionsteps.Job{Steps: []sessionsteps.Step{
+		{Name: StepRun, Run: func(ctx context.Context, _ *sessionsteps.State) error { return t.end(ctx) }},
+		{Name: sessionsteps.ValidateStepName, Run: func(ctx context.Context, _ *sessionsteps.State) error { return t.validate(ctx) }},
+		{Name: sessionsteps.FinishStepName, Run: t.finish},
+		{Name: StepRelease, Always: true, Run: func(context.Context, *sessionsteps.State) error { t.release(); return nil }},
+	}}, &sessionsteps.State{WorkspaceDir: b.dir, BaseRef: b.spec.BaseRef})
+	r.logSteps(b.label, recs)
+	return t.ret
+}
+
+// buildTail is what follows a build session, however this process came
+// to hold it, in its steps: end — the item released on a sandbox limit,
+// failed on an error or an unsuccessful end, finished already done (no
+// push: main holds the work); validate; finish — a changeset recorded
+// and the item finished on it (runsheet ADR 058, step 4; ADR-038), or,
+// on a platform without changesets, pushed and finished on the head
+// Push returned, a push that fails the item's failure with no finish
+// sent, the branch left for a retry (ADR-023 Decision 2). The finish is
+// the node's alone: the session's mesh_finish lands on the node's own
+// server and records nothing. A cancelled ctx — the node shutting down
+// — leaves the item and its still-running session for the next node to
+// adopt. Once the item is finished or failed the release step removes
+// the session directory.
+type buildTail struct {
+	r      *Runner
+	b      *buildRun
+	result harness.Result
+	runErr error
+	// v is the build's validation, closed by release; removeSession is
+	// set once the session's end is the node's to handle.
+	v             *buildValidation
+	removeSession bool
+	// ret is what the build answers.
+	ret error
+}
+
+// stop ends the job on err, which the build answers.
+func (t *buildTail) stop(err error) error {
+	t.ret = err
+	return sessionsteps.End(err)
+}
+
+// release lets go of what the tail held: the validation and the
+// session dir.
+func (t *buildTail) release() {
+	if t.v != nil {
+		t.v.close()
+	}
+	if t.removeSession {
+		harness.RemoveSession(t.b.dir)
+	}
+}
+
+// end reads the session's end: nil when the build goes on to validate
+// and finish, else the job ended (stop).
+func (t *buildTail) end(ctx context.Context) error {
+	r, b, result, runErr := t.r, t.b, &t.result, t.runErr
 	item, label := b.item, b.label
 	// what the agent left running in the session's unit, killed at its
 	// end (ADR 008, The session's end): a line in the log — logged before
@@ -849,26 +1029,26 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	// note on the item. A detach kills nothing.
 	if why := b.watch.lost(); why != "" && ctx.Err() == nil {
 		// the item is no longer the node's: stopped, and nothing sent
-		return r.afterLost(b, why, result)
+		return t.stop(r.afterLost(b, why, *result))
 	}
 	if why := b.watch.starved(); why != "" && ctx.Err() == nil {
 		// the host starved it: stopped, and released with the overload
-		return r.afterStarved(ctx, b, why, result)
+		return t.stop(r.afterStarved(ctx, b, why, *result))
 	}
 	killedNote := logKilled(r.logf, "item "+label, result.KilledPerSession(), result.KillError)
 	if ctx.Err() != nil {
 		r.logf("item %s: node shutting down; its session is left for the next node to adopt", label)
-		return ctx.Err()
+		return t.stop(ctx.Err())
 	}
-	defer harness.RemoveSession(b.dir)
+	t.removeSession = true
 	b.cost.observe(result.CostUSD)
 	if result.SessionID != "" {
 		b.mu.Lock()
 		b.sessionID = result.SessionID
 		b.mu.Unlock()
 	}
-	// kept before the deferred RemoveSession takes the session dir, and
-	// with it the transcript a retry resumes from
+	// kept before the release step takes the session dir, and with it the
+	// transcript a retry resumes from
 	r.keepResume(b)
 	if killedNote != "" {
 		b.report(ctx, killedNote)
@@ -886,11 +1066,11 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 		if rerr := r.GW.ReleaseWorkItem(ctx, b.item.ID, bsc.NodeID, reason); rerr != nil {
 			r.logf("item %s: release: %v", label, rerr)
 		}
-		return nil
+		return t.stop(nil)
 	}
 	if re := RuntimeErrorOf(runErr); re != nil {
 		// the pod the harness opened could not start: handed back
-		return r.releaseRuntime(ctx, item, label, re)
+		return t.stop(r.releaseRuntime(ctx, item, label, re))
 	}
 	if runErr != nil {
 		runErr = b.acct.RedactErr(runErr)
@@ -898,26 +1078,26 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 			reportFailure(r.Tripline, tripline.HarnessUnavailable, runErr, item, label, repoOf(b.res), gateway.RoleBuilder)
 		}
 		b.report(ctx, "harness error: "+runErr.Error())
-		return r.fail(ctx, item, runErr)
+		return t.stop(r.fail(ctx, item, runErr))
 	}
 	result.Text = b.acct.Redact(result.Text)
-	b.handedBack(ctx, result)
+	b.handedBack(ctx, *result)
 	if !result.Success {
 		b.report(ctx, "session ended without success: "+result.Text)
-		b.reportToolUse(ctx, result)
+		b.reportToolUse(ctx, *result)
 		failed := fmt.Errorf("session ended without success: %s", truncate(result.Text, 500))
 		reportFailure(r.Tripline, tripline.SessionFailed, failed, item, label, repoOf(b.res), gateway.RoleBuilder)
-		return r.fail(ctx, item, failed)
+		return t.stop(r.fail(ctx, item, failed))
 	}
 	b.report(ctx, result.Text)
-	b.reportToolUse(ctx, result)
+	b.reportToolUse(ctx, *result)
 
 	// the session's end is its mesh_finish or mesh_fail call when it made
 	// one (ADR-023): the final message need not be formatted, or there at
 	// all; with neither, the text is parsed as before and that is logged
-	fin := finishCallOf(result)
+	fin := finishCallOf(*result)
 	if fin.fail != "" {
-		return r.fail(ctx, item, errors.New(b.acct.Redact(fin.fail)))
+		return t.stop(r.fail(ctx, item, errors.New(b.acct.Redact(fin.fail))))
 	}
 	if !fin.called {
 		r.logf("item %s: no mesh_finish call; parsed the final message", label)
@@ -929,69 +1109,151 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	if already {
 		// main already holds the work (adr-003): no push, no branch, and
 		// the evaluator checks the evidence on the base ref
-		if err := b.acct.Carried(r.GW.FinishWorkItemAlreadyDone(ctx, item.ID, truncate(b.acct.Redact(evidence), 4000), b.cost.delta(), b.acct.Report(result), b.description(ctx))); err != nil {
-			return fmt.Errorf("finish %s: %w", label, err)
+		if err := b.acct.Carried(r.GW.FinishWorkItemAlreadyDone(ctx, item.ID, truncate(b.acct.Redact(evidence), 4000), b.cost.delta(), b.acct.Report(*result), b.description(ctx))); err != nil {
+			return t.stop(fmt.Errorf("finish %s: %w", label, err))
 		}
 		r.logf("item %s: finished already done ($%.2f): %s", label, result.CostUSD, truncate(evidence, 200))
-		return nil
+		return t.stop(nil)
 	}
-	// the repository's validation on the commit the item finishes with
-	// (runsheet ADR 032): a failing step gets the builder one more turn,
-	// then fails the item naming it
+	return nil
+}
+
+// validate is the repository's validation on the commit the item
+// finishes with (runsheet ADR 032), in the session's pod: a failing step
+// gets the builder one more turn, then fails the item naming it.
+func (t *buildTail) validate(ctx context.Context) error {
+	r, b, item := t.r, t.b, t.b.item
 	v, err := r.startValidation(ctx, b)
 	if err != nil {
 		b.report(ctx, "validation: "+err.Error())
-		return r.fail(ctx, item, fmt.Errorf("validation: %w", err))
+		return t.stop(r.fail(ctx, item, fmt.Errorf("validation: %w", err)))
 	}
-	if v != nil {
-		defer v.close()
-		_, err = r.validateBuild(ctx, b, v, result)
-		if errors.Is(err, ErrClaimLost) {
-			return nil
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if rep := b.acct.Report(result); rep != nil {
-			rep.Validation = v.usage()
-		}
-		var vf *validationFailure
-		if errors.As(err, &vf) {
-			if len(v.runs) > 0 {
-				r.uploadAttestation(ctx, b, v.runs[len(v.runs)-1])
-			}
-			b.report(ctx, vf.Error())
-			return r.fail(ctx, item, vf)
-		}
-		if err != nil {
-			err = b.acct.RedactErr(err)
-			b.report(ctx, "validation: "+err.Error())
-			return r.fail(ctx, item, fmt.Errorf("validation: %w", err))
-		}
+	if v == nil {
+		return nil
 	}
-	// the push is part of the build: no finish is sent until it has
-	// returned the head it pushed, and a refused push is the build's
-	// failure, named, never a finish
-	sha, err := r.pushBuild(ctx, b)
+	t.v = v
+	_, err = r.validateBuild(ctx, b, v, t.result)
+	if errors.Is(err, ErrClaimLost) {
+		return t.stop(nil)
+	}
+	if ctx.Err() != nil {
+		return t.stop(ctx.Err())
+	}
+	if rep := b.acct.Report(t.result); rep != nil {
+		rep.Validation = v.usage()
+	}
+	var vf *validationFailure
+	if errors.As(err, &vf) {
+		if len(v.runs) > 0 {
+			r.uploadAttestation(ctx, b, v.runs[len(v.runs)-1])
+		}
+		b.report(ctx, vf.Error())
+		return t.stop(r.fail(ctx, item, vf))
+	}
 	if err != nil {
 		err = b.acct.RedactErr(err)
-		b.report(ctx, err.Error())
-		return r.fail(ctx, item, err)
+		b.report(ctx, "validation: "+err.Error())
+		return t.stop(r.fail(ctx, item, fmt.Errorf("validation: %w", err)))
 	}
-	if v != nil {
-		// after the last push and before the finish: the platform signs for
-		// the head it can see while the item is still this node's
-		r.attestPushed(ctx, b, v, sha)
-		if rep := b.acct.Report(result); rep != nil {
-			rep.Validation = v.usage()
-		}
-	}
-	b.reportHandoff(ctx, result)
-	if err := b.acct.Carried(r.validationUsage(r.GW.FinishWorkItem(ctx, item.ID, b.spec.Branch, sha, b.cost.delta(), b.acct.Report(result), b.description(ctx)))); err != nil {
-		return fmt.Errorf("finish %s: %w", label, err)
-	}
-	r.logf("item %s: pushed %s; finished %s ($%.2f)", label, short(sha), b.spec.Branch, result.CostUSD)
 	return nil
+}
+
+// finish hands the build in as sessionsteps.Finish does: from the node,
+// outside the job container, the workspace's tree recorded as a
+// changeset and the item finished on it when the platform holds
+// changesets — the attestation of the commit validated uploaded first —
+// else the node's own push on the item's token (pushBuild) and the
+// finish on the head it pushed, attested after the push.
+func (t *buildTail) finish(ctx context.Context, state *sessionsteps.State) error {
+	r, b, item, label := t.r, t.b, t.b.item, t.b.label
+	result := t.result
+	b.reportHandoff(ctx, result)
+	var pushErr error
+	f := &sessionsteps.Finish{
+		ItemID:      item.ID,
+		Branch:      b.spec.Branch,
+		BaseRef:     t.changesetBase(ctx),
+		Description: b.description(ctx),
+		Push: func(ctx context.Context, _, _ string) (string, error) {
+			// the push is part of the build: no finish is sent until it has
+			// returned the head it pushed, and a refused push is the
+			// build's failure, named, never a finish
+			sha, err := r.pushBuild(ctx, b)
+			pushErr = err
+			return sha, err
+		},
+		FinishPushed: func(ctx context.Context, itemID, branch, sha string) error {
+			if t.v != nil {
+				// after the last push and before the finish: the platform
+				// signs for the head it can see while the item is still
+				// this node's
+				r.attestPushed(ctx, b, t.v, sha)
+				if rep := b.acct.Report(result); rep != nil {
+					rep.Validation = t.v.usage()
+				}
+			}
+			return b.acct.Carried(r.validationUsage(r.GW.FinishWorkItem(ctx, itemID, branch, sha, b.cost.delta(), b.acct.Report(result), b.description(ctx))))
+		},
+	}
+	if cg, ok := r.GW.(changesetGateway); ok && cg.TakesChangesets(ctx) {
+		if t.v != nil && len(t.v.runs) > 0 {
+			// the commit validated, attested before the changeset that
+			// carries its tree
+			r.uploadAttestation(ctx, b, t.v.runs[len(t.v.runs)-1])
+			if rep := b.acct.Report(result); rep != nil {
+				rep.Validation = t.v.usage()
+			}
+		}
+		f.Gateway = &carriedChangesets{ChangesetGateway: cg, carried: b.acct.Carried}
+		f.CostCents = b.cost.delta()
+		f.Usage = b.acct.Report(result)
+	}
+	err := f.Run(ctx, state)
+	if pushErr != nil {
+		err = b.acct.RedactErr(pushErr)
+		b.report(ctx, err.Error())
+		return t.stop(r.fail(ctx, item, err))
+	}
+	if err != nil {
+		return t.stop(fmt.Errorf("finish %s: %w", label, err))
+	}
+	fr, _ := state.Results[sessionsteps.FinishStepName].(*sessionsteps.FinishResult)
+	switch {
+	case fr != nil && fr.Pushed:
+		r.logf("item %s: pushed %s; finished %s ($%.2f)", label, short(fr.HeadSHA), b.spec.Branch, result.CostUSD)
+	case fr != nil:
+		r.logf("item %s: changeset %s recorded (%d path(s), %d object(s) uploaded); finished %s ($%.2f)", label, fr.ChangesetID, len(fr.PathsChanged), len(fr.Uploaded), b.spec.Branch, result.CostUSD)
+	}
+	return nil
+}
+
+// changesetBase is the ref the changeset's base tree is read from: the
+// item's base on origin, else — a merged dependency's branch gone
+// (ADR-033) — the repository's default branch.
+func (t *buildTail) changesetBase(ctx context.Context) string {
+	base := "origin/" + strings.TrimPrefix(t.b.spec.BaseRef, "origin/")
+	if _, err := sessionsteps.RunGit(ctx, t.b.dir, "rev-parse", "--verify", "--quiet", base+"^{tree}"); err == nil {
+		return base
+	}
+	return "origin/" + defaultBranchOf(t.b.res)
+}
+
+// carriedChangesets is a ChangesetGateway whose changeset finish carries
+// the session's usage report as FinishWorkItem's does (SessionAccount.Carried).
+type carriedChangesets struct {
+	sessionsteps.ChangesetGateway
+	carried func(error) error
+}
+
+func (c *carriedChangesets) FinishWorkItemChangeset(ctx context.Context, itemID, branch, changesetID string, costCents int, usage *gateway.UsageReport, description ...string) error {
+	return c.carried(c.ChangesetGateway.FinishWorkItemChangeset(ctx, itemID, branch, changesetID, costCents, usage, description...))
+}
+
+// changesetGateway is a platform client that can say whether it holds
+// changesets; *gateway.Client is one.
+type changesetGateway interface {
+	sessionsteps.ChangesetGateway
+	TakesChangesets(ctx context.Context) bool
 }
 
 // pushBuild pushes the build's branch on the build's own write token:
@@ -1143,6 +1405,13 @@ func (r *Runner) AdoptItem(ctx context.Context, item gateway.WorkItem, s FoundSe
 	}
 	if err != nil {
 		return r.fail(ctx, item, err)
+	}
+	if s.Sandboxed() {
+		// the adopted session's job container mounts the checkout: the
+		// token NewItemCred wrote there taken off again (ADR-038)
+		if err := cred.KeepOffCheckout(ctx); err != nil {
+			r.logf("item %s: credential off the checkout: %v", label, err)
+		}
 	}
 	at, ok := r.Harness.(harness.Attacher)
 	if !ok {

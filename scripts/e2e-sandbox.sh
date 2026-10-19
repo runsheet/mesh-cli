@@ -5,13 +5,21 @@
 #      (SandboxConfig.EnsureImage): built here from the embedded
 #      Containerfile (`sandbox.image: build`, the default) or pulled;
 #   2. runs every sandbox e2e test with MESH_SANDBOX_E2E=1: the probe
-#      session, the sidecars, and the node's own build and evaluation on
-#      runsheet's Postgres and the Redis fixture;
+#      session (its env and files hold no ghs_ token), the sidecars, and
+#      the node's own build and evaluation on runsheet's Postgres and the
+#      Redis fixture — the build run as the session's steps, checkout to
+#      release, its job container's env and files holding no ghs_ token
+#      and no session bearer (mesh-cli ADR-038);
 #   2b. runs the session proxy in a pod (TestSessionProxySandboxedE2E,
 #      `-tags e2e`): the agent reaches runsheet, a remote and a local tool
 #      through the pod shim, each fake upstream on the host gets its
 #      credential from the proxy, and a grep inside the agent's container
 #      for mesh-session and for each secret finds nothing (ADR-038);
+#   2c. runs a build through the session's steps against a stand-in
+#      GitHub and a fake gateway that holds changesets
+#      (TestBuildRunsAsSessionStepsE2E, `-tags e2e`): every step's record
+#      succeeded, no credential in the job container, and the finish
+#      recorded a changeset with nothing pushed (ADR-038);
 #   3. runs a runsheet item's evaluation on Codex in a pod from the node
 #      image (TestCodexEvaluationInAPodE2E) on the Codex credential given
 #      below — skipped, and said so, when none is — and shows podman holds
@@ -92,6 +100,22 @@ if (( status != 0 )) || grep -q -- '--- SKIP' "$out"; then
 fi
 echo "== session proxy: what the upstreams received and what the in-container greps found"
 grep -E 'upstream .* received its credential|podman exec .* grep|notes: no ' "$out" | sed 's/^ *//'
+rm -f "$out"
+
+# 2c. a build as the session's steps, finished on a changeset (ADR-038)
+echo "== session steps: a build run checkout to release, finished on a changeset"
+out=$(mktemp)
+set +e
+go test -tags e2e -count=1 -v -timeout 10m -run '^TestBuildRunsAsSessionStepsE2E$' ./internal/node 2>&1 | tee "$out"
+status=${PIPESTATUS[0]}
+set -e
+if (( status != 0 )) || grep -q -- '--- SKIP' "$out"; then
+  rm -f "$out"
+  echo "e2e-sandbox: the session steps did not pass" >&2
+  exit 1
+fi
+echo "== session steps: the records and the changeset"
+grep -E 'step [0-9]+ [a-z-]+: |changeset .* recorded' "$out" | sed 's/^ *//'
 rm -f "$out"
 
 # 3. a runsheet evaluation on Codex in a pod

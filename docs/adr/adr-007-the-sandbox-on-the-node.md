@@ -555,8 +555,9 @@ like any other:
   above reaches no container variable): `CODEX_HOME`, `OPENAI_API_KEY`
   or `CODEX_API_KEY` (an API-key credential; a ChatGPT login is the
   `auth.json` alone), `MESH_ACCOUNT`, `MESH_ITEM`, `MESH_SESSION_KIND`,
-  `MESH_TOOL_*`, `GH_TOKEN`, `GH_CONFIG_DIR`, the agent identity and
-  `BaseEnv`. No token, key or `auth.json` content is on a command line
+  `MESH_TOOL_*`, the agent identity and `BaseEnv` — `GH_TOKEN` and
+  `GH_CONFIG_DIR` no longer among them (amendment 2026-10-19, below).
+  No token, key or `auth.json` content is on a command line
   or in node.log: the stream and stderr are redacted by a streaming
   redactor that holds a secret's prefix across write boundaries
   (`streamredact.go`, `TestStreamRedactorSplitSecret`).
@@ -632,3 +633,36 @@ and it logs `scratch: swept <n> dirs, <bytes> bytes at start (<k> kept)`.
 knows which HOME a running container mounts. The scratch sweep takes
 `mesh-home-*` on a host node, where no container mounts one. A pod's own
 TMPDIR is unchanged: a sandboxed session gets no host scratch.
+
+## Amendment 2026-10-19: no GitHub credential in the pod; the relay on the node
+
+[ADR-038](adr-038-a-session-runs-as-ordered-steps.md) (goal
+a-session-runs-as-ordered-steps-like-an-actions-job; runsheet adr-061
+§4, one exchange). The pod — the session's job container — holds no
+GitHub credential and no session bearer:
+
+- **No `GH_TOKEN` in the pod.** `AllowedEnv` no longer lists `GH_TOKEN`
+  or `GH_CONFIG_DIR`, and `HeldOutEnv` (`GH_TOKEN`, `GITHUB_TOKEN`,
+  `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `GH_CONFIG_DIR`) is
+  refused by `Allowed` whatever the list says. The HOME's gh config dir
+  is empty and gh there signed out; a sandboxed build no longer makes a
+  gh config dir or `SessionEnv` at all. What this ADR's Decision said
+  of the item's token reaching the pod (ADR-001) is withdrawn.
+- **No token in the workspace.** A sandboxed build's checkout carries no
+  credential helper: its `ItemCred` is env-only, the node's fetches and
+  push run on `OnItemToken`, and the checkout step fails if any git
+  config the pod mounts names the token (`session.Checkout`).
+- **The relay on the node.** The pod's runsheet relay (`RelayScript`)
+  no longer reads a token file in the HOME: the node serves one relay
+  endpoint per pod session (`mcprelay.Serve`, an HTTP server on
+  `runsheet.sock`, 0600, in the HOME) that forwards to the gateway's
+  `/mcp` on the bearer read per request from a token file kept on the
+  node; and every MCP server goes through the session proxy
+  ([ADR-038, one proxy](adr-038-a-session-reaches-every-mcp-server-through-one-proxy.md)).
+  The pod mounts sockets, never a token.
+
+The node fetches, pushes or records the changeset, and finishes, from
+outside the pod. `TestProbeSessionE2E` greps the pod's env and files for
+`ghs_`, `TestSandboxedSessionsE2E`'s stub agent greps its container for
+`ghs_` and `mesh-session`, and `TestJobContainerHoldsNoCredential` and
+`TestBuildRunsAsSessionStepsE2E` prove it on `sandbox.Fake`.

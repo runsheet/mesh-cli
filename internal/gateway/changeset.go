@@ -143,6 +143,14 @@ func (c *Client) FinishWorkItemChangeset(ctx context.Context, itemID, branch, ch
 	return c.mutateWithUsage(ctx, "finishWorkItem", itemID, in, usage)
 }
 
+// TakesChangesets says whether the platform finishes an item on a
+// changeset: its FinishWorkItemInput takes `changesetId` (introspected,
+// kept ScalingProbeEvery). The node's finish step records a changeset
+// only then, else pushes (mesh-cli ADR-038).
+func (c *Client) TakesChangesets(ctx context.Context) bool {
+	return c.takesInputField(ctx, &c.changesetSchema, "FinishWorkItemInput", ChangesetIDField)
+}
+
 func (c *Client) changesetRequest(ctx context.Context, method, path string, body *bytes.Reader, contentType string) (*http.Request, error) {
 	var hr *http.Request
 	var err error
