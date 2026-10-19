@@ -1,0 +1,4 @@
+mesh node: 2026/10/15 06:30:00 item goal-a/1: usage build {"sessionId":"s1","adapter":"claude-code","model":"opus","wallMs":600000}
+mesh node: 2026/10/15 06:45:00 item goal-a/2: usage evaluate priority=normal evaluators=1 {"sessionId":"s2","adapter":"claude-code","model":"opus","wallMs":120000}
+mesh node: 2026/10/15 07:10:00 item goal-b/1: usage build {"sessionId":"s3","adapter":"claude-code","model":"sonnet","wallMs":900000}
+mesh node: 2026/10/15 07:30:00 item goal-c/1: usage build {"sessionId":"s4","adapter":"claude-code","model":"sonnet","wallMs":300000}
