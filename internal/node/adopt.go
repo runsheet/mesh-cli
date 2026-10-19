@@ -500,7 +500,9 @@ func (a AdoptWith) adopt(ctx context.Context, s FoundSession) error {
 // that ends it removes them (harness.RemoveSession, the state's
 // tempDirs).
 func unlessDetached(ctx context.Context, fn func()) {
-	if ctx.Err() == nil {
+	// a session stopped, not detached (a lost claim), leaves nothing for
+	// a next node to adopt
+	if ctx.Err() == nil || errors.Is(context.Cause(ctx), harness.ErrStopSession) {
 		fn()
 	}
 }

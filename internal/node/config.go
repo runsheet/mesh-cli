@@ -153,6 +153,9 @@ type Config struct {
 	// Update is node.yaml's `update:` block (UpdateConfig): how long a
 	// new process keeps trying to confirm an update before it gives up.
 	Update UpdateConfig `yaml:"update,omitempty"`
+	// Evaluate is node.yaml's `evaluate:` block (EvaluateConfig): how
+	// often an evaluation heartbeats its item.
+	Evaluate EvaluateConfig `yaml:"evaluate,omitempty"`
 	// Context is the size budget for the project's context on disk
 	// (ContextConfig), read again every tick like the accounts.
 	Context ContextConfig `yaml:"context,omitempty"`
@@ -695,6 +698,36 @@ func (c ContextConfig) Validate() error {
 		return errors.New("context.doc_bytes_max: a size cannot be negative")
 	}
 	return nil
+}
+
+// EvaluateConfig is node.yaml's `evaluate:` block.
+type EvaluateConfig struct {
+	// HeartbeatEvery is how often an evaluation sends its item's
+	// progress heartbeat, claim to verdict; empty is
+	// DefaultEvaluationHeartbeatEvery. It must be below the platform's
+	// stall window (EvaluationStallWindow), or a long suite is stalled.
+	HeartbeatEvery time.Duration `yaml:"heartbeat_every,omitempty"`
+}
+
+// Validate refuses a heartbeat interval that is negative or not below
+// the platform's stall window.
+func (c EvaluateConfig) Validate() error {
+	if c.HeartbeatEvery < 0 {
+		return errors.New("evaluate.heartbeat_every: cannot be negative")
+	}
+	if c.HeartbeatEvery >= EvaluationStallWindow {
+		return fmt.Errorf("evaluate.heartbeat_every: %s is not below the platform's stall window of %s", c.HeartbeatEvery, EvaluationStallWindow)
+	}
+	return nil
+}
+
+// EvaluationHeartbeatEvery is the evaluation heartbeat interval in
+// force: node.yaml's evaluate.heartbeat_every, else 5 minutes.
+func (c *Config) EvaluationHeartbeatEvery() time.Duration {
+	if c != nil && c.Evaluate.HeartbeatEvery > 0 {
+		return c.Evaluate.HeartbeatEvery
+	}
+	return DefaultEvaluationHeartbeatEvery
 }
 
 // UpdateConfig is node.yaml's `update:` block.
@@ -1451,6 +1484,9 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if err := c.Context.Validate(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if err := c.Evaluate.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if err := ValidateShares(c.Shares); err != nil {

@@ -483,8 +483,84 @@ type Fake struct {
 	// Now is the fake's clock for planClaimedAt and the TTL; nil is
 	// time.Now.
 	Now func() time.Time
+	// StallWindow, when set, is the platform's stall sweep (runsheet ADR
+	// 018 and its amendment 2026-10-18): before every request, an item
+	// claimed, running or evaluating whose last heartbeat — its claim,
+	// its finish into evaluating, then each reportWorkItemProgress; for
+	// a row seeded in one of those states, the first sweep that saw it —
+	// is older than the window is marked stalled (`stalledAt`) and
+	// recorded in Stalls, once per quiet spell. Zero sweeps nothing.
+	StallWindow time.Duration
+	// Stalls are the items the stall sweep marked, for a test to assert
+	// it never happened.
+	Stalls []Stall
 
 	requests int
+}
+
+// Stall is one item the fake's stall sweep marked stalled.
+type Stall struct {
+	ItemID string
+	Status string
+	// LastHeartbeat is the heartbeat the sweep judged quiet; At when it
+	// marked the item.
+	LastHeartbeat, At time.Time
+}
+
+// heartbeatAtKey is the row key the fake keeps an item's last heartbeat
+// under, for the stall sweep.
+const heartbeatAtKey = "lastHeartbeatAt"
+
+// beat records a heartbeat on item now and clears a stall mark: it is
+// alive again. With no StallWindow the row is left as it was.
+func (f *Fake) beat(item map[string]any) {
+	if f.StallWindow <= 0 {
+		return
+	}
+	item[heartbeatAtKey] = f.now()
+	delete(item, "stalledAt")
+}
+
+// sweepStalls is the platform's stall sweep, run under f.mu before every
+// request while StallWindow is set.
+func (f *Fake) sweepStalls() {
+	if f.StallWindow <= 0 {
+		return
+	}
+	now := f.now()
+	for id, item := range f.WorkItems {
+		switch item["status"] {
+		case "claimed", "running", "evaluating":
+		default:
+			delete(item, heartbeatAtKey)
+			continue
+		}
+		last, ok := item[heartbeatAtKey].(time.Time)
+		if !ok {
+			// the clock starts at the first sweep that sees the row
+			item[heartbeatAtKey] = now
+			continue
+		}
+		if _, stalled := item["stalledAt"]; stalled || now.Sub(last) <= f.StallWindow {
+			continue
+		}
+		item["stalledAt"] = now.UTC().Format(time.RFC3339Nano)
+		f.Stalls = append(f.Stalls, Stall{ItemID: id, Status: fmt.Sprint(item["status"]), LastHeartbeat: last, At: now})
+	}
+}
+
+// StallsOf is the stalls the sweep recorded for itemID.
+func (f *Fake) StallsOf(itemID string) []Stall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sweepStalls()
+	var out []Stall
+	for _, st := range f.Stalls {
+		if st.ItemID == itemID {
+			out = append(out, st)
+		}
+	}
+	return out
 }
 
 // DefaultPlanClaimTTL is the platform's PlanClaimTTL (runsheet goal.go).
@@ -675,6 +751,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.requests++
+	f.sweepStalls()
 	switch {
 	case strings.HasPrefix(q, "mutation { signIn"):
 		f.SignInCalls++
@@ -1941,6 +2018,7 @@ func (f *Fake) apply(name string, in map[string]any) error {
 			return fmt.Errorf("item is %s, not ready", item["status"])
 		}
 		item["status"], item["nodeId"], item["harness"] = "claimed", in["nodeId"], in["harness"]
+		f.beat(item)
 	case "claimWorkItemEvaluation":
 		if item == nil {
 			return fmt.Errorf("no such item")
@@ -1979,6 +2057,7 @@ func (f *Fake) apply(name string, in map[string]any) error {
 			item["status"] = "running"
 		}
 		item["costCents"] = toInt(item["costCents"]) + toInt(in["costCents"])
+		f.beat(item)
 		if n, _ := in["note"].(string); n != "" {
 			item["lastNote"] = n
 			f.Activity = append(f.Activity, map[string]any{
@@ -2040,6 +2119,8 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		}
 		item["status"] = "evaluating"
 		item["costCents"] = toInt(item["costCents"]) + toInt(in["costCents"])
+		// the finish into evaluating is its first heartbeat there
+		f.beat(item)
 	case "failWorkItem":
 		if item == nil {
 			return fmt.Errorf("no such item")
