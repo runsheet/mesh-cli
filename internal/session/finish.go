@@ -1,0 +1,294 @@
+package session
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"os/exec"
+	"sort"
+	"strings"
+
+	"github.com/google/uuid"
+
+	"projectmesh.io/mesh-cli/internal/gateway"
+)
+
+// The finish step hands the item's change to the platform as a changeset
+// (runsheet ADR 058, step 4): on the node, outside the pod, the
+// workspace's tree is written from its index once the builder's changes
+// are staged, the objects that differ from the base tree are offered to
+// the platform, only those it lacks are uploaded, the changeset is
+// recorded and the item finished naming it. The platform makes the
+// branch from the changeset. Nothing here runs in the job container, and
+// the changeset path runs no git push at all; a platform without the
+// changeset routes gets the node's own push instead, from the node
+// process on a per-command token (Push), never by exec in the pod.
+
+// ChangesetGateway is the platform's half the finish step speaks to;
+// *gateway.Client is one.
+type ChangesetGateway interface {
+	ChangesetMissing(ctx context.Context, itemID string, objects []gateway.ChangesetObject) ([]gateway.ChangesetObject, error)
+	PutChangesetObject(ctx context.Context, itemID string, obj gateway.ChangesetObject, content []byte) error
+	RecordChangeset(ctx context.Context, itemID string, cs gateway.Changeset) error
+	FinishWorkItemChangeset(ctx context.Context, itemID, branch, changesetID string, costCents int, usage *gateway.UsageReport, description ...string) error
+}
+
+// GitFunc runs one git command in dir on the node and answers its
+// stdout.
+type GitFunc func(ctx context.Context, dir string, args ...string) ([]byte, error)
+
+// Finish is the finish step's configuration.
+type Finish struct {
+	ItemID string
+	Branch string
+	// BaseRef is the ref the item's change is against (origin/main, a
+	// dependency's branch); State.BaseRef when empty.
+	BaseRef string
+	// ParentChangesetID is the item's previous changeset on a rework, ""
+	// on its first.
+	ParentChangesetID string
+	CostCents         int
+	Usage             *gateway.UsageReport
+	Description       string
+
+	Gateway ChangesetGateway
+	// Git runs git on the node; nil is the git binary in the workspace.
+	Git GitFunc
+	// NewID mints the changeset's id; nil is a random uuid.
+	NewID func() string
+	// Push is the fallback for a platform without changesets: the node's
+	// own push of Branch from dir, from the node process on a
+	// per-command token, answering the pushed head. FinishPushed then
+	// finishes the item on it. With either nil, a platform without
+	// changesets fails the step.
+	Push         func(ctx context.Context, dir, branch string) (string, error)
+	FinishPushed func(ctx context.Context, itemID, branch, headSHA string) error
+}
+
+// FinishResult is what the finish step leaves in State.Results["finish"].
+type FinishResult struct {
+	ChangesetID  string
+	BaseTree     string
+	Tree         string
+	PathsChanged []string
+	Uploaded     []gateway.ChangesetObject
+	// Pushed is the fallback taken: the node pushed HeadSHA.
+	Pushed  bool
+	HeadSHA string
+}
+
+// FinishStepName is the finish step's name in a Job.
+const FinishStepName = "finish"
+
+// Step is the finish step.
+func (f *Finish) Step() Step {
+	return Step{Name: FinishStepName, Run: f.Run}
+}
+
+// Run computes, uploads and records the changeset and finishes the item
+// on it, falling back to the node's push when the platform holds no
+// changesets.
+func (f *Finish) Run(ctx context.Context, state *State) error {
+	if state.WorkspaceDir == "" {
+		return errors.New("finish: no workspace")
+	}
+	if f.Gateway == nil {
+		return errors.New("finish: no gateway")
+	}
+	base := f.BaseRef
+	if base == "" {
+		base = state.BaseRef
+	}
+	if base == "" {
+		return errors.New("finish: no base ref")
+	}
+	res, err := f.changeset(ctx, state.WorkspaceDir, base)
+	if gateway.IsUnsupported(err) {
+		res, err = f.push(ctx, state.WorkspaceDir, err)
+	}
+	if res != nil {
+		if state.Results == nil {
+			state.Results = map[string]any{}
+		}
+		state.Results[FinishStepName] = res
+	}
+	return err
+}
+
+func (f *Finish) changeset(ctx context.Context, dir, base string) (*FinishResult, error) {
+	git := f.git()
+	// the builder's changes, committed or not, are staged in the
+	// worktree's own index and its tree written from it
+	if _, err := git(ctx, dir, "add", "--all"); err != nil {
+		return nil, fmt.Errorf("finish: stage: %w", err)
+	}
+	tree, err := gitLine(ctx, git, dir, "write-tree")
+	if err != nil {
+		return nil, fmt.Errorf("finish: write-tree: %w", err)
+	}
+	baseTree, err := gitLine(ctx, git, dir, "rev-parse", base+"^{tree}")
+	if err != nil {
+		return nil, fmt.Errorf("finish: base tree of %s: %w", base, err)
+	}
+	paths, objects, err := changedObjects(ctx, git, dir, baseTree, tree)
+	if err != nil {
+		return nil, err
+	}
+	res := &FinishResult{BaseTree: baseTree, Tree: tree, PathsChanged: paths}
+
+	missing, err := f.Gateway.ChangesetMissing(ctx, f.ItemID, objects)
+	if err != nil {
+		return nil, fmt.Errorf("finish: changeset missing: %w", err)
+	}
+	offered := make(map[gateway.ChangesetObject]bool, len(objects))
+	for _, o := range objects {
+		offered[o] = true
+	}
+	for _, o := range missing {
+		if !offered[o] {
+			return nil, fmt.Errorf("finish: the platform asked for %s %s, not one offered", o.Type, o.SHA)
+		}
+		content, err := git(ctx, dir, "cat-file", o.Type, o.SHA)
+		if err != nil {
+			return nil, fmt.Errorf("finish: read %s %s: %w", o.Type, o.SHA, err)
+		}
+		if err := f.Gateway.PutChangesetObject(ctx, f.ItemID, o, content); err != nil {
+			return nil, fmt.Errorf("finish: upload %s %s: %w", o.Type, o.SHA, err)
+		}
+		res.Uploaded = append(res.Uploaded, o)
+	}
+
+	id := f.newID()
+	cs := gateway.Changeset{ChangesetID: id, BaseTree: baseTree, Tree: tree, PathsChanged: paths, ParentChangesetID: f.ParentChangesetID}
+	if err := f.Gateway.RecordChangeset(ctx, f.ItemID, cs); err != nil {
+		return nil, fmt.Errorf("finish: record changeset: %w", err)
+	}
+	res.ChangesetID = id
+	if err := f.Gateway.FinishWorkItemChangeset(ctx, f.ItemID, f.Branch, id, f.CostCents, f.Usage, f.Description); err != nil {
+		return res, fmt.Errorf("finish: finish on changeset %s: %w", id, err)
+	}
+	return res, nil
+}
+
+// push is the fallback: the node's own push from the node process, then
+// the finish on the head it pushed.
+func (f *Finish) push(ctx context.Context, dir string, why error) (*FinishResult, error) {
+	if f.Push == nil || f.FinishPushed == nil {
+		return nil, fmt.Errorf("finish: the platform holds no changesets and no push is configured: %w", why)
+	}
+	head, err := f.Push(ctx, dir, f.Branch)
+	if err != nil {
+		return nil, fmt.Errorf("finish: push %s: %w", f.Branch, err)
+	}
+	res := &FinishResult{Pushed: true, HeadSHA: head}
+	if err := f.FinishPushed(ctx, f.ItemID, f.Branch, head); err != nil {
+		return res, fmt.Errorf("finish: finish on %s: %w", head, err)
+	}
+	return res, nil
+}
+
+// changedObjects answers the paths that differ between baseTree and tree
+// and the objects of tree that do not appear in baseTree — every changed
+// blob, every tree on a changed path, and tree itself — sorted.
+// Deletions offer no object; a submodule's commit is not an object the
+// changeset carries.
+func changedObjects(ctx context.Context, git GitFunc, dir, baseTree, tree string) ([]string, []gateway.ChangesetObject, error) {
+	out, err := git(ctx, dir, "diff-tree", "-r", "-z", "--no-renames", "--name-only", baseTree, tree)
+	if err != nil {
+		return nil, nil, fmt.Errorf("finish: changed paths: %w", err)
+	}
+	paths := splitZ(out)
+	sort.Strings(paths)
+
+	out, err = git(ctx, dir, "diff-tree", "-r", "-t", "-z", "--no-renames", baseTree, tree)
+	if err != nil {
+		return nil, nil, fmt.Errorf("finish: changed objects: %w", err)
+	}
+	seen := map[gateway.ChangesetObject]bool{}
+	var objects []gateway.ChangesetObject
+	add := func(o gateway.ChangesetObject) {
+		if !seen[o] {
+			seen[o] = true
+			objects = append(objects, o)
+		}
+	}
+	if tree != baseTree {
+		add(gateway.ChangesetObject{Type: gateway.ObjectTree, SHA: tree})
+	}
+	// -z raw output: ":<old mode> <new mode> <old sha> <new sha> <status>\0<path>\0"
+	fields := splitZ(out)
+	for i := 0; i+1 < len(fields); i += 2 {
+		meta := strings.Fields(strings.TrimPrefix(fields[i], ":"))
+		if len(meta) < 5 {
+			continue
+		}
+		mode, sha := meta[1], meta[3]
+		if strings.Trim(sha, "0") == "" {
+			continue
+		}
+		switch {
+		case mode == "040000":
+			add(gateway.ChangesetObject{Type: gateway.ObjectTree, SHA: sha})
+		case mode == "160000":
+		default:
+			add(gateway.ChangesetObject{Type: gateway.ObjectBlob, SHA: sha})
+		}
+	}
+	sort.Slice(objects, func(i, j int) bool {
+		if objects[i].Type != objects[j].Type {
+			return objects[i].Type < objects[j].Type
+		}
+		return objects[i].SHA < objects[j].SHA
+	})
+	return paths, objects, nil
+}
+
+func splitZ(b []byte) []string {
+	var out []string
+	for _, s := range strings.Split(string(b), "\x00") {
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func gitLine(ctx context.Context, git GitFunc, dir string, args ...string) (string, error) {
+	out, err := git(ctx, dir, args...)
+	if err != nil {
+		return "", err
+	}
+	s := strings.TrimSpace(string(out))
+	if s == "" {
+		return "", fmt.Errorf("git %s answered nothing", strings.Join(args, " "))
+	}
+	return s, nil
+}
+
+func (f *Finish) git() GitFunc {
+	if f.Git != nil {
+		return f.Git
+	}
+	return RunGit
+}
+
+func (f *Finish) newID() string {
+	if f.NewID != nil {
+		return f.NewID()
+	}
+	return uuid.NewString()
+}
+
+// RunGit runs git in dir as the node process.
+func RunGit(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return out, nil
+}
