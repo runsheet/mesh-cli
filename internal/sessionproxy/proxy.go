@@ -137,6 +137,8 @@ type Proxy struct {
 	upstreams map[string]Upstream
 	secrets   []string
 	children  map[string]*child
+	// errs is each server's first error, as the proxy answered it.
+	errs map[string]string
 
 	srv  *http.Server
 	ln   net.Listener
@@ -209,6 +211,31 @@ func contains(xs []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// noteError keeps msg as name's first error, masked (FirstError).
+func (p *Proxy) noteError(name, msg string) {
+	msg = p.mask(msg)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.errs == nil {
+		p.errs = map[string]string{}
+	}
+	if _, ok := p.errs[name]; !ok {
+		p.errs[name] = msg
+	}
+}
+
+// FirstError is the first error the proxy answered for server name —
+// an upstream it could not reach, a bearer it could not get, a status
+// that was not 2xx — in the words its JSON-RPC error carried
+// ("sessionproxy: runsheet: …"), every secret masked; "" when none.
+// The node names it in the session's tools note, since the agent's MCP
+// client says only that the server failed.
+func (p *Proxy) FirstError(name string) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.errs[name]
 }
 
 // mask replaces every secret the proxy holds or has held in s.
@@ -309,12 +336,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		msg := p.mask(err.Error())
 		p.logf("sessionproxy: %s: %s", name, msg)
+		p.noteError(name, fmt.Sprintf("sessionproxy: %s: %s", name, msg))
 		writeError(w, http.StatusBadGateway, -32603, fmt.Sprintf("sessionproxy: %s: %s", name, msg))
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		p.logf("sessionproxy: %s: %s %s answered %d", name, req.Method, u.endpoint(), resp.StatusCode)
+		if req.Method == http.MethodPost {
+			// a GET's 405 is how a server says it streams nothing
+			p.noteError(name, fmt.Sprintf("sessionproxy: %s: %s %s answered %d", name, req.Method, u.endpoint(), resp.StatusCode))
+		}
 	}
 	p.reply(w, resp)
 }

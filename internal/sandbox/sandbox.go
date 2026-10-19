@@ -337,6 +337,40 @@ type Session struct {
 	// org is the org root every mount must resolve inside (the
 	// Sandbox's Org when it was opened); zero confines nothing.
 	org OrgRoot
+	// proxyDirs are the session's sessionproxy socket directories
+	// (ShareProxyDir), mounted at their own paths; any set makes the
+	// session proxied, and its env admits no tool secret.
+	proxyDirs []string
+}
+
+// ShareProxyDir mounts dir, the directory of the session's sessionproxy
+// socket, read-write at its own path in every pod the session runs
+// from now on — checked against the org root like every other mount —
+// and makes the session proxied: its env (Env) admits no ToolEnvPrefix
+// variable, since every MCP server is reached through the proxy, which
+// holds the secrets on the host (mesh-cli goal
+// a-session-reaches-every-mcp-server-through-one-proxy). The directory
+// should hold the socket alone.
+func (s *Session) ShareProxyDir(dir string) {
+	if dir == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, d := range s.proxyDirs {
+		if d == dir {
+			return
+		}
+	}
+	s.proxyDirs = append(s.proxyDirs, dir)
+}
+
+// Proxied says whether the session reaches its MCP servers through a
+// sessionproxy (ShareProxyDir).
+func (s *Session) Proxied() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.proxyDirs) > 0
 }
 
 // GitIdentity is a session's commit identity: the agent its .gitconfig
@@ -519,9 +553,14 @@ func (s *Session) Env(jobEnv []string) []string {
 		"DISABLE_AUTOUPDATER=1",
 	}
 	out = append(out, s.sb.Config.Stores.Env()...)
+	proxied := s.Proxied()
 	for _, kv := range jobEnv {
 		name, _, ok := strings.Cut(kv, "=")
 		if !ok || !Allowed(name) {
+			continue
+		}
+		if proxied && strings.HasPrefix(name, ToolEnvPrefix) {
+			// the proxy holds every tool's secret on the host
 			continue
 		}
 		if name == "CODEX_HOME" {
@@ -599,6 +638,13 @@ func (s *Session) namedMounts(workspace string) []namedMount {
 	// the checkout's hooks, which its core.hooksPath names (ADR-024)
 	if s.hooks != "" {
 		m = append(m, namedMount{Mount{Source: s.hooks, Target: s.hooks, ReadOnly: true}, "hooks"})
+	}
+	// the sessionproxy's socket directory, the only way to its servers
+	s.mu.Lock()
+	dirs := append([]string(nil), s.proxyDirs...)
+	s.mu.Unlock()
+	for _, d := range dirs {
+		m = append(m, namedMount{Mount{Source: d, Target: d}, "mcp proxy"})
 	}
 	return m
 }
