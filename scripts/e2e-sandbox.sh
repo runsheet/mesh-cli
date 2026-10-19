@@ -7,6 +7,11 @@
 #   2. runs every sandbox e2e test with MESH_SANDBOX_E2E=1: the probe
 #      session, the sidecars, and the node's own build and evaluation on
 #      runsheet's Postgres and the Redis fixture;
+#   2b. runs the session proxy in a pod (TestSessionProxySandboxedE2E,
+#      `-tags e2e`): the agent reaches runsheet, a remote and a local tool
+#      through the pod shim, each fake upstream on the host gets its
+#      credential from the proxy, and a grep inside the agent's container
+#      for mesh-session and for each secret finds nothing (ADR-038);
 #   3. runs a runsheet item's evaluation on Codex in a pod from the node
 #      image (TestCodexEvaluationInAPodE2E) on the Codex credential given
 #      below — skipped, and said so, when none is — and shows podman holds
@@ -71,6 +76,23 @@ esac
 echo "== e2e: MESH_SANDBOX_E2E=1 MESH_SANDBOX_IMAGE=$image"
 MESH_SANDBOX_E2E=1 MESH_SANDBOX_IMAGE=$image \
   go test -count=1 -v -timeout 30m -run 'E2E' -skip '^TestCodexEvaluationInAPodE2E$' ./internal/sandbox ./internal/node
+
+# 2b. the session proxy in a pod (ADR-038)
+echo "== session proxy: a build reaching its MCP servers through its proxy in a pod from $image"
+out=$(mktemp)
+set +e
+MESH_SANDBOX_E2E=1 MESH_SANDBOX_IMAGE=$image \
+  go test -tags e2e -count=1 -v -timeout 30m -run '^TestSessionProxySandboxedE2E$' ./internal/node 2>&1 | tee "$out"
+status=${PIPESTATUS[0]}
+set -e
+if (( status != 0 )) || grep -q -- '--- SKIP' "$out"; then
+  rm -f "$out"
+  echo "e2e-sandbox: the session proxy in a pod did not pass" >&2
+  exit 1
+fi
+echo "== session proxy: what the upstreams received and what the in-container greps found"
+grep -E 'upstream .* received its credential|podman exec .* grep|notes: no ' "$out" | sed 's/^ *//'
+rm -f "$out"
 
 # 3. a runsheet evaluation on Codex in a pod
 if [[ -z ${MESH_E2E_CODEX_AUTH:-} && -z ${MESH_E2E_CODEX_API_KEY:-} ]]; then
