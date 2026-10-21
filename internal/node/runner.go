@@ -71,10 +71,11 @@ type Runner struct {
 	WS      Workspacer
 	Cfg     *Config
 	Scopes  Scopes
-	// Roots, when set, are each served org's own roots (ADR-034): the
-	// item's checkout, clone and scratch go under its org's, WorkRoot
-	// unused for them. Nil keeps WorkRoot for every org.
-	Roots    *OrgRootSet
+	// Layout, when set, is the node's job and connection trees (ADR-039):
+	// each item's checkout, scratch, kept stream and MCP files go in its
+	// job, its clone and store in its connection's caches, WorkRoot
+	// unused for them. Nil keeps WorkRoot (the tests' layout).
+	Layout   *Layout
 	WorkRoot string
 	// BuildCache is a host validation's GOCACHE; "" is BuildCacheDir().
 	BuildCache string
@@ -202,19 +203,16 @@ func (r *Runner) ServedDiff(client *gitdata.Client, cache *SharedCache) *Runner 
 }
 
 // NewServedDiffCache is the node's shared tree cache as its served-diff
-// validations use it: under SharedCacheRoot, filled from the shared
-// clones under ReposRoot when they hold an object, capped at node.yaml's
-// validation_cache_max_bytes, its counts left in ~/.mesh for `mesh node
-// status`.
+// validations use it: under SharedCacheRoot, filled from the validating
+// connection's shared clones when they hold an object (WithCloneRoot,
+// ADR-039), capped at node.yaml's validation_cache_max_bytes, its counts
+// left in ~/.mesh for `mesh node status`.
 func NewServedDiffCache(cfg *Config, logf func(string, ...any)) (*SharedCache, error) {
 	root, err := SharedCacheRoot()
 	if err != nil {
 		return nil, fmt.Errorf("cache root: %w", err)
 	}
 	c := &SharedCache{Root: root, MaxBytes: cfg.ValidationCacheCap(), Logf: logf}
-	if repos, err := ReposRoot(); err == nil {
-		c.ReposRoot = repos
-	}
 	if st, err := DefaultRunState(); err == nil {
 		c.State = &st
 	}
@@ -378,7 +376,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	ctx = WithLockHolder(ctx, label)
 	r.logf("item %s: %q on %s from %s", label, item.Title, res.Repo.FullName(), res.BaseRef())
 
-	spec, err := orgSpec(r.Roots, r.Scopes, item.OrgID, WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()})
+	spec, err := itemSpec(r.Layout, r.Scopes, item, label, WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()})
 	if err != nil {
 		return r.fail(ctx, item, fmt.Errorf("workspace: %w", err))
 	}
@@ -520,7 +518,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 			LastSession: r.State.LastSession(item.ID),
 			FoldNotes:   r.foldNotes(ctx, item, label),
 		}
-		kept, err := keptRootFor(r.Roots, r.Scopes, item.OrgID)
+		kept, err := keptRootFor(r.Layout, item.ID)
 		if err != nil {
 			return end(err)
 		}
@@ -544,7 +542,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		}
 		// the session's own scratch as its TMPDIR, gone with the session
 		// (sessionScratch); a detached one's by the node that ends it
-		scratchRoot, err := scratchRootFor(r.Roots, r.Scopes, item.OrgID, r.WorkRoot)
+		scratchRoot, err := scratchRootFor(r.Layout, item.ID, r.WorkRoot)
 		if err != nil {
 			return end(r.fail(ctx, item, err))
 		}
@@ -617,7 +615,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 			}
 			return end(nil)
 		}
-		closeProxy, err := st.UseVia(r.Proxies, mcpRootFor(r.Roots, r.Scopes, item.OrgID), &job, mcp, acct)
+		closeProxy, err := st.UseVia(r.Proxies, mcpRootFor(r.Layout, item.ID), &job, mcp, acct)
 		if err != nil {
 			return end(r.fail(ctx, item, fmt.Errorf("tools: %w", err)))
 		}
@@ -632,7 +630,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		// the checkout's services, started in the session's pod before its
 		// agent; the pod and its sidecars go on every way out
 		var err error
-		pod, err = openOrgSessionPod(ctx, r.Sandbox, r.Roots, r.Scopes, item.OrgID, dir, label, harness.KindBuild, ident.Sandbox(dir), r.logf)
+		pod, err = openOrgSessionPod(ctx, r.Sandbox, r.Layout, r.Scopes, item.OrgID, dir, label, harness.KindBuild, ident.Sandbox(dir), r.logf)
 		// a session the harness detached at the node's shutdown runs on in
 		// its pod, its services and HOME (Session.Detach makes this Close
 		// nothing): the node that adopts it removes them
@@ -1035,6 +1033,12 @@ func (t *buildTail) end(ctx context.Context) error {
 		// the host starved it: stopped, and released with the overload
 		return t.stop(r.afterStarved(ctx, b, why, *result))
 	}
+	if why, stopped := StoppedByPlatform(ctx); stopped {
+		// the platform's stop list (its item finished elsewhere, or the
+		// node's connection to its org was revoked): stopped as a lost
+		// claim is, and nothing sent
+		return t.stop(r.afterLost(b, "stopped by the platform: "+why, *result))
+	}
 	killedNote := logKilled(r.logf, "item "+label, result.KilledPerSession(), result.KillError)
 	if ctx.Err() != nil {
 		r.logf("item %s: node shutting down; its session is left for the next node to adopt", label)
@@ -1408,7 +1412,7 @@ func (r *Runner) AdoptItem(ctx context.Context, item gateway.WorkItem, s FoundSe
 	}
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
 	ctx = WithLockHolder(ctx, label)
-	spec, err := orgSpec(r.Roots, r.Scopes, item.OrgID, WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()})
+	spec, err := itemSpec(r.Layout, r.Scopes, item, label, WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()})
 	if err != nil {
 		return r.fail(ctx, item, fmt.Errorf("workspace: %w", err))
 	}
@@ -1485,12 +1489,8 @@ func (r *Runner) adoptedPod(s FoundSession, item gateway.WorkItem) *SessionPod {
 	if _, err := os.Stat(s.State.Home); err != nil {
 		return nil
 	}
-	// the adopted session's own org's store, as its Open had (orgSandbox)
-	sb, err := orgSandbox(r.Sandbox, r.Roots, r.Scopes, item.OrgID)
-	if err != nil {
-		r.logf("item %s: adopted pod: package store: %v; validating in a fresh session", s.State.Label, err)
-		return nil
-	}
+	// the adopted session's own job's store, as its Open had (jobSandbox)
+	sb := jobSandbox(r.Sandbox, s.Dir)
 	var sess *sandbox.Session
 	if s.standingPod() {
 		sess = sb.Reattach(sandbox.Pod{Name: s.State.Pod}, s.State.Home, s.State.Label)
@@ -1661,15 +1661,14 @@ func (r *Runner) retryChangedPaths(ctx context.Context, label, dir, base, def st
 
 // bindSessionBearer opens the mesh session of item's claim and binds its
 // bearer for the build's token file (SessionBearers.Open), and names the
-// file's directory under the item's org's MCP root on job (ADR-035). Its
+// file's directory under the item's job's MCP root on job (ADR-035,
+// ADR-039). Its
 // error is the release's reason: a node serving several orgs on a
 // platform that opens no mesh sessions, or a session the platform would
 // not open.
 func (r *Runner) bindSessionBearer(ctx context.Context, item gateway.WorkItem, nodeID string, job *harness.Job) (func(), error) {
-	if r.Roots != nil {
-		if roots, err := r.Roots.ForOrgID(r.Scopes, item.OrgID); err == nil && roots.MCP != "" {
-			job.TokenDir = MeshSessionTokenDir(roots.MCP, item.ID, item.Attempts)
-		}
+	if mcp := mcpRootFor(r.Layout, item.ID); mcp != "" {
+		job.TokenDir = MeshSessionTokenDir(mcp, item.ID, item.Attempts)
 	}
 	return r.Bearers.Open(ctx, item, nodeID)
 }

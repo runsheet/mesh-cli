@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -147,14 +146,9 @@ func OpenSandbox(ctx context.Context, c SandboxConfig, rt sandbox.Runtime, versi
 		}
 		return nil, &gateway.SandboxInfo{Mode: SandboxOff}, nil
 	}
+	// no store of the node's own: each session's pod mounts its
+	// connection's (orgSandbox, ADR-039)
 	cfg := c.Settings(version)
-	if root, err := StoreRoot(); err != nil {
-		if logf != nil {
-			logf("sandbox: no package store (%v); sessions install into their own HOME", err)
-		}
-	} else {
-		cfg.Stores = PackageStores(root)
-	}
 	if logf != nil {
 		logf("sandbox: on — %s, image %s, agent %g cpus / %s / %d pids", ver, cfg.Image, cfg.Limits.CPUs, cfg.Limits.Memory, cfg.Limits.Pids)
 		// under systemd (INVOCATION_ID set), a unit whose KillMode is not
@@ -341,34 +335,6 @@ func noteHostFallback(err error, logf func(string, ...any)) {
 	hostFallbackSaid.Do(func() {
 		logf("%v; every session is handed back until the sandbox is on (set `sandbox: on` and install podman, or serve one org)", err)
 	})
-}
-
-// orgRootOf is the org root a session working in dir is confined to:
-// the org's own tree, <meshDir>/orgs/<org>, when dir is under its work
-// root (OrgRoots.Work), else the zero OrgRoot — today's single-org paths,
-// confined by nothing.
-func orgRootOf(dir string) sandbox.OrgRoot {
-	dir = filepath.Clean(dir)
-	for p := dir; ; {
-		parent := filepath.Dir(p)
-		if parent == p {
-			return sandbox.OrgRoot{}
-		}
-		if filepath.Base(parent) == OrgsDirName && ValidateOrgName(filepath.Base(p)) == nil {
-			work := filepath.Join(p, "work")
-			if dir == work || strings.HasPrefix(dir, work+string(filepath.Separator)) {
-				return sandbox.OrgRoot{Org: filepath.Base(p), Path: p}
-			}
-		}
-		p = parent
-	}
-}
-
-// confineTo is sb with its sessions confined to the org whose work root
-// holds dir (orgRootOf, Sandbox.WithOrg); a dir under today's single
-// work root, or a nil sb, is sb.
-func confineTo(sb *sandbox.Sandbox, dir string) *sandbox.Sandbox {
-	return sb.WithOrg(orgRootOf(dir))
 }
 
 // ReleaseOnHostFallback hands back an item a multi-org node with no

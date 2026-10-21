@@ -20,14 +20,15 @@ import (
 )
 
 // Goal one-node-serves-several-orgs-each-sandboxed-from-the-rest, item
-// 6: one sandboxed node of an enterprise owner serves acme and beta. A
-// build of each runs at once, then a plan and a research of each. Every
-// session runs in a pod confined to its own org's tree (ADR-034): its
-// mounts are its org's checkout, clone, stores and HOME alone, its
-// kept-sessions root and token file are its org's, a build's token
-// file holds its own mesh session's bearer (ADR-035), and an attempt
-// from inside it to mount the other org's checkout, clone, kept
-// sessions, package store or MCP data is refused before any pod is made.
+// 6, on ADR-039's layout: one sandboxed node of an enterprise owner
+// serves acme and beta, each by its own connection. A build of each
+// runs at once, then a plan and a research of each. Every session runs
+// in a pod confined to its own job: its mounts are its job's checkout —
+// a clone of its own — its HOME and its job's stores alone, its
+// kept-sessions root and token file are its job's, a build's token file
+// holds its own mesh session's bearer (ADR-035), and an attempt from
+// inside it to mount the other org's checkout, clone, kept sessions,
+// package store or MCP data is refused before any pod is made.
 
 const (
 	twoOrgsEnterprise = "e1e1e1e1-0000-4000-8000-e1e1e1e1e1e1"
@@ -46,12 +47,36 @@ const (
 type twoOrgsOrg struct {
 	login, orgID, nodeID, acct, proj, repo, goal, planGoal, dir string
 	item                                                        gateway.WorkItem
-	roots                                                       OrgRoots
+	// old is a finished job of the org's, its clone, kept session, store
+	// and token file left for the other org to try
+	old JobDirs
 }
 
-// orgCloneWS is fakeWS whose builds are real worktrees of one shared
-// clone per repo under the spec's own repos root — the org's, as
-// orgSpec sets it (ADR-034) — so a pod's git common dir is that clone.
+// jobs are the org's own job directories: its build's, plan's and
+// research's.
+func (o *twoOrgsOrg) jobs(l *Layout) []string {
+	var out []string
+	for _, id := range []string{o.item.ID, o.planGoal, o.dir, o.old.ID} {
+		if j, err := l.Job(id); err == nil {
+			out = append(out, j.Dir)
+		}
+	}
+	return out
+}
+
+// owns says p is in one of the org's jobs.
+func (o *twoOrgsOrg) owns(l *Layout, p string) bool {
+	for _, j := range o.jobs(l) {
+		if underReal(p, j) {
+			return true
+		}
+	}
+	return false
+}
+
+// orgCloneWS is fakeWS whose builds are real clones of origin at the
+// spec's own path — the job's checkout, as itemSpec sets it (ADR-039) —
+// so a pod's checkout is a clone no other job shares.
 type orgCloneWS struct {
 	*fakeWS
 	t      *testing.T
@@ -62,15 +87,15 @@ func (w *orgCloneWS) Prepare(ctx context.Context, spec WorkspaceSpec) (string, e
 	w.mu.Lock()
 	w.prepared = append(w.prepared, spec)
 	w.mu.Unlock()
-	if spec.Repos == "" {
-		return "", fmt.Errorf("spec of %s has no org repos root", spec.Dir())
+	if spec.Job == "" || spec.Repos != "" {
+		return "", fmt.Errorf("spec of %s is not a job's own clone", spec.Dir())
 	}
-	clone := SharedClonePath(spec.Repos, spec.Repo)
 	dir := spec.Dir()
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return "", err
 	}
-	gitRun(w.t, filepath.Dir(dir), "-C", clone, "worktree", "add", "--quiet", "-b", spec.Branch, dir, "main")
+	gitRun(w.t, filepath.Dir(dir), "clone", "--quiet", w.origin, dir)
+	gitRun(w.t, dir, "checkout", "--quiet", "-b", spec.Branch)
 	return dir, nil
 }
 
@@ -189,38 +214,39 @@ func TestTwoOrgsSandboxedNodeNeitherOrgReadsTheOthersFiles(t *testing.T) {
 	f.ResearchGitHubTokens[betaDir] = []map[string]any{{"token": "ghs_research_beta", "expiresAt": exp, "repository": "beta/widgets"}}
 
 	gw := gateway.New(f.URL(), machine)
-	scopes := Scopes{{Login: "acme", ID: orgID, AccountID: acctID, NodeID: nodeA}, {Login: "beta", ID: orgB, AccountID: betaAcct, NodeID: nodeB}}
+	scopes := connected(Scopes{{Login: "acme", ID: orgID, AccountID: acctID, NodeID: nodeA}, {Login: "beta", ID: orgB, AccountID: betaAcct, NodeID: nodeB}})
 	cfg := &Config{Owner: "enterprise", OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: nodeA, Capacity: Fixed(2), OwnerID: f.UserID}
 
 	// the node's sandbox on the fake runtime, ~/.mesh a temp dir, each
-	// org's roots under ~/.mesh/orgs/<org>
+	// org's jobs under ~/.mesh/jobs and its caches under
+	// ~/.mesh/connections/<connection>
 	sb := nodeStoresSandbox(t)
 	rt := sb.Runtime.(*sandbox.Fake)
 	// the refused attempts' "mounting the workspace alone" lines are noise
 	sb.Logf = func(string, ...any) {}
 	home, _ := os.UserHomeDir()
 	mesh := filepath.Join(home, ".mesh")
-	roots, err := NewOrgRootSet(mesh, scopes.Names())
-	if err != nil {
-		t.Fatal(err)
-	}
+	layout := &Layout{Dir: mesh}
 	orgs := map[string]*twoOrgsOrg{
 		"acme": {login: "acme", orgID: orgID, nodeID: nodeA, acct: acctID, proj: projID, repo: repoID, goal: goalID, planGoal: acmePlanGoal, dir: acmeDir},
 		"beta": {login: "beta", orgID: orgB, nodeID: nodeB, acct: betaAcct, proj: betaProj, repo: betaRepo, goal: betaGoal, planGoal: betaPlanGoal, dir: betaDir},
 	}
 	origin := originRepo(t, nil)
 	for name, o := range orgs {
-		o.roots, _ = roots.For(name)
-		// one clone of the repo per org (ADR-034), each org's own,
-		// and something in each org's kept sessions, store and MCP
-		// data for the other to try
-		gitRun(t, home, "clone", "--quiet", origin, SharedClonePath(o.roots.Repos, name+"/widgets"))
-		for _, d := range []string{filepath.Join(o.roots.Kept, "old-session"), filepath.Join(o.roots.Store, "pnpm"), filepath.Join(o.roots.Store, "npm"), filepath.Join(o.roots.MCP, "sessions", "old")} {
+		// an old job of each org's — its clone, a kept session, MCP data
+		// and its store — for the other to try
+		var err error
+		o.old, err = openJob(layout, scopes, o.orgID, JobMeta{ID: "old-" + name, Unit: JobItem, ItemID: "old-" + name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		gitRun(t, home, "clone", "--quiet", origin, o.old.Checkout())
+		for _, d := range []string{filepath.Join(o.old.Kept, "old-session"), filepath.Join(o.old.Store, "pnpm"), filepath.Join(o.old.Store, "npm"), filepath.Join(o.old.MCP, "sessions", "old"), o.old.Homes} {
 			if err := os.MkdirAll(d, 0o700); err != nil {
 				t.Fatal(err)
 			}
 		}
-		if err := os.WriteFile(filepath.Join(o.roots.MCP, "sessions", "old", harness.TokenFileName), []byte("old\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(o.old.MCP, "sessions", "old", harness.TokenFileName), []byte("old\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if err := gw.ClaimWorkItem(context.Background(), map[string]string{"acme": item1, "beta": itemB}[name], o.nodeID, "claude-code"); err != nil {
@@ -245,25 +271,28 @@ func TestTwoOrgsSandboxedNodeNeitherOrgReadsTheOthersFiles(t *testing.T) {
 	forbid := func(org string) map[string]string {
 		o := orgs[other[org]]
 		m := map[string]string{
-			"work":             o.roots.Work,
-			"clone":            SharedClonePath(o.roots.Repos, o.login+"/widgets"),
-			"clone git dir":    filepath.Join(SharedClonePath(o.roots.Repos, o.login+"/widgets"), ".git"),
-			"kept sessions":    o.roots.Kept,
-			"pnpm store":       filepath.Join(o.roots.Store, "pnpm"),
-			"npm cache":        filepath.Join(o.roots.Store, "npm"),
-			"mcp data":         o.roots.MCP,
-			"mcp token":        filepath.Join(o.roots.MCP, "sessions", "old", harness.TokenFileName),
-			"homes":            filepath.Join(o.roots.Base, "homes"),
-			"the node's store": filepath.Join(mesh, "store"),
+			"job":            o.old.Dir,
+			"clone":          o.old.Checkout(),
+			"clone git dir":  filepath.Join(o.old.Checkout(), ".git"),
+			"kept sessions":  o.old.Kept,
+			"pnpm store":     filepath.Join(o.old.Store, "pnpm"),
+			"npm cache":      filepath.Join(o.old.Store, "npm"),
+			"mcp data":       o.old.MCP,
+			"mcp token":      filepath.Join(o.old.MCP, "sessions", "old", harness.TokenFileName),
+			"homes":          o.old.Homes,
+			"the jobs tree":  layout.JobsDir(),
+			"the mesh dir":   mesh,
 		}
-		if dirs, _ := filepath.Glob(filepath.Join(o.roots.Work, "*", "1")); len(dirs) > 0 {
-			m["checkout"] = dirs[0]
+		if j, err := layout.Job(o.item.ID); err == nil {
+			if _, err := os.Stat(j.Checkout()); err == nil {
+				m["checkout"] = j.Checkout()
+			}
 		}
 		return m
 	}
 	orgOf := func(job harness.Job) string {
 		for name, o := range orgs {
-			if underDir(job.Workspace, o.roots.Base) {
+			if o.owns(layout, job.Workspace) {
 				return name
 			}
 		}
@@ -278,7 +307,7 @@ func TestTwoOrgsSandboxedNodeNeitherOrgReadsTheOthersFiles(t *testing.T) {
 	ws := &orgCloneWS{fakeWS: &fakeWS{root: filepath.Join(mesh, "work")}, t: t, origin: origin}
 	declines := &Declines{}
 	runner := &Runner{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: filepath.Join(mesh, "work"),
-		Roots: roots, Sandbox: sb, ProgressEvery: time.Hour, Declines: declines,
+		Layout: layout, Sandbox: sb, ProgressEvery: time.Hour, Declines: declines,
 		// the stand-in agent commits nothing; its build is finished as one
 		// that did (a done session with nothing committed is failed)
 		HasCommit: func(string, string) bool { return true },
@@ -301,7 +330,7 @@ func TestTwoOrgsSandboxedNodeNeitherOrgReadsTheOthersFiles(t *testing.T) {
 	wg.Wait()
 
 	// then a plan and a research of each
-	planner := &Planner{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: filepath.Join(mesh, "work"), Roots: roots, Sandbox: sb, Declines: declines, Log: logger}
+	planner := &Planner{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: filepath.Join(mesh, "work"), Layout: layout, Sandbox: sb, Declines: declines, Log: logger}
 	for _, name := range []string{"acme", "beta"} {
 		o := orgs[name]
 		sc, _ := scopes.ByOrg(o.orgID)
@@ -312,7 +341,7 @@ func TestTwoOrgsSandboxedNodeNeitherOrgReadsTheOthersFiles(t *testing.T) {
 		}
 	}
 	h.text = "```json\n{\"goals\": []}\n```"
-	director := &Director{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: filepath.Join(mesh, "work"), Roots: roots, Sandbox: sb, Declines: declines, Log: logger}
+	director := &Director{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: filepath.Join(mesh, "work"), Layout: layout, Sandbox: sb, Declines: declines, Log: logger}
 	for _, name := range []string{"acme", "beta"} {
 		o := orgs[name]
 		sc, _ := scopes.ByOrg(o.orgID)
@@ -351,41 +380,41 @@ func TestTwoOrgsSandboxedNodeNeitherOrgReadsTheOthersFiles(t *testing.T) {
 		if s.mountErr != nil {
 			t.Fatalf("%s: its own mounts were refused: %v", label, s.mountErr)
 		}
+		jobDir, meta, inJob := jobOf(s.job.Workspace)
+		if sc, _ := scopes.ByOrg(mine.orgID); !inJob || meta.OrgID != mine.orgID || meta.ConnectionID != sc.ConnectionID {
+			t.Fatalf("%s: workspace %s is not in a job of its own connection (%+v)", label, s.job.Workspace, meta)
+		}
 		var sources []string
 		for _, m := range s.mounts {
 			sources = append(sources, m.Source)
-			if !underDir(m.Source, mine.roots.Base) {
-				t.Errorf("%s mounts %s, outside its org's root %s", label, m.Source, mine.roots.Base)
+			if !underReal(m.Source, jobDir) {
+				t.Errorf("%s mounts %s, outside its job %s", label, m.Source, jobDir)
 			}
-			if underDir(m.Source, theirs.roots.Base) {
-				t.Errorf("%s mounts %s, under %s's root", label, m.Source, theirs.login)
+			if theirs.owns(layout, m.Source) {
+				t.Errorf("%s mounts %s, %s's", label, m.Source, theirs.login)
 			}
 		}
-		want := []string{s.job.Workspace, s.job.Session.Home, filepath.Join(mine.roots.Store, "pnpm"), filepath.Join(mine.roots.Store, "npm")}
-		if s.job.Kind == harness.KindBuild {
-			// a build's worktree mounts its org's clone's git dir
-			want = append(want, filepath.Join(SharedClonePath(mine.roots.Repos, mine.login+"/widgets"), ".git"))
+		want := []string{s.job.Workspace, s.job.Session.Home, filepath.Join(jobDir, "store", "pnpm"), filepath.Join(jobDir, "store", "npm")}
+		for i := range sources {
+			sources[i] = realPath(sources[i])
 		}
 		for _, w := range want {
-			if !containsPath(sources, w) {
+			if !containsPath(sources, realPath(w)) {
 				t.Errorf("%s: mounts %q lack %s", label, sources, w)
 			}
 		}
-		if !underDir(s.job.Workspace, mine.roots.Work) {
-			t.Errorf("%s: checkout %s not under %s", label, s.job.Workspace, mine.roots.Work)
+		if j, _ := layout.Job(meta.ID); s.job.KeptRoot != j.Kept {
+			t.Errorf("%s: kept sessions under %q, want %s", label, s.job.KeptRoot, j.Kept)
 		}
-		if s.job.KeptRoot != mine.roots.Kept {
-			t.Errorf("%s: kept sessions under %q, want %s", label, s.job.KeptRoot, mine.roots.Kept)
+		if !underDir(s.tokPath, jobDir) || theirs.owns(layout, s.tokPath) {
+			t.Errorf("%s: token file %s not in its own job %s", label, s.tokPath, jobDir)
 		}
-		if !underDir(s.tokPath, mine.roots.Base) || underDir(s.tokPath, theirs.roots.Base) {
-			t.Errorf("%s: token file %s not under its own org's root", label, s.tokPath)
-		}
-		// every attempt at the other org's tree refused, no pod made
+		// every attempt at the other org's files refused, no pod made
 		for what, err := range s.refused {
-			if !errors.Is(err, sandbox.ErrMountOutsideOrg) {
-				t.Errorf("%s: mounting %s: %v, want ErrMountOutsideOrg", label, what, err)
-			} else if !strings.Contains(err.Error(), mine.login) {
-				t.Errorf("%s: refusal %q names no org", label, err)
+			if !errors.Is(err, sandbox.ErrMountOutsideJob) {
+				t.Errorf("%s: mounting %s: %v, want ErrMountOutsideJob", label, what, err)
+			} else if !strings.Contains(err.Error(), meta.ID) {
+				t.Errorf("%s: refusal %q names no job", label, err)
 			}
 		}
 		if len(s.refused) < 10 {
@@ -422,12 +451,10 @@ func TestTwoOrgsSandboxedNodeNeitherOrgReadsTheOthersFiles(t *testing.T) {
 	if buildTokens["acme"] == "" || buildTokens["acme"] == buildTokens["beta"] {
 		t.Fatalf("the two orgs' builds hold one bearer: %q", buildTokens)
 	}
-	for _, o := range orgs {
-		if o.roots.Base == "" || !strings.HasPrefix(o.roots.Base, filepath.Join(mesh, OrgsDirName)) {
-			t.Fatalf("%s's roots %s are not under ~/.mesh/orgs", o.login, o.roots.Base)
-		}
+	if _, err := os.Stat(filepath.Join(mesh, "connections")); !os.IsNotExist(err) {
+		t.Fatalf("a connections tree was made: %v", err)
 	}
-	// and no session's files landed in the node-wide work root
+	// and no session's files landed in a node-wide work root
 	if entries, _ := os.ReadDir(filepath.Join(mesh, "work")); len(entries) != 0 {
 		var names []string
 		for _, e := range entries {
@@ -457,3 +484,19 @@ func anyKeyHasPrefix(m map[string]error, prefix string) bool {
 	}
 	return false
 }
+
+// realPath is p with its symlinks resolved as far as it exists (macOS's
+// /var is /private/var): a removed HOME resolves by its parent.
+func realPath(p string) string {
+	p = filepath.Clean(p)
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	if parent := filepath.Dir(p); parent != p {
+		return filepath.Join(realPath(parent), filepath.Base(p))
+	}
+	return p
+}
+
+// underReal is underDir on resolved paths.
+func underReal(p, root string) bool { return underDir(realPath(p), realPath(root)) }

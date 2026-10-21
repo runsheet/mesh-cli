@@ -29,7 +29,7 @@ const answerPrefix = "answer: "
 // held under RecordBudget the same way and logged `item <label>: record
 // read from the platform (N entries)`. ok is false when neither has one.
 func (r *Runner) itemRecord(ctx context.Context, orgID, itemID, label string) (entries []RecordEntry, lines []string, dropped int, ok bool) {
-	if store := r.resumes(orgID); store != nil {
+	if store := r.resumes(itemID); store != nil {
 		if entries, lines, dropped, ok = ItemRecord(*store, itemID); ok {
 			return entries, lines, dropped, true
 		}

@@ -89,13 +89,14 @@ var ErrNoCandidateWorktrees = errors.New("the node's workspace makes no candidat
 func (r *Runner) validateCandidate(ctx context.Context, batch gateway.MainValidationBatch, cred *ItemCred) (validate.Attestation, error) {
 	label := fmt.Sprintf("batch-%d", batch.Number)
 	prefix := candidatePrefix(batch)
-	root, err := workRootFor(r.Roots, r.Scopes, batch.OrgID, r.WorkRoot)
+	dir, err := batchDirFor(r.Layout, r.Scopes, batch.OrgID, batch.MergeBatchID, "candidate", int(batch.Attempt), prefix,
+		func(root string) string { return CandidateDir(root, batch) }, r.WorkRoot)
 	if err != nil {
 		return validate.Attestation{}, fmt.Errorf("%s: %w", prefix, err)
 	}
 	t := validationTarget{
 		item:      gateway.WorkItem{OrgID: batch.OrgID, RepoID: batch.RepoID},
-		dir:       CandidateDir(root, batch),
+		dir:       dir,
 		base:      batch.DefaultBranch,
 		prefix:    prefix,
 		label:     label,
@@ -134,13 +135,14 @@ func MainRequestDir(root string, req gateway.MainValidationRequest) string {
 func (r *Runner) validateMainRequest(ctx context.Context, req gateway.MainValidationRequest, tok *gateway.GitHubToken) (validate.Attestation, error) {
 	label := fmt.Sprintf("main-%d", req.Seq)
 	prefix := mainRequestLabel(req)
-	root, err := workRootFor(r.Roots, r.Scopes, req.OrgID, r.WorkRoot)
+	dir, err := batchDirFor(r.Layout, r.Scopes, req.OrgID, mainJobID(req.WorkItemID), "main", int(req.Attempt), prefix,
+		func(root string) string { return MainRequestDir(root, req) }, r.WorkRoot)
 	if err != nil {
 		return validate.Attestation{}, fmt.Errorf("%s: %w", prefix, err)
 	}
 	t := validationTarget{
 		item:     gateway.WorkItem{ID: req.WorkItemID, GoalID: req.GoalID, Seq: int(req.Seq), OrgID: req.OrgID, RepoID: req.RepoID},
-		dir:      MainRequestDir(root, req),
+		dir:      dir,
 		base:     req.DefaultBranch,
 		diffFrom: req.SHA + "^1",
 		prefix:   prefix,
@@ -294,7 +296,7 @@ func (r *Runner) validateCheckout(ctx context.Context, t validationTarget, c mai
 		// no validate.yml on the commit is nothing to attest: the caller's
 		return validate.Attestation{}, err
 	}
-	pod, err := openOrgSessionPod(ctx, r.Sandbox, r.Roots, r.Scopes, t.item.OrgID, dir, t.label, CandidateKind, sandbox.GitIdentity{}, r.logf)
+	pod, err := openOrgSessionPod(ctx, r.Sandbox, r.Layout, r.Scopes, t.item.OrgID, dir, t.label, CandidateKind, sandbox.GitIdentity{}, r.logf)
 	defer pod.Close()
 	if err != nil {
 		return validate.Attestation{}, err
@@ -363,12 +365,16 @@ func (g *Git) AddCommitWorktree(ctx context.Context, repo, dir, branch, sha stri
 }
 
 // addDetachedWorktree fetches branch into the shared clone, asks check
-// of it, and adds a detached worktree of sha at dir.
+// of it, and adds a detached worktree of sha at dir. A dir in a job is a
+// clone of its own instead (addDetachedClone, ADR-039).
 func (g *Git) addDetachedWorktree(ctx context.Context, repo, dir, branch, sha string, check func(clone, ref string) error) error {
 	if _, err := os.Stat(dir); err == nil {
 		if err := g.RemoveWorkspace(ctx, dir); err != nil {
 			return err
 		}
+	}
+	if _, _, ok := jobOf(dir); ok {
+		return g.addDetachedClone(ctx, repo, dir, branch, sha, check)
 	}
 	root, key := g.lockRoot("", dir), RepoLockKey(repo)
 	clone := SharedClonePath(g.reposRootFor(dir), repo)
@@ -396,5 +402,30 @@ func (g *Git) addDetachedWorktree(ctx context.Context, repo, dir, branch, sha st
 		return err
 	}
 	_, err = g.run(ctx, clone, "git", "worktree", "add", "--quiet", "--detach", dir, sha)
+	return err
+}
+
+// addDetachedClone is addDetachedWorktree for a dir in a job (ADR-039):
+// repo cloned into dir alone, branch fetched into it, check asked of
+// it, sha checked out detached — no shared clone, no other job's
+// objects.
+func (g *Git) addDetachedClone(ctx context.Context, repo, dir, branch, sha string, check func(clone, ref string) error) error {
+	root, key := g.lockRoot("", dir), RepoLockKey(repo)
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		return err
+	}
+	clone := g.cloneCommand(ctx, repo, dir, "--no-checkout")
+	if _, err := g.fetchLocked(ctx, root, key, filepath.Dir(dir), clone[0], clone[1:]...); err != nil {
+		os.RemoveAll(dir)
+		return err
+	}
+	ref := "refs/remotes/origin/" + branch
+	if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--quiet", "origin", "+refs/heads/"+branch+":"+ref); err != nil {
+		return err
+	}
+	if err := check(dir, ref); err != nil {
+		return err
+	}
+	_, err := g.run(ctx, dir, "git", "checkout", "--quiet", "--detach", sha)
 	return err
 }

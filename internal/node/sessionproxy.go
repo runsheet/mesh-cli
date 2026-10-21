@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"projectmesh.io/mesh-cli/internal/dpop"
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
@@ -32,11 +33,27 @@ const ProxySocketName = "s"
 type SessionProxies struct {
 	// Bearer is the session's runsheet bearer source: TokenFiles.Source.
 	Bearer func(kind harness.Kind, meta harness.SessionMeta) (TokenSource, error)
+	// Key is the DPoP key a session's bearer is bound to, nil when it is
+	// not (TokenFiles.KeyOf): the proxy signs each runsheet request with
+	// it (runsheet ADR 064 §5).
+	Key func(meta harness.SessionMeta) *dpop.Key
 	// Root is the MCP root the socket directories go under when the
 	// session's org has none of its own (one org served: its MCP root).
 	Root string
 	// Logf hears the proxy's own lines, every secret masked.
 	Logf func(format string, args ...any)
+	// Server, when set, is the node's HTTP server, which serves each
+	// session's socket as one of its listeners (ADR-039); nil serves
+	// each on a server of the proxy's own.
+	Server *Server
+}
+
+// listen serves p at sock: on the node's server when there is one.
+func (px *SessionProxies) listen(p *sessionproxy.Proxy, sock string) error {
+	if px.Server != nil {
+		return p.ListenOn(px.Server, sock)
+	}
+	return p.Listen(sock)
 }
 
 // SessionProxy is one session's running proxy: its directory and
@@ -114,24 +131,35 @@ func (px *SessionProxies) open(job *harness.Job, root, builtinURL string, specs 
 	if err != nil {
 		return nil, fmt.Errorf("sessionproxy: %w", err)
 	}
-	p := sessionproxy.New(upstreamsOf(specs, builtinURL, bearer))
+	p := sessionproxy.New(upstreamsOf(specs, builtinURL, bearer, px.keyOf(job.Meta)))
 	p.Logf = px.Logf
 	sock := filepath.Join(dir, ProxySocketName)
-	if err := p.Listen(sock); err != nil {
+	if err := px.listen(p, sock); err != nil {
 		os.RemoveAll(dir)
 		return nil, fmt.Errorf("sessionproxy: listen %s: %w", sock, err)
 	}
 	return &SessionProxy{Dir: dir, Socket: sock, p: p}, nil
 }
 
+// keyOf is the DPoP key meta's session signs with, else nil.
+func (px *SessionProxies) keyOf(meta harness.SessionMeta) sessionproxy.Signer {
+	if px == nil || px.Key == nil {
+		return nil
+	}
+	if k := px.Key(meta); k != nil {
+		return k
+	}
+	return nil
+}
+
 // upstreamsOf is each spec as the proxy's upstream, the built-in on
-// builtinURL and bearer.
-func upstreamsOf(specs map[string]tools.UpstreamSpec, builtinURL string, bearer TokenSource) map[string]sessionproxy.Upstream {
+// builtinURL and bearer, signed by key when it is DPoP-bound.
+func upstreamsOf(specs map[string]tools.UpstreamSpec, builtinURL string, bearer TokenSource, key sessionproxy.Signer) map[string]sessionproxy.Upstream {
 	ups := make(map[string]sessionproxy.Upstream, len(specs))
 	for name, sp := range specs {
 		switch {
 		case name == tools.Builtin:
-			ups[name] = sessionproxy.Runsheet{URL: builtinURL, Bearer: bearer}
+			ups[name] = sessionproxy.Runsheet{URL: builtinURL, Bearer: bearer, Key: key}
 		case sp.Transport == tools.Local:
 			ups[name] = sessionproxy.Local{Command: sp.Command, Args: sp.Args, Env: sp.Env, Secrets: sp.Secrets}
 		default:
@@ -187,9 +215,9 @@ func (px *SessionProxies) Adopt(st sessionunit.State, builtin map[string]any, us
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, missing, fmt.Errorf("sessionproxy: %w", err)
 	}
-	p := sessionproxy.New(upstreamsOf(named, url, bearer))
+	p := sessionproxy.New(upstreamsOf(named, url, bearer, px.keyOf(meta)))
 	p.Logf = px.Logf
-	if err := p.Listen(st.Proxy.Socket); err != nil {
+	if err := px.listen(p, st.Proxy.Socket); err != nil {
 		return nil, missing, fmt.Errorf("sessionproxy: listen %s: %w", st.Proxy.Socket, err)
 	}
 	return &SessionProxy{Dir: dir, Socket: st.Proxy.Socket, p: p}, missing, nil
@@ -241,31 +269,6 @@ func (st SessionTools) UseVia(px *SessionProxies, root string, job *harness.Job,
 		acct.used, acct.toolEnv, acct.proxy = st.Use, nil, sp
 	}
 	return sp.End, nil
-}
-
-// mcpRootFor is the MCP root of the org whose id is orgID when roots
-// are laid out, else "" (SessionProxies.Root).
-func mcpRootFor(roots *OrgRootSet, scopes Scopes, orgID string) string {
-	if roots == nil {
-		return ""
-	}
-	r, err := roots.ForOrgID(scopes, orgID)
-	if err != nil {
-		return ""
-	}
-	return r.MCP
-}
-
-// mcpRootOfScope is mcpRootFor by the session's scope.
-func mcpRootOfScope(roots *OrgRootSet, scope Scope) string {
-	if roots == nil {
-		return ""
-	}
-	r, err := roots.For(scope.Name())
-	if err != nil {
-		return ""
-	}
-	return r.MCP
 }
 
 // adoptProxy restarts an adopted session's proxy (SessionProxies.Adopt)

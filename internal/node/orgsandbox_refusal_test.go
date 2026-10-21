@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/validate"
 )
@@ -23,7 +24,7 @@ var twoScopes = Scopes{{Login: "acme", ID: "org-a", NodeID: "node-a"}, {Login: "
 // the error naming the org, the checkout and both orgs, kinded
 // sandbox_required; with a sandbox it refuses nothing.
 func TestHostFallbackRefusesATwoOrgNodeWithSandboxOff(t *testing.T) {
-	dir := "/home/mesh/.mesh/orgs/acme/work/ship-it/1"
+	dir := "/home/mesh/.mesh/jobs/item-1/checkout"
 	err := HostFallback(nil, twoScopes, "org-a", dir)
 	if err == nil {
 		t.Fatal("a two-org node with sandbox off was not refused")
@@ -109,20 +110,59 @@ func TestRunItemOnAOneOrgNodeWithSandboxOffRuns(t *testing.T) {
 	}
 }
 
-// A checkout under one org's tree confines its pod to that tree; one
-// under today's single work root confines nothing.
-func TestOrgRootOfACheckout(t *testing.T) {
-	mesh := "/home/mesh/.mesh"
-	for dir, want := range map[string]sandbox.OrgRoot{
-		mesh + "/orgs/acme/work/ship-it/1":               {Org: "acme", Path: mesh + "/orgs/acme"},
-		mesh + "/orgs/acme/work/merge-batches/b-1":       {Org: "acme", Path: mesh + "/orgs/acme"},
-		mesh + "/orgs/beta/work/ship-it/1-eval":          {Org: "beta", Path: mesh + "/orgs/beta"},
-		mesh + "/work/ship-it/1":                         {},
-		mesh + "/orgs/acme/repos/o/n":                    {},
-		"/elsewhere/orgs/acme/work/x/orgs/beta/work/y/1": {Org: "beta", Path: "/elsewhere/orgs/acme/work/x/orgs/beta"},
-	} {
-		if got := orgRootOf(dir); got != want {
-			t.Errorf("orgRootOf(%s) = %+v, want %+v", dir, got, want)
+// A checkout in a job confines its pod to the job's directory alone
+// (ADR-039); a directory in no job — a job directory with no job.json,
+// anything outside the jobs tree — confines nothing.
+func TestConfinementOfACheckout(t *testing.T) {
+	l := testLayout(t)
+	scopes := connected(Scopes{{Login: "acme", ID: "org-a"}})
+	j, err := openJob(l, scopes, "org-a", JobMeta{ID: "item-1", Unit: JobItem, ItemID: "item-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := sandbox.Confinement{Job: "item-1", Roots: []string{j.Dir}, Homes: j.Homes}
+	for _, dir := range []string{j.Checkout(), j.Eval(), j.Attempt("candidate", 2)} {
+		got := confinementOf(dir)
+		if got.Job != want.Job || got.Homes != want.Homes || len(got.Roots) != 1 || got.Roots[0] != want.Roots[0] {
+			t.Errorf("confinementOf(%s) = %+v, want %+v", dir, got, want)
 		}
+	}
+	bare := filepath.Join(l.JobsDir(), "no-job-json", "checkout")
+	if err := os.MkdirAll(bare, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{bare, t.TempDir()} {
+		if got := confinementOf(dir); !got.IsZero() {
+			t.Errorf("confinementOf(%s) = %+v, want none", dir, got)
+		}
+	}
+}
+
+// Every kind of session is refused on the host of a node serving two
+// orgs with no sandbox (ADR 066, decision 10), not only builds and
+// rebases: the pod an evaluation or a main validation opens
+// (openOrgSessionPod) and the one a plan or research opens
+// (openScopePod, on the orgs the loop serves) are refused alike, and
+// both open nothing on a one-org node.
+func TestEverySessionKindIsRefusedOnATwoOrgHost(t *testing.T) {
+	ctx := context.Background()
+	dir := "/home/mesh/.mesh/work/ship-it/1"
+	logf := func(string, ...any) {}
+	pod, err := openOrgSessionPod(ctx, nil, nil, twoScopes, "org-a", dir, "e-1", harness.KindEvaluate, sandbox.GitIdentity{}, logf)
+	if pod != nil || !errors.Is(err, ErrHostServesSeveralOrgs) {
+		t.Fatalf("an evaluation's pod on a two-org host: %v %v", pod, err)
+	}
+	pod, err = openScopePod(ctx, nil, nil, twoScopes, twoScopes[0], dir, "p-1", harness.KindPlan, logf)
+	if pod != nil || !errors.Is(err, ErrHostServesSeveralOrgs) {
+		t.Fatalf("a plan's pod on a two-org host: %v %v", pod, err)
+	}
+	if pod, err := openOrgSessionPod(ctx, nil, nil, twoScopes[:1], "org-a", dir, "e-1", harness.KindEvaluate, sandbox.GitIdentity{}, logf); pod != nil || err != nil {
+		t.Fatalf("an evaluation on a one-org host: %v %v", pod, err)
+	}
+	if pod, err := openScopePod(ctx, nil, nil, twoScopes[:1], twoScopes[0], dir, "p-1", harness.KindResearch, logf); pod != nil || err != nil {
+		t.Fatalf("research on a one-org host: %v %v", pod, err)
+	}
+	if pod, err := openScopePod(ctx, nil, nil, nil, twoScopes[0], dir, "p-1", harness.KindPlan, logf); pod != nil || err != nil {
+		t.Fatalf("a plan with no served orgs given: %v %v", pod, err)
 	}
 }

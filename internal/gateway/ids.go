@@ -1,6 +1,10 @@
 package gateway
 
-import "github.com/google/uuid"
+import (
+	"strings"
+
+	"github.com/google/uuid"
+)
 
 // The platform's aggregate ids are v5 uuids over one fixed namespace
 // (runsheet/platform/ids). Deriving them here means a node registers and
@@ -43,4 +47,10 @@ func ProjectID(orgID uuid.UUID, slug string) uuid.UUID {
 // alone) or a context project's (both).
 func AgentID(orgID, projectID uuid.UUID, slug string) uuid.UUID {
 	return uuid.NewSHA1(idNamespace, []byte("agent:"+orgID.String()+":"+projectID.String()+":"+slug))
+}
+
+// ThreadID is a product thread's Thread aggregate id (runsheet
+// ids.ThreadID): one per product and thread key.
+func ThreadID(product, threadKey string) uuid.UUID {
+	return uuid.NewSHA1(idNamespace, []byte("thread:"+strings.TrimSpace(product)+"/"+strings.TrimSpace(threadKey)))
 }

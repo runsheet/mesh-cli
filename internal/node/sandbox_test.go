@@ -344,17 +344,17 @@ func TestSandboxEnsureImage(t *testing.T) {
 	}
 }
 
-// The node fills its sandbox's stores: one pnpm store and one npm cache
-// under ~/.mesh/store, beside ~/.mesh/work (mesh-specs ADR 017 §3).
-func TestOpenSandboxNamesThePackageStores(t *testing.T) {
+// The node's sandbox has no package store of its own (ADR-039): each
+// session's pod mounts its own job's (jobSandbox), so nothing one job
+// installs is another's.
+func TestOpenSandboxHasNoStoreOfItsOwn(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	sb, _, err := OpenSandbox(context.Background(), SandboxConfig{}, &sandbox.Fake{}, "v1", nil)
 	if err != nil || sb == nil {
 		t.Fatalf("open: %v %v", sb, err)
 	}
-	want := sandbox.Stores{Pnpm: filepath.Join(home, ".mesh", "store", "pnpm"), Npm: filepath.Join(home, ".mesh", "store", "npm")}
-	if sb.Config.Stores != want {
-		t.Errorf("stores = %+v, want %+v", sb.Config.Stores, want)
+	if sb.Config.Stores != (sandbox.Stores{}) {
+		t.Errorf("stores = %+v, want none", sb.Config.Stores)
 	}
 }

@@ -328,53 +328,33 @@ func TestRetryValidatesTheResumedTurnsHead(t *testing.T) {
 	}
 }
 
-// (e) With Roots laid out for several orgs, the runner resolves each
-// item's resume store through its own org: a record Kept for an item
-// of org A is found by org A's store, and org B's store — the one the
-// runner resolves for an item of org B with the same item id — reports
-// it not found (ADR-034, a node serving several orgs keeps one
-// ResumeStore per org).
-func TestRunnerResumesStoreIsPerOrg(t *testing.T) {
-	mesh := filepath.Join(t.TempDir(), ".mesh")
-	set, err := NewOrgRootSet(mesh, []string{"acme", "grapevine"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := &Runner{Roots: set, Scopes: Scopes{{ID: "org-a", Login: "acme"}, {ID: "org-b", Login: "grapevine"}}}
+// (e) With a Layout, each item's resume store is its own job's: a
+// record Kept for one item is found by that item's store and not by
+// another item's (ADR-039, a record goes with its job).
+func TestRunnerResumesStoreIsPerJob(t *testing.T) {
+	l := testLayout(t)
+	r := &Runner{Layout: l}
 
-	storeA := r.resumes("org-a")
+	storeA := r.resumes("item-1")
 	if storeA == nil {
-		t.Fatal("org A: no resume store resolved")
+		t.Fatal("item 1: no resume store resolved")
 	}
-	rootsA, err := set.For("acme")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if storeA.Dir != rootsA.Resumes {
-		t.Fatalf("org A's store dir = %s, want %s", storeA.Dir, rootsA.Resumes)
+	j, _ := l.Job("item-1")
+	if storeA.Dir != j.Resume {
+		t.Fatalf("item 1's store dir = %s, want %s", storeA.Dir, j.Resume)
 	}
 	if err := storeA.Keep("item-1", ResumeRecord{SessionID: "s-1", Adapter: "claude-code", Worktree: "/w"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := storeA.Lookup("item-1"); !ok {
-		t.Fatal("org A's store does not find its own record")
+		t.Fatal("item 1's store does not find its own record")
 	}
-
-	storeB := r.resumes("org-b")
-	if storeB == nil {
-		t.Fatal("org B: no resume store resolved")
-	}
-	if storeB.Dir == storeA.Dir {
-		t.Fatalf("org A and org B resolved the same store dir %s", storeA.Dir)
+	storeB := r.resumes("item-2")
+	if storeB == nil || storeB.Dir == storeA.Dir {
+		t.Fatalf("item 2 resolved %+v, beside item 1's %s", storeB, storeA.Dir)
 	}
 	if _, ok := storeB.Lookup("item-1"); ok {
-		t.Fatal("org B's store found org A's record")
-	}
-
-	// an org the node does not serve looks up and keeps nothing, never
-	// another org's roots in its place
-	if r.resumes("org-unknown") != nil {
-		t.Fatal("an unserved org resolved a resume store")
+		t.Fatal("item 2's store found item 1's record")
 	}
 }
 

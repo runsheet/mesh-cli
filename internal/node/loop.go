@@ -85,6 +85,11 @@ type Loop struct {
 	// ordinary answer. Optional; it does not count against capacity — it
 	// competes for the machine, not for the work.
 	Research func(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope)
+	// Thread answers one turn of a product thread this node runs the
+	// kind of (ThreadRunner.Run; runsheet ADR 061 §7): a person waits on
+	// it, so a raised turn is taken on the tick that sees it. Optional;
+	// nil runs none.
+	Thread func(ctx context.Context, turn gateway.ThreadTurn, kind string, scope Scope)
 	// Rebase runs a session of kind rebase on an item whose rebase this
 	// node has claimed (runsheet ADR 008) and returns when the rebase is
 	// finished or failed. The claim is taken here, before it runs; another
@@ -281,6 +286,12 @@ type Loop struct {
 	evaluating  map[string]bool
 	planning    map[string]bool
 	researching map[string]bool
+	// threading is the thread turns this node is answering, by turn id.
+	threading map[string]bool
+	// threadKinds is the platform's job-kind catalogue, read at most
+	// every threadKindsEvery, for which kind a thread turn is.
+	threadKinds   map[string]gateway.JobKind
+	threadKindsAt time.Time
 	rebasing    map[string]bool
 	// validating is the main validations running, by mergeBatchId or,
 	// for a merged item's, workItemId: each a session against the
@@ -429,6 +440,9 @@ type Loop struct {
 	updating bool
 	restart  bool
 	updateWG sync.WaitGroup
+	// stoppables are the sessions the platform's stop list can end, by
+	// kind and item (stops.go)
+	stoppables map[string]stoppable
 	// letGo cancels every context Context derived: the sessions detach
 	// and Run returns. exiting is set by Restart.
 	letGo   []context.CancelFunc
@@ -709,6 +723,10 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 		already := l.running[item.ID]
 		l.mu.Unlock()
 		if already {
+			continue
+		}
+		if why, at := atConnectionCap(sc, orgHeld); at {
+			l.passOver(item.GoalID, "item", priorityName(r.rank), why, time.Time{})
 			continue
 		}
 		if l.capFull(capped, item.GoalID, "item", priorityName(r.rank)) {
@@ -1110,7 +1128,7 @@ func (l *Loop) drained() bool {
 
 // sessions counts every session in flight, of any kind; l.mu is held.
 func (l *Loop) sessions() int {
-	return l.buildingLocked() + len(l.evaluating) + len(l.planning) + len(l.researching) + len(l.rebasing) + len(l.validating)
+	return l.buildingLocked() + len(l.evaluating) + len(l.planning) + len(l.researching) + len(l.rebasing) + len(l.validating) + len(l.threading)
 }
 
 func (l *Loop) wakeup() chan struct{} {
@@ -1189,7 +1207,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	// the heartbeat goes out before this tick's pass, so its holding is
 	// the last pass's decision (nil before the first; a draining node,
 	// which makes no pass, keeps sending its last one unchanged)
-	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(l.Known.Accounts(l.now()), l.now(), l.Thresholds()), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Reason: l.Condition(), Adopted: l.Adopted(), Resumed: l.Resumed(), Holding: l.Holding(), Commit: l.Commit, Findings: l.heartbeatFindings(ctx)}
+	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(l.Known.Accounts(l.now()), l.now(), l.Thresholds()), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Reason: l.Condition(), Adopted: l.Adopted(), Resumed: l.Resumed(), Holding: l.Holding(), Commit: l.Commit, Findings: l.heartbeatFindings(ctx), Sessions: l.Sessions()}
 	rt := l.RuntimeBroken()
 	l.runtimeHeartbeat(ctx, &extras, rt)
 	scaling, ranged := l.Scaling()
@@ -1218,6 +1236,9 @@ func (l *Loop) Tick(ctx context.Context) {
 		} else {
 			beat = true
 			l.TakeAnswer(answer)
+			if answer != nil {
+				l.applyStops(answer.Stop)
+			}
 		}
 	} else {
 		for _, sc := range l.Scopes {
@@ -1264,6 +1285,7 @@ func (l *Loop) Tick(ctx context.Context) {
 				l.rebaseRequested(ctx)
 				l.planRequested(ctx)
 				l.researchDue(ctx)
+				l.threadsDue(ctx)
 			}
 			// the slots taken are the tracked builds or, when more run on
 			// the host, the live agent sessions, orphans included (LiveProbe)
@@ -2215,9 +2237,11 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 		capped.started()
 		l.logf("evaluating item %d %q", item.Seq, item.Title)
 		l.wg.Add(1)
+		actx, stopped := l.stoppableCtx(actx, "evaluate", item.ID)
 		go func(ctx context.Context, item gateway.WorkItem) {
 			defer crash.Guard()
 			defer l.wg.Done()
+			defer stopped()
 			defer func() {
 				l.mu.Lock()
 				delete(l.evaluating, item.ID)
@@ -2342,9 +2366,11 @@ func (l *Loop) rebaseRequested(ctx context.Context) {
 		capped.started()
 		l.logf("%s: rebasing item %d %q", sc.Name(), item.Seq, item.Title)
 		l.wg.Add(1)
+		actx, stopped := l.stoppableCtx(actx, "rebase", item.ID)
 		go func(ctx context.Context, item gateway.WorkItem) {
 			defer crash.Guard()
 			defer l.wg.Done()
+			defer stopped()
 			defer func() {
 				l.mu.Lock()
 				delete(l.rebasing, item.ID)
@@ -2415,6 +2441,10 @@ func (l *Loop) planRequested(ctx context.Context) {
 		if reason, ok := l.planReleased(g); ok {
 			l.passOver(g.ID, "plan", priorityName(gateway.PriorityRank(g.Priority)), reason, time.Time{})
 			l.NoteHeld(HeldGoal{GoalID: g.ID, Slug: g.Slug, Org: sc.Name(), Kind: "plan", Reason: reason, Since: l.heldSince(g.ID, "plan")})
+			continue
+		}
+		if why, at := atConnectionCap(sc, l.heldByOrg()); at {
+			l.passOver(g.ID, "plan", priorityName(gateway.PriorityRank(g.Priority)), why, time.Time{})
 			continue
 		}
 		actx, ok := l.accountFor(ctx, priorityName(gateway.PriorityRank(g.Priority)), true, "plan")
@@ -2568,6 +2598,10 @@ func (l *Loop) researchDue(ctx context.Context) {
 			// api account and never on a paced one; it has no priority
 			// (""), so any credential's priorities serve it (adr-005's
 			// amendment 2026-10-02)
+			if why, at := atConnectionCap(sc, l.heldByOrg()); at {
+				l.passOver(d.ID, "research", "", why, time.Time{})
+				continue
+			}
 			actx, ok := l.accountFor(ctx, "", false, "")
 			if !ok {
 				continue
@@ -2670,9 +2704,11 @@ func (l *Loop) runsOn(ctx context.Context, itemID string) {
 func (l *Loop) run(ctx context.Context, item gateway.WorkItem) {
 	l.runsOn(ctx, item.ID)
 	l.wg.Add(1)
+	ctx, stopped := l.stoppableCtx(ctx, "build", item.ID)
 	go func() {
 		defer crash.Guard()
 		defer l.wg.Done()
+		defer stopped()
 		defer func() {
 			l.mu.Lock()
 			delete(l.running, item.ID)

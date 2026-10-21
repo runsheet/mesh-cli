@@ -32,7 +32,10 @@ type itemCheckout struct {
 	Dir      string
 	GoalSlug string
 	Seq      int
-	Label    string // <goal>/<seq> or <goal>/<seq>-eval
+	Label    string // <goal>/<seq> or <goal>/<seq>-eval; <job label>/checkout
+	// ItemID, set, is the item of a job's checkout (ADR-039), its status
+	// read by id.
+	ItemID string
 }
 
 // DeadCheckoutCheck is the quartermaster's dead-checkout check: every
@@ -48,23 +51,66 @@ type itemCheckout struct {
 // not answer.
 func DeadCheckoutCheck(gw Gateway, git *Git, root string, live func(dir string) bool) Check {
 	return func(ctx context.Context, now time.Time) []Finding {
-		return []Finding{deadCheckouts(ctx, gw, git, root, live, now)}
+		reposRoot := git.ReposRoot
+		if reposRoot == "" {
+			reposRoot = filepath.Join(filepath.Dir(root), "repos")
+		}
+		prune := func(ctx context.Context) (int, []string) {
+			return pruneGoneWorktrees(ctx, git, reposRoot, git.lockRoot(root, ""))
+		}
+		return []Finding{deadCheckouts(ctx, gw, git, root, itemCheckouts(root), prune, live, now)}
 	}
 }
 
-func deadCheckouts(ctx context.Context, gw Gateway, git *Git, root string, live func(string) bool, now time.Time) Finding {
+// JobDeadCheckoutCheck is DeadCheckoutCheck over the node's jobs
+// (ADR-039): every item job's checkout, evaluation clone and rebase
+// clone, its item's status read by id.
+func JobDeadCheckoutCheck(gw Gateway, git *Git, l *Layout, live func(dir string) bool) Check {
+	return func(ctx context.Context, now time.Time) []Finding {
+		// every job's checkout is a clone of its own: no shared clone
+		// holds a registration to prune
+		prune := func(context.Context) (int, []string) { return 0, nil }
+		return []Finding{deadCheckouts(ctx, gw, git, l.JobsDir(), jobCheckouts(l), prune, live, now)}
+	}
+}
+
+// jobCheckouts is every item job's workspace with a `.git`: its
+// checkout, eval and rebase, sorted by path.
+func jobCheckouts(l *Layout) []itemCheckout {
+	jobs, _ := l.Jobs()
+	var out []itemCheckout
+	for _, fj := range jobs {
+		if fj.Meta.Unit != JobItem {
+			continue
+		}
+		j, err := l.Job(fj.Meta.ID)
+		if err != nil {
+			continue
+		}
+		for _, dir := range []string{j.Checkout(), j.Eval(), j.Rebase()} {
+			if _, err := os.Lstat(filepath.Join(dir, ".git")); err != nil {
+				continue
+			}
+			out = append(out, itemCheckout{Dir: dir, ItemID: fj.Meta.ItemID, Label: cmpLabel(fj.Meta) + "/" + filepath.Base(dir)})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Dir < out[j].Dir })
+	return out
+}
+
+func deadCheckouts(ctx context.Context, gw Gateway, git *Git, root string, checkouts []itemCheckout, prune func(context.Context) (int, []string), live func(string) bool, now time.Time) Finding {
 	f := Finding{Kind: "dead_checkout", Severity: "ok", Subject: root, At: now}
 	var notes []string
 
-	pruned, pruneErrs := pruneGoneWorktrees(ctx, git, root)
+	pruned, pruneErrs := prune(ctx)
 	notes = append(notes, pruneErrs...)
 
 	items := &checkoutItems{gw: gw}
 	var dead, removed, keptLive, keptRecent, unread int
 	var unreadErr error
 	var failed []string
-	for _, c := range itemCheckouts(root) {
-		status, err := items.status(ctx, c.GoalSlug, c.Seq)
+	for _, c := range checkouts {
+		status, err := items.statusOf(ctx, c)
 		if err != nil {
 			unread++
 			if unreadErr == nil {
@@ -164,6 +210,22 @@ type checkoutItems struct {
 	goals map[string]string // slug → goal id
 	items map[string]map[int]string
 	ierr  map[string]error
+}
+
+// statusOf is a checkout's item's status: by id for a job's checkout,
+// else by goal slug and seq (status).
+func (c *checkoutItems) statusOf(ctx context.Context, co itemCheckout) (string, error) {
+	if co.ItemID == "" {
+		return c.status(ctx, co.GoalSlug, co.Seq)
+	}
+	it, err := c.gw.WorkItem(ctx, co.ItemID)
+	if errors.Is(err, gateway.ErrNotFound) || (err == nil && it == nil) {
+		return "unknown", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("item %s: %w", co.ItemID, err)
+	}
+	return itemStatus(*it), nil
 }
 
 // status is the item's status, "unknown" when the platform has no goal
@@ -277,12 +339,7 @@ func dirBytes(dir string) int64 {
 // on this node (WorkspaceLive) — never a blanket `git worktree prune`
 // (ADR-028, What RemoveWorkspace removes) — under the repo's lock; it
 // returns the count and a note per clone it could not clean.
-func pruneGoneWorktrees(ctx context.Context, git *Git, root string) (int, []string) {
-	reposRoot := git.ReposRoot
-	if reposRoot == "" {
-		reposRoot = filepath.Join(filepath.Dir(root), "repos")
-	}
-	lockRoot := git.lockRoot(root, "")
+func pruneGoneWorktrees(ctx context.Context, git *Git, reposRoot, lockRoot string) (int, []string) {
 	var n int
 	var notes []string
 	for _, clone := range sharedClones(reposRoot) {

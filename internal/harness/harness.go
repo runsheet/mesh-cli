@@ -32,6 +32,10 @@ const (
 	// KindRebase rebases a finished branch the integrator could not
 	// rebase itself onto its base and pushes it (runsheet ADR 008).
 	KindRebase Kind = "rebase"
+	// KindThread answers one turn of a person's thread with a product's
+	// role (runsheet ADR 061 §7, runsheet/goal-chat): an answer, or a
+	// proposal the person acts on.
+	KindThread Kind = "thread"
 )
 
 // Job is one session's brief.

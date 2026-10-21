@@ -132,19 +132,13 @@ func (r *Runner) freshContextFor(ctx context.Context, item gateway.WorkItem, lab
 	return fc
 }
 
-// resumes is the resume store for an item of orgID: its own org's when
-// Roots is laid out (ADR-034) — a ResumeStore over roots.Resumes, so an
-// org never finds or keeps a record under another org's dir — else the
-// runner's own (Resumes, then State's), nil when neither is set. An
-// orgID Roots does not serve looks up and keeps nothing (the item would
-// already have failed at its workspace, orgSpec).
-func (r *Runner) resumes(orgID string) *ResumeStore {
-	if r.Roots != nil {
-		roots, err := r.Roots.ForOrgID(r.Scopes, orgID)
-		if err != nil {
-			return nil
-		}
-		s := ResumeStore{Dir: roots.Resumes}
+// resumes is the resume store for item itemID: its own job's when the
+// node has a Layout (ADR-039) — a ResumeStore over <job>/resume, so a
+// record goes with its job — else the runner's own (Resumes, then
+// State's), nil when neither is set.
+func (r *Runner) resumes(itemID string) *ResumeStore {
+	if j, ok := jobDirsOf(r.Layout, itemID); ok {
+		s := ResumeStore{Dir: j.Resume}
 		return &s
 	}
 	if r.Resumes != nil {
@@ -186,7 +180,7 @@ func sessionConfigDir(acct *SessionAccount, pod *SessionPod, adapter string) str
 // this claim's checkout (ADR-028: one worktree per item), or a transcript
 // that does not restore.
 func (r *Runner) resumable(orgID, itemID, label, dir string, acct *SessionAccount, pod *SessionPod) (ResumeRecord, string) {
-	store := r.resumes(orgID)
+	store := r.resumes(itemID)
 	if store == nil {
 		return ResumeRecord{}, notResumedNoRecord
 	}

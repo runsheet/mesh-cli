@@ -37,17 +37,24 @@ type WorkspaceSpec struct {
 	// place RebuildWorktree looks when neither the shared clone's
 	// refs/heads/<branch> nor origin/<branch> is there.
 	Head string
-	// Repos, when set, is the repos root of the item's org (OrgRoots.Repos,
-	// ADR-034): the shared clone a new checkout is a worktree of is
-	// <Repos>/<owner>/<name>, whatever Git.ReposRoot says, so org A's
-	// worktree is never added from org B's clone.
+	// Repos, when set, is a repos root: the shared clone a new checkout
+	// is a worktree of is <Repos>/<owner>/<name>, whatever Git.ReposRoot
+	// says (the tests' work-root layout; a job's checkout is a clone of
+	// its own).
 	Repos string
+	// Job, when set, is the item's job directory (ADR-039): the checkout
+	// is a clone of its own at Path, under the job's own repo locks
+	// (Root).
+	Job string
 }
 
 // Dir is the workspace directory.
 func (s WorkspaceSpec) Dir() string {
 	if s.Path != "" {
 		return s.Path
+	}
+	if s.Job != "" {
+		return filepath.Join(s.Job, "checkout")
 	}
 	return filepath.Join(s.Root, s.GoalSlug, fmt.Sprint(s.Seq))
 }
@@ -352,10 +359,6 @@ func (g *Git) sharedClone(spec WorkspaceSpec) string {
 		return ""
 	}
 	reposRoot := spec.Repos
-	if reposRoot == "" && spec.Root != "" {
-		// an org's work root names its own repos root (ADR-034)
-		reposRoot = orgReposRootOf(spec.Dir())
-	}
 	if reposRoot == "" {
 		reposRoot = g.ReposRoot
 	}
@@ -366,6 +369,21 @@ func (g *Git) sharedClone(spec WorkspaceSpec) string {
 		reposRoot = filepath.Join(filepath.Dir(spec.Root), "repos")
 	}
 	return SharedClonePath(reposRoot, spec.Repo)
+}
+
+// cloneCommand is the command that clones repo into dir: git over https
+// on the item's token when ctx carries one (withGitToken: in the
+// environment, never the command line or a config file), else the
+// operator's gh. flags go to git clone (through gh after its --).
+func (g *Git) cloneCommand(ctx context.Context, repo, dir string, flags ...string) []string {
+	if gitTokenEnv(ctx) != nil {
+		return append(append([]string{"git", "clone", "--quiet"}, flags...), g.githubURL()+"/"+repo+".git", dir)
+	}
+	cmd := []string{"gh", "repo", "clone", repo, dir}
+	if len(flags) > 0 {
+		cmd = append(append(cmd, "--"), flags...)
+	}
+	return cmd
 }
 
 // Prepare implements Workspacer. A new item's checkout is a worktree of
@@ -388,7 +406,8 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 			return "", err
 		}
-		if _, err := g.fetchLocked(ctx, root, key, filepath.Dir(dir), "gh", "repo", "clone", spec.Repo, dir); err != nil {
+		clone := g.cloneCommand(ctx, spec.Repo, dir)
+		if _, err := g.fetchLocked(ctx, root, key, filepath.Dir(dir), clone[0], clone[1:]...); err != nil {
 			return "", err
 		}
 	} else if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--prune", "origin"); err != nil {
@@ -655,14 +674,14 @@ func registeredDir(admin string) (string, bool) {
 	return filepath.Dir(filepath.Clean(strings.TrimSpace(string(b)))), true
 }
 
-// reposRootFor is the repos root dir's shared clone lives under: its
-// org's (~/.mesh/orgs/<org>/repos for ~/.mesh/orgs/<org>/work/<goal>/<seq>,
-// ADR-034), else ReposRoot when set, else "repos" beside dir's work root
-// (its grandparent's parent: ~/.mesh/repos for ~/.mesh/work/<goal>/<seq>),
-// as sharedClone derives it from a spec's Root.
+// reposRootFor is the repos root dir's shared clone lives under: none
+// for a checkout in a job, which is a clone of its own (ADR-039), else
+// ReposRoot when set, else "repos" beside dir's work root (its
+// grandparent's parent: <root>/../repos for <root>/<goal>/<seq>), as
+// sharedClone derives it from a spec's Root.
 func (g *Git) reposRootFor(dir string) string {
-	if r := orgReposRootOf(dir); r != "" {
-		return r
+	if _, _, ok := jobOf(dir); ok {
+		return ""
 	}
 	if g.ReposRoot != "" {
 		return g.ReposRoot

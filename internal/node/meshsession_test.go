@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"projectmesh.io/mesh-cli/internal/dpop"
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 	"projectmesh.io/mesh-cli/internal/harness"
@@ -25,13 +26,13 @@ const (
 )
 
 // twoOrgs is a node serving acme and beta, each holding the claim of
-// one item, its roots under a temp ~/.mesh, its token files kept by tf
+// one item, its jobs under a temp ~/.mesh, its token files kept by tf
 // and its builds' bearers opened by sb.
 type twoOrgs struct {
 	f      *gatewaytest.Fake
 	r      *Runner
 	tf     *TokenFiles
-	roots  *OrgRootSet
+	layout *Layout
 	items  map[string]gateway.WorkItem
 	nodeOf map[string]string
 }
@@ -43,15 +44,12 @@ func newTwoOrgs(t *testing.T) *twoOrgs {
 	f.WorkItems[item1] = map[string]any{"id": item1, "orgId": orgID, "status": "claimed", "nodeId": nodeA, "attempts": 1}
 	f.WorkItems[itemB] = map[string]any{"id": itemB, "orgId": orgB, "status": "claimed", "nodeId": nodeB, "attempts": 3}
 	gw := gateway.New(f.URL(), machine)
-	scopes := Scopes{{Login: "acme", ID: orgID, NodeID: nodeA}, {Login: "beta", ID: orgB, NodeID: nodeB}}
-	roots, err := NewOrgRootSet(t.TempDir(), scopes.Names())
-	if err != nil {
-		t.Fatal(err)
-	}
+	scopes := connected(Scopes{{Login: "acme", ID: orgID, NodeID: nodeA}, {Login: "beta", ID: orgB, NodeID: nodeB}})
+	layout := testLayout(t)
 	tf := &TokenFiles{Token: gw.Bearer, MultiOrg: func() bool { return len(scopes) > 1 }}
 	sb := &SessionBearers{GW: gw, Tokens: tf, Audience: MeshMCPURL(f.URL()), Orgs: func() int { return len(scopes) }}
-	r := &Runner{GW: gw, Scopes: scopes, Roots: roots, Bearers: sb, Log: log.New(os.Stderr, "", 0)}
-	return &twoOrgs{f: f, r: r, tf: tf, roots: roots,
+	r := &Runner{GW: gw, Scopes: scopes, Layout: layout, Bearers: sb, Log: log.New(os.Stderr, "", 0)}
+	return &twoOrgs{f: f, r: r, tf: tf, layout: layout,
 		items:  map[string]gateway.WorkItem{"acme": {ID: item1, OrgID: orgID, Attempts: 1}, "beta": {ID: itemB, OrgID: orgB, Attempts: 3}},
 		nodeOf: map[string]string{"acme": nodeA, "beta": nodeB}}
 }
@@ -82,7 +80,7 @@ func readTok(t *testing.T, path string) string {
 
 // Two sessions of two orgs get two bearers, each its own mesh
 // session's id token and never the machine's, each file under its own
-// org's MCP root; the open names the item, its claim and its node; at
+// job's MCP root (ADR-039); the open names the item, its claim and its node; at
 // the session's end the bearer is cleared and the file and its
 // directory removed (ADR-035).
 func TestTwoOrgsSessionsReadOnTheirOwnBearers(t *testing.T) {
@@ -97,9 +95,9 @@ func TestTwoOrgsSessionsReadOnTheirOwnBearers(t *testing.T) {
 		}
 		paths[org], toks[org] = path, readTok(t, path)
 		ends[org] = func() { unbind(); release(true); RemoveTokenDir(filepath.Dir(path)) }
-		roots, _ := o.roots.For(org)
-		if !strings.HasPrefix(path, roots.MCP+string(filepath.Separator)) {
-			t.Fatalf("%s's token file %s is not under its MCP root %s", org, path, roots.MCP)
+		j, _ := o.layout.Job(o.items[org].ID)
+		if !strings.HasPrefix(path, j.MCP+string(filepath.Separator)) {
+			t.Fatalf("%s's token file %s is not under its job's MCP root %s", org, path, j.MCP)
 		}
 		ms := o.f.MeshSessionFor(o.items[org].ID)
 		if ms == nil || len(ms.Minted) == 0 || toks[org] != ms.Minted[len(ms.Minted)-1] {
@@ -113,10 +111,10 @@ func TestTwoOrgsSessionsReadOnTheirOwnBearers(t *testing.T) {
 		t.Fatalf("both orgs' sessions hold one bearer %q", toks["acme"])
 	}
 	for _, other := range []string{"acme", "beta"} {
-		roots, _ := o.roots.For(other)
+		j, _ := o.layout.Job(o.items[other].ID)
 		for org, p := range paths {
-			if org != other && strings.HasPrefix(p, roots.MCP) {
-				t.Fatalf("%s's file %s is under %s's MCP root", org, p, other)
+			if org != other && strings.HasPrefix(p, j.MCP) {
+				t.Fatalf("%s's file %s is under %s's job's MCP root", org, p, other)
 			}
 		}
 	}
@@ -214,11 +212,7 @@ func TestNoMeshSessionsOnOneOrgFallsBack(t *testing.T) {
 	o.r.Bearers.Orgs = func() int { return len(one) }
 	var buf bytes.Buffer
 	o.r.Bearers.Logf = log.New(&buf, "", 0).Printf
-	roots, err := NewOrgRootSet(t.TempDir(), one.Names())
-	if err != nil {
-		t.Fatal(err)
-	}
-	o.r.Roots = roots
+	o.r.Layout = testLayout(t)
 	for i := 0; i < 2; i++ {
 		path, unbind, release, err := o.session(t, "acme")
 		if err != nil {
@@ -301,41 +295,45 @@ func TestRunItemBindsItsOwnBearerWhileItRuns(t *testing.T) {
 	}
 }
 
-// Until the relay signs its requests (runsheet ADR 064), a one-org
-// node with MachineUntilDPoP opens the build's mesh session and mints
-// its first id token, but the session reads on the machine bearer, so
-// its runsheet server starts; a node serving two orgs keeps the
-// session's own token.
-func TestOneOrgSessionReadsOnTheMachineBearerUntilDPoP(t *testing.T) {
-	for _, tc := range []struct {
-		orgs      int
-		wantBound bool
-	}{{1, false}, {2, true}} {
+// A build's mesh session token is minted for mesh-session and bound to
+// the node's DPoP key (runsheet ADR 064 §5), on a node serving one org
+// or two: the session's bearer is bound for the run, its key is the
+// node's, and nothing falls back to the machine bearer.
+func TestSessionTokensAreBoundToTheNodesKey(t *testing.T) {
+	key, err := dpop.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, orgs := range []int{1, 2} {
 		f := seed(t)
 		tf := &TokenFiles{Token: func(context.Context) (string, error) { return machine, nil }}
 		var boundDuring bool
+		var keyDuring *dpop.Key
 		h := &fakeHarness{}
 		r, _, item, _ := runnerOnFake(t, f, h, nil)
 		item.Attempts = 0
-		var buf bytes.Buffer
-		orgs := tc.orgs
-		r.Bearers = &SessionBearers{GW: gateway.New(f.URL(), machine), Tokens: tf, Audience: MeshMCPURL(f.URL()),
-			Orgs: func() int { return orgs }, MachineUntilDPoP: true, Logf: log.New(&buf, "", 0).Printf}
-		h.onRun = func(job harness.Job) { boundDuring = tf.Bound(job.Meta.ItemID, job.Meta.Attempt) }
+		n := orgs
+		r.Bearers = &SessionBearers{GW: gateway.New(f.URL(), machine), Tokens: tf, Key: key, Orgs: func() int { return n }}
+		h.onRun = func(job harness.Job) {
+			boundDuring = tf.Bound(job.Meta.ItemID, job.Meta.Attempt)
+			keyDuring = tf.KeyOf(job.Meta)
+		}
 		if err := r.RunItem(context.Background(), item); err != nil {
 			t.Fatal(err)
 		}
-		if len(h.jobs) != 1 || len(f.CallsNamed("openMeshSession")) != 1 {
-			t.Fatalf("%d orgs: jobs %d, opens %d", orgs, len(h.jobs), len(f.CallsNamed("openMeshSession")))
+		ms := f.MeshSessionFor(item1)
+		if ms == nil || len(ms.Minted) == 0 {
+			t.Fatalf("%d orgs: no token minted (%+v)", orgs, ms)
 		}
-		if ms := f.MeshSessionFor(item1); ms == nil || len(ms.Minted) == 0 {
-			t.Fatalf("%d orgs: no id token minted (%+v)", orgs, ms)
+		tok := ms.Minted[0]
+		if ms.Audiences[0] != MeshSessionAudience || ms.JKT[tok] != key.Thumbprint() {
+			t.Fatalf("%d orgs: minted %q for %q bound to %q, want mesh-session bound to %s", orgs, tok, ms.Audiences[0], ms.JKT[tok], key.Thumbprint())
 		}
-		if boundDuring != tc.wantBound {
-			t.Fatalf("%d orgs: session token bound during the run %v, want %v", orgs, boundDuring, tc.wantBound)
+		if !boundDuring || keyDuring != key {
+			t.Fatalf("%d orgs: bound during the run %v, key %v", orgs, boundDuring, keyDuring)
 		}
-		if said := strings.Contains(buf.String(), "DPoP-bound"); said == tc.wantBound {
-			t.Fatalf("%d orgs: log %q", orgs, buf.String())
+		if tf.KeyOf(harness.SessionMeta{ItemID: item1}) != nil {
+			t.Fatalf("%d orgs: the key is still bound after the build", orgs)
 		}
 	}
 }

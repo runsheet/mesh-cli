@@ -50,6 +50,8 @@ var roleForKind = map[string]string{
 	"plan":     "planner",
 	"research": "director",
 	"rebase":   "rebase",
+	// a thread's role reads and proposes as a planner does
+	"thread": "planner",
 }
 
 // RoleFor is the console role a session of kind selects tools for:

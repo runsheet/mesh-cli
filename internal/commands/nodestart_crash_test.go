@@ -23,7 +23,7 @@ func TestNodeStartPanicChild(t *testing.T) {
 	startNode = func(*cobra.Command, []string, *log.Logger) error {
 		panic("runtime error: invalid memory address or nil pointer dereference")
 	}
-	rootCmd.SetArgs([]string{"node", "start", "--mode=poll", "--unattended"})
+	rootCmd.SetArgs([]string{"node", "start", "--unattended"})
 	_ = rootCmd.Execute()
 	t.Fatal("node start returned after a panic")
 }

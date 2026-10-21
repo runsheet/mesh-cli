@@ -33,23 +33,21 @@ func mkKeptSession(t *testing.T, kept, name string, started time.Time) string {
 	return dir
 }
 
-// twoOrgsKept lays out two orgs' roots and, under each org's Kept, one
-// expired kept session and one young one.
-func twoOrgsKept(t *testing.T, now time.Time) (roots *OrgRootSet, expired, young []string) {
+// twoJobsKept lays out two jobs of two connections and, in each job's
+// kept sessions, one expired kept session and one young one.
+func twoJobsKept(t *testing.T, now time.Time) (l *Layout, expired, young []string) {
 	t.Helper()
-	roots, err := NewOrgRootSet(t.TempDir(), []string{"acme", "grapevine"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, org := range roots.Orgs() {
-		r, err := roots.For(org)
+	l = testLayout(t)
+	scopes := connected(Scopes{{Login: "acme", ID: "org-a"}, {Login: "grapevine", ID: "org-b"}})
+	for _, sc := range scopes {
+		j, err := openJob(l, scopes, sc.ID, JobMeta{ID: "item-" + sc.Name(), Unit: JobItem, ItemID: "item-" + sc.Name()})
 		if err != nil {
 			t.Fatal(err)
 		}
-		expired = append(expired, mkKeptSession(t, r.Kept, org+"-old", now.Add(-harness.KeepSessionOutput-time.Hour)))
-		young = append(young, mkKeptSession(t, r.Kept, org+"-young", now.Add(-time.Hour)))
+		expired = append(expired, mkKeptSession(t, j.Kept, sc.Name()+"-old", now.Add(-harness.KeepSessionOutput-time.Hour)))
+		young = append(young, mkKeptSession(t, j.Kept, sc.Name()+"-young", now.Add(-time.Hour)))
 	}
-	return roots, expired, young
+	return l, expired, young
 }
 
 func assertKeptSwept(t *testing.T, expired, young []string) {
@@ -66,75 +64,59 @@ func assertKeptSwept(t *testing.T, expired, young []string) {
 	}
 }
 
-// The kept-sessions sweep, given two orgs' roots, removes each org's
-// expired kept session under its own Kept and keeps each one's young
-// one (ADR-034).
-func TestOrgRootSetSweepKeptSessionsCoversEveryOrg(t *testing.T) {
+// The kept-sessions sweep removes each job's expired kept session under
+// its own kept sessions and keeps each one's young one (ADR-039).
+func TestLayoutSweepKeptSessionsCoversEveryJob(t *testing.T) {
 	now := time.Now()
-	roots, expired, young := twoOrgsKept(t, now)
-	if err := roots.SweepKeptSessions(now); err != nil {
+	l, expired, young := twoJobsKept(t, now)
+	if err := l.SweepKeptSessions(now); err != nil {
 		t.Fatal(err)
 	}
 	assertKeptSwept(t, expired, young)
 
-	var none *OrgRootSet
+	var none *Layout
 	if err := none.SweepKeptSessions(now); err != nil {
-		t.Fatalf("nil roots: %v", err)
+		t.Fatalf("nil layout: %v", err)
 	}
 }
 
-// The quartermaster's check sweeps every org's Kept and the work root's
-// own kept-sessions, with no Codex session started for either org.
-func TestKeptSessionsCheckSweepsEveryOrgAndTheWorkRoot(t *testing.T) {
+// The quartermaster's check sweeps every job's kept sessions and a work
+// root's own kept-sessions, with no Codex session started in any.
+func TestKeptSessionsCheckSweepsEveryJobAndTheWorkRoot(t *testing.T) {
 	now := time.Now()
-	roots, expired, young := twoOrgsKept(t, now)
+	l, expired, young := twoJobsKept(t, now)
 	work := t.TempDir()
 	expired = append(expired, mkKeptSession(t, filepath.Join(work, "kept-sessions"), "old", now.Add(-harness.KeepSessionOutput-time.Hour)))
 	young = append(young, mkKeptSession(t, filepath.Join(work, "kept-sessions"), "young", now.Add(-time.Hour)))
 
-	check := KeptSessionsCheck(func() *OrgRootSet { return roots }, work)
+	check := KeptSessionsCheck(l, work)
 	fs := check(context.Background(), now)
 	if len(fs) != 1 || fs[0].Kind != "kept_sessions" || fs[0].Severity != "ok" {
 		t.Fatalf("findings = %+v", fs)
 	}
 	assertKeptSwept(t, expired, young)
 
-	// no roots laid out: the work root's alone
-	if fs := KeptSessionsCheck(func() *OrgRootSet { return nil }, work)(context.Background(), now); fs[0].Severity != "ok" {
-		t.Fatalf("nil roots: %+v", fs)
+	// no layout: the work root's alone
+	if fs := KeptSessionsCheck(nil, work)(context.Background(), now); fs[0].Severity != "ok" {
+		t.Fatalf("nil layout: %+v", fs)
 	}
 }
 
-// A session's KeptRoot is its own org's Kept; an org the node does not
-// serve is refused, never given another's; with no roots laid out it is
-// "", the harness's old <work root>/kept-sessions.
-func TestKeptRootForIsTheOrgsOwn(t *testing.T) {
-	roots, err := NewOrgRootSet(t.TempDir(), []string{"acme", "grapevine"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	scopes := Scopes{{Login: "acme", ID: "org-a"}, {Login: "grapevine", ID: "org-b"}}
-	for _, c := range []struct{ id, org string }{{"org-a", "acme"}, {"org-b", "grapevine"}} {
-		want, _ := roots.For(c.org)
-		got, err := keptRootFor(roots, scopes, c.id)
+// A session's KeptRoot is its own job's; with no layout it is "", the
+// harness's old <work root>/kept-sessions.
+func TestKeptRootForIsTheJobsOwn(t *testing.T) {
+	l := testLayout(t)
+	for _, id := range []string{"item-a", "goal-b"} {
+		want, _ := l.Job(id)
+		got, err := keptRootFor(l, id)
 		if err != nil || got != want.Kept {
-			t.Errorf("keptRootFor(%s) = %q, %v; want %q", c.id, got, err, want.Kept)
-		}
-		got, err = keptRootOfScope(roots, Scope{Login: c.org, ID: c.id})
-		if err != nil || got != want.Kept {
-			t.Errorf("keptRootOfScope(%s) = %q, %v; want %q", c.org, got, err, want.Kept)
+			t.Errorf("keptRootFor(%s) = %q, %v; want %q", id, got, err, want.Kept)
 		}
 	}
-	if got, err := keptRootFor(roots, scopes, "org-c"); err == nil {
-		t.Errorf("unserved org id given %q", got)
+	if got, err := keptRootFor(l, "../escape"); err == nil {
+		t.Errorf("a key with a separator given %q", got)
 	}
-	if got, err := keptRootOfScope(roots, Scope{Login: "other", ID: "org-c"}); err == nil {
-		t.Errorf("unserved scope given %q", got)
-	}
-	if got, err := keptRootFor(nil, scopes, "org-c"); err != nil || got != "" {
-		t.Errorf("no roots: %q, %v; want \"\"", got, err)
-	}
-	if got, err := keptRootOfScope(nil, Scope{Login: "acme"}); err != nil || got != "" {
-		t.Errorf("no roots (scope): %q, %v; want \"\"", got, err)
+	if got, err := keptRootFor(nil, "item-a"); err != nil || got != "" {
+		t.Errorf("no layout: %q, %v; want \"\"", got, err)
 	}
 }

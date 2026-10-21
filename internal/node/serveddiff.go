@@ -150,6 +150,11 @@ func (r *Runner) checkoutServed(ctx context.Context, t validationTarget, c mainC
 		return "", nil, err
 	}
 	gctx := gitdata.WithToken(ctx, tok)
+	// the cache fills from this job's own clone alone, else from GitHub
+	// (ADR-039: no clone is shared between jobs)
+	if r.Layout != nil {
+		gctx = WithClone(gctx, jobCheckoutOf(t.dir))
+	}
 	gd := r.GitData
 	if c.atHead {
 		head, err := gd.Commit(gctx, c.repo, c.branch)
@@ -188,7 +193,7 @@ func (r *Runner) checkoutServed(ctx context.Context, t validationTarget, c mainC
 		}
 		return "", nil, validate.Classify(fmt.Errorf("compare %s...%s: %w", base, short(c.sha), err))
 	}
-	root, err := scratchRootFor(r.Roots, r.Scopes, t.item.OrgID, r.WorkRoot)
+	root, err := scratchRootFor(r.Layout, validationJobID(t), r.WorkRoot)
 	if err != nil {
 		return "", nil, fmt.Errorf("scratch: %w", err)
 	}

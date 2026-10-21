@@ -380,7 +380,8 @@ container itself**:
 - `~/.mesh/node.yaml` naming `DATABASE_URL` or a Postgres URL on
   localhost/127.0.0.1:5432;
 - the workspaces' `.env`, `.env.*` and `.envrc` under `~/.mesh/work`
-  with such a URL, in a checkout that declares no services (one that
+  with such a URL (the script still reads that tree; a node's checkouts
+  are under `~/.mesh/jobs` since ADR-039), in a checkout that declares no services (one that
   does gets a sidecar on that same address, which is fine);
 - a running host `claude`/`codex` session (`sandbox: off`) with such a
   URL in its environment.

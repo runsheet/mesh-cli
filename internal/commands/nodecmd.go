@@ -15,18 +15,17 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"text/tabwriter"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/crash"
+	"projectmesh.io/mesh-cli/internal/dpop"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
 	"projectmesh.io/mesh-cli/internal/auth"
-	"projectmesh.io/mesh-cli/internal/channel"
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/gitdata"
 	"projectmesh.io/mesh-cli/internal/harness"
@@ -62,7 +61,6 @@ var (
 	nodeModelBuildFlag     string
 	nodeModelEvaluateFlag  string
 	nodeModelPlanFlag      string
-	nodeModelChannelFlag   string
 	nodeModelResearchFlag  string
 	nodeModelRebaseFlag    string
 	// nodeModels is what `node start` resolved for this run: the config
@@ -85,7 +83,6 @@ func modelsFor(cmd *cobra.Command, cfg *node.Config) node.Models {
 		{"model-build", nodeModelBuildFlag, &m.Build},
 		{"model-evaluate", nodeModelEvaluateFlag, &m.Evaluate},
 		{"model-plan", nodeModelPlanFlag, &m.Plan},
-		{"model-channel", nodeModelChannelFlag, &m.Channel},
 		{"model-research", nodeModelResearchFlag, &m.Research},
 		{"model-rebase", nodeModelRebaseFlag, &m.Rebase},
 	} {
@@ -378,6 +375,14 @@ var nodeStatusCmd = &cobra.Command{
 		}
 		if line := personalNodeStatusLine(); line != "" {
 			fmt.Println(line)
+		}
+		// the running node's own view, live from its admin socket (ADR-039)
+		if sock, err := node.AdminSocket(); err == nil {
+			if st, err := node.ReadStatus(ctx, sock); err == nil {
+				for _, l := range st.LiveLines() {
+					fmt.Println(l)
+				}
+			}
 		}
 		scopes := out.Scopes
 		fmt.Println(credentialLine(src.Credential()))
@@ -930,19 +935,15 @@ var nodeLogoutCmd = &cobra.Command{
 
 var nodeStartCmd = &cobra.Command{
 	Use:   "start",
-	Short: "Run the node in the foreground (channel mode by default; --mode poll for claude -p per item)",
-	Long: `Every --interval the node heartbeats, lists the org's ready work items and
-claims up to its capacity. In channel mode (the default) one persistent
-claude session runs with the mesh channel attached and each claimed item
-is pushed into it as a work_item.ready event; the session reports back
-through the channel's tools. In poll mode each claimed item runs its own
-"claude -p" session and the node reports, pushes and finishes for it.
+	Short: "Run the node in the foreground",
+	Long: `Every --interval the node heartbeats, lists the ready work items of every
+org it serves and claims up to its capacity. Each claimed item, evaluation,
+rebase, plan and research runs as its own "claude -p" session in the job's own
+directory under ~/.mesh/jobs (in its own pod when the sandbox is on), and the
+node reports, pushes and finishes for it.
 
-Channels are a Claude Code research preview: the session is started with
---dangerously-load-development-channels server:mesh and needs claude.ai
-(Max) or Console auth — not Bedrock/Vertex. --unattended adds
---dangerously-skip-permissions so the session never waits on a prompt;
-only use it on a machine you trust with that.`,
+--unattended adds --dangerously-skip-permissions so a session never waits on a
+prompt; only use it on a machine you trust with that.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// a panic anywhere on the start path is one line in node.log
 		// and exit 70, not Go's bare status 2 (internal/crash)
@@ -1215,15 +1216,38 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 	sessionTokens = &node.TokenFiles{Token: gw.Bearer, Logf: logger.Printf, MultiOrg: func() bool { return loop.ServedOrgs() > 1 }}
 	// a build's runsheet reads on its own mesh session's bearer, never
 	// the machine's that reads every served org's (ADR-035)
-	sessionBearers = &node.SessionBearers{GW: gw, Tokens: sessionTokens, Audience: node.MeshMCPURL(gw.BaseURL), Orgs: loop.ServedOrgs, Logf: logger.Printf, MachineUntilDPoP: true}
+	// the node's DPoP key, in memory for this process alone: every
+	// session's token is bound to it, and its proxy signs each runsheet
+	// request with it (runsheet ADR 064 §5)
+	dpopKey, err := dpop.NewKey()
+	if err != nil {
+		return fmt.Errorf("dpop key: %w", err)
+	}
+	logger.Printf("dpop: session tokens bound to %s", dpopKey.Thumbprint())
+	sessionBearers = &node.SessionBearers{GW: gw, Tokens: sessionTokens, Key: dpopKey, Orgs: loop.ServedOrgs, Logf: logger.Printf}
 	// every build, evaluation, plan and research reaches its MCP servers
 	// through its own sessionproxy, the bearer and the tools' secrets
 	// held on the host, none of it in the session's pod
+	// the node's one HTTP server (ADR-039): its admin socket, for
+	// `mesh node status` and a watchdog, and every session's relay
+	// socket, each listener reaching only what it serves
+	nodeServer := &node.Server{Admin: node.AdminHandler(loop, nodeLayout, started), Logf: logger.Printf}
+	defer nodeServer.Close()
+	if sock, err := node.AdminSocket(); err != nil {
+		logger.Printf("admin socket: %v", err)
+	} else if err := nodeServer.ListenAdmin(sock); err != nil {
+		logger.Printf("admin socket %s: %v; status is read from the state files alone", sock, err)
+	} else {
+		logger.Printf("admin: %s (/health /status /jobs /metrics)", sock)
+	}
 	sessionProxies = newSessionProxies(logger.Printf)
+	if sessionProxies != nil {
+		sessionProxies.Server = nodeServer
+	}
 	loop.NoCredential = &node.NoCredentials{Log: logger, Now: loop.Now}
 	accounts := &node.Credentials{GW: gw, Limits: loop.Limits, Thresholds: loop.Thresholds, Known: known, NoCredential: loop.NoCredential, Log: logger}
-	// the quartermaster keeps the node fit from every tick, poll and
-	// channel mode alike: disk, /tmp scratch, dead checkouts, version
+	// the quartermaster keeps the node fit from every tick: disk, /tmp
+	// scratch, dead checkouts, version
 	// (goal the-quartermaster-keeps-the-nodes-fit); what it finds is
 	// left in node.findings for `mesh node status` and rides the heartbeat
 	loop.Quartermaster = nodeQuartermaster(gw, loop, workRoot, "", sessionSandbox, logger.Printf)
@@ -1232,14 +1256,10 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 			logger.Printf("findings state: %v", err)
 		}
 	}
-	switch nodeModeFlag {
-	case "poll":
-		return runPollMode(ctx, cfg, scopes, gw, loop, workRoot, fallback, accounts, logger)
-	case "channel", "":
-		return runChannelMode(ctx, cfg, scopes, gw, loop, workRoot, fallback, accounts, logger)
-	default:
-		return fmt.Errorf("--mode must be channel or poll")
+	if nodeModeFlag != "" && nodeModeFlag != "poll" {
+		return fmt.Errorf("--mode %s: channel mode is gone; a node runs every session as its own job (drop --mode)", nodeModeFlag)
 	}
+	return runNode(ctx, cfg, scopes, gw, loop, workRoot, fallback, accounts, logger)
 }
 
 // hostUnit is the unit sessions run in on this machine; a test of the
@@ -1248,7 +1268,7 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 var hostUnit = sessionunit.Default
 
 // sessionsOut is where what sessions say goes — the workspaces' git
-// commands, the agents' stderr, channel mode's text: ~/.mesh/sessions.log
+// commands, the agents' stderr: ~/.mesh/sessions.log
 // once `mesh node start` has opened it, so node.log keeps the node's own
 // lines; stderr for every other command.
 var sessionsOut io.Writer = os.Stderr
@@ -1275,19 +1295,13 @@ func openNodeLogs() (*node.NodeLogs, error) {
 	return logs, nil
 }
 
-// channelText logs a channel session's text, its first line, on the
-// sessions log: what a session says is not the node's reasoning.
-func channelText(sessions *log.Logger) func(string) {
-	return func(t string) { sessions.Printf("session: %s", firstLine(t)) }
-}
-
 // observed is a one-shot harness whose sessions report their plan
 // standing into the loop's Limits and their cost into its Ledger.
 func observed(loop *node.Loop, logger *log.Logger) harness.Harness {
 	return node.ObserveSpend(node.ObserveLimits(oneShotHarness(), loop.Limits), loop.Ledger, logger.Printf)
 }
 
-func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gateway.Client, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) error {
+func runNode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gateway.Client, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) error {
 	h := observed(loop, logger)
 	// an item's handed-back build leaves what it spent on beside the
 	// pidfile for the item's next claim (ADR 012 Hand-back)
@@ -1298,7 +1312,7 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 		rs := st.Resumes()
 		resumes = &rs
 	}
-	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return meshContextMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, BatchFallback: &node.TokenFallback{}, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, RuntimeBroken: loop.NoteRuntimeBroken, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Sandbox: sessionSandbox, MeshBinary: meshBinary(), State: state, Notices: validationNotices, Machine: loop.Machine, Host: loop.HostThresholds, RetryTurns: loop.NoteRetryTurn, Resumes: resumes, Tripline: loop.Tripline, Bearers: sessionBearers, Proxies: sessionProxies, Log: logger}
+	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Layout: nodeLayout, MCPFunc: func(ctx context.Context) map[string]any { return meshContextMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, BatchFallback: &node.TokenFallback{}, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, RuntimeBroken: loop.NoteRuntimeBroken, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Sandbox: sessionSandbox, MeshBinary: meshBinary(), State: state, Notices: validationNotices, Machine: loop.Machine, Host: loop.HostThresholds, RetryTurns: loop.NoteRetryTurn, Resumes: resumes, Tripline: loop.Tripline, Bearers: sessionBearers, Proxies: sessionProxies, Log: logger}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		r := *runner
 		r.Scopes = loop.CurrentScopes() // an org served since start is known to its build
@@ -1313,11 +1327,31 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 	// and attestation upload (ADR 048, ADR 054 decision 3)
 	loop.ValidateBatch = runner.ValidateCandidate
 	loop.ValidateMain = runner.ValidateMainRequest
+	// a pushed commit is validated from GitHub's served diff through the
+	// node's shared cache, else from a worktree of the shared clone; the
+	// same cache, Go build cache included, measured and trimmed under its
+	// cap at the first tick and hourly after
+	if cache, err := node.NewServedDiffCache(cfg, logger.Printf); err != nil {
+		logger.Printf("served diff: %v; validations take worktrees", err)
+	} else {
+		runner.ServedDiff(&gitdata.Client{}, cache)
+		loop.CacheTrim = &node.CacheTrim{Cache: cache, State: cache.State, Logf: logger.Printf}
+	}
 	loop.Plan = planWith(gw, cfg, h, loop, workRoot, accounts, logger)
 	loop.PlanReleased = (&node.Planner{WorkRoot: workRoot, Log: logger}).Released
 	loop.Research = researchWith(gw, cfg, h, loop, workRoot, accounts, logger)
+	// thread turns (runsheet ADR 061 §7): a person's message on a
+	// product's thread, answered in its own session
+	threads := &node.ThreadRunner{GW: gw, Harness: h, Credentials: accounts, Sandbox: sessionSandbox, Layout: nodeLayout, Served: loop.CurrentScopes,
+		Proxies: sessionProxies, MCP: meshContextMCP(ctx, gw), Runtimes: loop.ToolRuntimes, Model: nodeModels.For("plan"),
+		Timeout: nodeSessionTimeoutFlag, BudgetUSD: nodePlanBudgetFlag, WorkRoot: workRoot, Log: logger}
+	loop.Thread = func(ctx context.Context, turn gateway.ThreadTurn, kind string, sc node.Scope) {
+		if err := threads.Run(ctx, turn, kind, sc); err != nil {
+			logger.Printf("thread %s: %v", turn.ThreadKey, err)
+		}
+	}
 	loop.Rebase = rebaseWith(gw, cfg, h, loop, loop.CurrentScopes, workRoot, fallback, accounts, logger)
-	logger.Printf("poll mode: node %s (%s) for %s, capacity %s, every %s", cfg.Name, cfg.Slug, strings.Join(scopes.Names(), ", "), cfg.Capacity, loop.Interval)
+	logger.Printf("node %s (%s) for %s, capacity %s, every %s", cfg.Name, cfg.Slug, strings.Join(scopes.Names(), ", "), cfg.Capacity, loop.Interval)
 	// sessions the process before this one started run on in their own
 	// units: each is taken up where it is, before anything is claimed
 	found := adoptSessions(ctx, gw, cfg, h, second, loop, runner, workRoot, fallback, accounts, logger)
@@ -1390,10 +1424,12 @@ func registerNode(ctx context.Context, cmd *cobra.Command, logger *log.Logger, u
 	if err != nil {
 		return
 	}
-	workRoot, err = node.WorkRoot()
-	if err != nil {
+	// every session works in its job's directory under ~/.mesh/jobs,
+	// every clone and store in its connection's (ADR-039)
+	if nodeLayout, err = node.DefaultLayout(); err != nil {
 		return
 	}
+	workRoot = nodeLayout.JobsDir()
 	if err = os.MkdirAll(workRoot, 0o755); err != nil {
 		return
 	}
@@ -1639,265 +1675,6 @@ func endRun(err error, logger *log.Logger) error {
 	return err
 }
 
-func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gateway.Client, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) error {
-	sock, err := channel.SockPath()
-	if err != nil {
-		return err
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	// each held item is a slot: its event, kept for a re-push, and the
-	// outcome the session reports through the channel's tools
-	type slot struct {
-		content  string
-		meta     map[string]string
-		done     chan string
-		pushedAt time.Time
-		// cred is the item's GitHub token on its workspace, renewed by
-		// repush (nil on the old platform's fallback)
-		cred *node.ItemCred
-	}
-	slots := map[string]*slot{}
-	var mu sync.Mutex
-	hub := &channel.Hub{OnDone: func(itemID, outcome string) {
-		mu.Lock()
-		s := slots[itemID]
-		delete(slots, itemID)
-		mu.Unlock()
-		if s != nil {
-			s.done <- outcome
-		}
-	}}
-	if err := hub.Listen(sock); err != nil {
-		return fmt.Errorf("channel hub: %w", err)
-	}
-	defer hub.Close()
-
-	sess := &channel.Session{Cfg: cfg, Orgs: scopes.Names(), MCPFunc: func() map[string]any { return meshContextMCP(ctx, gw) }, Tokens: tokenKeeper(), WorkDir: filepath.Join(workRoot, cfg.Slug), Exe: exe, SockPath: sock, Unattended: nodeUnattended, Model: nodeModels.For("channel"), Stderr: sessionsOut, Log: logger,
-		OnText:      channelText(log.New(sessionsOut, "mesh node: ", log.LstdFlags)),
-		OnRateLimit: func(rl *harness.RateLimit) { loop.Limits.Observe(node.Account(os.Environ()), rl) }}
-	var sessMu sync.Mutex
-	sessionID := ""
-	sess.OnSessionID = func(id string) { sessMu.Lock(); sessionID = id; sessMu.Unlock() }
-	// an event goes both ways: the channel notification and a user
-	// message on the session's stdin, so it is worked even if the
-	// notification is missed
-	push := func(content string, meta map[string]string) {
-		sessMu.Lock()
-		if sessionID != "" {
-			meta["session_id"] = sessionID
-		}
-		sessMu.Unlock()
-		hub.Push(content, meta)
-		if err := sess.SendFor(meta["item_id"], channel.UserMessage(content, meta)); err != nil {
-			logger.Printf("session stdin: %v (the channel still has it)", err)
-		}
-		if id := meta["item_id"]; id != "" {
-			mu.Lock()
-			if s := slots[id]; s != nil {
-				s.pushedAt = time.Now()
-			}
-			mu.Unlock()
-		}
-	}
-
-	ws := &node.Git{Log: sessionsOut}
-	// the one-shot sessions the process before this one started run on
-	// in their own units: each is taken up where it is (a build of a
-	// poll-mode run before this one too), before anything is claimed
-	oneShot := observed(loop, logger)
-	// one per node: the evaluations of every tick and the adopted ones
-	// share what has been said once per item
-	second := codexSecondOpinion(cfg, loop, workRoot, logger)
-	found := adoptSessions(ctx, gw, cfg, oneShot, second, loop, &node.Runner{GW: gw, Harness: oneShot, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, RuntimeBroken: loop.NoteRuntimeBroken, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Machine: loop.Machine, Host: loop.HostThresholds, Tripline: loop.Tripline, Bearers: sessionBearers, Log: logger}, workRoot, fallback, accounts, logger)
-	node.SweepSandbox(ctx, sessionSandbox, found, logger.Printf)
-	sweepScratch(workRoot, found, logger)
-	loop.Evaluate = evaluateWith(gw, cfg, observed(loop, logger), second, loop, workRoot, fallback, accounts, logger)
-	mainRunner := &node.Runner{GW: gw, WS: ws, RuntimeBroken: loop.NoteRuntimeBroken, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, BatchFallback: &node.TokenFallback{}, Sandbox: sessionSandbox, Notices: validationNotices, Log: logger}
-	// a pushed commit is validated from GitHub's served diff through the
-	// node's shared cache, else from a worktree of the shared clone
-	if cache, err := node.NewServedDiffCache(cfg, logger.Printf); err != nil {
-		logger.Printf("served diff: %v; main validations take worktrees", err)
-	} else {
-		mainRunner.ServedDiff(&gitdata.Client{}, cache)
-		// the same cache, Go build cache included, measured and trimmed
-		// under its cap at the first tick and hourly after
-		trim := &node.CacheTrim{Cache: cache, State: cache.State, Logf: logger.Printf}
-		if root, err := node.ScratchRoot(workRoot); err == nil {
-			trim.ScratchRoot = root
-		}
-		loop.CacheTrim = trim
-	}
-	loop.ValidateBatch = mainRunner.ValidateCandidate
-	loop.ValidateMain = mainRunner.ValidateMainRequest
-	loop.Plan = planWith(gw, cfg, observed(loop, logger), loop, workRoot, accounts, logger)
-	loop.PlanReleased = (&node.Planner{WorkRoot: workRoot, Log: logger}).Released
-	loop.Research = researchWith(gw, cfg, observed(loop, logger), loop, workRoot, accounts, logger)
-	loop.Rebase = rebaseWith(gw, cfg, observed(loop, logger), loop, loop.CurrentScopes, workRoot, fallback, accounts, logger)
-	reopenClaims(ctx, loop, workRoot, found, logger)
-	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
-		ready, err := readyChannelItem(ctx, gw, ws, loop.CurrentScopes(), item, workRoot, fallback, logger.Printf)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			if ce := (*node.CredentialError)(nil); errors.As(err, &ce) {
-				sc, _ := loop.CurrentScopes().ByOrg(item.OrgID)
-				_ = node.ReleaseOnCredential(ctx, gw, item.ID, sc.NodeID, ce, logger.Printf)
-				return
-			}
-			logger.Printf("item %s: failed: %v", item.ID, err)
-			_ = gw.FailWorkItem(ctx, item.ID, err.Error())
-			return
-		}
-		res := ready.Res
-		content, meta := ready.Content, ready.Meta
-		s := &slot{content: content, meta: meta, done: make(chan string, 1), cred: ready.Cred}
-		mu.Lock()
-		slots[item.ID] = s
-		mu.Unlock()
-		push(content, meta)
-		logger.Printf("item %s/%d pushed to the session", res.Goal.Slug, item.Seq)
-		select {
-		case outcome := <-s.done:
-			logger.Printf("item %s/%d %s", res.Goal.Slug, item.Seq, outcome)
-		case <-ctx.Done():
-		}
-	}
-
-	// repush takes up every item this node holds on the platform: those
-	// already in a slot are pushed again when the session restarted (it
-	// lost them) or when it has gone quiet on one — idle, with no progress
-	// reported and no push within the stall window — so an item whose
-	// session gave up mid-way (a hung subagent, an interrupted turn) is
-	// offered again instead of sitting in running for ever; those without
-	// a slot (a restarted daemon) are adopted unless someone reported
-	// progress on them within the last interval.
-	stalled := func(s *slot, it gateway.WorkItem) bool {
-		idle, _ := sess.Idle()
-		return idle && !recentProgress(it.HeartbeatAt, nodeStallFlag) && time.Since(s.pushedAt) >= nodeStallFlag
-	}
-	// hung: the session is busy and nothing has been reported on the item
-	// for --turn-timeout since it was pushed — a subagent's call that never
-	// returns, a turn that never ends. Killing the session restarts it,
-	// and OnStart re-pushes every held item.
-	hung := func(s *slot, it gateway.WorkItem) bool {
-		if nodeTurnTimeoutFlag <= 0 {
-			return false
-		}
-		idle, _ := sess.Idle()
-		return !idle && !recentProgress(it.HeartbeatAt, nodeTurnTimeoutFlag) && time.Since(s.pushedAt) >= nodeTurnTimeoutFlag
-	}
-	repush := func(ctx context.Context, all bool) {
-		creds := map[string]*node.ItemCred{}
-		mu.Lock()
-		for id, s := range slots {
-			if s.cred != nil {
-				creds[id] = s.cred
-			}
-		}
-		mu.Unlock()
-		refreshItemCreds(ctx, creds, logger.Printf)
-		var held []gateway.WorkItem
-		for _, sc := range loop.CurrentScopes() {
-			for _, status := range []string{"claimed", "running"} {
-				items, err := gw.OrgWorkItems(ctx, sc.ID, status)
-				if err != nil {
-					logger.Printf("list held items of %s: %v", sc.Name(), err)
-					return
-				}
-				for _, it := range items {
-					if it.NodeID == sc.NodeID {
-						held = append(held, it)
-					}
-				}
-			}
-		}
-		for _, it := range held {
-			mu.Lock()
-			s := slots[it.ID]
-			mu.Unlock()
-			if s != nil {
-				if all {
-					push(s.content, s.meta)
-					logger.Printf("item %s re-pushed to the session", it.ID)
-				} else if stalled(s, it) {
-					push(s.content, s.meta)
-					logger.Printf("item %s re-pushed: the session is idle and nothing has been reported on it for %s", it.ID, nodeStallFlag)
-				} else if hung(s, it) {
-					sess.Kill(fmt.Sprintf("item %s: busy, nothing reported for %s", it.ID, nodeTurnTimeoutFlag))
-					mu.Lock()
-					s.pushedAt = time.Now() // the restart re-pushes; count the patience from there
-					mu.Unlock()
-				}
-				continue
-			}
-			if !all && recentProgress(it.HeartbeatAt, loop.Interval) {
-				continue
-			}
-			loop.Adopt(ctx, it)
-		}
-	}
-	sess.OnStart = func() {
-		time.Sleep(2 * time.Second) // let the channel server attach
-		repush(ctx, true)
-	}
-	// a turn's cost lands on the item its event was for, as the cents
-	// since the last turn: claude's total_cost_usd is the session's
-	// running total (a smaller figure is a fresh process, taken whole).
-	// The report is refused only on a pending item, so it lands however
-	// far the item has moved by the time the turn ends.
-	var costMu sync.Mutex
-	lastCost := 0.0
-	sess.OnTurn = func(itemID string, costUSD float64) {
-		costMu.Lock()
-		delta := costUSD - lastCost
-		if delta < 0 {
-			delta = costUSD
-		}
-		lastCost = costUSD
-		costMu.Unlock()
-		cents := node.Cents(delta)
-		if itemID == "" || cents == 0 {
-			return
-		}
-		sessMu.Lock()
-		sid := sessionID
-		sessMu.Unlock()
-		rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-		if err := gw.ReportWorkItemProgress(rctx, itemID, "", cents, sid); err != nil {
-			logger.Printf("item %s: report $%.2f: %v", itemID, delta, err)
-			return
-		}
-		logger.Printf("item %s: $%.2f reported", itemID, delta)
-	}
-	loop.AfterTick = func(ctx context.Context) { repush(ctx, false) }
-
-	logger.Printf("channel mode: node %s (%s) for %s, capacity %s, every %s; session in %s", cfg.Name, cfg.Slug, strings.Join(scopes.Names(), ", "), cfg.Capacity, loop.Interval, sess.WorkDir)
-	for _, sc := range scopes {
-		go func() {
-			defer crash.Guard()
-			channel.WatchGoals(ctx, gw, sc.ID, loop.Interval, func(kind string, g gateway.Goal) {
-				content, meta := channel.GoalEvent(kind, g)
-				push(content, meta)
-			})
-		}()
-	}
-	go func() {
-		defer crash.Guard()
-		_ = sess.Run(ctx, workRoot)
-	}()
-	err = loop.Run(ctx)
-	if errors.Is(err, context.Canceled) {
-		logger.Printf("stopped; claimed items were left for a retry")
-		return nil
-	}
-	return endRun(err, logger)
-}
-
 // nodeQuartermaster is node start's quartermaster: the disk check over
 // the work root, /tmp and home; the scratch check over tempDir ("" is
 // os.TempDir()), with the sandbox's own home sweep when there is a
@@ -1920,17 +1697,11 @@ func nodeQuartermaster(gw node.Gateway, loop *node.Loop, workRoot, tempDir strin
 	return &node.Quartermaster{Checks: []node.Check{
 		node.NewDiskCheck(workRoot).Check,
 		scratch.Check,
-		node.DeadCheckoutCheck(gw, &node.Git{Log: sessionsOut}, workRoot, loop.LiveCheckout),
+		node.JobDeadCheckoutCheck(gw, &node.Git{Log: sessionsOut}, nodeLayout, loop.LiveCheckout),
 		node.VersionCheck(loop),
-		// every served org's kept session streams, swept whether or not
-		// a Codex session of that org starts again (ADR-034)
-		node.KeptSessionsCheck(func() *node.OrgRootSet {
-			roots, err := node.NewOrgRootSetFor(loop.CurrentScopes())
-			if err != nil {
-				return nil
-			}
-			return roots
-		}, workRoot),
+		// every job's kept session streams, swept whether or not a Codex
+		// session starts in it again (ADR-039)
+		node.KeptSessionsCheck(nodeLayout, ""),
 	}}
 }
 
@@ -1962,15 +1733,18 @@ var sessionBearers *node.SessionBearers
 var sessionProxies *node.SessionProxies
 
 // newSessionProxies is the node's SessionProxies on sessionTokens'
-// bearers, their sockets under ~/.mesh/mcp unless the session's org has
-// an MCP root of its own; nil without sessionTokens or a home.
+// bearers, each session's sockets under its job's MCP root (ADR-039);
+// nil without sessionTokens.
 func newSessionProxies(logf func(string, ...any)) *node.SessionProxies {
-	home, err := os.UserHomeDir()
-	if sessionTokens == nil || err != nil {
+	if sessionTokens == nil {
 		return nil
 	}
-	return &node.SessionProxies{Bearer: sessionTokens.Source, Root: node.SingleOrgRoots(filepath.Join(home, ".mesh")).MCP, Logf: logf}
+	return &node.SessionProxies{Bearer: sessionTokens.Source, Key: sessionTokens.KeyOf, Logf: logf}
 }
+
+// nodeLayout is the node's job and connection trees under ~/.mesh
+// (ADR-039): set by registerNode.
+var nodeLayout *node.Layout
 
 // tokenKeeper is sessionTokens as a harness's TokenKeeper, nil (never a
 // nil pointer in an interface) when there is none.
@@ -1984,14 +1758,9 @@ func tokenKeeper() harness.TokenKeeper {
 // sessionSandbox is the pod every one-shot session runs in (OpenSandbox);
 // nil runs it on the host, as `sandbox: off` does.
 // sweepScratch is the start-up scratch sweep (node.SweepScratch) of
-// workRoot's scratch root and os.TempDir(), keeping what found names.
+// every job's scratch root and os.TempDir(), keeping what found names.
 func sweepScratch(workRoot string, found []node.FoundSession, logger *log.Logger) {
-	root, err := node.ScratchRoot(workRoot)
-	if err != nil {
-		logger.Printf("scratch: sweep at start: %v", err)
-		return
-	}
-	node.SweepScratch(node.ScratchSweep{Roots: []string{root}, Sandboxed: sessionSandbox != nil, Found: found, InUse: node.WorkspaceLive}, logger.Printf)
+	node.SweepScratch(node.ScratchSweep{Roots: nodeLayout.ScratchRoots(), Sandboxed: sessionSandbox != nil, Found: found, InUse: node.WorkspaceLive}, logger.Printf)
 }
 
 var sessionSandbox *sandbox.Sandbox
@@ -2002,9 +1771,11 @@ func oneShotHarness() *harness.ClaudeCode {
 	// a sandboxed session's agent runs detached in its pod and outlives
 	// the node like a host one: the next node adopts it (ADR 009)
 	h := &harness.ClaudeCode{Stderr: sessionsOut, Sandbox: sessionSandbox, MeshBinary: meshBinary(), DetachSandboxed: sessionSandbox != nil, Tokens: tokenKeeper()}
-	// a job with no work dir keeps its session dir in the node's scratch
-	// root, never /tmp
-	if root, err := node.ScratchRoot(""); err == nil {
+	// a job with no work dir keeps its session dir in the jobs tree's
+	// scratch root, never /tmp
+	if nodeLayout != nil {
+		h.ScratchRoot = filepath.Join(nodeLayout.JobsDir(), node.ScratchDirName)
+	} else if root, err := node.ScratchRoot(""); err == nil {
 		h.ScratchRoot = root
 	}
 	if nodeUnattended {
@@ -2216,7 +1987,7 @@ func researchWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, loop 
 }
 
 func evaluator(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, second secondOpinion, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) *node.Evaluator {
-	return &node.Evaluator{GW: gw, Proxies: sessionProxies, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: loop.CurrentScopes(), WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Sandbox: sessionSandbox, Tripline: loop.Tripline, Log: logger,
+	return &node.Evaluator{GW: gw, Proxies: sessionProxies, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: loop.CurrentScopes(), WorkRoot: workRoot, Layout: nodeLayout, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Sandbox: sessionSandbox, Tripline: loop.Tripline, Log: logger,
 		Codex: second.h, CodexPreflight: second.preflight, CodexModel: cfg.Codex.CodexModel, CodexAccounts: second.accounts, Waits: second.waits, Blind: second.blind, NoVerdict: second.noVerdict, Splits: &node.OncePer{}, LeftRunning: second.left, Limits: second.limits, Thresholds: second.thresholds}
 }
 
@@ -2225,15 +1996,15 @@ func evaluator(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harn
 var validationNotices = &node.ValidationNotices{}
 
 func rebaser(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, scopes func() node.Scopes, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) *node.Rebaser {
-	return &node.Rebaser{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes(), WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeRebaseBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("rebase"), Fallback: fallback, Credentials: accounts, Sandbox: sessionSandbox, Notices: validationNotices, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Tripline: loop.Tripline, Log: logger}
+	return &node.Rebaser{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes(), WorkRoot: workRoot, Layout: nodeLayout, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeRebaseBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("rebase"), Fallback: fallback, Credentials: accounts, Sandbox: sessionSandbox, Notices: validationNotices, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Tripline: loop.Tripline, Log: logger}
 }
 
 func planner(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, workRoot string, accounts *node.Credentials, logger *log.Logger) *node.Planner {
-	return &node.Planner{GW: gw, Proxies: sessionProxies, Harness: h, Sandbox: sessionSandbox, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodePlanBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.PlanModel(), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Log: logger}
+	return &node.Planner{GW: gw, Proxies: sessionProxies, Harness: h, Sandbox: sessionSandbox, Served: loop.CurrentScopes, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, Layout: nodeLayout, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodePlanBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.PlanModel(), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Log: logger}
 }
 
 func director(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, workRoot string, accounts *node.Credentials, logger *log.Logger) *node.Director {
-	return &node.Director{GW: gw, Proxies: sessionProxies, Harness: h, Sandbox: sessionSandbox, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeResearchBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("research"), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Log: logger}
+	return &node.Director{GW: gw, Proxies: sessionProxies, Harness: h, Sandbox: sessionSandbox, Served: loop.CurrentScopes, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, Layout: nodeLayout, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeResearchBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("research"), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Log: logger}
 }
 
 // adoptSessions takes up, before the first claim, every session under the
@@ -2276,10 +2047,9 @@ func adoptSessions(ctx context.Context, gw *gateway.Client, cfg *node.Config, h 
 			}
 		}
 	}
-	keep := []string{cfg.Slug} // the channel session's <node-slug> dir
-	nodeWorkSweep(ctx, gw, workRoot, loop.CurrentScopes(), startLive, keep, sessionSandbox, logger.Printf)
+	nodeWorkSweep(ctx, gw, nodeLayout, loop.CurrentScopes(), startLive, sessionSandbox, logger.Printf)
 	loop.WorkSweep = func(ctx context.Context) {
-		nodeWorkSweep(ctx, gw, workRoot, loop.CurrentScopes(), loop.LiveSubjects(), keep, sessionSandbox, logger.Printf)
+		nodeWorkSweep(ctx, gw, nodeLayout, loop.CurrentScopes(), loop.LiveSubjects(), sessionSandbox, logger.Printf)
 	}
 	if len(found) == 0 {
 		return nil
@@ -2371,10 +2141,14 @@ func init() {
 	nodeRegisterCmd.Flags().StringVar(&nodeOwnerFlag, "owner", "", `the node's owner: "person" (default, bring your own infra) or "enterprise" (shared infra; requires --enterprise)`)
 	nodeRegisterCmd.Flags().StringVar(&nodeEnterpriseFlag, "enterprise", "", "the enterprise that owns this node, by slug or id (required with --owner enterprise)")
 	nodeStartCmd.Flags().DurationVar(&nodeIntervalFlag, "interval", 30*time.Second, "heartbeat and claim interval")
-	nodeStartCmd.Flags().DurationVar(&nodeStallFlag, "stall", 10*time.Minute, "channel mode: re-push a held item the idle session has reported nothing on for this long")
-	nodeStartCmd.Flags().DurationVar(&nodeTurnTimeoutFlag, "turn-timeout", 45*time.Minute, "channel mode: kill and restart a busy session that has reported nothing on its item for this long (0 never)")
+	// --stall and --turn-timeout were channel mode's: an installed
+	// service unit naming them still starts
+	nodeStartCmd.Flags().DurationVar(&nodeStallFlag, "stall", 0, "deprecated: channel mode is gone")
+	nodeStartCmd.Flags().DurationVar(&nodeTurnTimeoutFlag, "turn-timeout", 0, "deprecated: channel mode is gone")
+	_ = nodeStartCmd.Flags().MarkDeprecated("stall", "channel mode is gone; drop --stall")
+	_ = nodeStartCmd.Flags().MarkDeprecated("turn-timeout", "channel mode is gone; drop --turn-timeout")
 	nodeStartCmd.Flags().DurationVar(&nodeSessionTimeoutFlag, "session-timeout", 40*time.Minute, "cap on one evaluator, planner, director or rebase session's wall clock (0 never)")
-	nodeStartCmd.Flags().Float64Var(&nodeMaxBudgetFlag, "max-budget-usd", 10, "cap on one session's budget (poll mode), whatever the goal has left")
+	nodeStartCmd.Flags().Float64Var(&nodeMaxBudgetFlag, "max-budget-usd", 10, "cap on one session's budget, whatever the goal has left")
 	nodeStartCmd.Flags().Float64Var(&nodeEvalBudgetFlag, "eval-budget-usd", 3, "cap on one evaluator session's budget")
 	nodeStartCmd.Flags().Float64Var(&nodePlanBudgetFlag, "plan-budget-usd", 5, "cap on one planner session's budget")
 	nodeStartCmd.Flags().Float64Var(&nodeResearchBudgetFlag, "research-budget-usd", 5, "cap on one director (research) session's budget")
@@ -2383,17 +2157,18 @@ func init() {
 	nodeStartCmd.Flags().StringVar(&nodeModelBuildFlag, "model-build", "", "model for build sessions (overrides --model)")
 	nodeStartCmd.Flags().StringVar(&nodeModelEvaluateFlag, "model-evaluate", "", "model for evaluator sessions (overrides --model)")
 	nodeStartCmd.Flags().StringVar(&nodeModelPlanFlag, "model-plan", "", "model for planner sessions (default: the strongest configured, else opus)")
-	nodeStartCmd.Flags().StringVar(&nodeModelChannelFlag, "model-channel", "", "model for the channel-mode session (overrides --model)")
 	nodeStartCmd.Flags().StringVar(&nodeModelResearchFlag, "model-research", "", "model for director (research) sessions (overrides --model)")
 	nodeStartCmd.Flags().StringVar(&nodeModelRebaseFlag, "model-rebase", "", "model for rebase sessions (overrides --model)")
-	nodeStartCmd.Flags().StringVar(&nodeModeFlag, "mode", "channel", "channel (one persistent session fed by the mesh channel) or poll (claude -p per item)")
+	// --mode poll was the one mode left once channel mode went; a
+	// service unit installed with it still starts
+	nodeStartCmd.Flags().StringVar(&nodeModeFlag, "mode", "", "deprecated: every node runs one session per job")
+	_ = nodeStartCmd.Flags().MarkDeprecated("mode", "every node runs one session per job; drop --mode")
 	nodeStartCmd.Flags().BoolVar(&nodeUnattended, "unattended", false, "run sessions with --dangerously-skip-permissions (trusted machines only)")
-	nodeStartCmd.Flags().BoolVar(&nodeOnceFlag, "once", false, "poll mode: one tick, then exit")
+	nodeStartCmd.Flags().BoolVar(&nodeOnceFlag, "once", false, "one tick, then exit")
 	nodeModelCmd.Flags().StringVar(&nodeModelFlag, "default", "", "model for any kind that names none")
 	nodeModelCmd.Flags().StringVar(&nodeModelBuildFlag, "build", "", "model for build sessions")
 	nodeModelCmd.Flags().StringVar(&nodeModelEvaluateFlag, "evaluate", "", "model for evaluator sessions")
 	nodeModelCmd.Flags().StringVar(&nodeModelPlanFlag, "plan", "", "model for planner sessions")
-	nodeModelCmd.Flags().StringVar(&nodeModelChannelFlag, "channel", "", "model for the channel-mode session")
 	nodeModelCmd.Flags().StringVar(&nodeModelResearchFlag, "research", "", "model for director (research) sessions")
 	nodeModelCmd.Flags().StringVar(&nodeModelRebaseFlag, "rebase", "", "model for rebase sessions")
 	nodeCmd.AddCommand(nodeLoginCmd, nodeRegisterCmd, nodeStartCmd, nodeStatusCmd, nodeDrainCmd, nodeUpgradeCmd, nodeLogoutCmd, nodeModelCmd)
@@ -2441,7 +2216,6 @@ A flag on ` + "`mesh node start`" + ` wins over these for that run.`,
 			{"plan", nodeModelPlanFlag, &cfg.Models.Plan},
 			{"research", nodeModelResearchFlag, &cfg.Models.Research},
 			{"rebase", nodeModelRebaseFlag, &cfg.Models.Rebase},
-			{"channel", nodeModelChannelFlag, &cfg.Models.Channel},
 		} {
 			if cmd.Flags().Changed(o.flag) {
 				*o.set = strings.TrimSpace(o.val)
@@ -2462,7 +2236,7 @@ A flag on ` + "`mesh node start`" + ` wins over these for that run.`,
 		fmt.Printf("default   %s\n", shown(cfg.Models.Default))
 		for _, k := range []struct{ name, val string }{
 			{"build", cfg.Models.Build}, {"evaluate", cfg.Models.Evaluate},
-			{"plan", cfg.Models.Plan}, {"channel", cfg.Models.Channel},
+			{"plan", cfg.Models.Plan},
 			{"research", cfg.Models.Research}, {"rebase", cfg.Models.Rebase},
 		} {
 			switch {

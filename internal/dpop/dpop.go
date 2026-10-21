@@ -66,6 +66,9 @@ type Claims struct {
 	HTU string `json:"htu"`
 	IAT int64  `json:"iat"`
 	Ath string `json:"ath,omitempty"`
+	// Nonce is the server's DPoP-Nonce, when it asked for one (RFC 9449
+	// §8; Latchkey's session_dpop_nonce required).
+	Nonce string `json:"nonce,omitempty"`
 }
 
 // NewKey makes a fresh P-256 key, held only in memory.
@@ -140,6 +143,11 @@ func HTU(rawURL string) (string, error) {
 // carries — empty for the mint request, whose proof has no ath. Every call
 // has a fresh jti.
 func (k *Key) Proof(method, rawURL, token string) (string, error) {
+	return k.ProofWithNonce(method, rawURL, token, "")
+}
+
+// ProofWithNonce is Proof carrying the server's nonce, "" for none.
+func (k *Key) ProofWithNonce(method, rawURL, token, nonce string) (string, error) {
 	if k == nil || k.priv == nil {
 		return "", errors.New("dpop: proof: no key")
 	}
@@ -162,6 +170,7 @@ func (k *Key) Proof(method, rawURL, token string) (string, error) {
 	if token != "" {
 		claims.Ath = Ath(token)
 	}
+	claims.Nonce = nonce
 	head, err := json.Marshal(Header{Typ: Typ, Alg: Alg, JWK: k.jwk})
 	if err != nil {
 		return "", fmt.Errorf("dpop: proof: header: %w", err)

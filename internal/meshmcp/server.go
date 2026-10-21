@@ -1,8 +1,6 @@
-// Package meshmcp is Mesh's stdio MCP server, shared by the node's
-// channel mode (internal/channel, which pushes the platform's events as
-// `notifications/claude/channel`) and by `mesh mcp`, the client half of
-// Mesh inside Claude Code on the person's own credential (ADR-023, mesh
-// mcp). Only a Server with Channel set advertises the channel capability.
+// Package meshmcp is Mesh's stdio MCP server: `mesh mcp`, the client
+// half of Mesh inside Claude Code on the person's own credential
+// (ADR-023, mesh mcp).
 package meshmcp
 
 import (
@@ -18,10 +16,7 @@ import (
 )
 
 // ServerName is the MCP server's name, in its initialize response's
-// serverInfo.name: `--dangerously-load-development-channels
-// server:mesh` for channel mode (that flag's own name is unrelated and
-// unchanged), `claude mcp add runsheet -- mesh mcp` for the personal
-// one.
+// serverInfo.name: `claude mcp add runsheet -- mesh mcp`.
 //
 // Amended 2026-10-17 (ADR-023): renamed from "mesh" to "runsheet",
 // alongside mcpinstall.ServerName — the entry a client's config keeps
@@ -36,17 +31,14 @@ type Tool struct {
 	Call        func(ctx context.Context, args map[string]any) (string, error)
 }
 
-// Server is a stdio MCP server. With Channel set it advertises Claude
-// Code's experimental `claude/channel` capability and Push reaches the
-// session; without it, it is a plain tools server.
+// Server is a stdio MCP tools server.
 type Server struct {
 	Instructions string
 	Tools        []Tool
-	Channel      bool
 	// Register, when set, runs once before Serve reads its first
 	// request: `mesh mcp`'s personal node registration (ADR-015's owner
 	// form, ADR-023 mesh mcp). A failure is logged to stderr, never
-	// fatal — the tools still serve. A channel-mode server leaves it nil.
+	// fatal — the tools still serve.
 	Register func(ctx context.Context) error
 
 	mu  sync.Mutex
@@ -80,16 +72,6 @@ func (s *Server) write(m rpcMessage) error {
 	}
 	_, err = s.out.Write(append(b, '\n'))
 	return err
-}
-
-// Push sends one channel event into the session: content is the body,
-// meta's entries become attributes of the <channel> tag (identifier keys).
-func (s *Server) Push(content string, meta map[string]string) error {
-	params := map[string]any{"content": content}
-	if len(meta) > 0 {
-		params["meta"] = meta
-	}
-	return s.write(rpcMessage{Method: "notifications/claude/channel", Params: mustJSON(params)})
 }
 
 func mustJSON(v any) json.RawMessage {
@@ -162,9 +144,6 @@ func (s *Server) handle(ctx context.Context, raw []byte) error {
 			p.ProtocolVersion = "2025-06-18"
 		}
 		capabilities := map[string]any{"tools": map[string]any{}}
-		if s.Channel {
-			capabilities["experimental"] = map[string]any{"claude/channel": map[string]any{}}
-		}
 		return s.write(rpcMessage{ID: msg.ID, Result: map[string]any{
 			"protocolVersion": p.ProtocolVersion,
 			"capabilities":    capabilities,

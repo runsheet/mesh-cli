@@ -29,15 +29,20 @@ type Planner struct {
 	Harness harness.Harness
 	WS      Workspacer
 	Cfg     *Config
-	// Roots, when set, put the session's checkouts under its org's work
-	// root (ADR-034). Nil keeps WorkRoot for every org.
-	Roots    *OrgRootSet
+	// Layout, when set, is the node's job and connection trees (ADR-039):
+	// the session works in its goal's or direction's job. Nil keeps
+	// WorkRoot (the tests' layout).
+	Layout   *Layout
 	WorkRoot string
 	// BuildCache is a host session's GOCACHE; "" is BuildCacheDir().
 	BuildCache string
 	// Sandbox is the node's sandbox, when its sessions run in pods: a
 	// host session (nil) gets a scratch of its own (sessionScratch).
 	Sandbox *sandbox.Sandbox
+	// Served is the orgs the node serves now (the loop's CurrentScopes):
+	// with no Sandbox and two or more of them, no session runs on the
+	// host (ADR 066, decision 10; openScopePod). Nil serves one.
+	Served func() Scopes
 	// MCP is the built-in MCP server the session gets (runsheet);
 	// the tools attached for the planner role are rendered beside it
 	// (SelectTools, trd §3 Tools).
@@ -483,11 +488,10 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	if err != nil {
 		return err
 	}
-	root, err := workRootOfScope(p.Roots, scope, p.WorkRoot)
+	dir, err := planDirFor(p.Layout, scope, goal, p.WorkRoot)
 	if err != nil {
 		return err
 	}
-	dir := PlanDir(root, goal.Slug)
 	names := make([]string, 0, len(repos))
 	for name := range repos {
 		names = append(names, name)
@@ -874,20 +878,21 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, scope Scope, dir s
 	// Tools: the served tools, so PlanPrompt can name them and say when
 	// to search.
 	in.Tools = toolHints(st.Use)
-	kept, err := keptRootOfScope(p.Roots, scope)
+	kept, err := keptRootFor(p.Layout, goal.ID)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, nil, 0, acct, err
 	}
 	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: harness.PlanPrompt(in), MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model, KeptRoot: kept}
-	// dir is PlanDir(root, slug): the org's work root is two up
-	scratchRoot, err := ScratchRoot(filepath.Dir(filepath.Dir(dir)))
+	// the goal's job's scratch, else the work root's (dir is
+	// PlanDir(root, slug): the work root is two up)
+	scratchRoot, err := scratchRootFor(p.Layout, goal.ID, filepath.Dir(filepath.Dir(dir)))
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, nil, 0, acct, err
 	}
 	// the goal's org's pod, opened before anything runs: a pod that
 	// cannot start runs no session, never on the host in its place
 	// (ADR-034, Refusals); nil on an unsandboxed node serving one org
-	pod, err := openScopePod(ctx, p.Sandbox, p.Roots, scope, dir, job.Label, harness.KindPlan, p.logf)
+	pod, err := openScopePod(ctx, p.Sandbox, p.Layout, servedOf(p.Served), scope, dir, job.Label, harness.KindPlan, p.logf)
 	// a session the harness detached runs on in its pod (Session.Detach
 	// makes this Close nothing): the node that adopts it removes it
 	defer pod.Close()
@@ -916,7 +921,7 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, scope Scope, dir s
 	}
 	defer unlessDetached(ctx, func() { RemoveScratch(scratch) })
 	acct.Apply(&job)
-	closeProxy, err := st.UseVia(p.Proxies, mcpRootOfScope(p.Roots, scope), &job, p.MCP, acct)
+	closeProxy, err := st.UseVia(p.Proxies, mcpRootFor(p.Layout, goal.ID), &job, p.MCP, acct)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, nil, 0, acct, fmt.Errorf("tools: %w", err)
 	}

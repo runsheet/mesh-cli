@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -75,6 +76,9 @@ func (c *Client) SessionCredentials(ctx context.Context, ref SessionRef, nodeID 
 // a secret.
 func (c *Client) Session(ctx context.Context, ref SessionRef, nodeID string) (*Session, error) {
 	ctx = withNodeID(ctx, nodeID)
+	if ref.ThreadID != "" {
+		return c.jobSession(ctx, ref)
+	}
 	f, err := fieldsFor(ref)
 	if err != nil {
 		return nil, err
@@ -344,4 +348,39 @@ func (s *Session) String() string {
 		names[i] = t.Name
 	}
 	return fmt.Sprintf("%d credential(s), tools [%s]", len(s.Credentials), strings.Join(names, " "))
+}
+
+// jobSession is Session for a job read through the one exchange
+// (jobAccess, runsheet ADR 061 §4): a thread turn's model accounts, as
+// itemCredentials answers them, and its runsheet tools, as itemTools
+// does.
+func (c *Client) jobSession(ctx context.Context, ref SessionRef) (*Session, error) {
+	acc, err := c.JobAccess(ctx, ref.JobKind, JobSubject{Type: "thread", ID: ref.ThreadID}, "")
+	if err != nil {
+		return nil, err
+	}
+	s := &Session{Credentials: []Credential{}, Tools: []tools.Tool{}}
+	var creds []any
+	if len(acc.Model) > 0 {
+		if err := json.Unmarshal(acc.Model, &creds); err != nil {
+			return nil, fmt.Errorf("jobAccess model: %w", err)
+		}
+	}
+	for _, row := range rowsOf(creds) {
+		if cr, ok := issuedCredential(row); ok {
+			s.Credentials = append(s.Credentials, cr)
+		}
+	}
+	if raw := acc.MCP["runsheet"]; len(raw) > 0 {
+		var ts []any
+		if err := json.Unmarshal(raw, &ts); err != nil {
+			return nil, fmt.Errorf("jobAccess mcp runsheet: %w", err)
+		}
+		for _, row := range rowsOf(ts) {
+			if t, ok := servedTool(row); ok {
+				s.Tools = append(s.Tools, t)
+			}
+		}
+	}
+	return s, nil
 }

@@ -198,36 +198,6 @@ func (r ResumeStore) Sweep(ctx context.Context, statusOf func(itemID string) (st
 	return forgot, nil
 }
 
-// SweepResumes runs Sweep over every served org's Resumes dir (ADR-034:
-// a node serving several orgs keeps one ResumeStore per org), each
-// org's own records only — never another's. statusOf is asked by item
-// id alone, an id unique across orgs. It returns what each org forgot,
-// keyed by org; an org with nothing to forget is left out.
-func (s *OrgRootSet) SweepResumes(ctx context.Context, statusOf func(itemID string) (string, error), now time.Time) (map[string][]string, error) {
-	if s == nil {
-		return nil, nil
-	}
-	forgotten := map[string][]string{}
-	for _, org := range s.Orgs() {
-		if err := ctx.Err(); err != nil {
-			return forgotten, err
-		}
-		roots, err := s.For(org)
-		if err != nil {
-			return forgotten, err
-		}
-		store := ResumeStore{Dir: roots.Resumes}
-		forgot, err := store.Sweep(ctx, statusOf, now)
-		if err != nil {
-			return forgotten, err
-		}
-		if len(forgot) > 0 {
-			forgotten[org] = forgot
-		}
-	}
-	return forgotten, nil
-}
-
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {

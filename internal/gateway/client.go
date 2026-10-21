@@ -87,6 +87,10 @@ type Client struct {
 	// the gateway refused it (see mutateForAnswer): until then they ask
 	// `status` alone, one request each, as before the answer existed.
 	nodeAnswerUntil atomic.Int64
+	// scopeCapUntil (unix nanoseconds) is when the answer's scopes are
+	// next asked for their `cap` (ADR 066), after a platform refused it;
+	// zero asks every time.
+	scopeCapUntil atomic.Int64
 	// nodesWithoutDesired is set once the gateway has refused
 	// NodeIndex.desiredVersion (a platform older than
 	// update-nodes-from-console): every later node read leaves it out.
@@ -182,6 +186,9 @@ type Client struct {
 	// `adopted` element type was last found to take goalId, directionId,
 	// sessionId and alive (see takesAdoptedFields).
 	adoptedFieldsSchema holdingProbe
+	// sessionsSchema is whether the gateway's HeartbeatNodeInput was last
+	// found to take `sessions` (see takesSessions).
+	sessionsSchema holdingProbe
 	// resumedSchema is whether the gateway's HeartbeatNodeInput was last
 	// found to have `resumed` (see takesResumed).
 	resumedSchema holdingProbe
@@ -1893,7 +1900,37 @@ type NodeAnswer struct {
 	NodeID string        `json:"nodeId"`
 	Owner  NodeOwner     `json:"owner"`
 	Scopes []ScopeAnswer `json:"scopes"`
+	// Stop is the sessions the heartbeat reported that the node is to
+	// stop (heartbeatNode only, when it sent its sessions): their item
+	// merged, was cancelled or superseded elsewhere, or the node's
+	// connection to its org was revoked (ADR 066, decision 8).
+	Stop []SessionStop `json:"stop"`
 }
+
+// SessionStop is one session the platform tells the node to stop: the
+// item, the session's kind and harness session id as the heartbeat
+// reported them, and why.
+type SessionStop struct {
+	ItemID    string `json:"itemId"`
+	Kind      string `json:"kind"`
+	SessionID string `json:"sessionId"`
+	Reason    string `json:"reason"`
+}
+
+// NodeSession is one session the heartbeat reports the node runs under
+// an item's claim (a build, an evaluation, a rebase), so the platform can
+// tell it which to stop: the item, the kind, the harness session id when
+// the node has one, and when it started.
+type NodeSession struct {
+	ItemID    string `json:"itemId"`
+	Kind      string `json:"kind"`
+	SessionID string `json:"sessionId,omitempty"`
+	Since     string `json:"since"`
+}
+
+// stopFields is what heartbeatNode's payload is asked for its stop list,
+// beside the answer, when the heartbeat sends its sessions.
+const stopFields = " stop { itemId kind sessionId reason }"
 
 // NodeOwner is the NodeAnswer's owner: a person, an enterprise or an org, its
 // id and its display name.
@@ -1915,6 +1952,16 @@ type ScopeAnswer struct {
 	Slug      string `json:"slug"`
 	AccountID string `json:"accountId"`
 	Shares    int    `json:"shares"`
+	// Cap is the node's connection to the org's cap on concurrent
+	// sessions (ADR 066, decision 11): 0 is no cap, the node's fair share
+	// floors alone. Asked for until a platform refuses it (withScopeCap).
+	Cap int `json:"cap"`
+	// ConnectionID is the node's connection to the org for Product (ADR
+	// 066): the key of the connection's clones and package stores
+	// (mesh-cli ADR-039). Asked for with Cap.
+	ConnectionID string `json:"connectionId"`
+	// Product is the connection's product: runsheet.
+	Product string `json:"product"`
 }
 
 // nodeAnswerFields is what RegisterNode and HeartbeatNode ask their
@@ -1930,6 +1977,14 @@ const nodeAnswerFields = "nodeId owner { kind id name } scopes { orgId login slu
 // selection on an unknown field ("Cannot query field"), so the node
 // must not ask for it blind.
 const nodeAnswerFieldsWithShares = "nodeId owner { kind id name } scopes { orgId login slug accountId shares }"
+
+// withScopeCap is fields with the connection's `cap` (ADR 066, decision
+// 11), `connectionId` and `product` added to the scopes selection, which
+// a platform before them refuses — mutateForAnswer then asks again
+// without them.
+func withScopeCap(fields string) string {
+	return strings.Replace(fields, "scopes { orgId login slug accountId", "scopes { orgId login slug accountId cap connectionId product", 1)
+}
 
 // nodeAnswerFieldsFor is nodeAnswerFields, or
 // nodeAnswerFieldsWithShares when the gateway's scopes element type
@@ -1947,6 +2002,7 @@ type nodeAnswerPayload struct {
 	NodeID string        `json:"nodeId"`
 	Owner  *NodeOwner    `json:"owner"`
 	Scopes []ScopeAnswer `json:"scopes"`
+	Stop   []SessionStop `json:"stop"`
 }
 
 // asAnswer is nil when the payload named none of nodeId, owner or
@@ -1955,7 +2011,7 @@ func (p nodeAnswerPayload) asAnswer() *NodeAnswer {
 	if p.NodeID == "" && p.Owner == nil && len(p.Scopes) == 0 {
 		return nil
 	}
-	a := &NodeAnswer{NodeID: p.NodeID, Scopes: p.Scopes}
+	a := &NodeAnswer{NodeID: p.NodeID, Scopes: p.Scopes, Stop: p.Stop}
 	if a.Scopes == nil {
 		a.Scopes = []ScopeAnswer{}
 	}
@@ -1980,11 +2036,33 @@ func (c *Client) mutateForAnswer(ctx context.Context, field, aggregateID string,
 		return nil, c.Mutate(ctx, field, aggregateID, input)
 	}
 	var payload nodeAnswerPayload
-	err := c.MutateFields(ctx, field, aggregateID, input, "status "+c.nodeAnswerFieldsFor(ctx), &payload)
+	fields := c.nodeAnswerFieldsFor(ctx)
+	withCap := time.Now().UnixNano() >= c.scopeCapUntil.Load()
+	if withCap {
+		fields = withScopeCap(fields)
+	}
+	// the stop list answers the sessions a heartbeat sends: a platform
+	// that takes `sessions` serves `stop` (the same goal landed both)
+	stop := ""
+	if _, sent := input["sessions"]; sent && field == "heartbeatNode" {
+		stop = stopFields
+	}
+	fields += stop
+	err := c.MutateFields(ctx, field, aggregateID, input, "status "+fields, &payload)
 	if err == nil {
 		return payload.asAnswer(), nil
 	}
 	var ge *Error
+	if withCap && errors.As(err, &ge) && unknownField(ge.Message, "nodeId", "owner", "scopes", "cap") {
+		// a platform before ADR 066's caps refuses `cap` — and so the
+		// whole scopes selection, which its answer splices in: the cap
+		// alone is dropped for NodeAnswerRetry and the answer asked again
+		c.scopeCapUntil.Store(time.Now().Add(NodeAnswerRetry).UnixNano())
+		payload = nodeAnswerPayload{}
+		if err = c.MutateFields(ctx, field, aggregateID, input, "status "+c.nodeAnswerFieldsFor(ctx)+stop, &payload); err == nil {
+			return payload.asAnswer(), nil
+		}
+	}
 	if errors.As(err, &ge) && unknownField(ge.Message, "nodeId", "owner", "scopes") {
 		c.nodeAnswerUntil.Store(time.Now().Add(NodeAnswerRetry).UnixNano())
 		if err2 := c.Mutate(ctx, field, aggregateID, input); err2 != nil {
@@ -2247,6 +2325,12 @@ type HeartbeatExtras struct {
 	// before it rather than starting them (mesh-specs ADR 008, mesh-cli
 	// ADR 009); none sends no key.
 	Adopted []AdoptedSession
+	// Sessions are the build, evaluate and rebase sessions the node runs
+	// now, under an item's claim, so the platform can answer which to
+	// stop (NodeAnswer.Stop). nil sends none (a node that does not report
+	// them); an empty list says it runs none. Sent only when the gateway's
+	// HeartbeatNodeInput has `sessions` (takesSessions).
+	Sessions []NodeSession
 	// Resumed are the build sessions a retry took up again after a failed
 	// check — resumed, or started fresh with the same message when the
 	// old one could not be (goal a-failed-check-returns-to-the-session-
@@ -2586,6 +2670,12 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 		}
 		if len(x.Resumed) > 0 && c.takesResumed(ctx) {
 			in["resumed"] = x.Resumed
+		}
+		// every heartbeat of a node that reports sessions says them all,
+		// none as [] — which clears the platform's record — once the
+		// gateway's HeartbeatNodeInput takes them (takesSessions)
+		if x.Sessions != nil && c.takesSessions(ctx) {
+			in["sessions"] = x.Sessions
 		}
 		if x.Holding != nil && c.takesHolding(ctx) {
 			h := *x.Holding
@@ -3882,6 +3972,13 @@ type SetGoalInput struct {
 	DailyBudgetCents int
 	Checkpoints      []string
 	By               string
+	// the human summary a new goal says (runsheet trd §6a): outcome, why,
+	// appetite and done-when are required of a new goal; who it is for
+	// and what is not being done are optional
+	Outcome, Why, WhoFor, Appetite, DoneWhen, NotDoing string
+	// NoInitiativeReason files a new goal under no initiative, saying why
+	// (runsheet trd §6h); "" files nothing
+	NoInitiativeReason string
 }
 
 // SetGoal creates or restates a goal.
@@ -3897,6 +3994,14 @@ func (c *Client) SetGoal(ctx context.Context, in SetGoalInput) error {
 	}
 	if in.By != "" {
 		m["by"] = in.By
+	}
+	for k, v := range map[string]string{"outcome": in.Outcome, "why": in.Why, "whoFor": in.WhoFor, "appetite": in.Appetite, "doneWhen": in.DoneWhen, "notDoing": in.NotDoing} {
+		if v != "" {
+			m[k] = v
+		}
+	}
+	if in.NoInitiativeReason != "" {
+		m["noInitiative"], m["noInitiativeReason"] = true, in.NoInitiativeReason
 	}
 	return c.Mutate(ctx, "setGoal", in.GoalID, m)
 }
@@ -4552,6 +4657,11 @@ type SessionRef struct {
 	ItemID      string
 	GoalID      string
 	DirectionID string
+	// ThreadID is a thread turn's session (ThreadSession): its account
+	// and tools come from the one exchange, jobAccess, for the job kind
+	// JobKind (runsheet ADR 061 §4).
+	ThreadID string
+	JobKind  string
 }
 
 // Credential is one Claude account the platform hands the node that
@@ -5260,4 +5370,11 @@ func (c *Client) takesAttestations(ctx context.Context) (bool, error) {
 	}
 	p.at, p.takes = now, takes
 	return takes, nil
+}
+
+// takesSessions is whether the gateway's HeartbeatNodeInput takes
+// `sessions` (goal a-session-stops-when-its-item-finishes-elsewhere),
+// probed as the other optional heartbeat fields are.
+func (c *Client) takesSessions(ctx context.Context) bool {
+	return c.takesInputField(ctx, &c.sessionsSchema, "HeartbeatNodeInput", "sessions")
 }

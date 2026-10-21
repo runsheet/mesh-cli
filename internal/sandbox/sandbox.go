@@ -222,10 +222,10 @@ type Sandbox struct {
 	Config  Config
 	// TempDir is where temporary HOMEs are made ("" is os.TempDir).
 	TempDir string
-	// Org, set (WithOrg), confines its sessions to one org's tree on a
-	// node serving several: every mount must resolve inside it
-	// (CheckedMounts, mesh-cli ADR-034 Refusals).
-	Org OrgRoot
+	// Confine, set (WithConfinement), confines its sessions to one job's
+	// directory and its connection's caches: every mount must resolve
+	// inside them (CheckedMounts, mesh-cli ADR-039).
+	Confine Confinement
 	// Logf is where the sandbox says what it fell back on (nil is the
 	// standard logger).
 	Logf func(format string, args ...any)
@@ -334,9 +334,9 @@ type Session struct {
 	detached bool
 	// execs counts the commands Exec ran, naming each its own container.
 	execs int
-	// org is the org root every mount must resolve inside (the
-	// Sandbox's Org when it was opened); zero confines nothing.
-	org OrgRoot
+	// confine is the roots every mount must resolve inside (the
+	// Sandbox's Confine when it was opened); zero confines nothing.
+	confine Confinement
 	// proxyDirs are the session's sessionproxy socket directories
 	// (ShareProxyDir), mounted at their own paths; any set makes the
 	// session proxied, and its env admits no tool secret.
@@ -450,7 +450,7 @@ func (s *Sandbox) Open(label, kind string, git GitIdentity) (*Session, error) {
 	if len(name) > 40 {
 		name = name[:40]
 	}
-	sess := &Session{sb: s, Home: home, Label: label, Kind: kind, hooks: git.HooksDir, image: s.Config.Image, org: s.Org, name: "mesh-" + name + "-" + hex.EncodeToString(rnd[:])}
+	sess := &Session{sb: s, Home: home, Label: label, Kind: kind, hooks: git.HooksDir, image: s.Config.Image, confine: s.Confine, name: "mesh-" + name + "-" + hex.EncodeToString(rnd[:])}
 	set := s.openSessions()
 	set.mu.Lock()
 	set.m[sess] = struct{}{}
@@ -866,7 +866,7 @@ func (s *Session) StartDetached(ctx context.Context, spec DetachedSpec) (Detache
 		if f == "" {
 			continue
 		}
-		if err := s.org.Check("stream dir", filepath.Dir(f)); err != nil {
+		if err := s.confine.Check("stream dir", filepath.Dir(f)); err != nil {
 			return DetachedAgent{}, err
 		}
 	}

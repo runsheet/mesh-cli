@@ -11,6 +11,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/auth"
 	"projectmesh.io/mesh-cli/internal/crash"
+	"projectmesh.io/mesh-cli/internal/dpop"
 	"projectmesh.io/mesh-cli/internal/harness"
 )
 
@@ -52,6 +53,8 @@ type TokenFiles struct {
 	mu       sync.Mutex
 	files    map[string]*keptToken
 	sessions map[sessionKey]TokenSource
+	// keys is the DPoP key each bound session's tokens are bound to.
+	keys map[sessionKey]*dpop.Key
 }
 
 // TokenSource answers a bearer for a token file.
@@ -82,19 +85,26 @@ type keptToken struct {
 // its own mesh session's (ADR-035) — for every file KeepSession keeps
 // for it from now on. The returned unbind clears it: the session's
 // bearer is forgotten, and a file still kept for it stops refreshing.
-func (t *TokenFiles) Bind(item string, attempt int, src TokenSource) (unbind func()) {
+// key, when set, is the DPoP key src's tokens are bound to (KeyOf): the
+// session's proxy signs every request with it.
+func (t *TokenFiles) Bind(item string, attempt int, src TokenSource, dk *dpop.Key) (unbind func()) {
 	key := sessionKey{item, attempt}
 	t.mu.Lock()
 	if t.sessions == nil {
 		t.sessions = map[sessionKey]TokenSource{}
+		t.keys = map[sessionKey]*dpop.Key{}
 	}
 	t.sessions[key] = src
+	if dk != nil {
+		t.keys[key] = dk
+	}
 	t.mu.Unlock()
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			t.mu.Lock()
 			delete(t.sessions, key)
+			delete(t.keys, key)
 			for _, k := range t.files {
 				if k.bound == key {
 					k.src = unboundSource
@@ -103,6 +113,18 @@ func (t *TokenFiles) Bind(item string, attempt int, src TokenSource) (unbind fun
 			t.mu.Unlock()
 		})
 	}
+}
+
+// KeyOf is the DPoP key the bound session of meta's claim signs with,
+// nil when its bearer is not bound to one (the machine's, an unbound
+// mint).
+func (t *TokenFiles) KeyOf(meta harness.SessionMeta) *dpop.Key {
+	if t == nil || meta.ItemID == "" {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.keys[sessionKey{meta.ItemID, meta.Attempt}]
 }
 
 // Bound says whether a session bearer is bound for item's claim at

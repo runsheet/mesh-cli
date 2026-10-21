@@ -37,10 +37,11 @@ type Evaluator struct {
 	WS      Workspacer
 	Cfg     *Config
 	Scopes  Scopes
-	// Roots, when set, are each served org's own roots (ADR-034): the
-	// item's checkout, clone and scratch go under its org's, WorkRoot
-	// unused for them. Nil keeps WorkRoot for every org.
-	Roots    *OrgRootSet
+	// Layout, when set, is the node's job and connection trees (ADR-039):
+	// each item's checkout, scratch, kept stream and MCP files go in its
+	// job, its clone and store in its connection's caches, WorkRoot
+	// unused for them. Nil keeps WorkRoot (the tests' layout).
+	Layout   *Layout
 	WorkRoot string
 	// BuildCache is a host session's GOCACHE; "" is BuildCacheDir().
 	BuildCache string
@@ -277,11 +278,10 @@ func (e *Evaluator) evaluate(ctx context.Context, item gateway.WorkItem, res *Re
 	}
 	// a checkout of its own, never the build's: its Authorize must not
 	// rewrite the credential helper the build's push reads
-	root, err := workRootFor(e.Roots, e.Scopes, item.OrgID, e.WorkRoot)
+	spec, err := evalSpec(e.Layout, e.Scopes, item, label, EvalWorkspaceSpec(e.WorkRoot, res.Goal.Slug, item.Seq, res.Repo.FullName(), branch, res.BaseRef()))
 	if err != nil {
 		return fmt.Errorf("workspace: %w", err)
 	}
-	spec := EvalWorkspaceSpec(root, res.Goal.Slug, item.Seq, res.Repo.FullName(), branch, res.BaseRef())
 	// live on this node while this runs: no cleanup touches it (HoldWorkspace)
 	defer HoldWorkspace(spec.Dir())()
 	// the item's own GitHub token, as its builder had
@@ -358,7 +358,7 @@ func (e *Evaluator) evaluate(ctx context.Context, item gateway.WorkItem, res *Re
 	model := fam.model
 	budget, budgetSource := e.budgetWithSource(res.Goal, model)
 	e.logf("item %s: evaluate budget $%.2f (%s)", label, budget, budgetSource)
-	kept, err := keptRootFor(e.Roots, e.Scopes, item.OrgID)
+	kept, err := keptRootFor(e.Layout, item.ID)
 	if err != nil {
 		return err
 	}
@@ -375,7 +375,7 @@ func (e *Evaluator) evaluate(ctx context.Context, item gateway.WorkItem, res *Re
 	}
 	// the session's own scratch as its TMPDIR, gone with the session
 	// (sessionScratch); a detached one's by the node that ends it
-	scratchRoot, err := scratchRootFor(e.Roots, e.Scopes, item.OrgID, e.WorkRoot)
+	scratchRoot, err := scratchRootFor(e.Layout, item.ID, e.WorkRoot)
 	if err != nil {
 		return err
 	}
@@ -402,10 +402,21 @@ func (e *Evaluator) evaluate(ctx context.Context, item gateway.WorkItem, res *Re
 	// service that does not come up leaves it unevaluated, and the loop
 	// does not try again while that holds; a missing optional one is in
 	// the verdict's notes.
-	pod, err := openOrgSessionPod(ctx, e.Sandbox, e.Roots, e.Scopes, item.OrgID, dir, job.Label, harness.KindEvaluate, sandbox.GitIdentity{}, e.logf)
+	pod, err := openOrgSessionPod(ctx, e.Sandbox, e.Layout, e.Scopes, item.OrgID, dir, job.Label, harness.KindEvaluate, sandbox.GitIdentity{}, e.logf)
 	defer pod.Close() // nothing, once the harness detached the session (Session.Detach)
 	if re := RuntimeErrorOf(err); re != nil {
 		return e.runtimeNoVerdict(ctx, evalRun{item: item, res: res, label: label, model: model, fam: fam, dir: dir, acct: acct}, re, harness.Result{})
+	}
+	if errors.Is(err, ErrHostServesSeveralOrgs) {
+		// no sandbox on a node serving several orgs: never on the host
+		// (ADR 066, decision 10). An item in evaluating can be neither
+		// released nor reported on, so it is left unevaluated and held
+		// off this node, as a required service that did not come up is
+		noteHostFallback(err, e.logf)
+		reason := HostFallbackReason(err)
+		e.Declines.HoldFor(item.ID, reason, time.Now(), WorkspaceReleaseHold)
+		e.logf("item %s: not evaluated, %s", label, reason)
+		return err
 	}
 	if err != nil {
 		return fmt.Errorf("services: %w", err)
@@ -444,7 +455,7 @@ func (e *Evaluator) evaluate(ctx context.Context, item gateway.WorkItem, res *Re
 			e.Declines.Record(item.ID, st.Missing, runtimes, time.Now())
 			return fmt.Errorf("declined, %s", st.DeclineReason())
 		}
-		closeProxy, err := st.UseVia(e.Proxies, mcpRootFor(e.Roots, e.Scopes, item.OrgID), &job, e.MCP, acct)
+		closeProxy, err := st.UseVia(e.Proxies, mcpRootFor(e.Layout, item.ID), &job, e.MCP, acct)
 		if err != nil {
 			return fmt.Errorf("tools: %w", err)
 		}

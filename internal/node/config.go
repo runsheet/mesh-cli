@@ -853,7 +853,6 @@ type Models struct {
 	Build    string `yaml:"build,omitempty"`
 	Evaluate string `yaml:"evaluate,omitempty"`
 	Plan     string `yaml:"plan,omitempty"`
-	Channel  string `yaml:"channel,omitempty"`
 	Research string `yaml:"research,omitempty"`
 	Rebase   string `yaml:"rebase,omitempty"`
 }
@@ -868,8 +867,6 @@ func (m Models) For(kind string) string {
 		v = m.Evaluate
 	case "plan":
 		v = m.Plan
-	case "channel":
-		v = m.Channel
 	case "research":
 		v = m.Research
 	case "rebase":
@@ -889,7 +886,7 @@ func (m Models) PlanModel() string {
 	if m.Plan != "" {
 		return m.Plan
 	}
-	if s := Strongest(m.Default, m.Build, m.Evaluate, m.Channel, m.Research); s != "" {
+	if s := Strongest(m.Default, m.Build, m.Evaluate, m.Research); s != "" {
 		return s
 	}
 	return "opus"
@@ -1028,6 +1025,16 @@ type Scope struct {
 	ID        string
 	AccountID string
 	NodeID    string
+	// Cap is the node's connection to the org's cap on its concurrent
+	// sessions there (ADR 066, decision 11): 0 is none — the fair share
+	// floors alone decide — and above 0 no claim starts past it.
+	Cap int
+	// ConnectionID is the node's connection to the org (ADR 066): the
+	// key of the connection's clones and package stores under
+	// ~/.mesh/connections/ (ADR-039).
+	ConnectionID string
+	// Product is the connection's product: runsheet.
+	Product string
 }
 
 // Name is what to show a person for this org: Login, or Slug when
@@ -1194,7 +1201,8 @@ func ScopesFromAnswer(a *gateway.NodeAnswer, restrict []string) (Scopes, error) 
 		}
 		found[login] = true
 		found[slug] = true
-		scopes = append(scopes, Scope{Login: sa.Login, Slug: sa.Slug, ID: sa.OrgID, AccountID: sa.AccountID, NodeID: a.NodeID})
+		scopes = append(scopes, Scope{Login: sa.Login, Slug: sa.Slug, ID: sa.OrgID, AccountID: sa.AccountID, NodeID: a.NodeID, Cap: sa.Cap,
+			ConnectionID: sa.ConnectionID, Product: sa.Product})
 	}
 	if missing := missingOrgs(want, found); len(missing) > 0 {
 		return nil, fmt.Errorf("not a member of %s (the node.yaml orgs list names them)", strings.Join(missing, ", "))

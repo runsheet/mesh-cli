@@ -39,15 +39,20 @@ type Director struct {
 	Harness harness.Harness
 	WS      Workspacer
 	Cfg     *Config
-	// Roots, when set, put the session's checkouts under its org's work
-	// root (ADR-034). Nil keeps WorkRoot for every org.
-	Roots    *OrgRootSet
+	// Layout, when set, is the node's job and connection trees (ADR-039):
+	// the session works in its goal's or direction's job. Nil keeps
+	// WorkRoot (the tests' layout).
+	Layout   *Layout
 	WorkRoot string
 	// BuildCache is a host session's GOCACHE; "" is BuildCacheDir().
 	BuildCache string
 	// Sandbox is the node's sandbox, when its sessions run in pods: a
 	// host session (nil) gets a scratch of its own (sessionScratch).
 	Sandbox *sandbox.Sandbox
+	// Served is the orgs the node serves now (the loop's CurrentScopes):
+	// with no Sandbox and two or more of them, no session runs on the
+	// host (ADR 066, decision 10; openScopePod). Nil serves one.
+	Served func() Scopes
 	// MCP is the built-in MCP server the session gets (runsheet);
 	// the tools attached for the director role are rendered beside it
 	// (SelectTools, trd §3 Tools).
@@ -166,11 +171,10 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	if err != nil {
 		return fmt.Errorf("repos: %w", err)
 	}
-	root, err := workRootOfScope(d.Roots, scope, d.WorkRoot)
+	dir, err := researchDirFor(d.Layout, scope, project, direction, d.WorkRoot)
 	if err != nil {
 		return err
 	}
-	dir := ResearchDir(root, project.Slug, direction.Slug)
 	byName := map[string]gateway.Repo{}
 	names := make([]string, 0, len(all))
 	for _, r := range all {
@@ -241,7 +245,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		Tools: toolHints(st.Use), Goals: existing, Room: room, Proposes: direction.Proposes(),
 	})
 	budget, budgetSource := d.budgetWithSource()
-	kept, err := keptRootOfScope(d.Roots, scope)
+	kept, err := keptRootFor(d.Layout, direction.ID)
 	if err != nil {
 		return err
 	}
@@ -250,7 +254,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		Label: project.Slug + "/" + direction.Slug + " research", Timeout: d.Timeout, MCPServers: d.MCP, Model: d.Model,
 		KeptRoot: kept,
 	}
-	scratchRoot, err := ScratchRoot(root)
+	scratchRoot, err := scratchRootFor(d.Layout, direction.ID, d.WorkRoot)
 	if err != nil {
 		return fmt.Errorf("session scratch: %w", err)
 	}
@@ -258,7 +262,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	// cannot start runs no session, never on the host in its place, and
 	// hands in an empty research so the direction is not left claimed
 	// (ADR-034, Refusals); nil on an unsandboxed node serving one org
-	pod, err := openScopePod(ctx, d.Sandbox, d.Roots, scope, dir, job.Label, harness.KindResearch, d.logf)
+	pod, err := openScopePod(ctx, d.Sandbox, d.Layout, servedOf(d.Served), scope, dir, job.Label, harness.KindResearch, d.logf)
 	// a session the harness detached runs on in its pod (Session.Detach
 	// makes this Close nothing): the node that adopts it removes it
 	defer pod.Close()
@@ -294,7 +298,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	defer unlessDetached(ctx, func() { RemoveScratch(scratch) })
 	acct.SetContextBytes(written.Bytes)
 	acct.Apply(&job)
-	closeProxy, err := st.UseVia(d.Proxies, mcpRootOfScope(d.Roots, scope), &job, d.MCP, acct)
+	closeProxy, err := st.UseVia(d.Proxies, mcpRootFor(d.Layout, direction.ID), &job, d.MCP, acct)
 	if err != nil {
 		return d.emptyResearch(ctx, direction, project, scope, fmt.Errorf("tools: %w", err), "tools: "+err.Error())
 	}

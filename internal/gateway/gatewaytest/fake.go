@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"projectmesh.io/mesh-cli/internal/dpop/dpoptest"
 	"projectmesh.io/mesh-cli/internal/gateway"
 )
 
@@ -77,6 +78,14 @@ type Fake struct {
 	// route 404, a platform that predates it (meshsessions.go).
 	MeshSessions   map[string]*MeshSession
 	NoMeshSessions bool
+	// ThreadTurns are the thread turns the fake holds (jobs.go), by id:
+	// listed by threadSessionIndexs while raised, claimed and finished
+	// through claimJob and finishJob, their accounts from jobAccess.
+	ThreadTurns map[string]*ThreadTurn
+	// DPoP checks every mint's proof (meshsessions.go); DPoPNonce, set,
+	// is the nonce a proof must carry, asked for with use_dpop_nonce.
+	DPoP      dpoptest.Verifier
+	DPoPNonce string
 	// Changesets is a platform holding changesets (runsheet ADR 058, step
 	// 4): the /mesh/v1/items/{id}/changeset routes served (changeset.go)
 	// and FinishWorkItemInput taking `changesetId`. False, the routes
@@ -752,6 +761,9 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 	f.requests++
 	f.sweepStalls()
+	if f.jobAPI(w, q, req.Variables) {
+		return
+	}
 	switch {
 	case strings.HasPrefix(q, "mutation { signIn"):
 		f.SignInCalls++
@@ -2554,6 +2566,13 @@ func camel(s string) string {
 // mesh serves the context server's document endpoints under /mesh/v1, the
 // only path the gateway serves.
 func (f *Fake) mesh(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == gateway.JobKindsPath {
+		writeREST(w, http.StatusOK, map[string]any{"kinds": []map[string]any{
+			{"slug": "runsheet/goal-chat", "product": "runsheet", "kind": "goal-chat", "harness": []string{"claude-code", "codex"}, "finish": "answer-or-proposal", "access": []string{"runsheet", "model"}},
+			{"slug": "wardroom/thread", "product": "wardroom", "kind": "thread", "harness": []string{"claude-code", "codex"}, "finish": "answer-or-proposal", "access": []string{"wardroom", "model"}},
+		}})
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, gateway.MeshSessionsPath) {
 		f.meshSessions(w, r)
 		return
