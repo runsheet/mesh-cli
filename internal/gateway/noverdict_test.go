@@ -1,7 +1,6 @@
 package gateway_test
 
 import (
-	"context"
 	"errors"
 	"testing"
 	"time"
@@ -24,7 +23,7 @@ func TestEvaluateWorkItemNoVerdictSendsTheOutcome(t *testing.T) {
 	defer f.Close()
 	evaluatingItem(f)
 	gw := gateway.New(f.URL(), "rs_test")
-	ctx := context.Background()
+	ctx := nodeCtx()
 	for range 2 {
 		if err := gw.EvaluateWorkItemNoVerdict(ctx, finishItem, "no VERDICT line: I could not tell.", 30, nil, gateway.EvaluateChoice{}); err != nil {
 			t.Fatal(err)
@@ -69,7 +68,7 @@ func TestEvaluateWorkItemNoVerdictOnAnOlderPlatform(t *testing.T) {
 	gw := gateway.New(f.URL(), "rs_test")
 	now := time.Now()
 	gw.Now = func() time.Time { return now }
-	ctx := context.Background()
+	ctx := nodeCtx()
 	for range 2 {
 		if err := gw.EvaluateWorkItemNoVerdict(ctx, finishItem, "blind", 30, nil, gateway.EvaluateChoice{}); !errors.Is(err, gateway.ErrNoVerdictOutcome) {
 			t.Fatalf("err = %v, want ErrNoVerdictOutcome", err)
@@ -101,7 +100,7 @@ func TestEvaluateWorkItemCarriesNoOutcome(t *testing.T) {
 	defer f.Close()
 	evaluatingItem(f)
 	gw := gateway.New(f.URL(), "rs_test")
-	if err := gw.EvaluateWorkItem(context.Background(), finishItem, false, "no", nil, 10, nil, gateway.EvaluateChoice{}); err != nil {
+	if err := gw.EvaluateWorkItem(nodeCtx(), finishItem, false, "no", nil, 10, nil, gateway.EvaluateChoice{}); err != nil {
 		t.Fatal(err)
 	}
 	in := f.CallsNamed("evaluateWorkItem")[0].Input
@@ -117,7 +116,7 @@ func TestTheFakeRefusesANoVerdictThePlatformRefuses(t *testing.T) {
 	defer f.Close()
 	evaluatingItem(f)
 	gw := gateway.New(f.URL(), "rs_test")
-	ctx := context.Background()
+	ctx := nodeCtx()
 	if err := gw.EvaluateWorkItemNoVerdict(ctx, finishItem, "  ", 30, nil, gateway.EvaluateChoice{}); err == nil {
 		t.Fatal("a blank reason was taken")
 	}

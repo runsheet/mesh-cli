@@ -49,7 +49,7 @@ func stallOnce(stall time.Duration, answer string, n *int32) http.HandlerFunc {
 func TestSessionRetriesAStalledRead(t *testing.T) {
 	shortReads(t, 5*time.Second, 100*time.Millisecond)
 	var n int32
-	srv := httptest.NewServer(stallOnce(2*time.Second, `{"data": {"itemCredentials": [], "itemTools": []}}`, &n))
+	srv := httptest.NewServer(stallOnce(2*time.Second, `{"data": {"jobAccess": {"kind": "runsheet/build", "model": [], "mcp": {"runsheet": []}}}}`, &n))
 	defer srv.Close()
 
 	gw := New(srv.URL, "rs_test")
@@ -117,14 +117,14 @@ func TestReadFailsAfterTheWindowCountingTries(t *testing.T) {
 	}
 }
 
-// A mutation off the allowlist — a claim — is a command: sent once
-// against a 503, never repeated.
+// A mutation off the allowlist — a claim, claimJob's — is a command:
+// sent once against a 503, never repeated.
 func TestClaimWorkItemIsSentOnceAgainstA503(t *testing.T) {
 	shortReads(t, time.Second, 100*time.Millisecond)
 	var claims int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		if bytes.Contains(body, []byte("claimWorkItem")) {
+		if bytes.Contains(body, []byte("claimJob")) && bytes.Contains(body, []byte("runsheet/build")) {
 			atomic.AddInt32(&claims, 1)
 		}
 		w.WriteHeader(http.StatusServiceUnavailable)

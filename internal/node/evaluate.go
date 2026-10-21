@@ -215,6 +215,7 @@ func (e *Evaluator) failDiff(ctx context.Context, item gateway.WorkItem, label, 
 	notes = truncate(notes, 4000)
 	e.logf("item %s: not evaluated, failed: %s", label, notes)
 	stopHeartbeat(ctx)
+	ctx = gateway.WithNodeID(ctx, nodeIDOf(e.Scopes, item.OrgID, e.Cfg))
 	if err := e.GW.EvaluateWorkItem(ctx, item.ID, false, notes, nil, 0, nil, gateway.EvaluateChoice{}); err != nil {
 		return fmt.Errorf("record verdict: %w", err)
 	}
@@ -242,6 +243,9 @@ func evaluationNotYours(err error) bool {
 func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	// every command the evaluation sends acts as its evaluator (ADR-015)
 	ctx = actorContext(ctx, e.Cfg, gateway.RoleEvaluator)
+	// the node a finish is handed back by (finishJob, runsheet ADR 061)
+	ctx = gateway.WithNodeID(ctx, nodeIDOf(e.Scopes, item.OrgID, e.Cfg))
+	ctx = gateway.WithJobKind(ctx, "runsheet/evaluate")
 	res, err := Resolve(ctx, e.GW, item)
 	if err != nil {
 		return fmt.Errorf("resolve: %w", err)
@@ -828,6 +832,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	acct.SetEvaluation(ev.res.Goal.Priority, evaluators)
 	// no heartbeat after the verdict
 	stopHeartbeat(ctx)
+	ctx = gateway.WithNodeID(ctx, nodeIDOf(e.Scopes, item.OrgID, e.Cfg))
 	if err := acct.Carried(e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, failed, Cents(cost), usage, gateway.EvaluateChoice{EvaluatedModel: fam.model})); err != nil {
 		if verdictCalled && gateway.IsRefusal(err) && !gateway.IsUnsupported(err) {
 			// the hosted mesh_verdict already recorded it, so the item is
@@ -965,6 +970,7 @@ func (e *Evaluator) logReadings(label, notes string) {
 func (e *Evaluator) noVerdict(ctx context.Context, ev evalRun, reason string, cost float64, usage *gateway.UsageReport, fallback func() error) error {
 	reason = truncate(reason, 4000)
 	stopHeartbeat(ctx)
+	ctx = gateway.WithNodeID(ctx, nodeIDOf(e.Scopes, ev.item.OrgID, e.Cfg))
 	err := e.GW.EvaluateWorkItemNoVerdict(ctx, ev.item.ID, reason, Cents(cost), usage, gateway.EvaluateChoice{EvaluatedModel: ev.fam.model})
 	if errors.Is(err, gateway.ErrNoVerdictOutcome) {
 		if e.NoVerdict.First("") {
@@ -987,6 +993,9 @@ func (e *Evaluator) noVerdict(ctx context.Context, ev evalRun, reason string, co
 // session is stopped and its directory removed.
 func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, s FoundSession) error {
 	ctx = actorContext(ctx, e.Cfg, gateway.RoleEvaluator)
+	// the node a finish is handed back by (finishJob, runsheet ADR 061)
+	ctx = gateway.WithNodeID(ctx, s.State.NodeID)
+	ctx = gateway.WithJobKind(ctx, "runsheet/evaluate")
 	if item.Status != "evaluating" || item.NodeID != s.State.NodeID {
 		e.logf("item %s: adopted evaluation is no longer this node's (%s); stopped", item.ID, item.Status)
 		stopFound(e.logf, "item "+item.ID, s)

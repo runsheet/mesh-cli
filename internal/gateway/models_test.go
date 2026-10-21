@@ -1,7 +1,6 @@
 package gateway_test
 
 import (
-	"context"
 	"reflect"
 	"testing"
 
@@ -29,7 +28,7 @@ func TestWorkItemCarriesModelAndAgent(t *testing.T) {
 	defer f.Close()
 	modelItem(f, "item-1", 1)
 	gw := gateway.New(f.URL(), "rs_test")
-	ctx := context.Background()
+	ctx := nodeCtx()
 
 	it, err := gw.WorkItem(ctx, "item-1")
 	if err != nil {
@@ -55,7 +54,7 @@ func TestWorkItemReadsWithoutModelOnAnOlderPlatform(t *testing.T) {
 	f.UnknownFields["model"] = true
 	modelItem(f, "item-1", 1)
 	gw := gateway.New(f.URL(), "rs_test")
-	ctx := context.Background()
+	ctx := nodeCtx()
 
 	for i := 0; i < 2; i++ {
 		items, err := gw.ReadyWorkItems(ctx, orgID)
@@ -90,7 +89,7 @@ func TestAgentModel(t *testing.T) {
 	f.Agents[id] = map[string]any{"id": id, "slug": "fast-builder", "model": "haiku", "status": "active"}
 	f.Agents[retired] = map[string]any{"id": retired, "slug": "old", "model": "opus", "status": "retired"}
 	gw := gateway.New(f.URL(), "rs_test")
-	ctx := context.Background()
+	ctx := nodeCtx()
 
 	if m, err := gw.AgentModel(ctx, id); err != nil || m != "haiku" {
 		t.Fatalf("AgentModel = %q, %v", m, err)
@@ -132,7 +131,7 @@ func TestPlanGoalSendsModel(t *testing.T) {
 	f.Goals["goal-1"] = map[string]any{"id": "goal-1", "status": "planning"}
 	gw := gateway.New(f.URL(), "rs_test")
 
-	err := gw.PlanGoal(context.Background(), "goal-1", "", []gateway.PlannedItem{
+	err := gw.PlanGoal(nodeCtx(), "goal-1", "", []gateway.PlannedItem{
 		{Seq: 1, Title: "docs", Model: "haiku"},
 		{Seq: 2, Title: "the rest"},
 	}, 0, nil)
@@ -157,7 +156,7 @@ func TestPlanGoalWithoutModelOnAnOlderPlatform(t *testing.T) {
 	f.Goals["goal-1"] = map[string]any{"id": "goal-1", "status": "planning"}
 	gw := gateway.New(f.URL(), "rs_test")
 
-	err := gw.PlanGoal(context.Background(), "goal-1", "", []gateway.PlannedItem{{Seq: 1, Title: "docs", Model: "haiku"}}, 0, nil)
+	err := gw.PlanGoal(nodeCtx(), "goal-1", "", []gateway.PlannedItem{{Seq: 1, Title: "docs", Model: "haiku"}}, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

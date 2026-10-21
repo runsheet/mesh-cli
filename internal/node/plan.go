@@ -173,6 +173,9 @@ func PlanDir(root, goalSlug string) string { return filepath.Join(root, goalSlug
 func (p *Planner) Plan(ctx context.Context, goal gateway.Goal, scope Scope) error {
 	// every command the plan sends acts as its planner (ADR-015)
 	ctx = actorContext(ctx, p.Cfg, gateway.RolePlanner)
+	// the node a finish is handed back by (finishJob, runsheet ADR 061)
+	ctx = gateway.WithNodeID(ctx, scope.NodeID)
+	ctx = gateway.WithJobKind(ctx, "runsheet/plan")
 	p.mu.Lock()
 	if p.attempts == nil {
 		p.attempts = map[string]int{}
@@ -1159,6 +1162,8 @@ func briefWithDeps(brief string, deps []int, because map[int]string) string {
 // stopped and its directory removed.
 func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope, s FoundSession) error {
 	ctx = actorContext(ctx, p.Cfg, gateway.RolePlanner)
+	// the node a finish is handed back by (finishJob, runsheet ADR 061)
+	ctx = gateway.WithNodeID(ctx, scope.NodeID)
 	if goal.Status != "planning" {
 		p.logf("goal %s: adopted plan is no longer wanted (%s); stopped", goal.Slug, goal.Status)
 		stopFound(p.logf, "goal "+goal.Slug, s)

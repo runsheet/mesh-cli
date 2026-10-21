@@ -1,7 +1,6 @@
 package gateway_test
 
 import (
-	"context"
 	"encoding/json"
 	"reflect"
 	"testing"
@@ -25,7 +24,7 @@ func TestFinishWorkItemAlreadyDone(t *testing.T) {
 	gw := gateway.New(f.URL(), "rs_test")
 
 	ev := "https://github.com/acme/widgets/pull/3 merged item 3's work; abc123 on main"
-	if err := gw.FinishWorkItemAlreadyDone(context.Background(), finishItem, ev, 40, nil); err != nil {
+	if err := gw.FinishWorkItemAlreadyDone(nodeCtx(), finishItem, ev, 40, nil); err != nil {
 		t.Fatal(err)
 	}
 	calls := f.CallsNamed("finishWorkItem")
@@ -44,7 +43,7 @@ func TestFinishWorkItemAlreadyDone(t *testing.T) {
 	if row := f.Item(finishItem); row["status"] != "evaluating" || row["outcome"] != "already_done" {
 		t.Fatalf("row = %+v", row)
 	}
-	if err := gw.FinishWorkItemAlreadyDone(context.Background(), finishItem, "  ", 0, nil); err == nil {
+	if err := gw.FinishWorkItemAlreadyDone(nodeCtx(), finishItem, "  ", 0, nil); err == nil {
 		t.Fatal("an already_done finish without evidence must be refused before it is sent")
 	}
 }
@@ -58,7 +57,7 @@ func TestFinishWorkItemBuiltUnchanged(t *testing.T) {
 	runningItem(f)
 	gw := gateway.New(f.URL(), "rs_test")
 
-	if err := gw.FinishWorkItem(context.Background(), finishItem, "mesh/g-7", "abc123", 12, nil); err != nil {
+	if err := gw.FinishWorkItem(nodeCtx(), finishItem, "mesh/g-7", "abc123", 12, nil); err != nil {
 		t.Fatal(err)
 	}
 	calls := f.CallsNamed("finishWorkItem")
@@ -94,7 +93,7 @@ func TestWorkItemOutcomeDecodes(t *testing.T) {
 	defer f.Close()
 	f.UnknownFields = map[string]bool{"outcome": true, "evidence": true}
 	f.WorkItems["item-1"] = map[string]any{"id": "item-1", "orgId": orgID, "goalId": "g", "seq": 1, "status": "merged"}
-	items, err := gateway.New(f.URL(), "rs_test").GoalWorkItems(context.Background(), "g")
+	items, err := gateway.New(f.URL(), "rs_test").GoalWorkItems(nodeCtx(), "g")
 	if err != nil {
 		t.Fatal(err)
 	}

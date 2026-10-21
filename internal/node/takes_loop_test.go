@@ -266,7 +266,7 @@ func takesRun(t *testing.T, p *priorityFake, takes Takes) (*Loop, string, []gate
 func claimCalls(p *priorityFake) []string {
 	var out []string
 	for _, c := range p.Calls {
-		if strings.HasPrefix(c.Name, "claim") {
+		if strings.HasPrefix(c.Name, "claim") && c.Name != "claimJob" {
 			out = append(out, c.Name)
 		}
 	}

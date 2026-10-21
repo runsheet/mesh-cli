@@ -324,9 +324,11 @@ func (r *Runner) validateCheckout(ctx context.Context, t validationTarget, c mai
 		r.logf("%s: %s; not attested", prefix, validate.Reason(vf))
 		return att, vf
 	}
-	out := vr.upload(ctx, t, att)
-	if out.Err != nil {
-		return att, out.Err
+	// the attestation is the job's finish (FinishValidationJob, runsheet
+	// ADR 061): kept beside the checkout here, handed back with the end
+	// of the claim
+	if err := writeAttestationAt(t.dir+".attestation.json", att); err != nil {
+		r.logf("%s: validation: %v", prefix, err)
 	}
 	return att, nil
 }

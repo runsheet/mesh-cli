@@ -21,10 +21,10 @@ func batchToMint() gateway.MainValidationBatch {
 	}
 }
 
-// The batch form is the platform's contract (runsheet ADR 009's
-// amendment 2026-10-14): issueItemRepoToken with mergeBatchId — and no
-// workItemId — naming the batch, answering the item's shape plus
-// mergeBatchId. The request is read off the wire, not the fake.
+// A candidate's token is the validate job's exchange (runsheet ADR 061
+// §4): jobAccess for runsheet/validate on the candidate, answered the
+// batch's read token under repo. The request is read off the wire, not
+// the fake.
 func TestIssueMergeBatchRepoTokenSendsTheContract(t *testing.T) {
 	b := batchToMint()
 	var sent []struct {
@@ -39,10 +39,10 @@ func TestIssueMergeBatchRepoTokenSendsTheContract(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		sent = append(sent, req)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"issueItemRepoToken": map[string]any{
-			"token": "ghs_batch", "expiresAt": "2026-10-14T19:27:21Z", "repo": "runsheet/latchkey",
-			"access": "read", "permissions": map[string]any{"contents": "read", "actions": "read", "issues": "read"},
-			"mergeBatchId": b.MergeBatchID,
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"jobAccess": map[string]any{
+			"kind": "runsheet/validate", "access": []string{"repo"},
+			"repo": map[string]any{"token": "ghs_batch", "expiresAt": "2026-10-14T19:27:21Z", "repo": "runsheet/latchkey",
+				"access": "read", "permissions": map[string]any{"contents": "read"}, "mergeBatchId": b.MergeBatchID},
 		}}})
 	}))
 	defer srv.Close()
@@ -55,24 +55,13 @@ func TestIssueMergeBatchRepoTokenSendsTheContract(t *testing.T) {
 		tok.Repository != "runsheet/latchkey" || tok.Access != "read" || tok.IssuedAt.IsZero() {
 		t.Fatalf("token = %+v", *tok)
 	}
-	var mint []int
-	for i, r := range sent {
-		if strings.Contains(r.Query, "issueItemRepoToken") {
-			mint = append(mint, i)
-		}
+	if len(sent) != 1 || sent[0].Query != `query($in: Map!) { jobAccess(input: $in) }` {
+		t.Fatalf("sent %+v", sent)
 	}
-	if len(mint) != 1 {
-		t.Fatalf("issueItemRepoToken sent %d times: %+v", len(mint), sent)
-	}
-	r := sent[mint[0]]
-	if want := `mutation($id: UUID!) { issueItemRepoToken(mergeBatchId: $id) }`; r.Query != want {
-		t.Fatalf("query = %q, want %q", r.Query, want)
-	}
-	if strings.Contains(r.Query, "workItemId") {
-		t.Fatalf("query names workItemId beside mergeBatchId: %q", r.Query)
-	}
-	if len(r.Variables) != 1 || r.Variables["id"] != b.MergeBatchID {
-		t.Fatalf("variables = %v, want id %s", r.Variables, b.MergeBatchID)
+	in, _ := sent[0].Variables["in"].(map[string]any)
+	subject, _ := in["subject"].(map[string]any)
+	if in["kind"] != "runsheet/validate" || subject["type"] != "candidate" || subject["id"] != b.MergeBatchID {
+		t.Fatalf("input = %v", in)
 	}
 }
 
@@ -109,40 +98,6 @@ func TestIssueMergeBatchRepoToken(t *testing.T) {
 	calls := f.CallsNamed("issueItemRepoToken")
 	if len(calls) != 1 || calls[0].Input["mergeBatchId"] != b.MergeBatchID || calls[0].Input["workItemId"] != nil {
 		t.Fatalf("calls = %+v", calls)
-	}
-}
-
-// A platform without issueItemRepoToken, or whose issueItemRepoToken
-// takes no mergeBatchId yet, answers IsUnsupported: the caller's cue to
-// fetch as before.
-func TestIssueMergeBatchRepoTokenOldPlatform(t *testing.T) {
-	for _, unsupported := range []string{"issueItemRepoToken", "issueItemRepoToken.mergeBatchId"} {
-		f := gatewaytest.New("rs_test")
-		b := batchToMint()
-		f.SeedMergeBatch(b)
-		f.Unsupported[unsupported] = true
-		gw := gateway.New(f.URL(), "rs_test")
-		if err := gw.ClaimMergeBatchValidation(context.Background(), b.MergeBatchID, nodeID, ""); err != nil {
-			t.Fatal(err)
-		}
-		_, err := gw.IssueMergeBatchRepoToken(context.Background(), b, nodeID)
-		f.Close()
-		if !gateway.IsUnsupported(err) {
-			t.Fatalf("%s: err = %v, want unsupported", unsupported, err)
-		}
-	}
-	for _, msg := range []string{
-		`Cannot query field "issueItemRepoToken" on type "Mutation".`,
-		`Unknown argument "mergeBatchId" on field "issueItemRepoToken" of type "Mutation".`,
-		`Field "issueItemRepoToken" argument "workItemId" of type "UUID!" is required but not provided.`,
-	} {
-		f := gatewaytest.New("rs_test")
-		f.Refuse["issueItemRepoToken"] = msg
-		_, err := gateway.New(f.URL(), "rs_test").IssueMergeBatchRepoToken(context.Background(), batchToMint(), nodeID)
-		f.Close()
-		if !gateway.IsUnsupported(err) {
-			t.Fatalf("%q: err = %v, want unsupported", msg, err)
-		}
 	}
 }
 
@@ -191,7 +146,7 @@ func TestIssueMergeBatchRepoTokenEmptyOrOtherBatch(t *testing.T) {
 	if err == nil || tok != nil || gateway.IsRefusal(err) {
 		t.Fatalf("empty token: tok = %v, err = %v, want a plain error", tok, err)
 	}
-	if !strings.Contains(err.Error(), "no token for merge batch "+b.MergeBatchID) {
+	if !strings.Contains(err.Error(), "no token") {
 		t.Fatalf("err = %v", err)
 	}
 

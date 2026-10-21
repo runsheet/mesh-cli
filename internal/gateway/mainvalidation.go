@@ -163,13 +163,6 @@ func (c *Client) ClaimMergeBatchValidation(ctx context.Context, batchID, nodeID,
 	return c.mainValidationCommand(ctx, "claimMergeBatchValidation", batchID, withHarness(map[string]any{"nodeId": nodeID}, harness))
 }
 
-// FinishMergeBatchValidation says the claiming node attested sha, the
-// candidate's: the attestation (RecordBatchCandidateAttestation) is the
-// verdict, this command the end of the claim.
-func (c *Client) FinishMergeBatchValidation(ctx context.Context, batchID, nodeID, sha string) error {
-	return c.mainValidationCommand(ctx, "finishMergeBatchValidation", batchID, map[string]any{"nodeId": nodeID, "sha": sha})
-}
-
 // FailMergeBatchValidation gives the claim back with why the node could
 // not validate the candidate — never a red verdict, which an
 // attestation carries.
@@ -181,12 +174,6 @@ func (c *Client) FailMergeBatchValidation(ctx context.Context, batchID, nodeID, 
 // ClaimMergeBatchValidation takes a batch's.
 func (c *Client) ClaimWorkItemMainValidation(ctx context.Context, itemID, nodeID, harness string) error {
 	return c.mainValidationCommand(ctx, "claimWorkItemMainValidation", itemID, withHarness(map[string]any{"nodeId": nodeID}, harness))
-}
-
-// FinishWorkItemMainValidation says the merge commit sha was attested.
-// The platform's input carries no nodeId: the claim names the node.
-func (c *Client) FinishWorkItemMainValidation(ctx context.Context, itemID, sha string) error {
-	return c.mainValidationCommand(ctx, "finishWorkItemMainValidation", itemID, map[string]any{"sha": sha})
 }
 
 // FailWorkItemMainValidation gives a merged item's main validation back
@@ -250,4 +237,42 @@ func (c *Client) RecordBatchCandidateAttestation(ctx context.Context, batchID st
 		TestEvidenceID: str("testEvidenceId"),
 		Raw:            out.Receipt,
 	}, nil
+}
+
+// FinishValidationJob is a validate job's finish (runsheet ADR 061 §7):
+// the attestation of a candidate (subject candidate, id the merge
+// batch's) or of a merged item's merge on main (subject main, id the
+// item's), handed back once through finishJob, which records it and
+// ends the claim. It answers the attestation's receipt.
+func (c *Client) FinishValidationJob(ctx context.Context, subject, id, nodeID string, att ValidationAttestation) (map[string]any, error) {
+	body, err := json.Marshal(att)
+	if err != nil {
+		return nil, err
+	}
+	var in map[string]any
+	if err := json.Unmarshal(body, &in); err != nil {
+		return nil, err
+	}
+	if subject == "candidate" {
+		in["mergeBatchId"] = id
+	}
+	var out map[string]any
+	err = retryOnTransient(ctx, func() error {
+		var err error
+		out, err = c.FinishJob(ctx, nodeID, "runsheet/validate", JobSubject{Type: subject, ID: id}, map[string]any{"attestation": in})
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	answers, _ := out["answers"].(map[string]any)
+	receipt, _ := answers["recordValidationAttestation"].(map[string]any)
+	return receipt, nil
+}
+
+// MainValidationToken is a merged item's main validation's read token
+// of its repository, from the exchange (jobAccess, runsheet ADR 061 §4):
+// what its fetches carry instead of the operator's login.
+func (c *Client) MainValidationToken(ctx context.Context, itemID, nodeID string) (*GitHubToken, error) {
+	return c.jobRepoToken(withNodeID(ctx, nodeID), "runsheet/validate", JobSubject{Type: "main", ID: itemID})
 }

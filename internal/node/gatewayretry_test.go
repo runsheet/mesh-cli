@@ -81,7 +81,8 @@ func TestGatewayRetryDownPastTheWindowFailsTheItemCountingTries(t *testing.T) {
 	if reason == "" {
 		reason, _ = fails[0].Input["reason"].(string)
 	}
-	if !regexp.MustCompile(`^session credentials: after [0-9]+ tries over [0-9.]+m?s: `).MatchString(reason) {
+	// the job's one exchange: whichever claim-time read asks it first
+	if !regexp.MustCompile(`^(session credentials|github token): after [0-9]+ tries over [0-9.]+m?s: `).MatchString(reason) {
 		t.Fatalf("failWorkItem reason = %q, want it to open `session credentials: after N tries over D: `", reason)
 	}
 	if len(ws.pushed) != 0 || len(f.CallsNamed("finishWorkItem")) != 0 {

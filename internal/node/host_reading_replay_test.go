@@ -212,7 +212,9 @@ func cifitsItem14(t *testing.T, f *gatewaytest.Fake, gw *gateway.Client) {
 	if len(clauses) != 1 {
 		t.Fatalf("item 14's clauses %+v", clauses)
 	}
-	if err := gw.EvaluateWorkItem(context.Background(), item1, false, strings.TrimSpace(notes), clauses, 10, nil, gateway.EvaluateChoice{}); err != nil {
+	holder, _ := f.WorkItems[item1]["nodeId"].(string)
+	ctx := gateway.WithNodeID(context.Background(), holder)
+	if err := gw.EvaluateWorkItem(ctx, item1, false, strings.TrimSpace(notes), clauses, 10, nil, gateway.EvaluateChoice{}); err != nil {
 		t.Fatal(err)
 	}
 	f.WorkItems[item1]["status"] = "evaluating"

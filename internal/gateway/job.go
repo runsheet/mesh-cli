@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -177,6 +178,8 @@ type jobRepoToken struct {
 	Repository  string         `json:"repository"`
 	Access      string         `json:"access"`
 	Permissions map[string]any `json:"permissions"`
+	// MergeBatchID, on a candidate's token, is the batch it was minted for
+	MergeBatchID string `json:"mergeBatchId"`
 }
 
 func (t jobRepoToken) token() (GitHubToken, error) {
@@ -241,10 +244,65 @@ func (a *JobAccess) RepoToken() (*GitHubToken, error) {
 	return &ts[0], nil
 }
 
+// jobAccessReuse is how long a session start's exchange answers its
+// other claim-time reads: never past a repository token's last five
+// minutes.
+const jobAccessReuse = 30 * time.Second
+
+type heldAccess struct {
+	answer *JobAccess
+	until  time.Time
+}
+
+// exchanges holds one session start's whole exchanges (WithJobKind), so
+// its claim-time reads — its repository token, its accounts, its tools
+// — are one jobAccess. The next start, its own context, asks again.
+type exchanges struct {
+	mu   sync.Mutex
+	held map[string]heldAccess
+}
+
+type exchangesKey struct{}
+
 // JobAccess is the one exchange for the job of kind on subject, the
 // harness it runs with: what the job's access names, to the node
-// holding its claim.
+// holding its claim. Within one session start (a context WithJobKind
+// marked) a whole answer, every entry served, is reused.
 func (c *Client) JobAccess(ctx context.Context, kind string, subject JobSubject, harness string) (*JobAccess, error) {
+	box, _ := ctx.Value(exchangesKey{}).(*exchanges)
+	if box == nil {
+		return c.jobAccess(ctx, kind, subject, harness)
+	}
+	key := nodeIDFrom(ctx) + " " + kind + " " + subject.Type + " " + subject.ID + " " + harness
+	now := time.Now()
+	box.mu.Lock()
+	held, ok := box.held[key]
+	box.mu.Unlock()
+	if ok && now.Before(held.until) {
+		return held.answer, nil
+	}
+	acc, err := c.jobAccess(ctx, kind, subject, harness)
+	if err != nil || len(acc.NotServed) > 0 {
+		return acc, err
+	}
+	until := now.Add(jobAccessReuse)
+	if ts, terr := acc.RepoTokens(); terr == nil {
+		for _, t := range ts {
+			if last := t.ExpiresAt.Add(-5 * time.Minute); last.Before(until) {
+				until = last
+			}
+		}
+	}
+	box.mu.Lock()
+	if box.held == nil {
+		box.held = map[string]heldAccess{}
+	}
+	box.held[key] = heldAccess{answer: acc, until: until}
+	box.mu.Unlock()
+	return acc, nil
+}
+
+func (c *Client) jobAccess(ctx context.Context, kind string, subject JobSubject, harness string) (*JobAccess, error) {
 	in := map[string]any{"subject": map[string]any{"type": subject.Type, "id": subject.ID}}
 	if kind != "" {
 		in["kind"] = kind

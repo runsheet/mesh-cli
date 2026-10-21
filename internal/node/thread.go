@@ -48,16 +48,16 @@ type ThreadRunner struct {
 	Layout      *Layout
 	// Served is the orgs the loop serves now: a node serving two or more
 	// runs no turn on the host (openScopePod).
-	Served      func() Scopes
-	Proxies     *SessionProxies
-	MCP         map[string]any
-	Runtimes    func() []string
-	Model       string
-	Timeout     time.Duration
-	BudgetUSD   float64
-	WorkRoot    string
-	BuildCache  string
-	Log         interface{ Printf(string, ...any) }
+	Served     func() Scopes
+	Proxies    *SessionProxies
+	MCP        map[string]any
+	Runtimes   func() []string
+	Model      string
+	Timeout    time.Duration
+	BudgetUSD  float64
+	WorkRoot   string
+	BuildCache string
+	Log        interface{ Printf(string, ...any) }
 }
 
 func (t *ThreadRunner) logf(format string, args ...any) {

@@ -1,7 +1,6 @@
 package gateway_test
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -94,7 +93,7 @@ func TestChangesetRoutes(t *testing.T) {
 	srv := httptest.NewServer(p)
 	defer srv.Close()
 	gw := gateway.New(srv.URL, "rs_test")
-	ctx := context.Background()
+	ctx := nodeCtx()
 
 	objs := []gateway.ChangesetObject{{Type: gateway.ObjectBlob, SHA: "aaa"}, {Type: gateway.ObjectBlob, SHA: "bbb"}, {Type: gateway.ObjectTree, SHA: "ttt"}}
 	missing, err := gw.ChangesetMissing(ctx, "item-1", objs)
@@ -149,9 +148,14 @@ func TestChangesetRoutes(t *testing.T) {
 	if err := gw.FinishWorkItemChangeset(ctx, "item-1", "mesh/g-1", "cs-1", 12, nil); err != nil {
 		t.Fatal(err)
 	}
-	fin := p.finishes[0]
-	if fin["changesetId"] != "cs-1" || fin["branch"] != "mesh/g-1" || fin["aggregateId"] != "item-1" {
-		t.Fatalf("finish %+v", fin)
+	// the finish is the build job's (finishJob, runsheet ADR 061): the
+	// older finishWorkItem's input as its changeset
+	in := p.finishes[0]
+	subject, _ := in["subject"].(map[string]any)
+	finish, _ := in["finish"].(map[string]any)
+	fin, _ := finish["changeset"].(map[string]any)
+	if in["kind"] != "runsheet/build" || subject["id"] != "item-1" || fin["changesetId"] != "cs-1" || fin["branch"] != "mesh/g-1" {
+		t.Fatalf("finish %+v", in)
 	}
 	if _, sent := fin["headSha"]; sent {
 		t.Fatalf("changeset finish sent a head sha: %+v", fin)
@@ -170,7 +174,7 @@ func TestChangesetUnsupported(t *testing.T) {
 	defer srv.Close()
 	old := httptest.NewServer(http.NotFoundHandler())
 	defer old.Close()
-	ctx := context.Background()
+	ctx := nodeCtx()
 
 	gw := gateway.New(old.URL, "rs_test")
 	if _, err := gw.ChangesetMissing(ctx, "item-1", nil); !gateway.IsUnsupported(err) {

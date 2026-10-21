@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/validate"
 )
 
@@ -124,6 +125,7 @@ func (r *Rebaser) tryRegenerate(ctx context.Context, rb *rebaseRun, cred *ItemCr
 	// the rebased head is a commit no attestation names (ADR 032), in a
 	// pod of its own on a sandboxed node: there is no session's
 	r.validateRebased(ctx, rb, nil, head)
+	ctx = gateway.WithNodeID(ctx, nodeIDOf(r.Scopes, rb.item.OrgID, r.Cfg))
 	if err := r.GW.FinishWorkItemRebase(ctx, rb.item.ID, head, out.Paths, nil); err != nil {
 		return fail(fmt.Errorf("the rebase landed at %s, but finishing it failed: %w", short(head), err))
 	}

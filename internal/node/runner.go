@@ -368,6 +368,9 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	r.wireGitLogf()
 	// every command the build sends acts as its builder (ADR-015)
 	ctx = actorContext(ctx, r.Cfg, gateway.RoleBuilder)
+	// the node a finish is handed back by (finishJob, runsheet ADR 061)
+	ctx = gateway.WithNodeID(ctx, nodeIDOf(r.Scopes, item.OrgID, r.Cfg))
+	ctx = gateway.WithJobKind(ctx, "runsheet/build")
 	res, err := Resolve(ctx, r.GW, item)
 	if err != nil {
 		return r.fail(ctx, item, fmt.Errorf("resolve: %w", err))
@@ -1216,6 +1219,7 @@ func (t *buildTail) finish(ctx context.Context, state *sessionsteps.State) error
 					rep.Validation = t.v.usage()
 				}
 			}
+			ctx = gateway.WithNodeID(ctx, nodeIDOf(r.Scopes, item.OrgID, r.Cfg))
 			return b.acct.Carried(r.validationUsage(r.GW.FinishWorkItem(ctx, itemID, branch, sha, b.cost.delta(), b.acct.Report(result), b.description(ctx))))
 		},
 	}
@@ -1401,6 +1405,9 @@ func (b *buildRun) handedBack(ctx context.Context, result harness.Result) {
 // finish: its session is stopped and its directory removed.
 func (r *Runner) AdoptItem(ctx context.Context, item gateway.WorkItem, s FoundSession) error {
 	ctx = actorContext(ctx, r.Cfg, gateway.RoleBuilder)
+	// the node a finish is handed back by (finishJob, runsheet ADR 061)
+	ctx = gateway.WithNodeID(ctx, s.State.NodeID)
+	ctx = gateway.WithJobKind(ctx, "runsheet/build")
 	if item.Status != "claimed" && item.Status != "running" || item.NodeID != s.State.NodeID {
 		r.logf("item %s: adopted session is no longer this node's (%s); stopped", item.ID, item.Status)
 		stopFound(r.logf, "item "+item.ID, s)

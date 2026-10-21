@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"projectmesh.io/mesh-cli/internal/node"
+
+	"projectmesh.io/mesh-cli/internal/gateway"
 )
 
 // The work tools (ADR-023, Work tools): mesh_status, mesh_switch and the
@@ -257,6 +259,11 @@ func (p *Personal) finish(ctx context.Context, args map[string]any) (string, err
 	h, err := p.pick(args, "item")
 	if err != nil {
 		return "", err
+	}
+	// the finish is the build job's, handed back by the personal node
+	// (finishJob names it, runsheet ADR 061)
+	if id, err := p.nodeID(ctx); err == nil {
+		ctx = gateway.WithNodeID(ctx, id)
 	}
 	hosted := p.Join.Hosted.Use(ctx)
 	if str(args, "outcome") == "already_done" {

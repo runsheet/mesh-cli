@@ -2,7 +2,6 @@ package gateway_test
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -137,7 +136,7 @@ func TestRecordValidationAttestationSendsTheContractFixture(t *testing.T) {
 	if err := dec.Decode(&att); err != nil {
 		t.Fatalf("the fixture's input is not a ValidationAttestation: %v", err)
 	}
-	receipt, err := gw.RecordValidationAttestation(context.Background(), fx.Input.WorkItemID, att)
+	receipt, err := gw.RecordValidationAttestation(nodeCtx(), fx.Input.WorkItemID, att)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +176,7 @@ func TestRecordValidationAttestationSendsTheAttestationOnTheNodesToken(t *testin
 
 	gw := gateway.New(f.URL(), nodeToken)
 	att := sampleAttestation()
-	if _, err := gw.RecordValidationAttestation(context.Background(), itemID, att); err != nil {
+	if _, err := gw.RecordValidationAttestation(nodeCtx(), itemID, att); err != nil {
 		t.Fatal(err)
 	}
 	calls := f.CallsNamed("recordValidationAttestation")
@@ -206,7 +205,7 @@ func TestRecordValidationAttestationWithoutTheMutationIsUnsupportedAndSendsNothi
 	var log queryLog
 	gw := gateway.New(log.proxy(t, f), "rs_test")
 
-	_, err := gw.RecordValidationAttestation(context.Background(), itemID, sampleAttestation())
+	_, err := gw.RecordValidationAttestation(nodeCtx(), itemID, sampleAttestation())
 	if !gateway.IsUnsupported(err) {
 		t.Fatalf("err = %v, want IsUnsupported", err)
 	}
@@ -229,7 +228,7 @@ func TestRecordValidationAttestationRefusedCarriesThePlatformsWords(t *testing.T
 	claimedItem(f)
 	gw := gateway.New(f.URL(), "rs_test")
 
-	_, err := gw.RecordValidationAttestation(context.Background(), itemID, sampleAttestation())
+	_, err := gw.RecordValidationAttestation(nodeCtx(), itemID, sampleAttestation())
 	if err == nil || !strings.Contains(err.Error(), words) {
 		t.Fatalf("err = %v, want the platform's words", err)
 	}
@@ -252,7 +251,7 @@ func TestRecordValidationAttestationProbesTheMutationOnce(t *testing.T) {
 	gw.Now = func() time.Time { return now }
 
 	for i := 0; i < 2; i++ {
-		if _, err := gw.RecordValidationAttestation(context.Background(), itemID, sampleAttestation()); err != nil {
+		if _, err := gw.RecordValidationAttestation(nodeCtx(), itemID, sampleAttestation()); err != nil {
 			t.Fatal(err)
 		}
 		now = now.Add(gateway.ScalingProbeEvery / 3)
@@ -294,7 +293,7 @@ func TestRecordValidationAttestationRetriesTransientErrors(t *testing.T) {
 	defer srv.Close()
 
 	gw := gateway.New(srv.URL, "rs_test")
-	if _, err := gw.RecordValidationAttestation(context.Background(), itemID, sampleAttestation()); err != nil {
+	if _, err := gw.RecordValidationAttestation(nodeCtx(), itemID, sampleAttestation()); err != nil {
 		t.Fatal(err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 3 {
@@ -328,7 +327,7 @@ func TestRecordValidationAttestationRetriesRateLimitThenSucceeds(t *testing.T) {
 	defer srv.Close()
 
 	gw := gateway.New(srv.URL, "rs_test")
-	if _, err := gw.RecordValidationAttestation(context.Background(), itemID, sampleAttestation()); err != nil {
+	if _, err := gw.RecordValidationAttestation(nodeCtx(), itemID, sampleAttestation()); err != nil {
 		t.Fatal(err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 3 {
@@ -363,7 +362,7 @@ func TestRecordValidationAttestationRetriesRateLimitAsGraphQLError(t *testing.T)
 	defer srv.Close()
 
 	gw := gateway.New(srv.URL, "rs_test")
-	if _, err := gw.RecordValidationAttestation(context.Background(), itemID, sampleAttestation()); err != nil {
+	if _, err := gw.RecordValidationAttestation(nodeCtx(), itemID, sampleAttestation()); err != nil {
 		t.Fatal(err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 3 {
@@ -404,7 +403,7 @@ func TestRecordValidationAttestationHonoursRetryAfter(t *testing.T) {
 	defer srv.Close()
 
 	gw := gateway.New(srv.URL, "rs_test")
-	if _, err := gw.RecordValidationAttestation(context.Background(), itemID, sampleAttestation()); err != nil {
+	if _, err := gw.RecordValidationAttestation(nodeCtx(), itemID, sampleAttestation()); err != nil {
 		t.Fatal(err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 2 {
@@ -432,7 +431,7 @@ func TestRecordValidationAttestationDoesNotRetryAnOrdinaryRefusal(t *testing.T) 
 	defer srv.Close()
 
 	gw := gateway.New(srv.URL, "rs_test")
-	_, err := gw.RecordValidationAttestation(context.Background(), itemID, sampleAttestation())
+	_, err := gw.RecordValidationAttestation(nodeCtx(), itemID, sampleAttestation())
 	if err == nil {
 		t.Fatal("err = nil, want the refusal")
 	}
@@ -467,7 +466,7 @@ func TestFinishWorkItemCarriesValidationMinutes(t *testing.T) {
 		{Step: "lint", Ms: 1200, ExitCode: 0},
 		{Step: "unit", Ms: 45000, ExitCode: 1},
 	}
-	if err := gw.FinishWorkItem(context.Background(), finishItem, "mesh/g-7", "abc123", 12, u); err != nil {
+	if err := gw.FinishWorkItem(nodeCtx(), finishItem, "mesh/g-7", "abc123", 12, u); err != nil {
 		t.Fatal(err)
 	}
 	calls := f.CallsNamed("finishWorkItem")
@@ -504,7 +503,7 @@ func TestFinishWorkItemWithoutValidationUsageDropsItAndReturnsErrNoValidationUsa
 
 	u := sampleUsageReport()
 	u.Validation = []gateway.ValidationMinutes{{Step: "lint", Ms: 1200, ExitCode: 0}}
-	err := gw.FinishWorkItem(context.Background(), finishItem, "mesh/g-7", "abc123", 12, u)
+	err := gw.FinishWorkItem(nodeCtx(), finishItem, "mesh/g-7", "abc123", 12, u)
 	if !errors.Is(err, gateway.ErrNoValidationUsage) {
 		t.Fatalf("err = %v, want ErrNoValidationUsage", err)
 	}
@@ -534,7 +533,7 @@ func TestFinishWorkItemCarriesContextBytes(t *testing.T) {
 
 	u := sampleUsageReport()
 	u.ContextBytes = 187392
-	if err := gw.FinishWorkItem(context.Background(), finishItem, "mesh/g-7", "abc123", 12, u); err != nil {
+	if err := gw.FinishWorkItem(nodeCtx(), finishItem, "mesh/g-7", "abc123", 12, u); err != nil {
 		t.Fatal(err)
 	}
 	calls := f.CallsNamed("finishWorkItem")
@@ -571,7 +570,7 @@ func TestFinishWorkItemWithoutContextUsageDropsItAndReturnsErrNoContextUsage(t *
 
 	u := sampleUsageReport()
 	u.ContextBytes = 187392
-	err := gw.FinishWorkItem(context.Background(), finishItem, "mesh/g-7", "abc123", 12, u)
+	err := gw.FinishWorkItem(nodeCtx(), finishItem, "mesh/g-7", "abc123", 12, u)
 	if !errors.Is(err, gateway.ErrNoContextUsage) {
 		t.Fatalf("err = %v, want ErrNoContextUsage", err)
 	}
@@ -590,7 +589,7 @@ func TestFinishWorkItemWithoutContextUsageDropsItAndReturnsErrNoContextUsage(t *
 	// the next report omits the field at once: one post, no retry
 	posts.Store(0)
 	runningItem(f)
-	err = gw.FinishWorkItem(context.Background(), finishItem, "mesh/g-7", "abc124", 12, u)
+	err = gw.FinishWorkItem(nodeCtx(), finishItem, "mesh/g-7", "abc124", 12, u)
 	if !errors.Is(err, gateway.ErrNoContextUsage) {
 		t.Fatalf("second err = %v, want ErrNoContextUsage", err)
 	}
@@ -629,7 +628,7 @@ func TestFinishWorkItemWithoutContextThenValidationUsageDropsBoth(t *testing.T) 
 	u := sampleUsageReport()
 	u.ContextBytes = 187392
 	u.Validation = []gateway.ValidationMinutes{{Step: "lint", Ms: 1200, ExitCode: 0}}
-	err := gw.FinishWorkItem(context.Background(), finishItem, "mesh/g-7", "abc123", 12, u)
+	err := gw.FinishWorkItem(nodeCtx(), finishItem, "mesh/g-7", "abc123", 12, u)
 	if !errors.Is(err, gateway.ErrNoContextUsage) || !errors.Is(err, gateway.ErrNoValidationUsage) {
 		t.Fatalf("err = %v, want ErrNoContextUsage and ErrNoValidationUsage", err)
 	}
@@ -650,7 +649,7 @@ func TestFinishWorkItemWithoutContextThenValidationUsageDropsBoth(t *testing.T) 
 	// the next report omits both at once: one post, no retry
 	posts.Store(0)
 	runningItem(f)
-	err = gw.FinishWorkItem(context.Background(), finishItem, "mesh/g-7", "abc124", 12, u)
+	err = gw.FinishWorkItem(nodeCtx(), finishItem, "mesh/g-7", "abc124", 12, u)
 	if !errors.Is(err, gateway.ErrNoContextUsage) || !errors.Is(err, gateway.ErrNoValidationUsage) {
 		t.Fatalf("second err = %v", err)
 	}
@@ -687,7 +686,7 @@ func TestFinishWorkItemWithoutContextThenUsageDetailKeepsBoth(t *testing.T) {
 
 	u := sampleUsageReport()
 	u.ContextBytes = 187392
-	err := gw.FinishWorkItem(context.Background(), finishItem, "mesh/g-7", "abc123", 12, u)
+	err := gw.FinishWorkItem(nodeCtx(), finishItem, "mesh/g-7", "abc123", 12, u)
 	if !errors.Is(err, gateway.ErrNoContextUsage) || !errors.Is(err, gateway.ErrNoUsageDetail) {
 		t.Fatalf("err = %v, want ErrNoContextUsage and ErrNoUsageDetail", err)
 	}
@@ -710,7 +709,7 @@ func TestFinishWorkItemWithoutContextThenUsageDetailKeepsBoth(t *testing.T) {
 
 	posts.Store(0)
 	runningItem(f)
-	err = gw.FinishWorkItem(context.Background(), finishItem, "mesh/g-7", "abc124", 12, u)
+	err = gw.FinishWorkItem(nodeCtx(), finishItem, "mesh/g-7", "abc124", 12, u)
 	if !errors.Is(err, gateway.ErrNoContextUsage) || !errors.Is(err, gateway.ErrNoUsageDetail) {
 		t.Fatalf("second err = %v", err)
 	}

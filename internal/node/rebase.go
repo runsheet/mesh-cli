@@ -129,6 +129,9 @@ func (r *Rebaser) budgetWithSource(goal *gateway.Goal, model string) (float64, s
 func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	// a rebase is build-side: its commands act as the builder (ADR-024)
 	ctx = actorContext(ctx, r.Cfg, gateway.RoleBuilder)
+	// the node a finish is handed back by (finishJob, runsheet ADR 061)
+	ctx = gateway.WithNodeID(ctx, nodeIDOf(r.Scopes, item.OrgID, r.Cfg))
+	ctx = gateway.WithJobKind(ctx, "runsheet/rebase")
 	rb := &rebaseRun{r: r, item: item, label: item.ID} // the goal's slug and the seq once resolved
 	fail := func(cause error) error { return rb.fail(ctx, cause) }
 
@@ -480,6 +483,7 @@ func (r *Rebaser) afterRebase(ctx context.Context, rb *rebaseRun, acct *SessionA
 	// the rebased head is a commit no attestation names: the platform
 	// carries none forward (runsheet ADR 032, The honesty check, rule 1)
 	r.validateRebased(ctx, rb, acct, head)
+	ctx = gateway.WithNodeID(ctx, nodeIDOf(r.Scopes, rb.item.OrgID, r.Cfg))
 	if err := acct.Carried(r.GW.FinishWorkItemRebase(ctx, rb.item.ID, head, out.Files, acct.Report(result))); err != nil {
 		// a finish the platform did not take still ends the claim
 		return fail(fmt.Errorf("the rebase landed at %s, but finishing it failed: %w", short(head), err))
@@ -506,6 +510,9 @@ func (r *Rebaser) removeCheckout(ctx context.Context, wt rebaseWorktrees, label,
 // directory removed.
 func (r *Rebaser) AdoptRebase(ctx context.Context, item gateway.WorkItem, s FoundSession) error {
 	ctx = actorContext(ctx, r.Cfg, gateway.RoleBuilder)
+	// the node a finish is handed back by (finishJob, runsheet ADR 061)
+	ctx = gateway.WithNodeID(ctx, s.State.NodeID)
+	ctx = gateway.WithJobKind(ctx, "runsheet/rebase")
 	if item.RebaseState != "claimed" || item.RebaseNodeID != "" && item.RebaseNodeID != s.State.NodeID {
 		r.logf("item %s: adopted rebase is no longer this node's (%s); stopped", item.ID, item.RebaseState)
 		stopFound(r.logf, "item "+item.ID, s)

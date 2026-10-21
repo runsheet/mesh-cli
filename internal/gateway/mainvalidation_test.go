@@ -148,25 +148,14 @@ func TestMainValidationsDecodesTheContract(t *testing.T) {
 
 // Each command sends exactly the contract's input and reads its answer:
 // the method, called with the fixture's own values, lands as the
-// fixture's input object.
+// fixture's input object. The claims and finishes are the job API's
+// (claimJob, finishJob: TestJobAPISendsTheContracts); the fails stay.
 func TestMainValidationCommandsSendTheContracts(t *testing.T) {
 	type call func(gw *gateway.Client, in map[string]any) error
 	str := func(in map[string]any, k string) string { s, _ := in[k].(string); return s }
 	cases := map[string]call{
-		"claimMergeBatchValidation": func(gw *gateway.Client, in map[string]any) error {
-			return gw.ClaimMergeBatchValidation(context.Background(), str(in, "aggregateId"), str(in, "nodeId"), str(in, "harness"))
-		},
-		"finishMergeBatchValidation": func(gw *gateway.Client, in map[string]any) error {
-			return gw.FinishMergeBatchValidation(context.Background(), str(in, "aggregateId"), str(in, "nodeId"), str(in, "sha"))
-		},
 		"failMergeBatchValidation": func(gw *gateway.Client, in map[string]any) error {
 			return gw.FailMergeBatchValidation(context.Background(), str(in, "aggregateId"), str(in, "nodeId"), str(in, "reason"))
-		},
-		"claimWorkItemMainValidation": func(gw *gateway.Client, in map[string]any) error {
-			return gw.ClaimWorkItemMainValidation(context.Background(), str(in, "aggregateId"), str(in, "nodeId"), str(in, "harness"))
-		},
-		"finishWorkItemMainValidation": func(gw *gateway.Client, in map[string]any) error {
-			return gw.FinishWorkItemMainValidation(context.Background(), str(in, "aggregateId"), str(in, "sha"))
 		},
 		"failWorkItemMainValidation": func(gw *gateway.Client, in map[string]any) error {
 			return gw.FailWorkItemMainValidation(context.Background(), str(in, "aggregateId"), str(in, "reason"))
@@ -404,24 +393,24 @@ func TestFakeMergeBatchClaimConvergesAndFinishes(t *testing.T) {
 		t.Fatalf("the holder is served %+v", q.Batches)
 	}
 
-	receipt, err := gw.RecordBatchCandidateAttestation(ctx, b.MergeBatchID, sampleAttestation())
+	// the validate job's finish (finishJob): the attestation and the end
+	// of the claim in one, another node's refused
+	att := sampleAttestation()
+	att.Commit = b.SHA
+	if _, err := gw.FinishValidationJob(ctx, "candidate", b.MergeBatchID, otherNode, att); !gateway.IsRefusal(err) {
+		t.Fatalf("another node's finish = %v, want IsRefusal", err)
+	}
+	receipt, err := gw.FinishValidationJob(ctx, "candidate", b.MergeBatchID, nodeID, att)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if receipt.Branch != b.CandidateBranch {
-		t.Fatalf("receipt branch = %q, want %q", receipt.Branch, b.CandidateBranch)
+	if receipt["branch"] != b.CandidateBranch {
+		t.Fatalf("receipt = %v, want branch %q", receipt, b.CandidateBranch)
 	}
-	att := f.CallsNamed("recordValidationAttestation")
-	if len(att) != 1 || att[0].Input["mergeBatchId"] != b.MergeBatchID ||
-		att[0].Input["input"].(map[string]any)["mergeBatchId"] != b.MergeBatchID {
-		t.Fatalf("attestation calls = %+v", att)
-	}
-
-	if err := gw.FinishMergeBatchValidation(ctx, b.MergeBatchID, otherNode, b.SHA); !gateway.IsRefusal(err) {
-		t.Fatalf("another node's finish = %v, want IsRefusal", err)
-	}
-	if err := gw.FinishMergeBatchValidation(ctx, b.MergeBatchID, nodeID, b.SHA); err != nil {
-		t.Fatal(err)
+	atts := f.CallsNamed("recordValidationAttestation")
+	if len(atts) == 0 || atts[len(atts)-1].Input["mergeBatchId"] != b.MergeBatchID ||
+		atts[len(atts)-1].Input["input"].(map[string]any)["mergeBatchId"] != b.MergeBatchID {
+		t.Fatalf("attestation calls = %+v", atts)
 	}
 	if row := f.MergeBatch(b.MergeBatchID); row["validationState"] != "finished" || row["validationFinishedSha"] != b.SHA {
 		t.Fatalf("batch = %+v", row)
@@ -503,10 +492,14 @@ func TestFakeWorkItemMainValidation(t *testing.T) {
 	if err := gw.ClaimWorkItemMainValidation(ctx, itemID, otherNode, ""); err != nil {
 		t.Fatalf("the claim after a fail: %v", err)
 	}
-	if err := gw.FinishWorkItemMainValidation(ctx, itemID, "not-the-sha"); !gateway.IsRefusal(err) {
+	wrong := sampleAttestation()
+	wrong.Commit = "not-the-sha"
+	if _, err := gw.FinishValidationJob(ctx, "main", itemID, otherNode, wrong); !gateway.IsRefusal(err) {
 		t.Fatalf("a finish on another sha = %v, want IsRefusal", err)
 	}
-	if err := gw.FinishWorkItemMainValidation(ctx, itemID, r.SHA); err != nil {
+	right := sampleAttestation()
+	right.Commit = r.SHA
+	if _, err := gw.FinishValidationJob(ctx, "main", itemID, otherNode, right); err != nil {
 		t.Fatal(err)
 	}
 	if row := f.MainValidationRequest(itemID); row["validationState"] != "finished" {
