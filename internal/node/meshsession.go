@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/dpop"
 	"projectmesh.io/mesh-cli/internal/gateway"
 )
 
@@ -18,7 +19,7 @@ import (
 // mint of its id tokens.
 type MeshSessionOpener interface {
 	OpenMeshSession(ctx context.Context, req gateway.MeshSessionRequest) (*gateway.MeshSession, error)
-	MeshSessionToken(ctx context.Context, s *gateway.MeshSession, audience string) (string, time.Duration, error)
+	MeshSessionToken(ctx context.Context, s *gateway.MeshSession, audience string, key gateway.Prover) (string, time.Duration, bool, error)
 }
 
 // MeshSessionRefresh is how long before its expiry a session's id token
@@ -26,38 +27,36 @@ type MeshSessionOpener interface {
 // skew allowance and one Retry-After.
 const MeshSessionRefresh = 120 * time.Second
 
+// MeshSessionAudience is the audience of a session's token: what
+// runsheet's /mcp takes, DPoP-bound (runsheet ADR 064).
+const MeshSessionAudience = "mesh-session"
+
 // SessionBearers gives each build session the runsheet bearer of its
 // own mesh session, never the machine's (mesh-cli ADR-035): Open opens
 // the claim's session (POST /mesh/v1/sessions) and binds a source
-// minting its id tokens in Tokens, so the session's token file — under
-// its org's MCP root — holds that session's bearer alone, which /mcp
-// narrows to the session's project and refuses once the claim ends.
+// minting its tokens in Tokens, each bound to the node's DPoP key (Key,
+// runsheet ADR 064 §5): the session's proxy, in the node, sends each on
+// `Authorization: DPoP` with a fresh proof by that key, which no pod and
+// no file ever holds, so a token copied out of the node is of no use.
+// /mcp narrows the token to the session's project and refuses it once
+// the claim ends.
 type SessionBearers struct {
 	GW     MeshSessionOpener
 	Tokens *TokenFiles
-	// Audience is the id tokens' audience: /mcp's URL, the relay's own
-	// --url (MeshMCPURL).
+	// Audience is the tokens' audience: MeshSessionAudience when "".
 	Audience string
+	// Key is the node's DPoP key, held in memory for the process's life:
+	// every session's token is bound to it. Nil mints unbound tokens,
+	// which /mcp refuses (a test's platform may take them).
+	Key *dpop.Key
 	// Orgs is how many orgs the node serves; more than one refuses the
 	// machine bearer when the platform opens no mesh sessions.
 	Orgs func() int
 	Logf func(format string, args ...any)
 	// Now is the clock the id tokens' expiry is read on; nil is time.Now.
 	Now func() time.Time
-	// MachineUntilDPoP keeps a one-org node's sessions on the machine
-	// bearer after their mesh session opens: runsheet's /mcp takes a
-	// session token only DPoP-bound (runsheet ADR 064), which this node
-	// cannot present yet, so the session's id token as a Bearer leaves
-	// the runsheet server failed to start ("runsheet served, never
-	// called: failed"). The session is still opened and its first id
-	// token still minted, so a session the platform will not lease never
-	// starts. A node serving several orgs keeps its sessions' own tokens,
-	// since the machine bearer would cross orgs. Off once the relay signs
-	// its requests.
-	MachineUntilDPoP bool
 
-	fallbackOnce  sync.Once
-	untilDPoPOnce sync.Once
+	fallbackOnce sync.Once
 }
 
 // MachineBearerRefusal is the refusal of a build on a node serving
@@ -122,16 +121,10 @@ func (b *SessionBearers) Open(ctx context.Context, item gateway.WorkItem, nodeID
 	if _, err := src(ctx); err != nil {
 		return noop, fmt.Errorf("%s: id token: %w", s, err)
 	}
-	if b.MachineUntilDPoP && b.orgs() <= 1 {
-		b.untilDPoPOnce.Do(func() {
-			b.logf("mesh sessions open, but /mcp takes their tokens only DPoP-bound (runsheet ADR 064): a session's runsheet reads on the node's bearer until the relay signs (one org served)")
-		})
-		return noop, nil
-	}
-	return b.Tokens.Bind(item.ID, item.Attempts, src), nil
+	return b.Tokens.Bind(item.ID, item.Attempts, src, b.Key), nil
 }
 
-// source mints s's id tokens for Audience, each kept until
+// source mints s's tokens for Audience, bound to Key, each kept until
 // MeshSessionRefresh before it expires.
 func (b *SessionBearers) source(s *gateway.MeshSession) TokenSource {
 	var mu sync.Mutex
@@ -145,7 +138,15 @@ func (b *SessionBearers) source(s *gateway.MeshSession) TokenSource {
 			return tok, nil
 		}
 		sent := now
-		t, life, err := b.GW.MeshSessionToken(ctx, s, b.Audience)
+		var key gateway.Prover
+		if b.Key != nil {
+			key = b.Key
+		}
+		aud := b.Audience
+		if aud == "" {
+			aud = MeshSessionAudience
+		}
+		t, life, _, err := b.GW.MeshSessionToken(ctx, s, aud, key)
 		if err != nil {
 			return "", err
 		}

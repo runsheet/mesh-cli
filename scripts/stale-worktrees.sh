@@ -15,10 +15,10 @@
 # one line per stale checkout, `<checkout> -> <gitdir>`, never a
 # verdict.
 #
-# usage: scripts/stale-worktrees.sh [<work root>]   (default ~/.mesh/work)
+# usage: scripts/stale-worktrees.sh [<jobs root>]   (default ~/.mesh/jobs)
 set -uo pipefail
 
-root="${1:-$HOME/.mesh/work}"
+root="${1:-$HOME/.mesh/jobs}"
 [ -d "$root" ] || exit 0
 
 find "$root" -mindepth 2 -maxdepth 3 -name .git -type f 2>/dev/null | sort |

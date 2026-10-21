@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/crash"
+	"projectmesh.io/mesh-cli/internal/dpop"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -927,18 +928,14 @@ var nodeLogoutCmd = &cobra.Command{
 var nodeStartCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Run the node in the foreground",
-	Long: `Every --interval the node heartbeats, lists the org's ready work items and
-claims up to its capacity. In channel mode (the default) one persistent
-claude session runs with the mesh channel attached and each claimed item
-is pushed into it as a work_item.ready event; the session reports back
-through the channel's tools. In poll mode each claimed item runs its own
-"claude -p" session and the node reports, pushes and finishes for it.
+	Long: `Every --interval the node heartbeats, lists the ready work items of every
+org it serves and claims up to its capacity. Each claimed item, evaluation,
+rebase, plan and research runs as its own "claude -p" session in the job's own
+directory under ~/.mesh/jobs (in its own pod when the sandbox is on), and the
+node reports, pushes and finishes for it.
 
-Channels are a Claude Code research preview: the session is started with
---dangerously-load-development-channels server:mesh and needs claude.ai
-(Max) or Console auth — not Bedrock/Vertex. --unattended adds
---dangerously-skip-permissions so the session never waits on a prompt;
-only use it on a machine you trust with that.`,
+--unattended adds --dangerously-skip-permissions so a session never waits on a
+prompt; only use it on a machine you trust with that.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// a panic anywhere on the start path is one line in node.log
 		// and exit 70, not Go's bare status 2 (internal/crash)
@@ -1211,15 +1208,23 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 	sessionTokens = &node.TokenFiles{Token: gw.Bearer, Logf: logger.Printf, MultiOrg: func() bool { return loop.ServedOrgs() > 1 }}
 	// a build's runsheet reads on its own mesh session's bearer, never
 	// the machine's that reads every served org's (ADR-035)
-	sessionBearers = &node.SessionBearers{GW: gw, Tokens: sessionTokens, Audience: node.MeshMCPURL(gw.BaseURL), Orgs: loop.ServedOrgs, Logf: logger.Printf, MachineUntilDPoP: true}
+	// the node's DPoP key, in memory for this process alone: every
+	// session's token is bound to it, and its proxy signs each runsheet
+	// request with it (runsheet ADR 064 §5)
+	dpopKey, err := dpop.NewKey()
+	if err != nil {
+		return fmt.Errorf("dpop key: %w", err)
+	}
+	logger.Printf("dpop: session tokens bound to %s", dpopKey.Thumbprint())
+	sessionBearers = &node.SessionBearers{GW: gw, Tokens: sessionTokens, Key: dpopKey, Orgs: loop.ServedOrgs, Logf: logger.Printf}
 	// every build, evaluation, plan and research reaches its MCP servers
 	// through its own sessionproxy, the bearer and the tools' secrets
 	// held on the host, none of it in the session's pod
 	sessionProxies = newSessionProxies(logger.Printf)
 	loop.NoCredential = &node.NoCredentials{Log: logger, Now: loop.Now}
 	accounts := &node.Credentials{GW: gw, Limits: loop.Limits, Thresholds: loop.Thresholds, Known: known, NoCredential: loop.NoCredential, Log: logger}
-	// the quartermaster keeps the node fit from every tick, poll and
-	// channel mode alike: disk, /tmp scratch, dead checkouts, version
+	// the quartermaster keeps the node fit from every tick: disk, /tmp
+	// scratch, dead checkouts, version
 	// (goal the-quartermaster-keeps-the-nodes-fit); what it finds is
 	// left in node.findings for `mesh node status` and rides the heartbeat
 	loop.Quartermaster = nodeQuartermaster(gw, loop, workRoot, "", sessionSandbox, logger.Printf)
@@ -1231,7 +1236,7 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 	if nodeModeFlag != "" && nodeModeFlag != "poll" {
 		return fmt.Errorf("--mode %s: channel mode is gone; a node runs every session as its own job (drop --mode)", nodeModeFlag)
 	}
-	return runPollMode(ctx, cfg, scopes, gw, loop, workRoot, fallback, accounts, logger)
+	return runNode(ctx, cfg, scopes, gw, loop, workRoot, fallback, accounts, logger)
 }
 
 // hostUnit is the unit sessions run in on this machine; a test of the
@@ -1240,7 +1245,7 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 var hostUnit = sessionunit.Default
 
 // sessionsOut is where what sessions say goes — the workspaces' git
-// commands, the agents' stderr, channel mode's text: ~/.mesh/sessions.log
+// commands, the agents' stderr: ~/.mesh/sessions.log
 // once `mesh node start` has opened it, so node.log keeps the node's own
 // lines; stderr for every other command.
 var sessionsOut io.Writer = os.Stderr
@@ -1267,19 +1272,13 @@ func openNodeLogs() (*node.NodeLogs, error) {
 	return logs, nil
 }
 
-// channelText logs a channel session's text, its first line, on the
-// sessions log: what a session says is not the node's reasoning.
-func channelText(sessions *log.Logger) func(string) {
-	return func(t string) { sessions.Printf("session: %s", firstLine(t)) }
-}
-
 // observed is a one-shot harness whose sessions report their plan
 // standing into the loop's Limits and their cost into its Ledger.
 func observed(loop *node.Loop, logger *log.Logger) harness.Harness {
 	return node.ObserveSpend(node.ObserveLimits(oneShotHarness(), loop.Limits), loop.Ledger, logger.Printf)
 }
 
-func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gateway.Client, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) error {
+func runNode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gateway.Client, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) error {
 	h := observed(loop, logger)
 	// an item's handed-back build leaves what it spent on beside the
 	// pidfile for the item's next claim (ADR 012 Hand-back)
@@ -1707,7 +1706,7 @@ func newSessionProxies(logf func(string, ...any)) *node.SessionProxies {
 	if sessionTokens == nil {
 		return nil
 	}
-	return &node.SessionProxies{Bearer: sessionTokens.Source, Logf: logf}
+	return &node.SessionProxies{Bearer: sessionTokens.Source, Key: sessionTokens.KeyOf, Logf: logf}
 }
 
 // nodeLayout is the node's job and connection trees under ~/.mesh
@@ -1739,9 +1738,11 @@ func oneShotHarness() *harness.ClaudeCode {
 	// a sandboxed session's agent runs detached in its pod and outlives
 	// the node like a host one: the next node adopts it (ADR 009)
 	h := &harness.ClaudeCode{Stderr: sessionsOut, Sandbox: sessionSandbox, MeshBinary: meshBinary(), DetachSandboxed: sessionSandbox != nil, Tokens: tokenKeeper()}
-	// a job with no work dir keeps its session dir in the node's scratch
-	// root, never /tmp
-	if root, err := node.ScratchRoot(""); err == nil {
+	// a job with no work dir keeps its session dir in the jobs tree's
+	// scratch root, never /tmp
+	if nodeLayout != nil {
+		h.ScratchRoot = filepath.Join(nodeLayout.JobsDir(), node.ScratchDirName)
+	} else if root, err := node.ScratchRoot(""); err == nil {
 		h.ScratchRoot = root
 	}
 	if nodeUnattended {
@@ -2107,10 +2108,14 @@ func init() {
 	nodeRegisterCmd.Flags().StringVar(&nodeOwnerFlag, "owner", "", `the node's owner: "person" (default, bring your own infra) or "enterprise" (shared infra; requires --enterprise)`)
 	nodeRegisterCmd.Flags().StringVar(&nodeEnterpriseFlag, "enterprise", "", "the enterprise that owns this node, by slug or id (required with --owner enterprise)")
 	nodeStartCmd.Flags().DurationVar(&nodeIntervalFlag, "interval", 30*time.Second, "heartbeat and claim interval")
-	nodeStartCmd.Flags().DurationVar(&nodeStallFlag, "stall", 10*time.Minute, "channel mode: re-push a held item the idle session has reported nothing on for this long")
-	nodeStartCmd.Flags().DurationVar(&nodeTurnTimeoutFlag, "turn-timeout", 45*time.Minute, "channel mode: kill and restart a busy session that has reported nothing on its item for this long (0 never)")
+	// --stall and --turn-timeout were channel mode's: an installed
+	// service unit naming them still starts
+	nodeStartCmd.Flags().DurationVar(&nodeStallFlag, "stall", 0, "deprecated: channel mode is gone")
+	nodeStartCmd.Flags().DurationVar(&nodeTurnTimeoutFlag, "turn-timeout", 0, "deprecated: channel mode is gone")
+	_ = nodeStartCmd.Flags().MarkDeprecated("stall", "channel mode is gone; drop --stall")
+	_ = nodeStartCmd.Flags().MarkDeprecated("turn-timeout", "channel mode is gone; drop --turn-timeout")
 	nodeStartCmd.Flags().DurationVar(&nodeSessionTimeoutFlag, "session-timeout", 40*time.Minute, "cap on one evaluator, planner, director or rebase session's wall clock (0 never)")
-	nodeStartCmd.Flags().Float64Var(&nodeMaxBudgetFlag, "max-budget-usd", 10, "cap on one session's budget (poll mode), whatever the goal has left")
+	nodeStartCmd.Flags().Float64Var(&nodeMaxBudgetFlag, "max-budget-usd", 10, "cap on one session's budget, whatever the goal has left")
 	nodeStartCmd.Flags().Float64Var(&nodeEvalBudgetFlag, "eval-budget-usd", 3, "cap on one evaluator session's budget")
 	nodeStartCmd.Flags().Float64Var(&nodePlanBudgetFlag, "plan-budget-usd", 5, "cap on one planner session's budget")
 	nodeStartCmd.Flags().Float64Var(&nodeResearchBudgetFlag, "research-budget-usd", 5, "cap on one director (research) session's budget")
@@ -2126,7 +2131,7 @@ func init() {
 	nodeStartCmd.Flags().StringVar(&nodeModeFlag, "mode", "", "deprecated: every node runs one session per job")
 	_ = nodeStartCmd.Flags().MarkDeprecated("mode", "every node runs one session per job; drop --mode")
 	nodeStartCmd.Flags().BoolVar(&nodeUnattended, "unattended", false, "run sessions with --dangerously-skip-permissions (trusted machines only)")
-	nodeStartCmd.Flags().BoolVar(&nodeOnceFlag, "once", false, "poll mode: one tick, then exit")
+	nodeStartCmd.Flags().BoolVar(&nodeOnceFlag, "once", false, "one tick, then exit")
 	nodeModelCmd.Flags().StringVar(&nodeModelFlag, "default", "", "model for any kind that names none")
 	nodeModelCmd.Flags().StringVar(&nodeModelBuildFlag, "build", "", "model for build sessions")
 	nodeModelCmd.Flags().StringVar(&nodeModelEvaluateFlag, "evaluate", "", "model for evaluator sessions")

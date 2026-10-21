@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"projectmesh.io/mesh-cli/internal/dpop/dpoptest"
 	"projectmesh.io/mesh-cli/internal/gateway"
 )
 
@@ -77,6 +78,10 @@ type Fake struct {
 	// route 404, a platform that predates it (meshsessions.go).
 	MeshSessions   map[string]*MeshSession
 	NoMeshSessions bool
+	// DPoP checks every mint's proof (meshsessions.go); DPoPNonce, set,
+	// is the nonce a proof must carry, asked for with use_dpop_nonce.
+	DPoP      dpoptest.Verifier
+	DPoPNonce string
 	// Changesets is a platform holding changesets (runsheet ADR 058, step
 	// 4): the /mesh/v1/items/{id}/changeset routes served (changeset.go)
 	// and FinishWorkItemInput taking `changesetId`. False, the routes

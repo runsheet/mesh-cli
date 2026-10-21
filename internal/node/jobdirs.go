@@ -200,9 +200,3 @@ func evalSpec(l *Layout, scopes Scopes, item gateway.WorkItem, label string, spe
 	spec.Job, spec.Path, spec.Root, spec.Repos = j.Dir, j.Eval(), c.Dir, c.Repos
 	return spec, nil
 }
-
-// ItemSpec is itemSpec for a session outside the node's own runners
-// (the channel mode's items).
-func ItemSpec(l *Layout, scopes Scopes, item gateway.WorkItem, label string, spec WorkspaceSpec) (WorkspaceSpec, error) {
-	return itemSpec(l, scopes, item, label, spec)
-}

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/dpop/dpoptest"
 	"projectmesh.io/mesh-cli/internal/gateway"
 )
 
@@ -22,7 +23,15 @@ type MeshSession struct {
 	RequestToken string
 	// Minted are the id tokens the request URL answered, in order.
 	Minted []string
+	// JKT is each bound token's key thumbprint (cnf.jkt), by token.
+	JKT map[string]string
+	// Audiences are the audiences each mint asked for, in order.
+	Audiences []string
 }
+
+// MeshSessionAudience is the audience the fake binds every mint of, as
+// Latchkey binds a mesh-session token always (ADR 013's amendment).
+const MeshSessionAudience = "mesh-session"
 
 // meshSessions serves POST /mesh/v1/sessions and GET
 // /mesh/v1/sessions/{id}/id-token as runsheet ADR 056 says: the open on
@@ -67,9 +76,41 @@ func (f *Fake) meshSessions(w http.ResponseWriter, r *http.Request) {
 		writeREST(w, http.StatusUnauthorized, map[string]any{"message": "session ended: item is " + status, "reason": "lease_ended"})
 		return
 	}
+	// DPoP at mint (Latchkey's dpopBinding): a proof binds the token to
+	// its key; a mesh-session mint without one is refused; with
+	// DPoPNonce set, a proof without that nonce is asked for it
+	aud := r.URL.Query().Get("audience")
+	jkt := ""
+	if proof := r.Header.Get("DPoP"); proof != "" {
+		var err error
+		if jkt, err = dpoptest.ProofJKT(proof); err == nil {
+			err = f.DPoP.Verify(proof, dpoptest.Request{Method: r.Method, URL: f.Server.URL + r.URL.RequestURI(), JKT: jkt})
+		}
+		if err != nil {
+			writeREST(w, http.StatusBadRequest, map[string]any{"error": "invalid_dpop_proof", "message": err.Error()})
+			return
+		}
+		if n, _ := dpoptest.ProofNonce(proof); f.DPoPNonce != "" && n != f.DPoPNonce {
+			w.Header().Set("DPoP-Nonce", f.DPoPNonce)
+			writeREST(w, http.StatusBadRequest, map[string]any{"error": "use_dpop_nonce"})
+			return
+		}
+	} else if aud == MeshSessionAudience {
+		writeREST(w, http.StatusBadRequest, map[string]any{"error": "invalid_dpop_proof", "message": "a mesh-session token is minted only DPoP-bound"})
+		return
+	}
 	tok := fmt.Sprintf("mst_%s_%d", s.ID, len(s.Minted)+1)
 	s.Minted = append(s.Minted, tok)
-	writeREST(w, http.StatusOK, map[string]any{"value": tok, "expires_in": 600})
+	s.Audiences = append(s.Audiences, aud)
+	answer := map[string]any{"value": tok, "expires_in": 600}
+	if jkt != "" {
+		if s.JKT == nil {
+			s.JKT = map[string]string{}
+		}
+		s.JKT[tok] = jkt
+		answer["token_type"] = "DPoP"
+	}
+	writeREST(w, http.StatusOK, answer)
 }
 
 func (f *Fake) openMeshSession(w http.ResponseWriter, r *http.Request, bearer string) {
@@ -132,6 +173,11 @@ func (f *Fake) MeshSessionFor(itemID string) *MeshSession {
 		if s.ItemID == itemID {
 			c := *s
 			c.Minted = append([]string(nil), s.Minted...)
+			c.Audiences = append([]string(nil), s.Audiences...)
+			c.JKT = map[string]string{}
+			for k, v := range s.JKT {
+				c.JKT[k] = v
+			}
 			return &c
 		}
 	}

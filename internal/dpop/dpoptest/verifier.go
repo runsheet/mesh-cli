@@ -184,3 +184,53 @@ func publicJWK(m map[string]any) (dpop.JWK, *ecdsa.PublicKey, error) {
 }
 
 func decode(s string) ([]byte, error) { return base64.RawURLEncoding.DecodeString(s) }
+
+// ProofJKT is the thumbprint of the key a proof's header names, read
+// without checking the proof: what a mint binds the token it answers to
+// (cnf.jkt), before Verify checks the proof under it.
+func ProofJKT(proof string) (string, error) {
+	head, _, err := proofParts(proof)
+	if err != nil {
+		return "", err
+	}
+	jwk, _, err := publicJWK(head)
+	if err != nil {
+		return "", err
+	}
+	return dpop.Thumbprint(jwk), nil
+}
+
+// ProofNonce is the nonce a proof's claims carry, "" for none.
+func ProofNonce(proof string) (string, error) {
+	_, claims, err := proofParts(proof)
+	if err != nil {
+		return "", err
+	}
+	n, _ := claims["nonce"].(string)
+	return n, nil
+}
+
+func proofParts(proof string) (head, claims map[string]any, err error) {
+	parts := strings.Split(proof, ".")
+	if len(parts) != 3 {
+		return nil, nil, errors.New("dpop: proof is not a compact JWS")
+	}
+	rawHead, err := decode(parts[0])
+	if err != nil {
+		return nil, nil, fmt.Errorf("dpop: header: %w", err)
+	}
+	rawClaims, err := decode(parts[1])
+	if err != nil {
+		return nil, nil, fmt.Errorf("dpop: claims: %w", err)
+	}
+	var h struct {
+		JWK map[string]any `json:"jwk"`
+	}
+	if err := json.Unmarshal(rawHead, &h); err != nil {
+		return nil, nil, fmt.Errorf("dpop: header: %w", err)
+	}
+	if err := json.Unmarshal(rawClaims, &claims); err != nil {
+		return nil, nil, fmt.Errorf("dpop: claims: %w", err)
+	}
+	return h.JWK, claims, nil
+}

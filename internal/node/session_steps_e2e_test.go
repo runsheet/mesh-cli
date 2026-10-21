@@ -69,7 +69,7 @@ func TestBuildRunsAsSessionStepsE2E(t *testing.T) {
 	r.WorkRoot = filepath.Join(root, "work")
 	r.WS = &Git{GitHubURL: github.URL, ReposRoot: filepath.Join(root, "repos"), Logf: r.Log.Printf, Log: io.Discard}
 	tf := &TokenFiles{Token: func(context.Context) (string, error) { return proxyMachineBearer, nil }}
-	unbind := tf.Bind(item.ID, item.Attempts, func(context.Context) (string, error) { return proxySessionBearer, nil })
+	unbind := tf.Bind(item.ID, item.Attempts, func(context.Context) (string, error) { return proxySessionBearer, nil }, nil)
 	defer unbind()
 	r.Proxies = &SessionProxies{Bearer: tf.Source, Root: shortProxyRoot(t), Logf: t.Logf}
 

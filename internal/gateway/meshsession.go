@@ -107,50 +107,95 @@ func (c *Client) OpenMeshSession(ctx context.Context, req MeshSessionRequest) (*
 	return &out, nil
 }
 
-// MeshSessionToken mints one id token of s for audience — /mcp's URL,
-// the relay's own — at s's request URL on its request bearer: the
-// session's own bearer, which /mcp narrows to the session's project and
-// refuses once the claim ends. It answers the token and how long it
-// lives. A refusal (401, 403: the lease is over) is a *Error; a 503
-// (session tokens unavailable) an error that is not.
-func (c *Client) MeshSessionToken(ctx context.Context, s *MeshSession, audience string) (string, time.Duration, error) {
+// Prover signs a request's DPoP proof (internal/dpop.Key): method and
+// URL are the request's, token the access token it carries ("" at mint),
+// nonce the server's DPoP-Nonce ("" when it asked for none).
+type Prover interface {
+	ProofWithNonce(method, rawURL, token, nonce string) (string, error)
+}
+
+// MeshSessionToken mints one id token of s for audience — mesh-session,
+// the token runsheet's /mcp takes (runsheet ADR 064) — at s's request
+// URL on its request bearer: the session's own bearer, which /mcp
+// narrows to the session's project and refuses once the claim ends.
+// With key the mint carries a DPoP proof and the token is bound to the
+// key (cnf.jkt, Latchkey ADR 013's amendment): a server asking for a
+// nonce (use_dpop_nonce, its DPoP-Nonce header) is asked once more with
+// it. It answers the token, how long it lives and whether it is bound.
+// A refusal (401, 403: the lease is over) is a *Error; a 503 (session
+// tokens unavailable) an error that is not.
+func (c *Client) MeshSessionToken(ctx context.Context, s *MeshSession, audience string, key Prover) (string, time.Duration, bool, error) {
 	if s == nil || s.RequestURL == "" || s.RequestToken == "" {
-		return "", 0, errors.New("mesh session: no request url")
+		return "", 0, false, errors.New("mesh session: no request url")
 	}
 	u, err := url.Parse(s.RequestURL)
 	if err != nil {
-		return "", 0, fmt.Errorf("mesh session %s: request url: %w", s.SessionID, err)
+		return "", 0, false, fmt.Errorf("mesh session %s: request url: %w", s.SessionID, err)
 	}
 	q := u.Query()
 	q.Set("audience", audience)
 	u.RawQuery = q.Encode()
-	hr, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return "", 0, err
+	mint := func(nonce string) ([]byte, int, http.Header, error) {
+		hr, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+		if err != nil {
+			return nil, 0, nil, err
+		}
+		hr.Header.Set("Accept", "application/json")
+		hr.Header.Set("Authorization", "Bearer "+s.RequestToken)
+		if key != nil {
+			proof, err := key.ProofWithNonce(http.MethodGet, u.String(), "", nonce)
+			if err != nil {
+				return nil, 0, nil, fmt.Errorf("mesh session %s: %w", s.SessionID, err)
+			}
+			hr.Header.Set("DPoP", proof)
+		}
+		return c.doRESTHeaders(hr)
 	}
-	hr.Header.Set("Accept", "application/json")
-	hr.Header.Set("Authorization", "Bearer "+s.RequestToken)
-	raw, status, err := c.doREST(hr)
+	raw, status, h, err := mint("")
 	if err != nil {
-		return "", 0, err
+		return "", 0, false, err
+	}
+	if nonce := h.Get("DPoP-Nonce"); key != nil && nonce != "" && (status == http.StatusBadRequest || status == http.StatusUnauthorized) {
+		if raw, status, _, err = mint(nonce); err != nil {
+			return "", 0, false, err
+		}
 	}
 	switch {
 	case status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusConflict:
-		return "", 0, &Error{Message: fmt.Sprintf("mesh session %s: %s", s.SessionID, restMessage(raw, status)), Status: status}
+		return "", 0, false, &Error{Message: fmt.Sprintf("mesh session %s: %s", s.SessionID, restMessage(raw, status)), Status: status}
 	case status < 200 || status >= 300:
-		return "", 0, &httpError{Status: status, Text: http.StatusText(status), Body: restMessage(raw, status)}
+		return "", 0, false, &httpError{Status: status, Text: http.StatusText(status), Body: restMessage(raw, status)}
 	}
 	var out struct {
 		Value     string `json:"value"`
 		ExpiresIn int    `json:"expires_in"`
+		TokenType string `json:"token_type"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return "", 0, fmt.Errorf("mesh session %s: decode: %w", s.SessionID, err)
+		return "", 0, false, fmt.Errorf("mesh session %s: decode: %w", s.SessionID, err)
 	}
 	if out.Value == "" {
-		return "", 0, fmt.Errorf("mesh session %s: the request url answered no token", s.SessionID)
+		return "", 0, false, fmt.Errorf("mesh session %s: the request url answered no token", s.SessionID)
 	}
-	return out.Value, time.Duration(out.ExpiresIn) * time.Second, nil
+	bound := strings.EqualFold(out.TokenType, "DPoP")
+	if key != nil && !bound {
+		return "", 0, false, fmt.Errorf("mesh session %s: the mint carried a DPoP proof but answered an unbound token", s.SessionID)
+	}
+	return out.Value, time.Duration(out.ExpiresIn) * time.Second, bound, nil
+}
+
+// doRESTHeaders is doREST answering the response's headers too.
+func (c *Client) doRESTHeaders(req *http.Request) ([]byte, int, http.Header, error) {
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	return raw, resp.StatusCode, resp.Header, nil
 }
 
 // doREST sends one request and answers its body and status; only a

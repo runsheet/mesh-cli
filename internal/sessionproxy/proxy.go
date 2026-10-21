@@ -49,9 +49,9 @@ var returned = []string{
 // Upstream is one server the proxy fronts: Remote, Runsheet or Local.
 type Upstream interface {
 	endpoint() string
-	// authorize sets the upstream's own credential on h; again is a
-	// retry after a 401.
-	authorize(ctx context.Context, h http.Header, again bool) ([]string, error)
+	// authorize sets the upstream's own credential on out, the request
+	// going upstream; again is a retry after a 401.
+	authorize(ctx context.Context, out *http.Request, again bool) ([]string, error)
 	// retries401 says whether a 401 is asked again once.
 	retries401() bool
 }
@@ -68,10 +68,10 @@ func (r Remote) endpoint() string { return r.URL }
 
 func (r Remote) retries401() bool { return false }
 
-func (r Remote) authorize(_ context.Context, h http.Header, _ bool) ([]string, error) {
+func (r Remote) authorize(_ context.Context, out *http.Request, _ bool) ([]string, error) {
 	var secrets []string
 	for k, v := range r.Headers {
-		h.Set(k, v)
+		out.Header.Set(k, v)
 		secrets = append(secrets, secretParts(v)...)
 	}
 	return secrets, nil
@@ -79,17 +79,28 @@ func (r Remote) authorize(_ context.Context, h http.Header, _ bool) ([]string, e
 
 // Runsheet is the gateway's /mcp, reached on a bearer Bearer gives per
 // request: held in memory for that request alone, asked again after a
-// 401 and tried once more, as mcprelay re-reads its token file.
+// 401 and tried once more, as mcprelay re-reads its token file. With
+// Key the bearer is a DPoP-bound session token (runsheet ADR 064): it
+// goes as `Authorization: DPoP <token>` with a fresh proof by Key of
+// the request's method and URL and the token's hash, the key never
+// leaving the node. Without it the bearer goes as `Bearer` (the
+// machine's, on a platform that opens no mesh sessions).
 type Runsheet struct {
 	URL    string
 	Bearer func(ctx context.Context) (string, error)
+	Key    Signer
+}
+
+// Signer signs one request's DPoP proof (internal/dpop.Key).
+type Signer interface {
+	Proof(method, rawURL, token string) (string, error)
 }
 
 func (r Runsheet) endpoint() string { return r.URL }
 
 func (r Runsheet) retries401() bool { return true }
 
-func (r Runsheet) authorize(ctx context.Context, h http.Header, _ bool) ([]string, error) {
+func (r Runsheet) authorize(ctx context.Context, out *http.Request, _ bool) ([]string, error) {
 	if r.Bearer == nil {
 		return nil, errors.New("no bearer")
 	}
@@ -101,8 +112,17 @@ func (r Runsheet) authorize(ctx context.Context, h http.Header, _ bool) ([]strin
 	if tok == "" {
 		return nil, errors.New("bearer is empty")
 	}
-	h.Set("Authorization", "Bearer "+tok)
-	return []string{tok}, nil
+	if r.Key == nil {
+		out.Header.Set("Authorization", "Bearer "+tok)
+		return []string{tok}, nil
+	}
+	proof, err := r.Key.Proof(out.Method, out.URL.String(), tok)
+	if err != nil {
+		return nil, fmt.Errorf("dpop: %w", err)
+	}
+	out.Header.Set("Authorization", "DPoP "+tok)
+	out.Header.Set("DPoP", proof)
+	return []string{tok, proof}, nil
 }
 
 // secretParts is a header value to mask and, for `<scheme> <credential>`,
@@ -363,7 +383,7 @@ func (p *Proxy) forward(req *http.Request, u Upstream, body []byte, again bool) 
 			out.Header[http.CanonicalHeaderKey(k)] = append([]string(nil), v...)
 		}
 	}
-	secrets, err := u.authorize(req.Context(), out.Header, again)
+	secrets, err := u.authorize(req.Context(), out, again)
 	p.remember(secrets)
 	if err != nil {
 		return nil, err

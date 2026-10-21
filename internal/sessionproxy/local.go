@@ -37,7 +37,7 @@ func (l Local) endpoint() string { return "stdio:" + l.Command }
 
 func (Local) retries401() bool { return false }
 
-func (Local) authorize(context.Context, http.Header, bool) ([]string, error) {
+func (Local) authorize(context.Context, *http.Request, bool) ([]string, error) {
 	return nil, nil
 }
 

@@ -159,7 +159,7 @@ func TestAgentContainerHoldsNoCredential(t *testing.T) {
 	r.MCP = MeshContextMCP("mesh", gatewayMCP.URL)
 
 	tf := &TokenFiles{Token: func(context.Context) (string, error) { return proxyMachineBearer, nil }}
-	unbind := tf.Bind(item.ID, item.Attempts, func(context.Context) (string, error) { return proxySessionBearer, nil })
+	unbind := tf.Bind(item.ID, item.Attempts, func(context.Context) (string, error) { return proxySessionBearer, nil }, nil)
 	defer unbind()
 	root := shortProxyRoot(t)
 	r.Proxies = &SessionProxies{Bearer: tf.Source, Root: root, Logf: t.Logf}

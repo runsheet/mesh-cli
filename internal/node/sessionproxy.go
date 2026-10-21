@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"projectmesh.io/mesh-cli/internal/dpop"
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
@@ -32,6 +33,10 @@ const ProxySocketName = "s"
 type SessionProxies struct {
 	// Bearer is the session's runsheet bearer source: TokenFiles.Source.
 	Bearer func(kind harness.Kind, meta harness.SessionMeta) (TokenSource, error)
+	// Key is the DPoP key a session's bearer is bound to, nil when it is
+	// not (TokenFiles.KeyOf): the proxy signs each runsheet request with
+	// it (runsheet ADR 064 §5).
+	Key func(meta harness.SessionMeta) *dpop.Key
 	// Root is the MCP root the socket directories go under when the
 	// session's org has none of its own (one org served: its MCP root).
 	Root string
@@ -114,7 +119,7 @@ func (px *SessionProxies) open(job *harness.Job, root, builtinURL string, specs 
 	if err != nil {
 		return nil, fmt.Errorf("sessionproxy: %w", err)
 	}
-	p := sessionproxy.New(upstreamsOf(specs, builtinURL, bearer))
+	p := sessionproxy.New(upstreamsOf(specs, builtinURL, bearer, px.keyOf(job.Meta)))
 	p.Logf = px.Logf
 	sock := filepath.Join(dir, ProxySocketName)
 	if err := p.Listen(sock); err != nil {
@@ -124,14 +129,25 @@ func (px *SessionProxies) open(job *harness.Job, root, builtinURL string, specs 
 	return &SessionProxy{Dir: dir, Socket: sock, p: p}, nil
 }
 
+// keyOf is the DPoP key meta's session signs with, else nil.
+func (px *SessionProxies) keyOf(meta harness.SessionMeta) sessionproxy.Signer {
+	if px == nil || px.Key == nil {
+		return nil
+	}
+	if k := px.Key(meta); k != nil {
+		return k
+	}
+	return nil
+}
+
 // upstreamsOf is each spec as the proxy's upstream, the built-in on
-// builtinURL and bearer.
-func upstreamsOf(specs map[string]tools.UpstreamSpec, builtinURL string, bearer TokenSource) map[string]sessionproxy.Upstream {
+// builtinURL and bearer, signed by key when it is DPoP-bound.
+func upstreamsOf(specs map[string]tools.UpstreamSpec, builtinURL string, bearer TokenSource, key sessionproxy.Signer) map[string]sessionproxy.Upstream {
 	ups := make(map[string]sessionproxy.Upstream, len(specs))
 	for name, sp := range specs {
 		switch {
 		case name == tools.Builtin:
-			ups[name] = sessionproxy.Runsheet{URL: builtinURL, Bearer: bearer}
+			ups[name] = sessionproxy.Runsheet{URL: builtinURL, Bearer: bearer, Key: key}
 		case sp.Transport == tools.Local:
 			ups[name] = sessionproxy.Local{Command: sp.Command, Args: sp.Args, Env: sp.Env, Secrets: sp.Secrets}
 		default:
@@ -187,7 +203,7 @@ func (px *SessionProxies) Adopt(st sessionunit.State, builtin map[string]any, us
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, missing, fmt.Errorf("sessionproxy: %w", err)
 	}
-	p := sessionproxy.New(upstreamsOf(named, url, bearer))
+	p := sessionproxy.New(upstreamsOf(named, url, bearer, px.keyOf(meta)))
 	p.Logf = px.Logf
 	if err := p.Listen(st.Proxy.Socket); err != nil {
 		return nil, missing, fmt.Errorf("sessionproxy: listen %s: %w", st.Proxy.Socket, err)
