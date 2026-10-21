@@ -117,6 +117,28 @@ the thread closes, when its connection is revoked, or when it has been
 idle 14 days, and losing it costs a cold start, not the thread. A node
 runs one turn of a thread at a time (a lock in the thread directory).
 
+#### As built first (2026-10-22): runsheet/goal-chat
+
+The first thread kind is runsheet's goal chat (runsheet thread.loom,
+ADR 061 §7's amendment): a person's thread with runsheet about a goal
+they want. Each message raises a turn, a ThreadSession whose body is the
+whole transcript, so a turn carries everything it is answered from and
+`~/.mesh/threads/` is not made yet — the product is the thread's memory.
+The loop takes every raised turn of a kind the node runs
+(`node.ThreadKinds`; `threadsDue`, the kind read from the platform's
+catalogue, `gateway.ThreadTurn.KindIn`) under the connection's cap and
+an account with headroom; `ThreadRunner` claims it (`claimJob`), opens
+its job directory (unit `thread`, `job.json` naming the thread), its
+account and tools from the one exchange (`jobAccess`, through
+`gateway.Session`'s thread read), runs the role's session
+(`harness.KindThread`, `harness.GoalChatPrompt`) in the turn's pod with
+an empty workspace, and finishes with what the session's JSON block
+says (`harness.ParseThreadReply`): an answer, and a goal draft as the
+proposal. A turn it cannot run is answered saying why. The draft is the
+person's to set: `mesh chat` talks on the thread and `mesh chat accept`
+sets the goal in the person's name and records it on the thread. A
+turn's job goes BatchJobKeep after it opened.
+
 ### Two kinds, by how long they live
 
 A node runs jobs and threads and nothing else; what a session is for

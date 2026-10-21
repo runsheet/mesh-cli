@@ -3972,6 +3972,13 @@ type SetGoalInput struct {
 	DailyBudgetCents int
 	Checkpoints      []string
 	By               string
+	// the human summary a new goal says (runsheet trd §6a): outcome, why,
+	// appetite and done-when are required of a new goal; who it is for
+	// and what is not being done are optional
+	Outcome, Why, WhoFor, Appetite, DoneWhen, NotDoing string
+	// NoInitiativeReason files a new goal under no initiative, saying why
+	// (runsheet trd §6h); "" files nothing
+	NoInitiativeReason string
 }
 
 // SetGoal creates or restates a goal.
@@ -3987,6 +3994,14 @@ func (c *Client) SetGoal(ctx context.Context, in SetGoalInput) error {
 	}
 	if in.By != "" {
 		m["by"] = in.By
+	}
+	for k, v := range map[string]string{"outcome": in.Outcome, "why": in.Why, "whoFor": in.WhoFor, "appetite": in.Appetite, "doneWhen": in.DoneWhen, "notDoing": in.NotDoing} {
+		if v != "" {
+			m[k] = v
+		}
+	}
+	if in.NoInitiativeReason != "" {
+		m["noInitiative"], m["noInitiativeReason"] = true, in.NoInitiativeReason
 	}
 	return c.Mutate(ctx, "setGoal", in.GoalID, m)
 }
@@ -4642,6 +4657,11 @@ type SessionRef struct {
 	ItemID      string
 	GoalID      string
 	DirectionID string
+	// ThreadID is a thread turn's session (ThreadSession): its account
+	// and tools come from the one exchange, jobAccess, for the job kind
+	// JobKind (runsheet ADR 061 §4).
+	ThreadID string
+	JobKind  string
 }
 
 // Credential is one Claude account the platform hands the node that

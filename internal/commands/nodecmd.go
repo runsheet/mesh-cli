@@ -1340,6 +1340,16 @@ func runNode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gate
 	loop.Plan = planWith(gw, cfg, h, loop, workRoot, accounts, logger)
 	loop.PlanReleased = (&node.Planner{WorkRoot: workRoot, Log: logger}).Released
 	loop.Research = researchWith(gw, cfg, h, loop, workRoot, accounts, logger)
+	// thread turns (runsheet ADR 061 §7): a person's message on a
+	// product's thread, answered in its own session
+	threads := &node.ThreadRunner{GW: gw, Harness: h, Credentials: accounts, Sandbox: sessionSandbox, Layout: nodeLayout, Served: loop.CurrentScopes,
+		Proxies: sessionProxies, MCP: meshContextMCP(ctx, gw), Runtimes: loop.ToolRuntimes, Model: nodeModels.For("plan"),
+		Timeout: nodeSessionTimeoutFlag, BudgetUSD: nodePlanBudgetFlag, WorkRoot: workRoot, Log: logger}
+	loop.Thread = func(ctx context.Context, turn gateway.ThreadTurn, kind string, sc node.Scope) {
+		if err := threads.Run(ctx, turn, kind, sc); err != nil {
+			logger.Printf("thread %s: %v", turn.ThreadKey, err)
+		}
+	}
 	loop.Rebase = rebaseWith(gw, cfg, h, loop, loop.CurrentScopes, workRoot, fallback, accounts, logger)
 	logger.Printf("node %s (%s) for %s, capacity %s, every %s", cfg.Name, cfg.Slug, strings.Join(scopes.Names(), ", "), cfg.Capacity, loop.Interval)
 	// sessions the process before this one started run on in their own

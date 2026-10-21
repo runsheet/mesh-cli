@@ -85,6 +85,11 @@ type Loop struct {
 	// ordinary answer. Optional; it does not count against capacity — it
 	// competes for the machine, not for the work.
 	Research func(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope)
+	// Thread answers one turn of a product thread this node runs the
+	// kind of (ThreadRunner.Run; runsheet ADR 061 §7): a person waits on
+	// it, so a raised turn is taken on the tick that sees it. Optional;
+	// nil runs none.
+	Thread func(ctx context.Context, turn gateway.ThreadTurn, kind string, scope Scope)
 	// Rebase runs a session of kind rebase on an item whose rebase this
 	// node has claimed (runsheet ADR 008) and returns when the rebase is
 	// finished or failed. The claim is taken here, before it runs; another
@@ -281,6 +286,12 @@ type Loop struct {
 	evaluating  map[string]bool
 	planning    map[string]bool
 	researching map[string]bool
+	// threading is the thread turns this node is answering, by turn id.
+	threading map[string]bool
+	// threadKinds is the platform's job-kind catalogue, read at most
+	// every threadKindsEvery, for which kind a thread turn is.
+	threadKinds   map[string]gateway.JobKind
+	threadKindsAt time.Time
 	rebasing    map[string]bool
 	// validating is the main validations running, by mergeBatchId or,
 	// for a merged item's, workItemId: each a session against the
@@ -1117,7 +1128,7 @@ func (l *Loop) drained() bool {
 
 // sessions counts every session in flight, of any kind; l.mu is held.
 func (l *Loop) sessions() int {
-	return l.buildingLocked() + len(l.evaluating) + len(l.planning) + len(l.researching) + len(l.rebasing) + len(l.validating)
+	return l.buildingLocked() + len(l.evaluating) + len(l.planning) + len(l.researching) + len(l.rebasing) + len(l.validating) + len(l.threading)
 }
 
 func (l *Loop) wakeup() chan struct{} {
@@ -1274,6 +1285,7 @@ func (l *Loop) Tick(ctx context.Context) {
 				l.rebaseRequested(ctx)
 				l.planRequested(ctx)
 				l.researchDue(ctx)
+				l.threadsDue(ctx)
 			}
 			// the slots taken are the tracked builds or, when more run on
 			// the host, the live agent sessions, orphans included (LiveProbe)

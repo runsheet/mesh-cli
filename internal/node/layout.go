@@ -38,6 +38,8 @@ const (
 	JobPlan     = "plan"
 	JobResearch = "research"
 	JobBatch    = "batch"
+	// JobThread is one turn of a product thread (runsheet/goal-chat).
+	JobThread = "thread"
 )
 
 // Layout is the node's jobs tree under Dir (~/.mesh).

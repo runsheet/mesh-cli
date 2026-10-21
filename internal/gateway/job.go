@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 )
 
@@ -63,6 +64,20 @@ type JobBrief struct {
 	Guidance  string         `json:"guidance"`
 	// Claim is the older claim the platform routed this one to.
 	Claim string `json:"claim"`
+	// Thread is a thread job's turn: the product, the role, the project
+	// and the transcript it is answered from; nil for any other job.
+	Thread *JobThread `json:"thread,omitempty"`
+}
+
+// JobThread is a thread turn as the brief carries it.
+type JobThread struct {
+	Product   string `json:"product"`
+	Role      string `json:"role"`
+	ThreadKey string `json:"threadKey"`
+	// Ask is the turn's thread and message, <thread id>#<seq>.
+	Ask       string `json:"ask"`
+	Body      string `json:"body"`
+	ProjectID string `json:"projectId,omitempty"`
 }
 
 // HasHarness says the job runs an agent.
@@ -266,4 +281,52 @@ func (c *Client) FinishJob(ctx context.Context, nodeID, kind string, subject Job
 		return nil, err
 	}
 	return out.Receipt, nil
+}
+
+// JobKindsPath is the job-kind catalogue (runsheet ADR 061 §2).
+const JobKindsPath = "/mesh/v1/jobs/kinds"
+
+// JobKind is one kind of the catalogue.
+type JobKind struct {
+	Slug     string   `json:"slug"`
+	Product  string   `json:"product"`
+	Kind     string   `json:"kind"`
+	Harness  []string `json:"harness"`
+	Finish   string   `json:"finish"`
+	Access   []string `json:"access"`
+	Needs    string   `json:"needs"`
+	Pods     string   `json:"pods"`
+	Guidance string   `json:"guidance"`
+}
+
+// JobKinds reads the catalogue, by slug.
+func (c *Client) JobKinds(ctx context.Context) (map[string]JobKind, error) {
+	hr, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+JobKindsPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	hr.Header.Set("Accept", "application/json")
+	tok, err := c.Bearer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	hr.Header.Set("Authorization", "Bearer "+tok)
+	raw, status, err := c.doREST(hr)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, &httpError{Status: status, Text: http.StatusText(status), Body: restMessage(raw, status)}
+	}
+	var out struct {
+		Kinds []JobKind `json:"kinds"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("job kinds: %w", err)
+	}
+	kinds := make(map[string]JobKind, len(out.Kinds))
+	for _, k := range out.Kinds {
+		kinds[k.Slug] = k
+	}
+	return kinds, nil
 }

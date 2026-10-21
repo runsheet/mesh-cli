@@ -24,7 +24,7 @@ const BatchJobKeep = 6 * time.Hour
 //   - an item's job once the item is merged, cancelled or superseded, or
 //     failed for over FailedWorkspaceKeep;
 //   - a plan's job once its goal is not planning;
-//   - a batch's job BatchJobKeep after it was opened;
+//   - a batch's or a thread turn's job BatchJobKeep after it was opened;
 //   - any job whose connection the node no longer has (connections,
 //     when known: the connection ids of the node's answer), its work
 //     released by the platform on the revocation;
@@ -107,7 +107,9 @@ func (s *workSweep) job(l *Layout, m JobMeta, dir string, connections map[string
 		if g.Status != "planning" {
 			why = "goal " + g.Status + ", not planning"
 		}
-	case JobBatch:
+	case JobBatch, JobThread:
+		// a turn's job is its session's scratch and streams; the thread
+		// itself is the product's
 		if age := s.now.Sub(m.Started); age > BatchJobKeep {
 			why = fmt.Sprintf("opened %s ago", days(age))
 		}
