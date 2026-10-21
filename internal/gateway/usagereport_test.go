@@ -1,7 +1,6 @@
 package gateway_test
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -58,21 +57,21 @@ func usageCases() []usageCase {
 			name:  "finishWorkItem",
 			setup: runningItem,
 			send: func(gw *gateway.Client, u *gateway.UsageReport) error {
-				return gw.FinishWorkItem(context.Background(), finishItem, "mesh/g-7", "abc123", 12, u)
+				return gw.FinishWorkItem(nodeCtx(), finishItem, "mesh/g-7", "abc123", 12, u)
 			},
 		},
 		{
 			name:  "finishWorkItem",
 			setup: runningItem,
 			send: func(gw *gateway.Client, u *gateway.UsageReport) error {
-				return gw.FinishWorkItemAlreadyDone(context.Background(), finishItem, "abc123 on main", 12, u)
+				return gw.FinishWorkItemAlreadyDone(nodeCtx(), finishItem, "abc123 on main", 12, u)
 			},
 		},
 		{
 			name:  "evaluateWorkItem",
 			setup: runningItem,
 			send: func(gw *gateway.Client, u *gateway.UsageReport) error {
-				return gw.EvaluateWorkItem(context.Background(), finishItem, true, "looks good", nil, 30, u, gateway.EvaluateChoice{})
+				return gw.EvaluateWorkItem(nodeCtx(), finishItem, true, "looks good", nil, 30, u, gateway.EvaluateChoice{})
 			},
 		},
 		{
@@ -81,7 +80,7 @@ func usageCases() []usageCase {
 				f.Goals["goal-1"] = map[string]any{"id": "goal-1", "status": "planning"}
 			},
 			send: func(gw *gateway.Client, u *gateway.UsageReport) error {
-				return gw.PlanGoal(context.Background(), "goal-1", "", []gateway.PlannedItem{{Seq: 1, Title: "docs"}}, 0, u)
+				return gw.PlanGoal(nodeCtx(), "goal-1", "", []gateway.PlannedItem{{Seq: 1, Title: "docs"}}, 0, u)
 			},
 		},
 		{
@@ -91,7 +90,7 @@ func usageCases() []usageCase {
 				f.WorkItems[itemID]["rebaseNodeId"] = nodeID
 			},
 			send: func(gw *gateway.Client, u *gateway.UsageReport) error {
-				return gw.FinishWorkItemRebase(context.Background(), itemID, "abc123", []string{"main.go"}, u)
+				return gw.FinishWorkItemRebase(nodeCtx(), itemID, "abc123", []string{"main.go"}, u)
 			},
 		},
 		{
@@ -101,7 +100,7 @@ func usageCases() []usageCase {
 				f.Directions["d1"]["researchNodeId"] = nodeID
 			},
 			send: func(gw *gateway.Client, u *gateway.UsageReport) error {
-				return gw.RecordDirectionResearch(context.Background(), "d1", nodeID, gateway.Research{}, 50, "0 proposed", u)
+				return gw.RecordDirectionResearch(nodeCtx(), "d1", nodeID, gateway.Research{}, 50, "0 proposed", u)
 			},
 		},
 	}
@@ -269,7 +268,7 @@ func TestFinishingCommandWithoutToolsNeedsNoFallback(t *testing.T) {
 	gw := gateway.New(f.URL(), "rs_test")
 	u := sampleUsageReport()
 	u.Tools = nil
-	if err := gw.FinishWorkItem(context.Background(), finishItem, "mesh/g-7", "abc123", 12, u); err != nil {
+	if err := gw.FinishWorkItem(nodeCtx(), finishItem, "mesh/g-7", "abc123", 12, u); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -387,7 +386,7 @@ func TestRecordToolUsage(t *testing.T) {
 	gw := gateway.New(f.URL(), "rs_test")
 
 	u := sampleUsageReport()
-	if err := gw.RecordToolUsage(context.Background(), itemID, "call-1", "search", *u); err != nil {
+	if err := gw.RecordToolUsage(nodeCtx(), itemID, "call-1", "search", *u); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.ToolUsage) != 1 {
@@ -419,7 +418,7 @@ func TestRecordToolUsageWithoutUsageDetail(t *testing.T) {
 	}
 	gw := gateway.New(f.URL(), "rs_test")
 
-	err := gw.RecordToolUsage(context.Background(), itemID, "call-1", "search", *sampleUsageReport())
+	err := gw.RecordToolUsage(nodeCtx(), itemID, "call-1", "search", *sampleUsageReport())
 	if !errors.Is(err, gateway.ErrNoUsageDetail) {
 		t.Fatalf("err = %v, want ErrNoUsageDetail", err)
 	}
@@ -447,7 +446,7 @@ func TestRecordToolUsageUnsupported(t *testing.T) {
 	f.Unsupported["recordToolUsage"] = true
 	gw := gateway.New(f.URL(), "rs_test")
 
-	err := gw.RecordToolUsage(context.Background(), itemID, "call-1", "search", *sampleUsageReport())
+	err := gw.RecordToolUsage(nodeCtx(), itemID, "call-1", "search", *sampleUsageReport())
 	if !gateway.IsUnsupported(err) {
 		t.Fatalf("RecordToolUsage = %v, want unsupported", err)
 	}
@@ -464,7 +463,7 @@ func TestFakeRefusesTheOldUsageMutations(t *testing.T) {
 	f := gatewaytest.New("rs_test")
 	defer f.Close()
 	gw := gateway.New(f.URL(), "rs_test")
-	ctx := context.Background()
+	ctx := nodeCtx()
 	in := map[string]any{"in": map[string]any{"namespace": gateway.NS}}
 	err := gw.Query(ctx, `mutation($in: RecordSessionUsageInput!) { recordSessionUsage(input: $in) { status } }`, in, nil)
 	if err == nil || !strings.Contains(err.Error(), `Cannot query field "recordSessionUsage" on type "Mutation"`) {
@@ -501,7 +500,7 @@ func TestUsageReportToolErrorFollowsTheSchema(t *testing.T) {
 			for range 2 {
 				u := sampleUsageReport()
 				u.Tools[0].Error = "tool call failed: 401 Unauthorized"
-				if err := gw.EvaluateWorkItem(context.Background(), finishItem, true, "looks good", nil, 30, u, gateway.EvaluateChoice{}); err != nil {
+				if err := gw.EvaluateWorkItem(nodeCtx(), finishItem, true, "looks good", nil, 30, u, gateway.EvaluateChoice{}); err != nil {
 					t.Fatalf("err = %v, want nil (no ErrNoToolUsage)", err)
 				}
 			}
@@ -531,7 +530,7 @@ func TestUsageReportWithoutToolErrorProbesNothing(t *testing.T) {
 	defer f.Close()
 	runningItem(f)
 	gw := gateway.New(f.URL(), "rs_test")
-	if err := gw.EvaluateWorkItem(context.Background(), finishItem, true, "ok", nil, 30, sampleUsageReport(), gateway.EvaluateChoice{}); err != nil {
+	if err := gw.EvaluateWorkItem(nodeCtx(), finishItem, true, "ok", nil, 30, sampleUsageReport(), gateway.EvaluateChoice{}); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(f.ReadsNamed("__type UsageReportInput")); n != 0 {
@@ -566,7 +565,7 @@ func usageFallbackOnce(t *testing.T, refuse func(*gatewaytest.Fake), set func(*g
 
 	u := sampleUsageReport()
 	set(u)
-	err := gw.FinishWorkItem(context.Background(), finishItem, "mesh/g-7", "abc123", 12, u)
+	err := gw.FinishWorkItem(nodeCtx(), finishItem, "mesh/g-7", "abc123", 12, u)
 	if !errors.Is(err, want) {
 		t.Fatalf("err = %v, want %v", err, want)
 	}
@@ -585,7 +584,7 @@ func usageFallbackOnce(t *testing.T, refuse func(*gatewaytest.Fake), set func(*g
 
 	posts.Store(0)
 	runningItem(f)
-	err = gw.FinishWorkItem(context.Background(), finishItem, "mesh/g-7", "abc124", 12, u)
+	err = gw.FinishWorkItem(nodeCtx(), finishItem, "mesh/g-7", "abc124", 12, u)
 	if !errors.Is(err, want) {
 		t.Fatalf("second err = %v, want %v", err, want)
 	}

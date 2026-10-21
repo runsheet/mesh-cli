@@ -1,0 +1,32 @@
+{
+  "args": {
+    "input": {
+      "kind": "wardroom/thread",
+      "subject": {
+        "id": "00000000-0000-4000-8000-0000000fffff",
+        "type": "thread"
+      }
+    }
+  },
+  "field": "jobAccess",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "access": [
+      "wardroom",
+      "model"
+    ],
+    "harness": "claude-code",
+    "kind": "wardroom/thread",
+    "notServed": [
+      {
+        "access": "model",
+        "reason": "no model account is served to a wardroom/thread job yet: not served"
+      }
+    ],
+    "subject": {
+      "id": "00000000-0000-4000-8000-0000000fffff",
+      "type": "thread"
+    }
+  }
+}

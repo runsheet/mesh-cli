@@ -177,6 +177,8 @@ type jobRepoToken struct {
 	Repository  string         `json:"repository"`
 	Access      string         `json:"access"`
 	Permissions map[string]any `json:"permissions"`
+	// MergeBatchID, on a candidate's token, is the batch it was minted for
+	MergeBatchID string `json:"mergeBatchId"`
 }
 
 func (t jobRepoToken) token() (GitHubToken, error) {

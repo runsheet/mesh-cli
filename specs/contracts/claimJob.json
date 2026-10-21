@@ -1,0 +1,60 @@
+{
+  "field": "claimJob",
+  "input": {
+    "input": {
+      "harness": "claude-code",
+      "kind": "wardroom/thread",
+      "nodeId": "d1f6c904-510f-5905-a598-8ea0b41f837a",
+      "subject": {
+        "id": "00000000-0000-4000-8000-0000000fffff",
+        "type": "thread"
+      }
+    }
+  },
+  "inputType": "(input: Map!)",
+  "kind": "mutation",
+  "result": {
+    "claim": {
+      "alias": "claimThreadSession",
+      "status": "claimed"
+    },
+    "job": {
+      "access": [
+        "wardroom",
+        "model"
+      ],
+      "budget": {},
+      "claim": "claimThreadSession",
+      "code": {
+        "form": "none"
+      },
+      "finish": "answer-or-proposal",
+      "guidance": "specs/adr-060-a-product-registers-with-mesh.md",
+      "harness": "claude-code",
+      "harnesses": [
+        "claude-code"
+      ],
+      "kind": "wardroom/thread",
+      "needs": "none",
+      "pods": [
+        {
+          "code": false,
+          "from": "kind",
+          "name": "thread"
+        }
+      ],
+      "subject": {
+        "id": "00000000-0000-4000-8000-0000000fffff",
+        "type": "thread"
+      },
+      "thread": {
+        "ask": "ask-1",
+        "body": "@assistant what is running?",
+        "product": "wardroom",
+        "role": "assistant",
+        "threadKey": "general/1700000000.0001"
+      }
+    },
+    "status": "claimed"
+  }
+}

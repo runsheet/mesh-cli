@@ -163,13 +163,6 @@ func (c *Client) ClaimMergeBatchValidation(ctx context.Context, batchID, nodeID,
 	return c.mainValidationCommand(ctx, "claimMergeBatchValidation", batchID, withHarness(map[string]any{"nodeId": nodeID}, harness))
 }
 
-// FinishMergeBatchValidation says the claiming node attested sha, the
-// candidate's: the attestation (RecordBatchCandidateAttestation) is the
-// verdict, this command the end of the claim.
-func (c *Client) FinishMergeBatchValidation(ctx context.Context, batchID, nodeID, sha string) error {
-	return c.mainValidationCommand(ctx, "finishMergeBatchValidation", batchID, map[string]any{"nodeId": nodeID, "sha": sha})
-}
-
 // FailMergeBatchValidation gives the claim back with why the node could
 // not validate the candidate — never a red verdict, which an
 // attestation carries.
@@ -181,12 +174,6 @@ func (c *Client) FailMergeBatchValidation(ctx context.Context, batchID, nodeID, 
 // ClaimMergeBatchValidation takes a batch's.
 func (c *Client) ClaimWorkItemMainValidation(ctx context.Context, itemID, nodeID, harness string) error {
 	return c.mainValidationCommand(ctx, "claimWorkItemMainValidation", itemID, withHarness(map[string]any{"nodeId": nodeID}, harness))
-}
-
-// FinishWorkItemMainValidation says the merge commit sha was attested.
-// The platform's input carries no nodeId: the claim names the node.
-func (c *Client) FinishWorkItemMainValidation(ctx context.Context, itemID, sha string) error {
-	return c.mainValidationCommand(ctx, "finishWorkItemMainValidation", itemID, map[string]any{"sha": sha})
 }
 
 // FailWorkItemMainValidation gives a merged item's main validation back

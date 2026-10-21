@@ -11,6 +11,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 )
 
@@ -103,6 +104,12 @@ func (c *Client) jobRepoToken(ctx context.Context, kind string, subject JobSubje
 	if why := acc.Missing("repo"); why != "" {
 		return nil, &Error{Message: why}
 	}
+	if subject.Type == "candidate" {
+		var one jobRepoTokenRow
+		if json.Unmarshal(acc.Repo, &one) == nil && one.MergeBatchID != "" && one.MergeBatchID != subject.ID {
+			return nil, fmt.Errorf("jobAccess: asked for merge batch %s, answered for %s", subject.ID, one.MergeBatchID)
+		}
+	}
 	tok, err := acc.RepoToken()
 	if err != nil {
 		return nil, err
@@ -123,4 +130,10 @@ func (c *Client) jobRepoTokens(ctx context.Context, kind string, subject JobSubj
 		return nil, &Error{Message: why}
 	}
 	return acc.RepoTokens()
+}
+
+// jobRepoTokenRow is the one field of a repository token the exchange's
+// caller checks before it is read: the batch it was minted for.
+type jobRepoTokenRow struct {
+	MergeBatchID string `json:"mergeBatchId"`
 }

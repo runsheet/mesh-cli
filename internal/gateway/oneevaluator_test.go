@@ -1,7 +1,6 @@
 package gateway_test
 
 import (
-	"context"
 	"testing"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
@@ -21,7 +20,7 @@ func TestWorkItemProtectedFiles(t *testing.T) {
 	}
 	gw := gateway.New(f.URL(), "rs_test")
 
-	item, err := gw.WorkItem(context.Background(), "item-1")
+	item, err := gw.WorkItem(nodeCtx(), "item-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +39,7 @@ func TestProjectProtectedPaths(t *testing.T) {
 	f.Projects["p1"] = map[string]any{"id": "p1", "orgId": orgID, "slug": "widgets", "protectedPaths": []any{"infra/**"}}
 	gw := gateway.New(f.URL(), "rs_test")
 
-	p, err := gw.Project(context.Background(), "p1")
+	p, err := gw.Project(nodeCtx(), "p1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +61,7 @@ func TestProtectedFieldsOnAnOlderPlatform(t *testing.T) {
 	}
 	f.Projects["p1"] = map[string]any{"id": "p1", "orgId": orgID, "slug": "widgets", "protectedPaths": []any{"infra/**"}}
 	gw := gateway.New(f.URL(), "rs_test")
-	ctx := context.Background()
+	ctx := nodeCtx()
 
 	item, err := gw.WorkItem(ctx, "item-1")
 	if err != nil {
@@ -96,7 +95,7 @@ func TestEvaluateWorkItemSendsEvaluatedModel(t *testing.T) {
 	gw := gateway.New(f.URL(), "rs_test")
 
 	choice := gateway.EvaluateChoice{EvaluatedModel: "gpt-6-sol"}
-	if err := gw.EvaluateWorkItem(context.Background(), finishItem, true, "looks good", nil, 50, nil, choice); err != nil {
+	if err := gw.EvaluateWorkItem(nodeCtx(), finishItem, true, "looks good", nil, 50, nil, choice); err != nil {
 		t.Fatal(err)
 	}
 	in := f.CallsNamed("evaluateWorkItem")[0].Input
@@ -116,7 +115,7 @@ func TestEvaluateWorkItemWithoutEvaluatedModel(t *testing.T) {
 	evaluatingItem(f)
 	gw := gateway.New(f.URL(), "rs_test")
 
-	if err := gw.EvaluateWorkItem(context.Background(), finishItem, true, "looks good", nil, 50, nil, gateway.EvaluateChoice{}); err != nil {
+	if err := gw.EvaluateWorkItem(nodeCtx(), finishItem, true, "looks good", nil, 50, nil, gateway.EvaluateChoice{}); err != nil {
 		t.Fatal(err)
 	}
 	in := f.CallsNamed("evaluateWorkItem")[0].Input

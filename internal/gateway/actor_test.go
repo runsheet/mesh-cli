@@ -85,7 +85,7 @@ func TestActorRidesTheSessionsCommands(t *testing.T) {
 		t.Run(string(role), func(t *testing.T) {
 			f := actorFake(t)
 			gw := gateway.New(f.URL(), "rs_test")
-			ctx := gateway.WithActor(context.Background(), role, "mini")
+			ctx := gateway.WithActor(nodeCtx(), role, "mini")
 			want := "agent:" + string(role) + "@mini"
 			if got, ok := gateway.ActorFrom(ctx); !ok || got != want {
 				t.Fatalf("ActorFrom = %q, %v; want %q", got, ok, want)
@@ -119,7 +119,7 @@ func TestActorLeftOffAnOlderPlatform(t *testing.T) {
 			f := actorFake(t)
 			f.NoActor = true
 			gw := gateway.New(f.URL(), "rs_test")
-			sendAll(t, f, gw, gateway.WithActor(context.Background(), role, "mini"))
+			sendAll(t, f, gw, gateway.WithActor(nodeCtx(), role, "mini"))
 			for _, c := range fiveCalls(f) {
 				if _, sent := c.Input[gateway.ActorField]; sent {
 					t.Errorf("%s sent actor to a platform without it: %+v", c.Name, c.Input)
@@ -138,7 +138,7 @@ func TestActorProbeKeptAnHour(t *testing.T) {
 	gw := gateway.New(f.URL(), "rs_test")
 	now := time.Now()
 	gw.Now = func() time.Time { return now }
-	ctx := gateway.WithActor(context.Background(), gateway.RoleBuilder, "mini")
+	ctx := gateway.WithActor(nodeCtx(), gateway.RoleBuilder, "mini")
 	if err := gw.ReportWorkItemProgress(ctx, actorItem, "a", 0, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestActorProbeKeptAnHour(t *testing.T) {
 func TestNoActorWithoutWithActor(t *testing.T) {
 	f := actorFake(t)
 	gw := gateway.New(f.URL(), "rs_test")
-	ctx := context.Background()
+	ctx := nodeCtx()
 	if _, ok := gateway.ActorFrom(ctx); ok {
 		t.Fatal("ActorFrom answered on a bare ctx")
 	}

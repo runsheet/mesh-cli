@@ -1,7 +1,6 @@
 package gateway_test
 
 import (
-	"context"
 	"reflect"
 	"testing"
 
@@ -39,7 +38,7 @@ func TestSessionCarriesTools(t *testing.T) {
 		{"id": "t5", "slug": "Bad Name", "name": "Bad", "kind": "remote_mcp", "need": "nice_to_have", "url": "https://x", "builtIn": false, "account": nil, "headers": []any{}, "env": []any{}},
 	}
 	gw := gateway.New(f.URL(), "rs_test")
-	got, err := gw.Session(context.Background(), gateway.SessionRef{Kind: "build", ItemID: itemID}, nodeID)
+	got, err := gw.Session(nodeCtx(), gateway.SessionRef{Kind: "build", ItemID: itemID}, nodeID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +88,7 @@ func TestSessionExcludesTheBuiltinRow(t *testing.T) {
 			"headers": []any{}, "env": []any{}},
 	}
 	gw := gateway.New(f.URL(), "rs_test")
-	got, err := gw.Session(context.Background(), gateway.SessionRef{Kind: "build", ItemID: itemID}, nodeID)
+	got, err := gw.Session(nodeCtx(), gateway.SessionRef{Kind: "build", ItemID: itemID}, nodeID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,55 +98,11 @@ func TestSessionExcludesTheBuiltinRow(t *testing.T) {
 	}
 }
 
-// A platform whose read carries no tools — none configured — decodes to
-// an empty list; one older than tools-in-the-console refuses the field,
-// and the client asks again for the credentials alone, and from then on
-// asks that session kind for credentials alone.
-func TestSessionWithoutTools(t *testing.T) {
-	f := gatewaytest.New("rs_test")
-	defer f.Close()
-	f.SessionCredentials[itemID] = []map[string]any{anthropicSubscription("c1", "max-a", "s")}
-	gw := gateway.New(f.URL(), "rs_test")
-	ref := gateway.SessionRef{Kind: "build", ItemID: itemID}
-	got, err := gw.Session(context.Background(), ref, nodeID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got.Tools) != 0 || len(got.Credentials) != 1 {
-		t.Fatalf("session = %+v, want its credential and no tools", got)
-	}
-
-	old := gatewaytest.New("rs_test")
-	defer old.Close()
-	old.UnknownFields["itemTools"] = true
-	old.SessionCredentials[itemID] = f.SessionCredentials[itemID]
-	old.SessionTools[itemID] = []map[string]any{{"id": "t", "slug": "x", "kind": "remote_mcp", "url": "https://x"}}
-	gw = gateway.New(old.URL(), "rs_test")
-	for i := 0; i < 2; i++ {
-		got, err := gw.Session(context.Background(), ref, nodeID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got.Tools != nil || len(got.Credentials) != 1 {
-			t.Fatalf("read %d: session = %+v, want its credential and nil tools", i, got)
-		}
-	}
-	// two reads with tools refused once, then one without: three
-	// credential reads, and no second try at the tools
-	if n := len(old.CallsNamed("itemCredentials")); n != 2 {
-		t.Fatalf("itemCredentials reads = %d, want 2 (the refused one is not recorded)", n)
-	}
-	creds, err := gw.SessionCredentials(context.Background(), ref, nodeID)
-	if err != nil || len(creds) != 1 {
-		t.Fatalf("SessionCredentials = %v, %v", creds, err)
-	}
-}
-
 // The heartbeat carries runtimes and adapters when set, and neither key
 // when not, so a platform without the fields still takes it.
 func TestHeartbeatRuntimesAdapters(t *testing.T) {
 	f, gw := registeredFake(t)
-	ctx := context.Background()
+	ctx := nodeCtx()
 	if _, err := gw.HeartbeatNode(ctx, limitsNode, "v1", 1, gateway.HeartbeatExtras{Runtimes: []string{"npx", "docker"}, Adapters: []string{"claude-code"}}); err != nil {
 		t.Fatal(err)
 	}

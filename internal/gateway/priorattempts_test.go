@@ -1,7 +1,6 @@
 package gateway_test
 
 import (
-	"context"
 	"testing"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
@@ -15,7 +14,7 @@ func TestWorkItemPriorAttemptsReturnsRecordedAttemptsInOrder(t *testing.T) {
 	defer f.Close()
 	evaluatingItem(f)
 	gw := gateway.New(f.URL(), "rs_test")
-	ctx := context.Background()
+	ctx := nodeCtx()
 
 	clauses := []gateway.FailedClause{{Clause: "the shards run within 20% of each other", Satisfy: "a reading recorded honestly under load"}}
 	if err := gw.EvaluateWorkItem(ctx, finishItem, false, "first attempt: fails on load", clauses, 10, nil, gateway.EvaluateChoice{}); err != nil {
@@ -55,7 +54,7 @@ func TestWorkItemPriorAttemptsOnAnOlderPlatform(t *testing.T) {
 	f.NoEvaluations = true
 	evaluatingItem(f)
 	gw := gateway.New(f.URL(), "rs_test")
-	ctx := context.Background()
+	ctx := nodeCtx()
 
 	if err := gw.EvaluateWorkItem(ctx, finishItem, false, "first attempt", nil, 10, nil, gateway.EvaluateChoice{}); err != nil {
 		t.Fatal(err)

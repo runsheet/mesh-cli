@@ -51,10 +51,8 @@ type mainValidationGateway interface {
 	TakesMainValidation(ctx context.Context) bool
 	MainValidations(ctx context.Context, nodeID string) (gateway.MainValidationQueue, error)
 	ClaimMergeBatchValidation(ctx context.Context, batchID, nodeID, harness string) error
-	FinishMergeBatchValidation(ctx context.Context, batchID, nodeID, sha string) error
 	FailMergeBatchValidation(ctx context.Context, batchID, nodeID, reason string) error
 	ClaimWorkItemMainValidation(ctx context.Context, itemID, nodeID, harness string) error
-	FinishWorkItemMainValidation(ctx context.Context, itemID, sha string) error
 	FailWorkItemMainValidation(ctx context.Context, itemID, reason string) error
 	// FinishValidationJob hands the attestation back and ends the claim
 	// in one (runsheet ADR 061's finishJob).

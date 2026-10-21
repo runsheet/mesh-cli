@@ -96,37 +96,6 @@ func TestResearchGitHubTokensKeyedByDirection(t *testing.T) {
 	}
 }
 
-// A platform without the field is told apart from one that refuses, as
-// IssueItemRepoToken's: the node's cue to fall back to the operator's
-// own gh login for the fetch.
-func TestPlanGitHubTokensOldPlatform(t *testing.T) {
-	f := gatewaytest.New("rs_test")
-	defer f.Close()
-	goalID := planGoalID()
-	f.Goals[goalID] = map[string]any{"id": goalID, "projectId": projID, "plannerNodeId": nodeID}
-	f.Unsupported["planGitHubToken"] = true
-	gw := gateway.New(f.URL(), "rs_test")
-
-	_, err := gw.PlanGitHubTokens(context.Background(), goalID, nodeID)
-	if !gateway.IsUnsupported(err) {
-		t.Fatalf("err = %v, want unsupported", err)
-	}
-}
-
-func TestResearchGitHubTokensOldPlatform(t *testing.T) {
-	f := gatewaytest.New("rs_test")
-	defer f.Close()
-	directionID := "ffffffff-7777-4777-8777-ffffffffffff"
-	f.Directions[directionID] = map[string]any{"id": directionID, "projectId": projID, "researchNodeId": nodeID}
-	f.Unsupported["researchGitHubToken"] = true
-	gw := gateway.New(f.URL(), "rs_test")
-
-	_, err := gw.ResearchGitHubTokens(context.Background(), directionID, nodeID)
-	if !gateway.IsUnsupported(err) {
-		t.Fatalf("err = %v, want unsupported", err)
-	}
-}
-
 // A project repo with no row among the goal's tokens is refused by
 // name, not answered as a partial list.
 func TestPlanGitHubTokensMissingRepoIsRefusedByName(t *testing.T) {

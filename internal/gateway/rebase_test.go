@@ -1,7 +1,6 @@
 package gateway_test
 
 import (
-	"context"
 	"errors"
 	"reflect"
 	"testing"
@@ -35,7 +34,7 @@ func TestRequestedRebases(t *testing.T) {
 	f.WorkItems["item-6"]["orgId"] = "another-org"
 	gw := gateway.New(f.URL(), "rs_test")
 
-	items, err := gw.RequestedRebases(context.Background(), orgID)
+	items, err := gw.RequestedRebases(nodeCtx(), orgID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +61,7 @@ func TestClaimWorkItemRebaseOnce(t *testing.T) {
 	defer f.Close()
 	rebaseItem(f, itemID, 1, "requested")
 	gw := gateway.New(f.URL(), "rs_test")
-	ctx := context.Background()
+	ctx := nodeCtx()
 
 	if err := gw.ClaimWorkItemRebase(ctx, itemID, nodeID); err != nil {
 		t.Fatal(err)
@@ -93,7 +92,7 @@ func TestClaimWorkItemRebaseNotRequested(t *testing.T) {
 	gw := gateway.New(f.URL(), "rs_test")
 
 	var gerr *gateway.Error
-	if err := gw.ClaimWorkItemRebase(context.Background(), itemID, nodeID); !errors.As(err, &gerr) {
+	if err := gw.ClaimWorkItemRebase(nodeCtx(), itemID, nodeID); !errors.As(err, &gerr) {
 		t.Fatalf("claim = %v, want a gateway error", err)
 	}
 }
@@ -107,7 +106,7 @@ func TestFinishWorkItemRebase(t *testing.T) {
 	f.WorkItems[itemID]["rebaseNodeId"] = nodeID
 	gw := gateway.New(f.URL(), "rs_test")
 
-	if err := gw.FinishWorkItemRebase(context.Background(), itemID, "abc123", []string{"main.go", "go.sum"}, nil); err != nil {
+	if err := gw.FinishWorkItemRebase(nodeCtx(), itemID, "abc123", []string{"main.go", "go.sum"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	calls := f.CallsNamed("finishWorkItemRebase")
@@ -115,7 +114,7 @@ func TestFinishWorkItemRebase(t *testing.T) {
 		!reflect.DeepEqual(calls[0].Input["files"], []any{"main.go", "go.sum"}) {
 		t.Fatalf("calls = %+v", calls)
 	}
-	it, err := gw.WorkItem(context.Background(), itemID)
+	it, err := gw.WorkItem(nodeCtx(), itemID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +133,7 @@ func TestFailWorkItemRebase(t *testing.T) {
 	rebaseItem(f, itemID, 1, "claimed")
 	f.WorkItems[itemID]["rebaseNodeId"] = nodeID
 	gw := gateway.New(f.URL(), "rs_test")
-	ctx := context.Background()
+	ctx := nodeCtx()
 
 	const reason = "main.go: both sides rewrote Run; the intent conflicts"
 	if err := gw.FailWorkItemRebase(ctx, itemID, reason); err != nil {
