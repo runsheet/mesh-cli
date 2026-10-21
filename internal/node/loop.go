@@ -429,6 +429,9 @@ type Loop struct {
 	updating bool
 	restart  bool
 	updateWG sync.WaitGroup
+	// stoppables are the sessions the platform's stop list can end, by
+	// kind and item (stops.go)
+	stoppables map[string]stoppable
 	// letGo cancels every context Context derived: the sessions detach
 	// and Run returns. exiting is set by Restart.
 	letGo   []context.CancelFunc
@@ -1193,7 +1196,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	// the heartbeat goes out before this tick's pass, so its holding is
 	// the last pass's decision (nil before the first; a draining node,
 	// which makes no pass, keeps sending its last one unchanged)
-	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(l.Known.Accounts(l.now()), l.now(), l.Thresholds()), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Reason: l.Condition(), Adopted: l.Adopted(), Resumed: l.Resumed(), Holding: l.Holding(), Commit: l.Commit, Findings: l.heartbeatFindings(ctx)}
+	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(l.Known.Accounts(l.now()), l.now(), l.Thresholds()), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Reason: l.Condition(), Adopted: l.Adopted(), Resumed: l.Resumed(), Holding: l.Holding(), Commit: l.Commit, Findings: l.heartbeatFindings(ctx), Sessions: l.Sessions()}
 	rt := l.RuntimeBroken()
 	l.runtimeHeartbeat(ctx, &extras, rt)
 	scaling, ranged := l.Scaling()
@@ -1222,6 +1225,9 @@ func (l *Loop) Tick(ctx context.Context) {
 		} else {
 			beat = true
 			l.TakeAnswer(answer)
+			if answer != nil {
+				l.applyStops(answer.Stop)
+			}
 		}
 	} else {
 		for _, sc := range l.Scopes {
@@ -2219,9 +2225,11 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 		capped.started()
 		l.logf("evaluating item %d %q", item.Seq, item.Title)
 		l.wg.Add(1)
+		actx, stopped := l.stoppableCtx(actx, "evaluate", item.ID)
 		go func(ctx context.Context, item gateway.WorkItem) {
 			defer crash.Guard()
 			defer l.wg.Done()
+			defer stopped()
 			defer func() {
 				l.mu.Lock()
 				delete(l.evaluating, item.ID)
@@ -2346,9 +2354,11 @@ func (l *Loop) rebaseRequested(ctx context.Context) {
 		capped.started()
 		l.logf("%s: rebasing item %d %q", sc.Name(), item.Seq, item.Title)
 		l.wg.Add(1)
+		actx, stopped := l.stoppableCtx(actx, "rebase", item.ID)
 		go func(ctx context.Context, item gateway.WorkItem) {
 			defer crash.Guard()
 			defer l.wg.Done()
+			defer stopped()
 			defer func() {
 				l.mu.Lock()
 				delete(l.rebasing, item.ID)
@@ -2682,9 +2692,11 @@ func (l *Loop) runsOn(ctx context.Context, itemID string) {
 func (l *Loop) run(ctx context.Context, item gateway.WorkItem) {
 	l.runsOn(ctx, item.ID)
 	l.wg.Add(1)
+	ctx, stopped := l.stoppableCtx(ctx, "build", item.ID)
 	go func() {
 		defer crash.Guard()
 		defer l.wg.Done()
+		defer stopped()
 		defer func() {
 			l.mu.Lock()
 			delete(l.running, item.ID)

@@ -1035,6 +1035,12 @@ func (t *buildTail) end(ctx context.Context) error {
 		// the host starved it: stopped, and released with the overload
 		return t.stop(r.afterStarved(ctx, b, why, *result))
 	}
+	if why, stopped := StoppedByPlatform(ctx); stopped {
+		// the platform's stop list (its item finished elsewhere, or the
+		// node's connection to its org was revoked): stopped as a lost
+		// claim is, and nothing sent
+		return t.stop(r.afterLost(b, "stopped by the platform: "+why, *result))
+	}
 	killedNote := logKilled(r.logf, "item "+label, result.KilledPerSession(), result.KillError)
 	if ctx.Err() != nil {
 		r.logf("item %s: node shutting down; its session is left for the next node to adopt", label)

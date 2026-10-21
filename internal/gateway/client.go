@@ -186,6 +186,9 @@ type Client struct {
 	// `adopted` element type was last found to take goalId, directionId,
 	// sessionId and alive (see takesAdoptedFields).
 	adoptedFieldsSchema holdingProbe
+	// sessionsSchema is whether the gateway's HeartbeatNodeInput was last
+	// found to take `sessions` (see takesSessions).
+	sessionsSchema holdingProbe
 	// resumedSchema is whether the gateway's HeartbeatNodeInput was last
 	// found to have `resumed` (see takesResumed).
 	resumedSchema holdingProbe
@@ -1897,7 +1900,37 @@ type NodeAnswer struct {
 	NodeID string        `json:"nodeId"`
 	Owner  NodeOwner     `json:"owner"`
 	Scopes []ScopeAnswer `json:"scopes"`
+	// Stop is the sessions the heartbeat reported that the node is to
+	// stop (heartbeatNode only, when it sent its sessions): their item
+	// merged, was cancelled or superseded elsewhere, or the node's
+	// connection to its org was revoked (ADR 066, decision 8).
+	Stop []SessionStop `json:"stop"`
 }
+
+// SessionStop is one session the platform tells the node to stop: the
+// item, the session's kind and harness session id as the heartbeat
+// reported them, and why.
+type SessionStop struct {
+	ItemID    string `json:"itemId"`
+	Kind      string `json:"kind"`
+	SessionID string `json:"sessionId"`
+	Reason    string `json:"reason"`
+}
+
+// NodeSession is one session the heartbeat reports the node runs under
+// an item's claim (a build, an evaluation, a rebase), so the platform can
+// tell it which to stop: the item, the kind, the harness session id when
+// the node has one, and when it started.
+type NodeSession struct {
+	ItemID    string `json:"itemId"`
+	Kind      string `json:"kind"`
+	SessionID string `json:"sessionId,omitempty"`
+	Since     string `json:"since"`
+}
+
+// stopFields is what heartbeatNode's payload is asked for its stop list,
+// beside the answer, when the heartbeat sends its sessions.
+const stopFields = " stop { itemId kind sessionId reason }"
 
 // NodeOwner is the NodeAnswer's owner: a person, an enterprise or an org, its
 // id and its display name.
@@ -1962,6 +1995,7 @@ type nodeAnswerPayload struct {
 	NodeID string        `json:"nodeId"`
 	Owner  *NodeOwner    `json:"owner"`
 	Scopes []ScopeAnswer `json:"scopes"`
+	Stop   []SessionStop `json:"stop"`
 }
 
 // asAnswer is nil when the payload named none of nodeId, owner or
@@ -1970,7 +2004,7 @@ func (p nodeAnswerPayload) asAnswer() *NodeAnswer {
 	if p.NodeID == "" && p.Owner == nil && len(p.Scopes) == 0 {
 		return nil
 	}
-	a := &NodeAnswer{NodeID: p.NodeID, Scopes: p.Scopes}
+	a := &NodeAnswer{NodeID: p.NodeID, Scopes: p.Scopes, Stop: p.Stop}
 	if a.Scopes == nil {
 		a.Scopes = []ScopeAnswer{}
 	}
@@ -2000,6 +2034,13 @@ func (c *Client) mutateForAnswer(ctx context.Context, field, aggregateID string,
 	if withCap {
 		fields = withScopeCap(fields)
 	}
+	// the stop list answers the sessions a heartbeat sends: a platform
+	// that takes `sessions` serves `stop` (the same goal landed both)
+	stop := ""
+	if _, sent := input["sessions"]; sent && field == "heartbeatNode" {
+		stop = stopFields
+	}
+	fields += stop
 	err := c.MutateFields(ctx, field, aggregateID, input, "status "+fields, &payload)
 	if err == nil {
 		return payload.asAnswer(), nil
@@ -2011,7 +2052,7 @@ func (c *Client) mutateForAnswer(ctx context.Context, field, aggregateID string,
 		// alone is dropped for NodeAnswerRetry and the answer asked again
 		c.scopeCapUntil.Store(time.Now().Add(NodeAnswerRetry).UnixNano())
 		payload = nodeAnswerPayload{}
-		if err = c.MutateFields(ctx, field, aggregateID, input, "status "+c.nodeAnswerFieldsFor(ctx), &payload); err == nil {
+		if err = c.MutateFields(ctx, field, aggregateID, input, "status "+c.nodeAnswerFieldsFor(ctx)+stop, &payload); err == nil {
 			return payload.asAnswer(), nil
 		}
 	}
@@ -2277,6 +2318,12 @@ type HeartbeatExtras struct {
 	// before it rather than starting them (mesh-specs ADR 008, mesh-cli
 	// ADR 009); none sends no key.
 	Adopted []AdoptedSession
+	// Sessions are the build, evaluate and rebase sessions the node runs
+	// now, under an item's claim, so the platform can answer which to
+	// stop (NodeAnswer.Stop). nil sends none (a node that does not report
+	// them); an empty list says it runs none. Sent only when the gateway's
+	// HeartbeatNodeInput has `sessions` (takesSessions).
+	Sessions []NodeSession
 	// Resumed are the build sessions a retry took up again after a failed
 	// check — resumed, or started fresh with the same message when the
 	// old one could not be (goal a-failed-check-returns-to-the-session-
@@ -2616,6 +2663,12 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 		}
 		if len(x.Resumed) > 0 && c.takesResumed(ctx) {
 			in["resumed"] = x.Resumed
+		}
+		// every heartbeat of a node that reports sessions says them all,
+		// none as [] — which clears the platform's record — once the
+		// gateway's HeartbeatNodeInput takes them (takesSessions)
+		if x.Sessions != nil && c.takesSessions(ctx) {
+			in["sessions"] = x.Sessions
 		}
 		if x.Holding != nil && c.takesHolding(ctx) {
 			h := *x.Holding
@@ -5290,4 +5343,11 @@ func (c *Client) takesAttestations(ctx context.Context) (bool, error) {
 	}
 	p.at, p.takes = now, takes
 	return takes, nil
+}
+
+// takesSessions is whether the gateway's HeartbeatNodeInput takes
+// `sessions` (goal a-session-stops-when-its-item-finishes-elsewhere),
+// probed as the other optional heartbeat fields are.
+func (c *Client) takesSessions(ctx context.Context) bool {
+	return c.takesInputField(ctx, &c.sessionsSchema, "HeartbeatNodeInput", "sessions")
 }
