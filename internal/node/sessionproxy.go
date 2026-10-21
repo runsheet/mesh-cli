@@ -42,6 +42,18 @@ type SessionProxies struct {
 	Root string
 	// Logf hears the proxy's own lines, every secret masked.
 	Logf func(format string, args ...any)
+	// Server, when set, is the node's HTTP server, which serves each
+	// session's socket as one of its listeners (ADR-039); nil serves
+	// each on a server of the proxy's own.
+	Server *Server
+}
+
+// listen serves p at sock: on the node's server when there is one.
+func (px *SessionProxies) listen(p *sessionproxy.Proxy, sock string) error {
+	if px.Server != nil {
+		return p.ListenOn(px.Server, sock)
+	}
+	return p.Listen(sock)
 }
 
 // SessionProxy is one session's running proxy: its directory and
@@ -122,7 +134,7 @@ func (px *SessionProxies) open(job *harness.Job, root, builtinURL string, specs 
 	p := sessionproxy.New(upstreamsOf(specs, builtinURL, bearer, px.keyOf(job.Meta)))
 	p.Logf = px.Logf
 	sock := filepath.Join(dir, ProxySocketName)
-	if err := p.Listen(sock); err != nil {
+	if err := px.listen(p, sock); err != nil {
 		os.RemoveAll(dir)
 		return nil, fmt.Errorf("sessionproxy: listen %s: %w", sock, err)
 	}
@@ -205,7 +217,7 @@ func (px *SessionProxies) Adopt(st sessionunit.State, builtin map[string]any, us
 	}
 	p := sessionproxy.New(upstreamsOf(named, url, bearer, px.keyOf(meta)))
 	p.Logf = px.Logf
-	if err := p.Listen(st.Proxy.Socket); err != nil {
+	if err := px.listen(p, st.Proxy.Socket); err != nil {
 		return nil, missing, fmt.Errorf("sessionproxy: listen %s: %w", st.Proxy.Socket, err)
 	}
 	return &SessionProxy{Dir: dir, Socket: st.Proxy.Socket, p: p}, missing, nil

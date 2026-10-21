@@ -376,6 +376,14 @@ var nodeStatusCmd = &cobra.Command{
 		if line := personalNodeStatusLine(); line != "" {
 			fmt.Println(line)
 		}
+		// the running node's own view, live from its admin socket (ADR-039)
+		if sock, err := node.AdminSocket(); err == nil {
+			if st, err := node.ReadStatus(ctx, sock); err == nil {
+				for _, l := range st.LiveLines() {
+					fmt.Println(l)
+				}
+			}
+		}
 		scopes := out.Scopes
 		fmt.Println(credentialLine(src.Credential()))
 		state, err := node.DefaultRunState()
@@ -1220,7 +1228,22 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 	// every build, evaluation, plan and research reaches its MCP servers
 	// through its own sessionproxy, the bearer and the tools' secrets
 	// held on the host, none of it in the session's pod
+	// the node's one HTTP server (ADR-039): its admin socket, for
+	// `mesh node status` and a watchdog, and every session's relay
+	// socket, each listener reaching only what it serves
+	nodeServer := &node.Server{Admin: node.AdminHandler(loop, nodeLayout, started), Logf: logger.Printf}
+	defer nodeServer.Close()
+	if sock, err := node.AdminSocket(); err != nil {
+		logger.Printf("admin socket: %v", err)
+	} else if err := nodeServer.ListenAdmin(sock); err != nil {
+		logger.Printf("admin socket %s: %v; status is read from the state files alone", sock, err)
+	} else {
+		logger.Printf("admin: %s (/health /status /jobs /metrics)", sock)
+	}
 	sessionProxies = newSessionProxies(logger.Printf)
+	if sessionProxies != nil {
+		sessionProxies.Server = nodeServer
+	}
 	loop.NoCredential = &node.NoCredentials{Log: logger, Now: loop.Now}
 	accounts := &node.Credentials{GW: gw, Limits: loop.Limits, Thresholds: loop.Thresholds, Known: known, NoCredential: loop.NoCredential, Log: logger}
 	// the quartermaster keeps the node fit from every tick: disk, /tmp

@@ -174,6 +174,39 @@ org and product. Revoking a connection removes its tree once its jobs
 are gone. The served-diff tree cache stays content-addressed and shared,
 as ADR-034 had it.
 
+### The node is the relay, and signs
+
+A session reaches runsheet and its tools through its proxy (ADR-038),
+which runs in the node process, not in a pod. Runsheet's `/mcp` takes a
+session's token only DPoP-bound (runsheet ADR 064), so the node holds
+one P-256 key in memory for its process's life (`internal/dpop`,
+`SessionBearers.Key`): each build's token is minted for `mesh-session`
+with a proof by that key (Latchkey binds it, `cnf.jkt`; a
+`use_dpop_nonce` answer is asked again once with its nonce), and the
+proxy sends every runsheet request as `Authorization: DPoP <token>` with
+a fresh proof of the request's method, URL and the token's hash
+(`sessionproxy.Runsheet.Key`). A DPoP header the agent sends is never
+forwarded. The key is in no file and no pod, so a token copied out of
+the node is of no use; a node that restarts adopts its sessions by
+opening their mesh sessions again under its new key. The machine-bearer
+stopgap (`MachineUntilDPoP`) is gone.
+
+### The node's HTTP server
+
+One `http.Server` in the node process (`node.Server`) serves every
+listener the node opens: its admin socket, `~/.mesh/node.sock` (0600),
+and each session's relay socket in its job's `mcp/`. A connection
+carries the listener it came in on, so a request on a session's socket
+reaches that session's proxy and nothing else — no path, header or
+query on it names another session, and the admin endpoints are not on
+it. The admin socket answers `GET /health` (503 while the runtime is
+broken), `/status` (the node, its connections and caps, sessions,
+holds, findings, read live from the loop), `/jobs` (every job's
+`job.json` and session dirs) and `/metrics` (Prometheus text);
+`mesh node status` prints the live view when the node answers. Nothing
+listens on TCP; a TCP listener for remote monitoring would be its own
+decision, behind a token.
+
 ### One layout and one mode
 
 Every node uses it, serving one connection or many. `~/.mesh/work`,

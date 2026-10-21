@@ -268,11 +268,9 @@ Your personal GitHub access — every org and repo your `gh` login reaches
 The node puts the token on the checkout's own credential helper (in its
 `.git/config`, clearing the operator's `gh auth git-credential` for
 github.com), so clone, fetch and push use it alone, and a push from
-inside a session to any other repo fails. A poll-mode session gets
-`GH_TOKEN` set to it and `GH_CONFIG_DIR` pointing at a fresh, empty
-directory, so `gh` never reads your `~/.config/gh`; channel mode's shared
-session gets the empty `GH_CONFIG_DIR` and no token at all, since its
-items' checkouts carry their own. A token near its expiry is renewed and
+inside a session to any other repo fails. A session gets `GH_TOKEN`
+set to it and `GH_CONFIG_DIR` pointing at a fresh, empty directory, so
+`gh` never reads your `~/.config/gh`. A token near its expiry is renewed and
 the helper rewritten, so a long session does not lose its push. A token
 the platform refuses fails the item — it is not run on your login
 instead.
@@ -290,8 +288,8 @@ The push is the node's, after the session, and it goes out on the
 build's own write token: just before it the node rewrites the
 checkout's helper with the token it was issued at claim (or that
 token's refresh), so nothing written there since can be the one used.
-An evaluation of the item works in a checkout of its own,
-`~/.mesh/work/<goal>/<seq>-eval`, and never touches the build's helper
+An evaluation of the item works in a clone of its own in the item's
+job, `~/.mesh/jobs/<item id>/eval`, and never touches the build's helper
 (ADR-027). A build session finishes on the node's own `mesh-node`
 server, whose `mesh_finish` records nothing (the hosted one is
 disallowed for builds): the order is **push → attest → finish**, and
@@ -312,7 +310,7 @@ The planner reads a whole project's repos rather than one item's, so it
 asks for the goal's own tokens (`planGitHubToken`, adr-022): one per
 repo of the project, minted through each repo's own account's
 installation, read-only. Each repo's checkout under
-`~/.mesh/work/<goal-slug>/plan/repos/` gets its own row on its own
+`~/.mesh/jobs/<goal id>/plan/repos/` gets its own row on its own
 credential helper before it is fetched — with `git`, never `gh repo
 clone` — and the session gets `GH_TOKEN` (the first repo's by sorted
 name) and a fresh, empty `GH_CONFIG_DIR`. A node whose user never
@@ -356,8 +354,8 @@ mesh node model --build ""                       # back to the CLI's default
 
 Saved in `~/.mesh/node.yaml`; restart the node (or its service) for a
 change to take. `--model`, `--model-build`, `--model-evaluate`,
-`--model-plan` and `--model-channel` on `mesh node start` win over the
-file for that run (`--model-research` and `--model-rebase` too). A value is an alias the CLI
+`--model-plan`, `--model-research` and `--model-rebase` on `mesh node
+start` win over the file for that run. A value is an alias the CLI
 knows (`opus`, `sonnet`, `haiku`) or a full id (`claude-opus-5`); unset
 leaves the CLI's own default.
 
@@ -909,7 +907,7 @@ console token it is still on — and a line for the node process on this
 machine: running (its pid), draining, or none (see Drain below). While
 a node runs here it prints the **quartermaster**'s findings — `findings:`
 then one line per finding, `  <kind> <severity> <subject>: <detail>`,
-critical first (`disk critical /home/mesh/.mesh/work: 4% free (…)`,
+critical first (`disk critical /home/mesh/.mesh/jobs: 4% free (…)`,
 `scratch ok /tmp: reaped 3 dirs, 12.0K; 0 in use kept`, `dead_checkout
 ok …: 1 dead found, 1 removed, …`, `version warn v1.0.0: … desired
 v1.1.0, differing for 1h1m0s`), or `findings: none` — read from
@@ -950,8 +948,7 @@ in `~/.mesh/node.cache`), the cache root's size on disk and node.yaml's
 (Main validations from the served diff, below).
 Beside it is the cache's size line, from the node's hourly cache trim
 (`~/.mesh/node.cachesize`): `cache: 4.2 GiB of 20.0 GiB
-(/home/u/.cache/mesh/cache); scratch 1.0 GiB (/home/u/.mesh/work/.scratch);
-measured 2026-10-17T18:00:00Z`, or `cache: size unknown (no reading
+(/home/u/.cache/mesh/cache); measured 2026-10-17T18:00:00Z`, or `cache: size unknown (no reading
 yet)` before the first trim (A host session's scratch, below).
 
 ### Start
@@ -1021,18 +1018,22 @@ acme, go-apis`).
 
 Each claimed item runs its own
 `claude -p "<prompt>" --output-format stream-json --verbose --max-budget-usd <budget>`
-in `~/.mesh/work/<goal-slug>/<seq>` (a worktree of the repo's clone, cloned with your `gh`, branch
-`mesh/<goal-slug>-<seq>` from the base ref), with the goal's runsheet
-context written under `.mesh/context/` (excluded from git). The node
-keeps one clone per repo at `~/.mesh/repos/<owner>/<name>`, cloned by
-the repo's first item and fetched by every later one, and makes each new
+in its job's checkout, `~/.mesh/jobs/<item id>/checkout` (a worktree of
+the repo's clone, branch `mesh/<goal-slug>-<seq>` from the base ref),
+with the goal's runsheet context written under `.mesh/context/`
+(excluded from git). The job's `job.json` names its unit, connection,
+org, product, item and goal, written before anything is checked out
+(ADR-039,
+[`docs/adr/adr-039-a-session-works-in-its-own-job-directory.md`](docs/adr/adr-039-a-session-works-in-its-own-job-directory.md)).
+The node keeps one clone per repo per connection at
+`~/.mesh/connections/<connection id>/repos/<owner>/<name>`, cloned by the
+repo's first item and fetched by every later one, and makes each new
 item's checkout a `git worktree add` of it: the objects are shared, the
 files, index and HEAD are the item's own, and git checks a branch out in
 one worktree only. Each worktree's credential helper is its own
 (`git config --worktree`); the shared clone's config holds no token. A
-rework reuses its worktree; an evaluation's `<seq>-eval`, the goal doc's
-`<goal>/0` and plan and research checkouts stay clones of their own; a
-full clone left by an older node is used as it is until swept. Each
+rework reuses its worktree; an evaluation's `eval/` and plan and
+research checkouts stay clones of their own. Each
 worktree is locked (`git worktree lock`) while its item is live and the
 node never runs a blanket `git worktree prune`: the sweep removes only a
 finished item's worktree, with `git worktree remove --force` and its own
@@ -1042,17 +1043,18 @@ has gone anyway is rebuilt for its branch at its recorded head, its
 files kept, and the step that found it — a `git remote set-url`, a
 prepare, the validation — runs once more, logged `workspace <dir>:
 worktree <path> is gone; made again for <branch> at <sha>`, nothing
-failed or released; `scripts/stale-worktrees.sh` lists any stale
-checkout left under `~/.mesh/work`. A `.git/config.lock` older than five minutes that
+failed or released; `scripts/stale-worktrees.sh ~/.mesh/jobs` lists any
+stale checkout left in a job. A `.git/config.lock` older than five minutes that
 no git process holds is cleared before a config write. Every session installs
-against one pnpm store and one npm cache per node, `~/.mesh/store/pnpm`
-and `~/.mesh/store/npm` (ADR-028,
+against its connection's pnpm store and npm cache,
+`~/.mesh/connections/<connection id>/store/pnpm` and `…/store/npm`
+(ADR-028,
 `docs/adr/adr-028-one-clone-per-repo-one-worktree-per-item.md`, after
-mesh-specs ADR 017). A node serving several orgs keeps all of this per
-org, under `~/.mesh/orgs/<org>/` — one clone per repo *per org* — see
+mesh-specs ADR 017; the paths are ADR-039's). A repo two connections
+reach is two clones — see
 [Several orgs on one node](#several-orgs-on-one-node). Every `gh repo clone` and `git fetch` of one repo on the node runs
 under a per-repo lock, a process-wide mutex plus an exclusive `flock` on
-`~/.mesh/work/.locks/<owner>--<name>.lock`, released before any checkout,
+the connection's `.locks/<owner>--<name>.lock`, released before any checkout,
 so two sessions (or two node processes) fetching one repo at once never
 fail on `cannot lock ref`; a fetch that still fails with `cannot lock
 ref` or `unable to update local ref` — a git outside the lock's reach —
@@ -1065,12 +1067,15 @@ build and the item's model (see "Session budgets" above), and
 reports progress every minute (`ReportWorkItemProgress` with the cents
 since the last report), pushes the branch with your credentials and
 `FinishWorkItem`s — or `FailWorkItem`s; a workspace that cannot be prepared releases the claim instead (`ReleaseWorkItem` with `workspace: <error>`, attempts unchanged, the item held off this node for ten minutes; docs/adr/adr-024-a-workspace-failure-releases-the-claim.md). `--once` runs one tick.
+`--mode` is deprecated: every node runs one session per job, and the
+flag accepts only `poll`, so a service unit installed with it still
+starts; any other value refuses to start.
 
-In both modes `--unattended` adds `--dangerously-skip-permissions` so a
+`--unattended` adds `--dangerously-skip-permissions` so a
 session never waits on a permission prompt — only on a machine you trust
 with that. On SIGTERM the node exits leaving its host `claude -p`
 sessions running in their own units, for the next `mesh node start` to
-adopt; a channel-mode or sandboxed session ends with it and its claimed
+adopt; a sandboxed session ends with it and its claimed
 item is left for a retry. It never fails an item on its own shutdown.
 SIGHUP does the same and execs the binary again at once.
 
@@ -1093,8 +1098,8 @@ reloads, heartbeats, holds, and each session's one-line summaries
 
 What sessions say goes to **`~/.mesh/sessions.log`** instead, capped the
 same way at **20 MB with 2 rotated files kept** (`sessions.log.1`,
-`sessions.log.2`): channel mode's `session: …` text, the workspaces' git
-commands and their output, and the agents' stderr. A node started from
+`sessions.log.2`): the workspaces' git commands and their output, and
+the agents' stderr. A node started from
 a terminal also echoes both to it.
 
 The service no longer points its output at node.log: the systemd unit
@@ -1118,17 +1123,21 @@ days. sessions.log grows far faster, about 9 MB an hour
 `sessions.log.2` closed), so its 20 MB × 2 holds the last four to six
 hours of what sessions said.
 
-### The work sweep: finished workspaces go
+### The work sweep: finished jobs go
 
-`~/.mesh/work` is swept by the platform's answer (ADR 008, The work
-sweep): an item's checkout, session dir and attestation copy once the
-item is merged, cancelled or superseded, or failed for over a week; a
-done or cancelled goal's whole directory; a goal's `plan/` once it is
-not planning; kept sessions past 14 days. Nothing a live or adopted
-session runs in, nothing the platform cannot answer for, no symlink.
-The node runs a pass at start-up, after the scope sweep, and then
-hourly, logging `sweep: removed <goal>/<seq> (<why>, <bytes>)` per
-removal and a total; a removal that fails is logged and retried next
+`~/.mesh/jobs` is swept by the platform's answer (ADR 008, The work
+sweep; ADR-039), each job judged by its `job.json`: an item's job once
+the item is merged, cancelled or superseded, or failed for over a week;
+a plan's once its goal is not planning; a merge batch's or main
+validation's six hours after it was opened; any job whose connection
+the node's answer no longer names, once nothing in it runs; each job's
+kept sessions past 14 days. A research job stays: its clones are
+fetched over for the next research of the direction. Nothing a live or
+adopted session runs in, nothing the platform cannot answer for, no
+symlink; a directory with no `job.json` is left and logged. The node
+runs a pass at start-up, after the scope sweep, and then hourly, logging
+`sweep: removed <label> (<why>, <bytes>)` per removal (an item's job by
+`<goal>/<seq>`) and a total; a removal that fails is logged and retried next
 pass. To see what a pass would remove, or run one by hand:
 
 ```sh
@@ -1141,8 +1150,7 @@ mesh node sweep             # remove them and print the same lines
 A node's host `claude -p` sessions run in their own units and outlive a
 restart — the next process adopts them (see [Upgrading a node without
 ending sessions](#upgrading-a-node-without-ending-sessions), which is how
-a new binary goes in). A channel-mode session and a sandboxed one still
-end with the node. To take a machine out of service — or to restart a
+a new binary goes in). A sandboxed session still ends with the node. To take a machine out of service — or to restart a
 node whose sessions would end with it — drain it:
 
 ```bash
@@ -1170,8 +1178,8 @@ well, a field sent only while draining; until the platform's node record
 keeps it (runsheet `update-nodes-from-console`), the drain is known on
 the machine alone.
 
-Swapping the binary on the mini by a drain — for a channel-mode node,
-whose sessions do not outlive it (anything else:
+Swapping the binary on the mini by a drain — for a node whose sessions
+do not outlive it (anything else:
 `mesh node upgrade`, next section; a released version: `mesh node
 update`, under Release):
 
@@ -1204,7 +1212,7 @@ What survives a swap:
   (`<workdir>.session/state.json` names the node) is followed to its end
   by the new process, as above.
 - **Unopened plan and research claims are re-opened.** A plan or research
-  claim is written to `<work root>/.claims/<kind>-<subject>.json` the
+  claim is written to `~/.mesh/jobs/.claims/<kind>-<subject>.json` the
   moment the platform grants it, before its credential read, context
   fetch or unit. A record with no session beside it is claimed again by
   the same node id (the platform lets its holder re-claim inside
@@ -1322,8 +1330,8 @@ is not a release, not the way to ship a contract change.
 
 ### Near the plan's limits
 
-Every `claude -p` session — build, evaluation, plan, research, rebase and
-the channel session — reports its Claude plan's standing in a
+Every `claude -p` session — build, evaluation, plan, research and
+rebase — reports its Claude plan's standing in a
 `rate_limit_event`: a status (`allowed` while sessions may run), and how
 much of the five-hour and the seven-day window is used, with when each
 resets. The node keeps the latest reading per account (the issued
@@ -1645,7 +1653,7 @@ node claims nothing (ADR-035):
 ```yaml
 disk:
   free_min_gb: 10           # default, GiB; free space under it claims nothing
-  path: /home/chris/.mesh/work  # default: the work root
+  path: /home/chris/.mesh/jobs  # default: the jobs tree
 ```
 
 Each left out, or `free_min_gb` 0, takes its default; a negative floor
@@ -1658,8 +1666,8 @@ already runs runs on. It says so once as it crosses, at its first tick
 when it starts under the floor:
 
 ```
-disk_low: /home/chris/.mesh/work 3.0GiB free < floor 10.0GiB; claiming nothing
-disk ok: /home/chris/.mesh/work 40.0GiB free >= floor 10.0GiB; claiming again
+disk_low: /home/chris/.mesh/jobs 3.0GiB free < floor 10.0GiB; claiming nothing
+disk ok: /home/chris/.mesh/jobs 40.0GiB free >= floor 10.0GiB; claiming again
 ```
 
 Free space and the next tick claims again; no restart is needed.
@@ -1698,8 +1706,8 @@ memory cannot hold.
 ### Capacity counts live sessions
 
 The capacity check counts the build sessions **alive on the host** —
-active `mesh-session-build-*` scopes, else the work root's session
-state files whose pid is alive — not only the ones the node tracks:
+active `mesh-session-build-*` scopes, else the session state files
+under `~/.mesh/jobs` whose pid is alive — not only the ones the node tracks:
 `free = capacity − max(running, live)`. An orphan this node's item no
 longer claims is stopped by the periodic sweep and logged `capacity:
 orphan: stopped …`; past capacity the node claims nothing and says
@@ -1739,13 +1747,12 @@ its `state.json` names — an older session's `mesh-context.token`
 included (docs/adr/adr-029-a-sessions-mcp-token-is-refreshed-by-the-node.md).
 
 **Every server goes through the session's proxy.** That relay and its
-token file are now only a rebase's, a channel session's and an older
-node's. A build, evaluation, plan or research session reaches runsheet
+token file are now only a rebase's and an older node's. A build, evaluation, plan or research session reaches runsheet
 and every console tool through its own proxy (`internal/sessionproxy`,
 docs/adr/adr-038-a-session-reaches-every-mcp-server-through-one-proxy.md):
 the node runs it on the host, serving `/mcp/<server>` on a 0600 unix
-socket alone in a directory under the session's org MCP root
-(`~/.mesh/mcp/px/<rand>/s` on a one-org node), and it holds every
+socket alone in a directory under its job's MCP dir
+(`~/.mesh/jobs/<id>/mcp/px/<rand>/s`), and it holds every
 credential — the session's runsheet bearer in memory, asked per
 request; a remote tool's headers; a local tool's secret env, in the
 `npx`/`uvx`/`docker` child the proxy itself starts on the host. The
@@ -1800,8 +1807,8 @@ credentials and its `tools` (name, remote `url`/`headers` or local
 `runtime`/`command`/`args`/`env`, `required`, `roles`) in one read, and
 keeps the tools whose `roles` include the session's — `builder` for a
 build, `evaluator` for an evaluation, `planner` for a plan, `director`
-for research (`tools.RoleFor`); rebase and channel sessions keep
-runsheet alone for now. A plan or research session that cannot
+for research (`tools.RoleFor`); a rebase session keeps runsheet alone
+for now. A plan or research session that cannot
 start a required tool starts no agent: the plan's claim is released
 with the reason, the research hands in an empty one naming it, and the
 node leaves that goal or direction alone while its runtimes are
@@ -2080,7 +2087,8 @@ the console can say a kind no online node takes is why a goal waits.
 A failing validation step, or a retry claimed after a failed
 evaluation, resumes the build session that made the item — same
 adapter, credential and worktree, its transcript kept under
-`~/.mesh/resume/<item>/` for seven days — with one message naming what
+`~/.mesh/jobs/<item id>/resume/<item id>/` until the work sweep removes
+the item's job — with one message naming what
 failed (ADR-030). Beside the resume record the node keeps
 `record.jsonl`: one line per note, question, answer, failed check,
 hand-back and turn, appended as it happens, never rewritten, and never
@@ -2123,7 +2131,7 @@ merge base out of its one **shared validation cache** —
 `<user cache dir>/mesh/cache` (`~/.cache/mesh/cache` on Linux), blobs,
 trees and commits by sha, filled from the repo's shared clone when it
 has the object and from GitHub otherwise — into a scratch dir of its own
-under `~/.mesh/work/.scratch`, applies the diff's files through the
+under its job's `.scratch`, applies the diff's files through the
 cache, checks what is on disk against the commit's tree, and runs
 `.runsheet/validate.yml` there, its suites chosen by the compare's
 paths. No worktree is added and nothing is fetched. The step's TMPDIR,
@@ -2131,7 +2139,7 @@ GOTMPDIR and GOCACHE point into the scratch and the node's Go build
 cache; a sandboxed run mounts that scratch read-write, the Go cache
 read-write and the cache's `blobs/` read-only, nothing else of the
 cache. The scratch is removed on every path, so a validation leaves
-nothing under `/tmp` or `~/.mesh/work` but an empty `.scratch`.
+nothing under `/tmp` or its job but an empty `.scratch`.
 
 The cache is held under node.yaml's `validation_cache_max_bytes`
 (default 20 GiB, the Go build cache counted): the least recently used
@@ -2155,8 +2163,8 @@ has the detail.
 
 An unsandboxed session or validation never writes into the node's own
 `/tmp`. Each host build, evaluation, plan, rebase and research session,
-and each host validation, runs with a scratch dir of its own under
-`~/.mesh/work/.scratch` as its TMPDIR and GOTMPDIR, so whatever its
+and each host validation, runs with a scratch dir of its own under its
+job's `.scratch` (`~/.mesh/jobs/<id>/.scratch`) as its TMPDIR and GOTMPDIR, so whatever its
 `go test`, `mktemp` and go-build leave goes with it. They all share one
 Go build cache, `~/.cache/mesh/cache/go`, as GOCACHE. The scratch is
 removed when the session or validation ends, by whichever node handles
@@ -2280,21 +2288,20 @@ the output, not the status. The session's environment also carries
 `BASH_MAX_OUTPUT_LENGTH` (the cap in characters) and
 `MAX_MCP_OUTPUT_TOKENS` (the cap at four bytes a token), so MCP results
 and whatever the hook misses are bounded by the CLI itself. A sandboxed
-session gets the environment but not the hook (the pod has no `mesh`),
-and channel-mode sessions get neither. `mesh tool-trim --max-kb N`
+session gets the environment but not the hook (the pod has no `mesh`).
+`mesh tool-trim --max-kb N`
 works by hand too: it trims stdin to stdout.
 
 ### Sandbox
 
-Every one-shot session — a poll-mode build, an evaluation, a plan, a
-research or a rebase session — runs in its own rootless **Podman** pod
+Every session — a build, an evaluation, a plan, a research or a rebase
+session — runs in its own rootless **Podman** pod
 (mesh-specs ADR 007; `internal/sandbox/`), created when the session
 starts and removed when it ends. Build, evaluate and rebase sessions
 get their repository's services beside them in the pod (see
 [Services](#services)). A Codex session — an evaluation, its preflight
 and the second opinion — runs in its pod too, from the image's `codex`
-(see [Codex on a node](#codex-on-a-node)). Channel-mode sessions do not
-run in one yet.
+(see [Codex on a node](#codex-on-a-node)).
 
 - **Runtime.** `podman` on the node's `PATH`, rootless (the operator
   needs a subuid/subgid range, and the `cpu`, `memory` and `pids` cgroup
@@ -2307,10 +2314,11 @@ run in one yet.
   [Node image](#node-image)). Its `PATH` is
   `/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`
   and it must carry `nft` for the network rules.
-- **Mounts.** On a node serving several orgs, only what lies inside
-  the session's own org's tree (see
-  [Several orgs on one node](#several-orgs-on-one-node)). Otherwise: the item's workspace, read-write at its own
-  path, and a fresh temporary HOME (removed after the session) holding
+- **Mounts.** Only what lies inside the session's own job and its
+  connection (see
+  [Several orgs on one node](#several-orgs-on-one-node)): the item's workspace, read-write at its own
+  path, and a fresh temporary HOME under the job's `homes/` (removed
+  after the session) holding
   the `--mcp-config` file, `CLAUDE_CONFIG_DIR` (`$HOME/.claude`), an
   empty `GH_CONFIG_DIR` (`$HOME/.config/gh`) and a `.gitconfig` with the
   operator's commit identity — and, for a Codex session, its
@@ -2409,54 +2417,70 @@ never tries to pull it.
 ### Several orgs on one node
 
 A node may serve several orgs (an `owner: enterprise` or `owner:
-person` registration, the orgs `orgs:` lets through). Their sessions
-share a machine and nothing else: each org has its own tree and every
-session is held inside its own (ADR-034,
-[`docs/adr/adr-034-each-org-has-its-own-roots.md`](docs/adr/adr-034-each-org-has-its-own-roots.md);
+person` registration, the orgs `orgs:` lets through), each by its own
+connection (runsheet ADR 066: a tenant and a product; the node's answer
+names each scope's `connectionId`). Their sessions share a machine and
+nothing else: each unit of work has its own job directory, each
+connection its own caches, and every session is held inside its job and
+its connection (ADR-039,
+[`docs/adr/adr-039-a-session-works-in-its-own-job-directory.md`](docs/adr/adr-039-a-session-works-in-its-own-job-directory.md);
 ADR-035,
 [`docs/adr/adr-035-a-session-reads-mesh-context-on-its-own-bearer.md`](docs/adr/adr-035-a-session-reads-mesh-context-on-its-own-bearer.md)).
 
-**Per-org roots.** Each served org's directories are laid out under
-`~/.mesh/orgs/<org>/` (`OrgRoots`, keyed by the org's login, else its
-slug; a name that is not one path segment, or two that differ only in
-case, is refused):
+**Jobs and connections.** No path carries an org's or a product's
+name; every key is an id the platform gave. Every unit of work — an
+item, a goal's plan, a direction's research, a merge batch's candidate,
+a merged item's main validation (keyed `<item id>-main`) — has its own
+`~/.mesh/jobs/<id>/`, with a `job.json` written before anything is
+checked out that names its unit, connection, org, product and its
+item, goal, direction or batch. Every connection has
+`~/.mesh/connections/<connection id>/`, with a `connection.json`
+naming its org and product:
 
-| root | path |
+| path | what |
 |------|------|
-| checkouts (work) | `~/.mesh/orgs/<org>/work/<goal>/<seq>`, `…/<seq>-eval`, plan and research checkouts |
-| shared clones | `~/.mesh/orgs/<org>/repos/<owner>/<name>` — a repo two orgs reach is two clones |
-| scratch | `~/.mesh/orgs/<org>/work/.scratch` |
-| package store | `~/.mesh/orgs/<org>/store/{pnpm,npm}` |
-| kept sessions | `~/.mesh/orgs/<org>/work/kept-sessions` |
-| resume records | `~/.mesh/orgs/<org>/resume` |
-| MCP data | `~/.mesh/orgs/<org>/mcp` (a build's token file under `mcp/sessions/<item>-<attempt>/`) |
-| pod HOMEs | `~/.mesh/orgs/<org>/homes` (0700) |
+| `jobs/<id>/checkout/` | an item's build checkout, a worktree of its connection's clone |
+| `jobs/<id>/eval/`, `…/rebase/` | the item's evaluation's own clone, its rebase's worktree |
+| `jobs/<id>/plan/`, `…/research/` | a plan's or research's full clones, under `repos/<name>` |
+| `jobs/<id>/<what>-<attempt>/` | a batch candidate's (`candidate-<n>`) or main validation's (`main-<n>`) checkout |
+| `jobs/<id>/<dir>.session` | each session's state, beside its checkout |
+| `jobs/<id>/.scratch/` | host runs' TMPDIRs |
+| `jobs/<id>/kept-sessions/` | kept streams |
+| `jobs/<id>/resume/` | a build's resume record |
+| `jobs/<id>/mcp/` | session token files (`mcp/sessions/<item>-<attempt>/`) and proxy sockets |
+| `jobs/<id>/homes/` | sandboxed sessions' HOMEs |
+| `connections/<id>/repos/<owner>/<name>` | the shared clones — a repo two connections reach is two clones |
+| `connections/<id>/store/{pnpm,npm}` | the package stores |
+| `connections/<id>/.locks/` | the per-repo locks |
 
-An org's worktree is only ever made from its own org's clone, its
-sessions install against its own store, its kept streams, resume
-records and token files land in its own tree, and the quartermaster's
-`kept_sessions` check and the resume sweep walk each org's tree for
-that org's records alone. An item, plan or research of an org the node
-does not serve is refused at its workspace, never given another org's
-roots. A node serving **one** org keeps today's paths — `~/.mesh/work`,
-`~/.mesh/repos`, `~/.mesh/store`, `~/.mesh/resume` — and nothing is
-moved.
+Plan and research claim records are in `~/.mesh/jobs/.claims`, planner
+refusals in `~/.mesh/jobs/.plans/refusals.json`. A job is never reopened
+for another connection. A worktree is only ever made from its own
+connection's clone, a session installs against its own connection's
+store, and its kept streams, resume record and token files land in its
+own job. An item, plan or research of an org the node does not serve,
+or of a scope the platform named no connection for, opens no job and is
+refused at its workspace, never given another connection's caches. The
+same layout serves one connection or many. A node does not read or
+write `~/.mesh/work`, `~/.mesh/repos`, `~/.mesh/store`, `~/.mesh/resume`,
+`~/.mesh/mcp` or `~/.mesh/orgs/`, and nothing is migrated from them.
 
-**The refusals.** A session's pod is confined to its org's root: every
-mount — the checkout, the HOME, a worktree's git common dir and admin
-entry, the package stores, the hooks, a detached agent's stream dirs —
-must resolve, symlinks followed, inside `~/.mesh/orgs/<org>/`, checked
-before any pod is made. The first that does not refuses the whole
-session with `sandbox: <what> <path> is outside org <org>'s root
-<root>; refused` (`ErrMountOutsideOrg`) and nothing starts: another org's checkout,
-clone, kept sessions, package store or MCP token file, the node-wide
-`~/.mesh/store`, or a symlink out of the tree. Build, evaluate, rebase,
+**The refusals.** A session's pod is confined to its job's directory
+and its connection's directory: every mount — the checkout, the HOME, a
+worktree's git common dir and admin entry, the package stores, the
+hooks, a detached agent's stream dirs — must resolve, symlinks
+followed, inside one of the two, checked before any pod is made. The
+first that does not refuses the whole session with `sandbox: <what>
+<path> is outside job <id>'s roots <roots>; refused`
+(`ErrMountOutsideJob`) and nothing starts: another job's checkout, kept
+sessions or MCP token file, another connection's clone or package
+store, or a symlink out of the two. Build, evaluate, rebase,
 merge-batch and main validations, **plans and research** all run in
-their org's pod; a plan whose pod cannot start releases its plan claim
+their job's pod; a plan whose pod cannot start releases its plan claim
 (no try counted) and a research hands in an empty one, each held off
 the node for ten minutes. With no sandbox (`sandbox: off`, or no
 podman) a node serving two or more orgs runs nothing on the host — the
-node user can read every org's tree — and says why once per run,
+node user can read every job and connection — and says why once per run,
 `sandbox_required: …`: a build is released (no attempt charged), a
 rebase failed back to its builder, a plan's claim released and a
 research handed in empty.
@@ -2466,7 +2490,7 @@ of its own mesh session — opened by the node (`POST
 /mesh/v1/sessions`, runsheet ADR 056) for the item's claim, narrowed by
 `/mcp` to its project and refused once the claim ends — never the
 node's machine bearer, which reads every served org's MCP data. The
-file is 0600 in the pod's HOME (a host session's under its org's
+file is 0600 in the pod's HOME (a host session's under its job's
 `mcp/sessions/`), refreshed from that session alone and removed with
 it. A platform without the route refuses a build on a node serving
 several orgs (released, named, `… gives no session the machine
@@ -2479,14 +2503,12 @@ leaves).
 (`go test ./internal/node -run TwoOrgs`) runs it end to end on the
 gatewaytest fake and the fake runtime: an enterprise owner's node
 serving acme and beta builds one item of each at once, then plans and
-researches for each; every session ran in a pod, its mounts are its
-own org's checkout, clone, stores and HOME alone, its kept-sessions
-root and token file its own org's, a build's token its own mesh
-session's, and from inside each session a mount of the other org's
-checkout, clone, kept sessions, package store or MCP data is refused
-with no pod made. `mesh node start` does not yet hand the session kinds
-their org roots (`Roots`); until it does a multi-org node keeps the
-one `~/.mesh/work` and its pods are confined by nothing.
+researches for each, each org by its own connection; every session ran
+in a pod, its mounts are its job's checkout and HOME and its
+connection's clone and stores alone, its kept-sessions root and token
+file its job's, a build's token its own mesh session's, and from inside
+each session a mount of the other org's checkout, clone, kept sessions,
+package store or MCP data is refused with no pod made.
 
 ### Node image
 
@@ -2649,10 +2671,7 @@ merged instead of alongside them.
 ### The goal's record in the repo
 
 Status lives on the platform, not in git (ADR 003, decision 4). No item's
-branch writes a goal status table: in channel mode `mesh_record` hands its
-summary to the platform as a progress note on the item
-(`ReportWorkItemProgress`, like `mesh_progress`) and writes no file, and
-poll mode writes nothing either — a build's branch carries only its own
+branch writes a goal status table: a build's branch carries only its own
 work. A session reads live status from `.mesh/context/INDEX.md` or the
 platform.
 
@@ -3372,7 +3391,7 @@ update:
 version is the one above: a merge cuts a release and the platform asks
 the node for it. Upgrading by hand is for when that path cannot run —
 a platform that cannot reach the node, a build that is not a release,
-a sandboxed or channel-mode node. `mesh node upgrade` installs a release (or a local build)
+a sandboxed node. `mesh node upgrade` installs a release (or a local build)
 and restarts at once, as the platform's update does (see [Upgrading a
 node without ending sessions](#upgrading-a-node-without-ending-sessions)).
 `mesh node update [version]` is the draining variant, for a node whose

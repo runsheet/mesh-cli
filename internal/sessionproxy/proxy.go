@@ -163,6 +163,27 @@ type Proxy struct {
 	srv  *http.Server
 	ln   net.Listener
 	path string
+	// host, set by ListenOn, serves the socket instead of srv.
+	host Host
+}
+
+// Host serves a proxy's socket on a server of its own: the node's one
+// HTTP server (node.Server), every session's socket a listener of it.
+type Host interface {
+	Listen(path string, h http.Handler) error
+	Unlisten(path string) error
+}
+
+// ListenOn serves the proxy on a unix socket at path through host, until
+// Close, as Listen does on a server of the proxy's own.
+func (p *Proxy) ListenOn(host Host, path string) error {
+	if err := host.Listen(path, p); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	p.host, p.path = host, path
+	p.mu.Unlock()
+	return nil
 }
 
 // New is a proxy fronting upstreams by name.
@@ -309,9 +330,12 @@ func (p *Proxy) Listen(path string) error {
 func (p *Proxy) Close() error {
 	defer p.closeChildren()
 	p.mu.Lock()
-	srv, path := p.srv, p.path
-	p.srv, p.ln, p.path = nil, nil, ""
+	srv, path, host := p.srv, p.path, p.host
+	p.srv, p.ln, p.path, p.host = nil, nil, "", nil
 	p.mu.Unlock()
+	if host != nil {
+		return host.Unlisten(path)
+	}
 	if srv == nil {
 		return nil
 	}
