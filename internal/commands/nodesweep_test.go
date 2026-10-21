@@ -15,11 +15,11 @@ import (
 	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 )
 
-// `mesh node sweep` against the fake platform on a temp ~/.mesh/work
-// (mesh-cli ADR 008, The work sweep): --dry-run prints one line per
-// would-be removal — goal, seq, why, bytes — and the total, and leaves
-// every file in place; without the flag the same entries go and the
-// same lines are printed.
+// `mesh node sweep` against the fake platform on a temp ~/.mesh/jobs
+// (mesh-cli ADR 008's work sweep over ADR-039's jobs): --dry-run prints
+// one line per would-be removal — the job's label, why, bytes — and the
+// total, and leaves every file in place; without the flag the same jobs
+// go and the same lines are printed.
 func TestNodeSweepDryRunPrintsAndRemovesNothing(t *testing.T) {
 	const org = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
 	home := t.TempDir()
@@ -48,7 +48,7 @@ func TestNodeSweepDryRunPrintsAndRemovesNothing(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, ".mesh", "node.yaml"), []byte("slug: box\nname: Box\nsandbox: off\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	root := filepath.Join(home, ".mesh", "work")
+	root := filepath.Join(home, ".mesh", "jobs")
 	write := func(rel, body string) {
 		p := filepath.Join(root, rel)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -58,11 +58,14 @@ func TestNodeSweepDryRunPrintsAndRemovesNothing(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, seq := range []string{"1", "2", "3", "4"} {
-		write("ship-it/"+seq+"/main.go", "package main\n")
+	job := func(id, unit, field, subject, label string) {
+		write(id+"/job.json", fmt.Sprintf(`{"id": %q, "unit": %q, "connection": "conn-runsheet", "orgId": %q, %q: %q, "label": %q, "started": "2026-10-21T00:00:00Z"}`, id, unit, org, field, subject, label))
+		write(id+"/checkout/main.go", "package main\n")
 	}
-	write("ship-it/1.attestation.json", "{}\n")
-	write("all-done/5/main.go", "package main\n")
+	for _, id := range []string{"i1", "i2", "i3", "i4"} {
+		job(id, "item", "itemId", id, "ship-it/"+strings.TrimPrefix(id, "i"))
+	}
+	job("g-done", "plan", "goalId", "g-done", "all-done")
 
 	run := func(dry bool) string {
 		t.Helper()
@@ -80,11 +83,10 @@ func TestNodeSweepDryRunPrintsAndRemovesNothing(t *testing.T) {
 	dry := run(true)
 	lines := sizesOut(dry)
 	want := []string{
-		"sweep: removed all-done (goal done, <size>)",
+		"sweep: removed all-done (goal done, not planning, <size>)",
 		"sweep: removed ship-it/1 (item 1 merged, <size>)",
-		"sweep: removed ship-it/1.attestation.json (item 1 merged, <size>)",
 		"sweep: removed ship-it/3 (item 3 failed 8d ago, <size>)",
-		"sweep: removed 4 entries, <size> freed",
+		"sweep: removed 3 entries, <size> freed",
 		"sweep: dry run; nothing removed",
 	}
 	if !slices.Equal(lines, want) {
@@ -98,12 +100,12 @@ func TestNodeSweepDryRunPrintsAndRemovesNothing(t *testing.T) {
 	if got := strings.Split(strings.TrimSuffix(real, "\n"), "\n"); !slices.Equal(got, strings.Split(strings.TrimSuffix(dry, "\n"), "\n")[:len(want)-1]) {
 		t.Fatalf("pass printed:\n%s\nwant the dry run's lines:\n%s", real, dry)
 	}
-	for _, rel := range []string{"all-done", "ship-it/1", "ship-it/1.attestation.json", "ship-it/3"} {
+	for _, rel := range []string{"g-done", "i1", "i3"} {
 		if _, err := os.Lstat(filepath.Join(root, rel)); !os.IsNotExist(err) {
 			t.Errorf("%s still there after the pass (%v)", rel, err)
 		}
 	}
-	for _, rel := range []string{"ship-it/2/main.go", "ship-it/4/main.go"} {
+	for _, rel := range []string{"i2/checkout/main.go", "i4/checkout/main.go"} {
 		if _, err := os.Lstat(filepath.Join(root, rel)); err != nil {
 			t.Errorf("%s removed: %v", rel, err)
 		}

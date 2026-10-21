@@ -24,7 +24,7 @@ const (
 	credLatch = "dddddddd-1111-4111-8111-dddddddddddd"
 )
 
-// startAgainst runs `mesh node start --mode poll --once` — nodeStart
+// startAgainst runs `mesh node start --once` — nodeStart
 // itself, registration through the loop's one tick, whose first
 // heartbeat makes the credentials report — against the fake, and
 // returns node.log. The host's sessions are out of its reach: PATH is
@@ -89,7 +89,7 @@ func TestNodeStartNamesAProjectWithNoCredential(t *testing.T) {
 	if strings.Count(logs, want) != 1 {
 		t.Fatalf("node.log lacks %q once:\n%s", want, logs)
 	}
-	if !strings.Contains(logs, "poll mode: node mini") {
+	if !strings.Contains(logs, "node mini (mini) for") {
 		t.Fatalf("not the start's log:\n%s", logs)
 	}
 	if strings.Contains(logs, "project mesh has no") || strings.Contains(logs, "every project") {
@@ -121,7 +121,7 @@ func TestNodeStartContinuesWhenCredentialsAreRefused(t *testing.T) {
 	}
 	// and the start went on: the loop ran its tick past the notice and
 	// nodeStart returned nil (startAgainst fails on its error)
-	if !strings.Contains(logs, "poll mode: node mini") {
+	if !strings.Contains(logs, "node mini (mini) for") {
 		t.Fatalf("the start did not go on:\n%s", logs)
 	}
 }

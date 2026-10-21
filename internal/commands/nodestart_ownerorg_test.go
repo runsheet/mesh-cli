@@ -55,7 +55,7 @@ func ownerOrgHome(t *testing.T, f *gatewaytest.Fake, token string) string {
 	return home
 }
 
-// startOnce runs `mesh node start --mode poll --once` and returns its
+// startOnce runs `mesh node start --once` and returns its
 // error and node.log.
 func startOnce() (string, error) {
 	var logs bytes.Buffer

@@ -20,7 +20,10 @@ func TestNodeQuartermasterCarriesTheFiveChecks(t *testing.T) {
 	t.Cleanup(f.Close)
 	gw := gateway.New(f.URL(), "rs_test")
 	loop := &node.Loop{GW: gw, Cfg: &node.Config{Slug: "box"}, Version: "v0.2.188"}
-	q := nodeQuartermaster(gw, loop, t.TempDir(), t.TempDir(), nil, t.Logf)
+	old := nodeLayout
+	nodeLayout = &node.Layout{Dir: t.TempDir()}
+	t.Cleanup(func() { nodeLayout = old })
+	q := nodeQuartermaster(gw, loop, nodeLayout.JobsDir(), t.TempDir(), nil, t.Logf)
 	if len(q.Checks) != 5 {
 		t.Fatalf("checks = %d, want 5", len(q.Checks))
 	}
