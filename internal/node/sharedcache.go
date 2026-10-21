@@ -82,8 +82,10 @@ type SharedCache struct {
 	// Root is the cache root (SharedCacheRoot); go/ under it is the Go
 	// build cache, counted against MaxBytes and cleaned last.
 	Root string
-	// ReposRoot is where the shared clones are (ReposRoot()); "" asks
-	// no clone.
+	// ReposRoot is where the shared clones are when a call's ctx names
+	// none (WithCloneRoot): "" asks no clone. A node with a Layout
+	// leaves it "" — one connection's validation reads only its own
+	// connection's clones (ADR-039).
 	ReposRoot string
 	// Source fills what the shared clone cannot; nil, such a miss is an
 	// error.
@@ -394,12 +396,28 @@ func (c *SharedCache) cachedTree(commit string) (CacheTree, bool) {
 	return t, true
 }
 
-// clonePath is repo's shared clone when it is there, else "".
-func (c *SharedCache) clonePath(repo string) string {
-	if c.ReposRoot == "" || repo == "" {
+// cloneRootKey carries on a ctx the repos root a cache call may read
+// clones from (WithCloneRoot).
+type cloneRootKey struct{}
+
+// WithCloneRoot marks ctx with the repos root of the connection a
+// validation runs for: the shared cache fills from that connection's
+// clones and no other's.
+func WithCloneRoot(ctx context.Context, reposRoot string) context.Context {
+	return context.WithValue(ctx, cloneRootKey{}, reposRoot)
+}
+
+// clonePath is repo's shared clone under ctx's repos root
+// (WithCloneRoot), else ReposRoot, when it is there; else "".
+func (c *SharedCache) clonePath(ctx context.Context, repo string) string {
+	root := c.ReposRoot
+	if r, ok := ctx.Value(cloneRootKey{}).(string); ok {
+		root = r
+	}
+	if root == "" || repo == "" {
 		return ""
 	}
-	dir := SharedClonePath(c.ReposRoot, repo)
+	dir := SharedClonePath(root, repo)
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 		return ""
 	}
@@ -409,7 +427,7 @@ func (c *SharedCache) clonePath(repo string) string {
 var errNotInClone = errors.New("not in the shared clone")
 
 func (c *SharedCache) treeFromClone(ctx context.Context, repo, commit string) (CacheTree, error) {
-	dir := c.clonePath(repo)
+	dir := c.clonePath(ctx, repo)
 	if dir == "" {
 		return CacheTree{}, errNotInClone
 	}
@@ -477,7 +495,7 @@ func (c *SharedCache) blob(ctx context.Context, repo, sha string) (string, bool,
 }
 
 func (c *SharedCache) blobFromClone(ctx context.Context, repo, sha string) ([]byte, error) {
-	dir := c.clonePath(repo)
+	dir := c.clonePath(ctx, repo)
 	if dir == "" {
 		return nil, errNotInClone
 	}

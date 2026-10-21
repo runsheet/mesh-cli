@@ -1,6 +1,6 @@
 ---
 summary: A node serving several orgs lays each org's work, repos, scratch, package store, kept sessions, resume records and MCP data under ~/.mesh/orgs/<org>/ (OrgRoots, keyed by the scope's Name() and refused unless it is one path segment unique in case), so one org's worktree is only ever made from its own org's clone and a repo served for two orgs is two clones; a node serving one org keeps today's paths and nothing moves. Amends ADR-028.
-status: accepted
+status: superseded by ADR-039
 ---
 
 # ADR-034: Each org has its own roots

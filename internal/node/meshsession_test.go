@@ -25,13 +25,13 @@ const (
 )
 
 // twoOrgs is a node serving acme and beta, each holding the claim of
-// one item, its roots under a temp ~/.mesh, its token files kept by tf
+// one item, its jobs under a temp ~/.mesh, its token files kept by tf
 // and its builds' bearers opened by sb.
 type twoOrgs struct {
 	f      *gatewaytest.Fake
 	r      *Runner
 	tf     *TokenFiles
-	roots  *OrgRootSet
+	layout *Layout
 	items  map[string]gateway.WorkItem
 	nodeOf map[string]string
 }
@@ -43,15 +43,12 @@ func newTwoOrgs(t *testing.T) *twoOrgs {
 	f.WorkItems[item1] = map[string]any{"id": item1, "orgId": orgID, "status": "claimed", "nodeId": nodeA, "attempts": 1}
 	f.WorkItems[itemB] = map[string]any{"id": itemB, "orgId": orgB, "status": "claimed", "nodeId": nodeB, "attempts": 3}
 	gw := gateway.New(f.URL(), machine)
-	scopes := Scopes{{Login: "acme", ID: orgID, NodeID: nodeA}, {Login: "beta", ID: orgB, NodeID: nodeB}}
-	roots, err := NewOrgRootSet(t.TempDir(), scopes.Names())
-	if err != nil {
-		t.Fatal(err)
-	}
+	scopes := connected(Scopes{{Login: "acme", ID: orgID, NodeID: nodeA}, {Login: "beta", ID: orgB, NodeID: nodeB}})
+	layout := testLayout(t)
 	tf := &TokenFiles{Token: gw.Bearer, MultiOrg: func() bool { return len(scopes) > 1 }}
 	sb := &SessionBearers{GW: gw, Tokens: tf, Audience: MeshMCPURL(f.URL()), Orgs: func() int { return len(scopes) }}
-	r := &Runner{GW: gw, Scopes: scopes, Roots: roots, Bearers: sb, Log: log.New(os.Stderr, "", 0)}
-	return &twoOrgs{f: f, r: r, tf: tf, roots: roots,
+	r := &Runner{GW: gw, Scopes: scopes, Layout: layout, Bearers: sb, Log: log.New(os.Stderr, "", 0)}
+	return &twoOrgs{f: f, r: r, tf: tf, layout: layout,
 		items:  map[string]gateway.WorkItem{"acme": {ID: item1, OrgID: orgID, Attempts: 1}, "beta": {ID: itemB, OrgID: orgB, Attempts: 3}},
 		nodeOf: map[string]string{"acme": nodeA, "beta": nodeB}}
 }
@@ -82,7 +79,7 @@ func readTok(t *testing.T, path string) string {
 
 // Two sessions of two orgs get two bearers, each its own mesh
 // session's id token and never the machine's, each file under its own
-// org's MCP root; the open names the item, its claim and its node; at
+// job's MCP root (ADR-039); the open names the item, its claim and its node; at
 // the session's end the bearer is cleared and the file and its
 // directory removed (ADR-035).
 func TestTwoOrgsSessionsReadOnTheirOwnBearers(t *testing.T) {
@@ -97,9 +94,9 @@ func TestTwoOrgsSessionsReadOnTheirOwnBearers(t *testing.T) {
 		}
 		paths[org], toks[org] = path, readTok(t, path)
 		ends[org] = func() { unbind(); release(true); RemoveTokenDir(filepath.Dir(path)) }
-		roots, _ := o.roots.For(org)
-		if !strings.HasPrefix(path, roots.MCP+string(filepath.Separator)) {
-			t.Fatalf("%s's token file %s is not under its MCP root %s", org, path, roots.MCP)
+		j, _ := o.layout.Job(o.items[org].ID)
+		if !strings.HasPrefix(path, j.MCP+string(filepath.Separator)) {
+			t.Fatalf("%s's token file %s is not under its job's MCP root %s", org, path, j.MCP)
 		}
 		ms := o.f.MeshSessionFor(o.items[org].ID)
 		if ms == nil || len(ms.Minted) == 0 || toks[org] != ms.Minted[len(ms.Minted)-1] {
@@ -113,10 +110,10 @@ func TestTwoOrgsSessionsReadOnTheirOwnBearers(t *testing.T) {
 		t.Fatalf("both orgs' sessions hold one bearer %q", toks["acme"])
 	}
 	for _, other := range []string{"acme", "beta"} {
-		roots, _ := o.roots.For(other)
+		j, _ := o.layout.Job(o.items[other].ID)
 		for org, p := range paths {
-			if org != other && strings.HasPrefix(p, roots.MCP) {
-				t.Fatalf("%s's file %s is under %s's MCP root", org, p, other)
+			if org != other && strings.HasPrefix(p, j.MCP) {
+				t.Fatalf("%s's file %s is under %s's job's MCP root", org, p, other)
 			}
 		}
 	}
@@ -214,11 +211,7 @@ func TestNoMeshSessionsOnOneOrgFallsBack(t *testing.T) {
 	o.r.Bearers.Orgs = func() int { return len(one) }
 	var buf bytes.Buffer
 	o.r.Bearers.Logf = log.New(&buf, "", 0).Printf
-	roots, err := NewOrgRootSet(t.TempDir(), one.Names())
-	if err != nil {
-		t.Fatal(err)
-	}
-	o.r.Roots = roots
+	o.r.Layout = testLayout(t)
 	for i := 0; i < 2; i++ {
 		path, unbind, release, err := o.session(t, "acme")
 		if err != nil {

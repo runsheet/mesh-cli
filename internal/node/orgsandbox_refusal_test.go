@@ -24,7 +24,7 @@ var twoScopes = Scopes{{Login: "acme", ID: "org-a", NodeID: "node-a"}, {Login: "
 // the error naming the org, the checkout and both orgs, kinded
 // sandbox_required; with a sandbox it refuses nothing.
 func TestHostFallbackRefusesATwoOrgNodeWithSandboxOff(t *testing.T) {
-	dir := "/home/mesh/.mesh/orgs/acme/work/ship-it/1"
+	dir := "/home/mesh/.mesh/jobs/item-1/checkout"
 	err := HostFallback(nil, twoScopes, "org-a", dir)
 	if err == nil {
 		t.Fatal("a two-org node with sandbox off was not refused")
@@ -110,20 +110,31 @@ func TestRunItemOnAOneOrgNodeWithSandboxOffRuns(t *testing.T) {
 	}
 }
 
-// A checkout under one org's tree confines its pod to that tree; one
-// under today's single work root confines nothing.
-func TestOrgRootOfACheckout(t *testing.T) {
-	mesh := "/home/mesh/.mesh"
-	for dir, want := range map[string]sandbox.OrgRoot{
-		mesh + "/orgs/acme/work/ship-it/1":               {Org: "acme", Path: mesh + "/orgs/acme"},
-		mesh + "/orgs/acme/work/merge-batches/b-1":       {Org: "acme", Path: mesh + "/orgs/acme"},
-		mesh + "/orgs/beta/work/ship-it/1-eval":          {Org: "beta", Path: mesh + "/orgs/beta"},
-		mesh + "/work/ship-it/1":                         {},
-		mesh + "/orgs/acme/repos/o/n":                    {},
-		"/elsewhere/orgs/acme/work/x/orgs/beta/work/y/1": {Org: "beta", Path: "/elsewhere/orgs/acme/work/x/orgs/beta"},
-	} {
-		if got := orgRootOf(dir); got != want {
-			t.Errorf("orgRootOf(%s) = %+v, want %+v", dir, got, want)
+// A checkout in a job confines its pod to the job and its
+// connection's caches (ADR-039); a directory in no job — a connection's
+// clone, a job directory with no job.json, anything outside the jobs
+// tree — confines nothing.
+func TestConfinementOfACheckout(t *testing.T) {
+	l := testLayout(t)
+	scopes := connected(Scopes{{Login: "acme", ID: "org-a"}})
+	j, c, err := openJob(l, scopes, "org-a", JobMeta{ID: "item-1", Unit: JobItem, ItemID: "item-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := sandbox.Confinement{Job: "item-1", Roots: []string{j.Dir, c.Dir}, Homes: j.Homes}
+	for _, dir := range []string{j.Checkout(), j.Eval(), j.Attempt("candidate", 2)} {
+		got := confinementOf(dir)
+		if got.Job != want.Job || got.Homes != want.Homes || len(got.Roots) != 2 || got.Roots[0] != want.Roots[0] || got.Roots[1] != want.Roots[1] {
+			t.Errorf("confinementOf(%s) = %+v, want %+v", dir, got, want)
+		}
+	}
+	bare := filepath.Join(l.JobsDir(), "no-job-json", "checkout")
+	if err := os.MkdirAll(bare, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{filepath.Join(c.Repos, "o", "n"), bare, t.TempDir()} {
+		if got := confinementOf(dir); !got.IsZero() {
+			t.Errorf("confinementOf(%s) = %+v, want none", dir, got)
 		}
 	}
 }

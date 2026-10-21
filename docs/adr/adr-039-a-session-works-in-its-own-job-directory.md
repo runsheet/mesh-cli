@@ -1,5 +1,5 @@
 ---
-summary: Every session works in ~/.mesh/jobs/<job-id>/, named by a job.json that says whose it is (connection, kind, item or plan or thread), and mounts only that and its connection's caches under ~/.mesh/connections/<connection-id>/{repos,store}; a thread keeps its state across sessions in ~/.mesh/threads/<thread-id>/ as a cache of what the product holds. Supersedes ADR-034's per-org roots; no single-org layout and no migration.
+summary: Every unit of work (an item, a goal's plan, a research direction, a merge batch) has its own ~/.mesh/jobs/<job-id>/, named by a job.json that says whose it is (connection, unit, item or goal or direction or batch), and its sessions mount only that and its connection's caches under ~/.mesh/connections/<connection-id>/{repos,store}; a thread keeps its state across sessions in ~/.mesh/threads/<thread-id>/ as a cache of what the product holds. Supersedes ADR-034's per-org roots; no single-org layout and no migration.
 status: proposed
 ---
 
@@ -35,42 +35,70 @@ state now": no sessions to adopt from the old paths, nothing to migrate.
 
 | tree                                 | holds                                                             | lives                                   |
 | ------------------------------------ | ----------------------------------------------------------------- | --------------------------------------- |
-| `~/.mesh/jobs/<job-id>/`             | one session's checkout, scratch, kept stream, resume record, MCP token files | until the job ends and its kept stream ages out |
+| `~/.mesh/jobs/<job-id>/`             | one unit of work's checkouts, scratch, kept streams, resume record, MCP token files, session dirs | until its item, plan or batch is done (the sweep) |
 | `~/.mesh/threads/<thread-id>/`       | a thread's state between its sessions                             | until the thread closes, its connection is revoked, or it is idle 14 days |
-| `~/.mesh/connections/<connection-id>/` | the connection's shared clones (`repos/`) and package stores (`store/`) | until the connection is revoked          |
+| `~/.mesh/connections/<connection-id>/` | the connection's shared clones (`repos/`), package stores (`store/`) and repo locks (`.locks/`) | until the connection is revoked          |
 
 No path carries an org or product name. Every id is a uuid.
 
 ### A job
 
-A job is one session: a build, evaluation, rebase, validation, plan,
-research, or a thread's turn. Its id is minted by the node when the
-session starts and is the `sessionId` the heartbeat reports and the stop
-list names. Its directory holds `job.json`:
+A job is one unit of work and every session of it: an item (its
+builds, their validations and resumes, its evaluation, its rebases), a
+goal's plan, a research direction, a merge batch's candidate or a merged
+item's main validation. Its key is the platform's id of that work — the
+item's, goal's, direction's or batch's (`<item>-main` for a main
+validation, which outlives its item's job) — so a build retried, a
+session adopted after a restart, or an evaluation of the same item all
+find the same directory. `job.json` says whose it is:
 
 ```json
-{"id": "…", "connection": "…", "orgId": "…", "product": "runsheet",
- "kind": "build", "itemId": "…", "goalId": "…", "threadId": "",
- "attach": "none", "started": "2026-10-21T10:00:00Z"}
+{"id": "…", "unit": "item", "connection": "…", "orgId": "…",
+ "product": "runsheet", "itemId": "…", "goalId": "…", "threadId": "",
+ "label": "ship-it/3", "started": "2026-10-21T10:00:00Z"}
 ```
 
-and under it `work/` (the checkouts, worktrees of the connection's
-clones), `scratch/` (TMPDIR), `kept/`, `resume/` and `mcp/`.
+Under it:
 
-Everything that walked `~/.mesh/work` reads `job.json` files instead:
+| path                 | what                                                  |
+| -------------------- | ----------------------------------------------------- |
+| `checkout/`          | an item's build checkout, a worktree of the connection's clone |
+| `eval/`, `rebase/`   | its evaluation's clone, its rebase's worktree          |
+| `plan/`, `research/` | a plan's or research's full clones under `repos/`      |
+| `<what>-<attempt>/`  | a batch candidate's or main validation's checkout      |
+| `<dir>.session`      | each session's state, beside its checkout (sessionunit)|
+| `.scratch/`          | host runs' TMPDIRs                                     |
+| `kept-sessions/`     | kept streams                                           |
+| `resume/`            | a build's resume record                                |
+| `mcp/`               | session token files and proxy sockets                  |
+| `homes/`             | sandboxed sessions' HOMEs                              |
 
-- **Adoption** after a restart: every job whose session is still live
-  is reattached; the rest are finished or released.
-- **The claims dir** becomes `job.json` itself: a job directory is the
-  node's record that it holds the item.
-- **The live probe** and the **stop list** (ADR 066, decision 8) find a
-  session by its job's item and kind.
-- **The disk floor and the quartermaster** measure and sweep job
-  directories; a revoked connection's jobs are the ones whose
-  `job.json` names it.
+`openJob` writes `job.json` before anything is checked out; a job is
+never reopened for another connection.
 
-A session's pod mounts its job directory and its connection's `repos`
-and `store`, and nothing else under `~/.mesh` (`ErrMountOutsideJob`).
+What walked `~/.mesh/work` walks `~/.mesh/jobs`:
+
+- **Adoption** after a restart (`FindSessions`) and the **live probe**
+  find `*.session` dirs under the jobs tree.
+- **Plan and research claims** are recorded in `~/.mesh/jobs/.claims`,
+  as they were in the work root's.
+- **The work sweep** (`PlanJobSweep`) reads each `job.json` and asks the
+  platform for its item or goal by id: an item's job goes once it is
+  merged, cancelled or superseded, or failed a week; a plan's once its
+  goal is not planning; a batch's six hours on; a research's stays (its
+  clones are fetched over for the next research). Any job whose
+  connection is not among the node's answer goes, once nothing in it
+  runs. A directory with no `job.json` is left and logged.
+- **The dead-checkout check** reads item jobs' checkouts by item id and
+  prunes each connection's clones under that connection's locks.
+- **Kept sessions** are swept per job.
+- **The disk floor** measures the jobs tree.
+- **The stop list** (ADR 066, decision 8) names sessions by kind and
+  item, as before.
+
+A session's pod is confined to its job's directory and its
+connection's directory (`sandbox.Confinement`): every mount outside them
+is refused with `ErrMountOutsideJob`, naming the job.
 
 ### A thread
 
@@ -136,8 +164,8 @@ session's services stay its pod's sidecars (`.mesh/services.yml`).
 
 ### Connection caches
 
-Clones and package stores stay shared, since a clone per job would
-re-clone every session, but only within a connection: a worktree's
+Clones, package stores and repo locks stay shared, since a clone per
+job would re-clone every session, but only within a connection: a worktree's
 `.git` points into its clone, which the pod mounts, and a package store
 can be poisoned for whoever installs from it next. The node's answer
 names each scope's connection id (`ids.NodeConnectionID(node, org,
@@ -146,9 +174,21 @@ org and product. Revoking a connection removes its tree once its jobs
 are gone. The served-diff tree cache stays content-addressed and shared,
 as ADR-034 had it.
 
-### One layout
+### One layout and one mode
 
 Every node uses it, serving one connection or many. `~/.mesh/work`,
 `~/.mesh/repos`, `~/.mesh/store`, `~/.mesh/resume`, `~/.mesh/mcp` and
-`~/.mesh/orgs/` are no longer read or written; `OrgRoots`,
-`OrgRootSet`, `SingleOrgRoots` and `ValidateOrgName` are removed.
+`~/.mesh/orgs/` are no longer read or written by a node; `OrgRoots`,
+`OrgRootSet`, `SingleOrgRoots` and `ValidateOrgName` are removed. A
+scope the platform names no connection for opens no job: the node's
+answer must carry `connectionId` (runsheet serves it with `cap` and
+`product`).
+
+Channel mode is removed with it (Chris, 2026-10-21): one host session
+across every item's checkout cannot be confined to a job. Every node
+runs one session per job (what `--mode poll` was); `--mode` is kept,
+deprecated, so an installed service unit still starts, and refuses
+anything but `poll`.
+
+The Go build cache and the served-diff tree cache stay under the user
+cache dir, outside `~/.mesh`, content-addressed and not split.

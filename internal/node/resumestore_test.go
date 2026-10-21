@@ -138,58 +138,6 @@ func TestResumeStoreSweep(t *testing.T) {
 	}
 }
 
-// The resume sweep runs over every served org's own Resumes dir
-// (ADR-034): a done item's record kept under each org is removed by one
-// sweep of the OrgRootSet, and a record still live is kept, each org
-// reading only its own dir.
-func TestOrgRootSetSweepResumes(t *testing.T) {
-	mesh := filepath.Join(t.TempDir(), ".mesh")
-	set, err := NewOrgRootSet(mesh, []string{"acme", "grapevine"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	src := writeTranscript(t, "output.jsonl", "x\n")
-	for _, org := range []string{"acme", "grapevine"} {
-		roots, err := set.For(org)
-		if err != nil {
-			t.Fatal(err)
-		}
-		store := ResumeStore{Dir: roots.Resumes}
-		if err := store.Keep("done-item", ResumeRecord{SessionID: "s-done", Adapter: "claude-code"}, src); err != nil {
-			t.Fatal(err)
-		}
-		if err := store.Keep("live-item", ResumeRecord{SessionID: "s-live", Adapter: "claude-code"}, src); err != nil {
-			t.Fatal(err)
-		}
-	}
-	statusOf := func(itemID string) (string, error) {
-		if itemID == "done-item" {
-			return "merged", nil
-		}
-		return "ready", nil
-	}
-	forgotten, err := set.SweepResumes(context.Background(), statusOf, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, org := range []string{"acme", "grapevine"} {
-		if got := forgotten[org]; len(got) != 1 || got[0] != "done-item" {
-			t.Fatalf("%s: forgotten = %v, want [done-item]", org, got)
-		}
-		roots, err := set.For(org)
-		if err != nil {
-			t.Fatal(err)
-		}
-		store := ResumeStore{Dir: roots.Resumes}
-		if _, ok := store.Lookup("done-item"); ok {
-			t.Fatalf("%s: done-item still kept after the sweep", org)
-		}
-		if _, ok := store.Lookup("live-item"); !ok {
-			t.Fatalf("%s: live-item forgotten, want kept", org)
-		}
-	}
-}
-
 func TestResumeRecordHoldsNoSecret(t *testing.T) {
 	const token = "ghs_FAKEtoken0123456789abcdef"
 	const key = "sk-ant-FAKEkey9876543210"

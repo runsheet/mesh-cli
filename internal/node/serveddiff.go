@@ -150,6 +150,14 @@ func (r *Runner) checkoutServed(ctx context.Context, t validationTarget, c mainC
 		return "", nil, err
 	}
 	gctx := gitdata.WithToken(ctx, tok)
+	// the cache fills from this connection's clones alone (ADR-039)
+	if r.Layout != nil {
+		if conn, _, err := r.Layout.ConnectionOf(r.Scopes, t.item.OrgID); err == nil {
+			gctx = WithCloneRoot(gctx, conn.Repos)
+		} else {
+			gctx = WithCloneRoot(gctx, "")
+		}
+	}
 	gd := r.GitData
 	if c.atHead {
 		head, err := gd.Commit(gctx, c.repo, c.branch)

@@ -692,18 +692,14 @@ func TestReplanReportsBothSessionsOnce(t *testing.T) {
 	}
 }
 
-// twoOrgRoots lays out acme's and beta's roots under a temp ~/.mesh.
-func twoOrgRoots(t *testing.T) *OrgRootSet {
-	t.Helper()
-	roots, err := NewOrgRootSet(filepath.Join(t.TempDir(), ".mesh"), []string{"acme", "beta"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return roots
+// twoOrgsServed is a node's served scopes of acme (sc) and beta, each
+// with its connection.
+func twoOrgsServed(sc Scope) func() Scopes {
+	return func() Scopes { return connected(Scopes{sc, {Login: "beta", ID: orgB, NodeID: nodeB}}) }
 }
 
 // assertUnderOrg fails unless job's workspace, context dir and
-// GH_CONFIG_DIR lie under the org's root.
+// GH_CONFIG_DIR lie under root, its job's directory.
 func assertUnderOrg(t *testing.T, job harness.Job, root string) {
 	t.Helper()
 	if job.Session == nil {
@@ -727,21 +723,22 @@ func assertUnderOrg(t *testing.T, job harness.Job, root string) {
 
 // On a sandboxed node serving two orgs a plan runs in its goal's org's
 // pod: the job carries the pod, and its workspace, context dir and gh
-// config dir lie under that org's root (ADR-034).
+// config dir lie in the goal's job (ADR-039).
 func TestPlanOnASandboxedNodeRunsInItsOrgsPod(t *testing.T) {
 	f := widgetsAlone(t)
 	var logs bytes.Buffer
 	pl, _, _, cfg := planTokenPlanner(f, t, &logs)
 	h := &podGuardHarness{t: t, fakeHarness: fakeHarness{text: planTokenJSON}}
-	pl.Harness, pl.Sandbox, pl.Roots = h, nodeStoresSandbox(t), twoOrgRoots(t)
-	if err := pl.Plan(context.Background(), shipIt(), scopesOf(cfg)[0]); err != nil {
+	sc := connected(scopesOf(cfg))[0]
+	pl.Harness, pl.Sandbox, pl.Layout, pl.Served = h, nodeStoresSandbox(t), testLayout(t), twoOrgsServed(sc)
+	if err := pl.Plan(context.Background(), shipIt(), sc); err != nil {
 		t.Fatalf("plan: %v\n%s", err, logs.String())
 	}
 	if len(h.jobs) != 1 {
 		t.Fatalf("jobs = %d", len(h.jobs))
 	}
-	acme, _ := pl.Roots.For("acme")
-	assertUnderOrg(t, h.jobs[0], acme.Base)
+	j, _ := pl.Layout.Job(goalID)
+	assertUnderOrg(t, h.jobs[0], j.Dir)
 	if pods := pl.Sandbox.Runtime.(*sandbox.Fake).Pods; len(pods) != 1 {
 		t.Fatalf("pods created = %d, want 1 before the harness", len(pods))
 	}
@@ -757,8 +754,9 @@ func TestPlanPodStartFailureReleasesThePlanClaim(t *testing.T) {
 	h := &podGuardHarness{t: t, fakeHarness: fakeHarness{text: planTokenJSON}}
 	sb := nodeStoresSandbox(t)
 	sb.Runtime.(*sandbox.Fake).CreatePodErr = errors.New("pod create: no space left on device")
-	pl.Harness, pl.Sandbox, pl.Roots, pl.Declines = h, sb, twoOrgRoots(t), &Declines{}
-	err := pl.Plan(context.Background(), shipIt(), scopesOf(cfg)[0])
+	sc := connected(scopesOf(cfg))[0]
+	pl.Harness, pl.Sandbox, pl.Layout, pl.Served, pl.Declines = h, sb, testLayout(t), twoOrgsServed(sc), &Declines{}
+	err := pl.Plan(context.Background(), shipIt(), sc)
 	if _, ok := PodStartErrorOf(err); !ok {
 		t.Fatalf("err = %v, want a PodStartError", err)
 	}
@@ -783,8 +781,9 @@ func TestPlanOnATwoOrgNodeWithSandboxOffIsReleased(t *testing.T) {
 	f := widgetsAlone(t)
 	var logs bytes.Buffer
 	pl, _, h, cfg := planTokenPlanner(f, t, &logs)
-	pl.Roots, pl.Declines = twoOrgRoots(t), &Declines{}
-	err := pl.Plan(context.Background(), shipIt(), scopesOf(cfg)[0])
+	sc := connected(scopesOf(cfg))[0]
+	pl.Layout, pl.Served, pl.Declines = testLayout(t), twoOrgsServed(sc), &Declines{}
+	err := pl.Plan(context.Background(), shipIt(), sc)
 	if !errors.Is(err, ErrHostServesSeveralOrgs) {
 		t.Fatalf("err = %v", err)
 	}

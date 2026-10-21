@@ -203,19 +203,16 @@ func (r *Runner) ServedDiff(client *gitdata.Client, cache *SharedCache) *Runner 
 }
 
 // NewServedDiffCache is the node's shared tree cache as its served-diff
-// validations use it: under SharedCacheRoot, filled from the shared
-// clones under ReposRoot when they hold an object, capped at node.yaml's
-// validation_cache_max_bytes, its counts left in ~/.mesh for `mesh node
-// status`.
+// validations use it: under SharedCacheRoot, filled from the validating
+// connection's shared clones when they hold an object (WithCloneRoot,
+// ADR-039), capped at node.yaml's validation_cache_max_bytes, its counts
+// left in ~/.mesh for `mesh node status`.
 func NewServedDiffCache(cfg *Config, logf func(string, ...any)) (*SharedCache, error) {
 	root, err := SharedCacheRoot()
 	if err != nil {
 		return nil, fmt.Errorf("cache root: %w", err)
 	}
 	c := &SharedCache{Root: root, MaxBytes: cfg.ValidationCacheCap(), Logf: logf}
-	if repos, err := ReposRoot(); err == nil {
-		c.ReposRoot = repos
-	}
 	if st, err := DefaultRunState(); err == nil {
 		c.State = &st
 	}
