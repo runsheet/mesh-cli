@@ -1018,45 +1018,35 @@ acme, go-apis`).
 
 Each claimed item runs its own
 `claude -p "<prompt>" --output-format stream-json --verbose --max-budget-usd <budget>`
-in its job's checkout, `~/.mesh/jobs/<item id>/checkout` (a worktree of
-the repo's clone, branch `mesh/<goal-slug>-<seq>` from the base ref),
+in its job's checkout, `~/.mesh/jobs/<item id>/checkout` (a clone of
+its own, branch `mesh/<goal-slug>-<seq>` from the base ref),
 with the goal's runsheet context written under `.mesh/context/`
 (excluded from git). The job's `job.json` names its unit, connection,
 org, product, item and goal, written before anything is checked out
 (ADR-039,
 [`docs/adr/adr-039-a-session-works-in-its-own-job-directory.md`](docs/adr/adr-039-a-session-works-in-its-own-job-directory.md)).
-The node keeps one clone per repo per connection at
-`~/.mesh/connections/<connection id>/repos/<owner>/<name>`, cloned by the
-repo's first item and fetched by every later one, and makes each new
-item's checkout a `git worktree add` of it: the objects are shared, the
-files, index and HEAD are the item's own, and git checks a branch out in
-one worktree only. Each worktree's credential helper is its own
-(`git config --worktree`); the shared clone's config holds no token. A
-rework reuses its worktree; an evaluation's `eval/` and plan and
-research checkouts stay clones of their own. Each
-worktree is locked (`git worktree lock`) while its item is live and the
-node never runs a blanket `git worktree prune`: the sweep removes only a
-finished item's worktree, with `git worktree remove --force` and its own
-`.git/worktrees/<n>`, refuses one whose item is live on the node, and
-never touches the shared clone. A workspace whose `.git/worktrees/<n>`
-has gone anyway is rebuilt for its branch at its recorded head, its
-files kept, and the step that found it — a `git remote set-url`, a
-prepare, the validation — runs once more, logged `workspace <dir>:
-worktree <path> is gone; made again for <branch> at <sha>`, nothing
-failed or released; `scripts/stale-worktrees.sh ~/.mesh/jobs` lists any
-stale checkout left in a job. A `.git/config.lock` older than five minutes that
-no git process holds is cleared before a config write. Every session installs
-against its connection's pnpm store and npm cache,
-`~/.mesh/connections/<connection id>/store/pnpm` and `…/store/npm`
-(ADR-028,
-`docs/adr/adr-028-one-clone-per-repo-one-worktree-per-item.md`, after
-mesh-specs ADR 017; the paths are ADR-039's). A repo two connections
-reach is two clones — see
-[Several orgs on one node](#several-orgs-on-one-node). Every `gh repo clone` and `git fetch` of one repo on the node runs
-under a per-repo lock, a process-wide mutex plus an exclusive `flock` on
-the connection's `.locks/<owner>--<name>.lock`, released before any checkout,
-so two sessions (or two node processes) fetching one repo at once never
-fail on `cannot lock ref`; a fetch that still fails with `cannot lock
+Each job's checkout, evaluation (`eval/`) and rebase (`rebase/`) is a
+git clone of its own inside `~/.mesh/jobs/<id>/`, cloned by `git clone`
+over https on the job's token, which rides each command's environment
+and is never on the command line or in a config file (`cloneCommand`;
+the operator's `gh repo clone` only when no job token is minted). A
+complete clone, not a partial one: an agent in its pod holds no token to
+fetch a missing blob. A rework reuses its checkout; plan and research
+checkouts are clones of their own too. Nothing is shared between jobs,
+so there is no shared clone and no worktree registration to prune: the
+sweep removes a finished job's directory, and the quartermaster's
+dead-checkout check removes a dead checkout. A `.git/config.lock` older
+than five minutes that no git process holds is cleared before a config
+write. Every session installs
+against its job's own pnpm store and npm cache,
+`~/.mesh/jobs/<id>/store/pnpm` and `…/store/npm` (`jobSandbox`; ADR-039,
+Nothing is shared between jobs) — see
+[Several orgs on one node](#several-orgs-on-one-node). Every clone and
+`git fetch` a job runs is under a per-repo lock, a process-wide mutex
+plus an exclusive `flock` on the job's own `.locks/<owner>--<name>.lock`
+(`lockRoot`), released before any checkout, so two sessions (or two node
+processes) fetching into one clone at once never fail on `cannot lock
+ref`; a fetch that still fails with `cannot lock
 ref` or `unable to update local ref` — a git outside the lock's reach —
 is retried up to three times with a short backoff and logged once
 (ADR-023,
@@ -1790,7 +1780,7 @@ item ship-it/1: step 6 finish: succeeded (1.2s)
 
 The finish is the node's, outside the pod. When the platform takes a
 changeset (its `FinishWorkItemInput` has `changesetId`), the node writes
-the worktree's tree, uploads only the objects the platform lacks,
+the checkout's tree, uploads only the objects the platform lacks,
 records the changeset and finishes the item naming it — the platform
 makes the branch (`item <label>: changeset <id> recorded …; finished
 <branch>`). Otherwise it pushes on the item's token and finishes on the
@@ -2086,7 +2076,7 @@ the console can say a kind no online node takes is why a goal waits.
 
 A failing validation step, or a retry claimed after a failed
 evaluation, resumes the build session that made the item — same
-adapter, credential and worktree, its transcript kept under
+adapter, credential and checkout, its transcript kept under
 `~/.mesh/jobs/<item id>/resume/<item id>/` until the work sweep removes
 the item's job — with one message naming what
 failed (ADR-030). Beside the resume record the node keeps
@@ -2129,12 +2119,13 @@ without a clone: the node reads the commit and the compare
 `base...head` from GitHub's Git Data API on the minted token, writes the
 merge base out of its one **shared validation cache** —
 `<user cache dir>/mesh/cache` (`~/.cache/mesh/cache` on Linux), blobs,
-trees and commits by sha, filled from the repo's shared clone when it
-has the object and from GitHub otherwise — into a scratch dir of its own
+trees and commits by sha, filled from the validating job's own clone
+when it has one and holds the object (`WithClone`), never another job's,
+and from GitHub otherwise — into a scratch dir of its own
 under its job's `.scratch`, applies the diff's files through the
 cache, checks what is on disk against the commit's tree, and runs
 `.runsheet/validate.yml` there, its suites chosen by the compare's
-paths. No worktree is added and nothing is fetched. The step's TMPDIR,
+paths. No clone is made and nothing is fetched. The step's TMPDIR,
 GOTMPDIR and GOCACHE point into the scratch and the node's Go build
 cache; a sandboxed run mounts that scratch read-write, the Go cache
 read-write and the cache's `blobs/` read-only, nothing else of the
@@ -2148,13 +2139,14 @@ entries (<size>) to hold the cap of <cap>; <size> now`, then `go clean
 -cache`; still over after both is the finding `cache over cap: <size> of
 <cap>`, logged once until it is back under. A diff past GitHub's
 300-file cap, a truncated tree, no minted token or a materialised tree
-that does not match the commit's falls back to the worktree of
+that does not match the commit's falls back to a checkout of
 [ADR-032](docs/adr/adr-032-a-node-validates-a-merge-batch-candidate.md),
-said once per run per reason (`served diff: <reason>; validating from a
-worktree`). A merged item's request runs on the operator's credentials
-today, with no minted token to read the diff on, so it takes the
-worktree (`served diff: no minted token`) until the platform mints one
-for it. An evaluation still runs on the item's own checkout (ADR-027).
+a clone of its own in the batch job (`<job>/candidate-<n>`,
+`<item>-main/main-<n>`; `addDetachedClone`), said once per run per
+reason (`served diff: <reason>; validating from a worktree`). A merged
+item's request runs on the operator's credentials today, with no minted
+token to read the diff on, so it takes that clone (`served diff: no
+minted token`) until the platform mints one for it. An evaluation still runs on the item's own checkout (ADR-027).
 `mesh node status` prints the hit rate (above).
 [ADR-034](docs/adr/adr-034-a-node-validates-from-a-served-diff-with-a-shared-cache.md)
 has the detail.
@@ -2201,8 +2193,8 @@ what the checkout's helper holds by then: the validator's fetches — the
 diff's base and a newer head — take `ItemCred.ForFetch`, the build's
 push `ItemCred.ForPush` (renewed near expiry, re-issued once on a
 refusal), each run under `OnItemToken`, the token by `GIT_CONFIG_COUNT`
-at the command's scope and never in the shared clone's config (ADR-001's
-and ADR-028's). The sandbox image is pulled on the platform's registry
+at the command's scope and never in a clone's config (ADR-001's
+and ADR-039's). The sandbox image is pulled on the platform's registry
 credential (Node image, above).
 
 ### Environment failures
@@ -2314,8 +2306,7 @@ and the second opinion — runs in its pod too, from the image's `codex`
   [Node image](#node-image)). Its `PATH` is
   `/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`
   and it must carry `nft` for the network rules.
-- **Mounts.** Only what lies inside the session's own job and its
-  connection (see
+- **Mounts.** Only what lies inside the session's own job (see
   [Several orgs on one node](#several-orgs-on-one-node)): the item's workspace, read-write at its own
   path, and a fresh temporary HOME under the job's `homes/` (removed
   after the session) holding
@@ -2420,9 +2411,9 @@ A node may serve several orgs (an `owner: enterprise` or `owner:
 person` registration, the orgs `orgs:` lets through), each by its own
 connection (runsheet ADR 066: a tenant and a product; the node's answer
 names each scope's `connectionId`). Their sessions share a machine and
-nothing else: each unit of work has its own job directory, each
-connection its own caches, and every session is held inside its job and
-its connection (ADR-039,
+nothing else: each unit of work has its own job directory — its
+clones, package store and locks — and every session is held inside its
+job (ADR-039,
 [`docs/adr/adr-039-a-session-works-in-its-own-job-directory.md`](docs/adr/adr-039-a-session-works-in-its-own-job-directory.md);
 ADR-035,
 [`docs/adr/adr-035-a-session-reads-mesh-context-on-its-own-bearer.md`](docs/adr/adr-035-a-session-reads-mesh-context-on-its-own-bearer.md)).
@@ -2433,54 +2424,53 @@ item, a goal's plan, a direction's research, a merge batch's candidate,
 a merged item's main validation (keyed `<item id>-main`) — has its own
 `~/.mesh/jobs/<id>/`, with a `job.json` written before anything is
 checked out that names its unit, connection, org, product and its
-item, goal, direction or batch. Every connection has
-`~/.mesh/connections/<connection id>/`, with a `connection.json`
-naming its org and product:
+item, goal, direction or batch; the sweep drops a job whose
+connection is gone. The node keeps nothing per connection:
 
 | path | what |
 |------|------|
-| `jobs/<id>/checkout/` | an item's build checkout, a worktree of its connection's clone |
-| `jobs/<id>/eval/`, `…/rebase/` | the item's evaluation's own clone, its rebase's worktree |
+| `jobs/<id>/checkout/` | an item's build checkout, a clone of its own |
+| `jobs/<id>/eval/`, `…/rebase/` | the item's evaluation's and its rebase's own clones |
 | `jobs/<id>/plan/`, `…/research/` | a plan's or research's full clones, under `repos/<name>` |
-| `jobs/<id>/<what>-<attempt>/` | a batch candidate's (`candidate-<n>`) or main validation's (`main-<n>`) checkout |
+| `jobs/<id>/<what>-<attempt>/` | a batch candidate's (`candidate-<n>`) or main validation's (`main-<n>`) fallback checkout, a clone of its own |
 | `jobs/<id>/<dir>.session` | each session's state, beside its checkout |
 | `jobs/<id>/.scratch/` | host runs' TMPDIRs |
 | `jobs/<id>/kept-sessions/` | kept streams |
 | `jobs/<id>/resume/` | a build's resume record |
 | `jobs/<id>/mcp/` | session token files (`mcp/sessions/<item>-<attempt>/`) and proxy sockets |
 | `jobs/<id>/homes/` | sandboxed sessions' HOMEs |
-| `connections/<id>/repos/<owner>/<name>` | the shared clones — a repo two connections reach is two clones |
-| `connections/<id>/store/{pnpm,npm}` | the package stores |
-| `connections/<id>/.locks/` | the per-repo locks |
+| `jobs/<id>/store/{pnpm,npm}` | the job's package stores |
+| `jobs/<id>/.locks/` | the job's per-repo locks |
 
 Plan and research claim records are in `~/.mesh/jobs/.claims`, planner
 refusals in `~/.mesh/jobs/.plans/refusals.json`. A job is never reopened
-for another connection. A worktree is only ever made from its own
-connection's clone, a session installs against its own connection's
-store, and its kept streams, resume record and token files land in its
-own job. An item, plan or research of an org the node does not serve,
-or of a scope the platform named no connection for, opens no job and is
-refused at its workspace, never given another connection's caches. The
+for another connection. A job clones its own code, a session installs
+against its own job's store, and its kept streams, resume record and
+token files land in its own job. An item, plan or research of an org
+the node does not serve, or of a scope the platform named no connection
+for, opens no job and is refused at its workspace. The node's sandbox
+has no package store of its own. The
 same layout serves one connection or many. A node does not read or
 write `~/.mesh/work`, `~/.mesh/repos`, `~/.mesh/store`, `~/.mesh/resume`,
-`~/.mesh/mcp` or `~/.mesh/orgs/`, and nothing is migrated from them.
+`~/.mesh/mcp`, `~/.mesh/orgs/` or `~/.mesh/connections`, and nothing is
+migrated from them.
 
 **The refusals.** A session's pod is confined to its job's directory
-and its connection's directory: every mount — the checkout, the HOME, a
-worktree's git common dir and admin entry, the package stores, the
-hooks, a detached agent's stream dirs — must resolve, symlinks
-followed, inside one of the two, checked before any pod is made. The
+alone (`sandbox.Confinement`, one root): every mount — the checkout, the
+HOME, the package stores, the hooks, a detached agent's stream dirs —
+must resolve, symlinks followed, inside it, checked before any pod is
+made. The
 first that does not refuses the whole session with `sandbox: <what>
 <path> is outside job <id>'s roots <roots>; refused`
 (`ErrMountOutsideJob`) and nothing starts: another job's checkout, kept
-sessions or MCP token file, another connection's clone or package
-store, or a symlink out of the two. Build, evaluate, rebase,
+sessions, clone, package store or MCP token file, or a symlink out of
+the job. Build, evaluate, rebase,
 merge-batch and main validations, **plans and research** all run in
 their job's pod; a plan whose pod cannot start releases its plan claim
 (no try counted) and a research hands in an empty one, each held off
 the node for ten minutes. With no sandbox (`sandbox: off`, or no
 podman) a node serving two or more orgs runs nothing on the host — the
-node user can read every job and connection — and says why once per run,
+node user can read every job — and says why once per run,
 `sandbox_required: …`: a build is released (no attempt charged), a
 rebase failed back to its builder, a plan's claim released and a
 research handed in empty.
@@ -2504,8 +2494,7 @@ leaves).
 gatewaytest fake and the fake runtime: an enterprise owner's node
 serving acme and beta builds one item of each at once, then plans and
 researches for each, each org by its own connection; every session ran
-in a pod, its mounts are its job's checkout and HOME and its
-connection's clone and stores alone, its kept-sessions root and token
+in a pod, its mounts are its job's checkout, HOME and stores alone, its kept-sessions root and token
 file its job's, a build's token its own mesh session's, and from inside
 each session a mount of the other org's checkout, clone, kept sessions,
 package store or MCP data is refused with no pod made.

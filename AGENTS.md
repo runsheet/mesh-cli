@@ -234,93 +234,50 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   credential — Latchkey's device flow, the rotating refresh grant, and
   the `~/.mesh/token` that holds either shape behind one `TokenSource`
   (latchkey `adr-machine-identity`).
-- `internal/node/`: the loop (`runner`; a workspace that cannot be prepared before the harness starts — `PrepareWithRetry`, `Identify`, `WriteContext` — releases the claim with `workspace: <error>` by `ReleaseOnWorkspace`, never `FailWorkItem` unless the release is refused, and `Declines.HoldFor` keeps the item off the node for `WorkspaceReleaseHold`, ten minutes; ADR-024, a workspace failure releases the claim), the workspace — each new item's
-  `~/.mesh/jobs/<item id>/checkout` a `git worktree add` of one shared
-  clone per repo per connection at
-  `~/.mesh/connections/<connection id>/repos/<owner>/<name>`
-  (`WorkspaceSpec.Repos`, `Git.reposRootFor`, `SharedClonePath`; `syncSharedClone` clones it once
-  — `gh repo clone`, or `git clone` on an issued item token — and
-  fetches it under the per-repo lock, then `addWorktree`; ADR-028,
-  `docs/adr/adr-028-one-clone-per-repo-one-worktree-per-item.md`,
-  following mesh-specs ADR 017), each worktree's credential helper its
-  own `git config --worktree` (`writeHelper`,
-  `extensions.worktreeConfig` on the clone, whose config holds no
-  token), and nothing else of a session's in the shared clone's
-  `.git/config` (ADR-030,
-  `docs/adr/adr-030-a-session-never-writes-the-shared-clones-config.md`):
-  `Identify`'s `user.name`/`user.email`/`core.hooksPath` go
-  `--worktree` too, the item token rides each command's `GIT_CONFIG_*`
-  env (`withGitToken`, `OnItemToken`), origin and
-  `extensions.worktreeConfig` are read first and written once per clone
-  under the repo lock (`sharedOrigin`, `syncSharedClone`,
-  `addWorktree`), a git lock older than a minute is removed — `removed
-  stale git lock <path> (age <d>)` — and the write retried once
+- `internal/node/`: the loop (`runner`; a workspace that cannot be prepared before the harness starts — `PrepareWithRetry`, `Identify`, `WriteContext` — releases the claim with `workspace: <error>` by `ReleaseOnWorkspace`, never `FailWorkItem` unless the release is refused, and `Declines.HoldFor` keeps the item off the node for `WorkspaceReleaseHold`, ten minutes; ADR-024, a workspace failure releases the claim), the workspace — each job's
+  checkout, evaluation and rebase a git clone of its own inside
+  `~/.mesh/jobs/<id>/` (`checkout/`, `eval/`, `rebase/`; ADR-039,
+  Nothing is shared between jobs), cloned by `Git.cloneCommand`: `git
+  clone` over https on the job's token, the token in each command's
+  `GIT_CONFIG_*` env (`withGitToken`, `OnItemToken`) and never on the
+  command line or in a config file (the operator's `gh repo clone` only
+  with no token on the ctx); a complete clone, not a partial one, since
+  an agent in its pod holds no token to fetch a missing blob; a rework
+  reuses its checkout, and plan and research checkouts are clones of
+  their own too (`Git.reposRootFor` is "" for a dir in a job, so
+  `Git.sharedClone` names none); the credential helper and `Identify`'s
+  `user.name`/`user.email`/`core.hooksPath` go in the clone's own
+  `--local` config, a git lock older than a minute is removed —
+  `removed stale git lock <path> (age <d>)` — and the write retried once
   (`ClearStaleGitLock`, `withStaleLockRetry`), and a `config.lock`
   older than five minutes no git process holds is cleared before the
   write (`preclearStaleLock` at the top of `withStaleLockRetry`,
-  `PreclearGitLockAge`, `gitLockHolder` scanning `/proc`,
-  `commonDirConfigLock`; `TestStaleConfigLockIsCleared`), and a wait on the repo
+  `PreclearGitLockAge`, `gitLockHolder` scanning `/proc`;
+  `TestStaleConfigLockIsCleared`), and a wait on the repo
   lock logs `repo lock <key>: waiting on <goal>/<seq> (pid <n>, held
-  <d>)` (`WithLockHolder`, `SetRepoLockLogf`);
-  `TestConcurrentSessionsOnOneRepoE2E` (`-tags e2e`) starts two sessions
-  of one repo at once twenty times over, a rework reusing its worktree and keeping unpushed commits; every
-  worktree locked while its item is live (`lockWorktree`, `git worktree
-  lock --reason 'mesh: item <goal>/<seq> live'`, by `addWorktree` and on
-  reuse by Prepare and Authorize; the clone's `gc.worktreePruneExpire`
-  `never`) and no blanket `git worktree prune` anywhere
-  (`forgetStaleRegistrations`, the quartermaster's
-  `pruneGoneWorktrees`, forget only a gone, unlocked, not-live
-  registration), and `Git.RemoveWorkspace` the sweep's remover —
-  refusing a dir held live on this node (`HoldWorkspace`/
+  <d>)` (`WithLockHolder`, `SetRepoLockLogf`); no shared clone, so no
+  worktree registration to prune: the quartermaster's dead-checkout
+  check just removes a dead checkout (`JobDeadCheckoutCheck`), and
+  `Git.RemoveWorkspace` — the sweep's remover — removes a clone by
+  RemoveAll, refusing a dir held live on this node (`HoldWorkspace`/
   `WorkspaceLive`, `liveworkspaces.go`, held by the Runner, Evaluator
-  and Rebaser), a worktree unlocked and removed by `git worktree remove
-  --force` with only its own `.git/worktrees/<n>` under the repo's
-  lock, a full clone by RemoveAll, a path under the repos root refused,
-  never the shared clone (`TestWorkspaceCleanupNeverRemovesALiveWorktree`)
-  — and a worktree whose `.git` names a `.git/worktrees/<n>` that is
-  gone (`worktreeAdminGone`) rebuilt, never failed or released:
-  `Git.RebuildWorktree` under the repo lock adds a `--no-checkout`
-  worktree of the branch at its recorded head (the clone's
-  `refs/heads/<branch>`, else `origin/<branch>`, else
-  `WorkspaceSpec.Head`) under the lost admin's name, moves its `.git`
-  in, `git worktree repair`, a mixed `git reset` (the files left) and
-  the lock, logged `workspace <dir>: worktree <path> is gone; made
-  again for <branch> at <sha>` (an own-clone checkout, `eval/`,
-  removed for Prepare to clone again; any other stale checkout —
-  `staleWorktree`, its clone gone too — removed by `removeStale`,
-  `workspace <dir>: worktree <gitdir> is gone; made again`, and made
-  as a new one); Prepare and Authorize check
-  first, and `PrepareWithRetry` and the validation run
-  (`rebuildAndRetry` on `IsWorktreeAdminGone`) rebuild once, re-write
-  the token's helper (`ItemCred.Reauthorize`) and retry once
-  (`TestWorkspaceWithMissingWorktreeAdminIsRebuilt`; ADR-028's
-  amendments 2026-10-17 and 2026-10-19);
-  `internal/node/staleworktree_e2e_test.go`'s
-  `TestStaleWorktreeIsMadeAgainE2E` (`-tags e2e`) removes a built
-  item's registration between attempts and prunes while a second
-  item's locked worktree is hidden, and sees the second survive and the
-  rework made again, committing on its pushed head, pushed and
-  evaluated with no `not a git repository` in the log;
-  `scripts/stale-worktrees.sh ~/.mesh/jobs` lists a node's stale
-  checkouts, `<checkout> -> <gitdir>`, nothing when there are none (its
-  default root is still `~/.mesh/work`) — its evaluation's
-  at `<job>/eval` (`EvalWorkspaceSpec`, `evalSpec`, ADR-027),
-  a clone of its own, as are plan and research checkouts
-  (`Git.sharedClone` returns ""), so an
-  evaluation never rewrites the build's helper and git is never asked
-  for a branch another worktree holds — every `gh repo
-  clone` and `git fetch` `Git` runs going through `fetchLocked` under a
+  and Rebaser); the worktree paths (`addWorktree`, `lockWorktree`,
+  `RebuildWorktree`, `forgetStaleRegistrations`) serve only the tests'
+  work-root layout; the evaluation's own clone at `<job>/eval`
+  (`EvalWorkspaceSpec`, `evalSpec`, ADR-027) never rewrites the build's
+  helper; every clone
+  and `git fetch` `Git` runs going through `fetchLocked` under a
   per-repo fetch lock (`repolock.go`: a process-wide mutex keyed by
   `RepoLockKey`, owner/name, and an exclusive flock on
-  `<root>/.locks/<owner>--<name>.lock`, `Git.LockRoot` else the spec's
-  Root (an item's connection dir) else the connection of the item or
-  batch job holding the checkout (`itemConnectionOf`) else the
-  checkout's grandparent (a plan's own dir); released before any checkout,
-  never held across a session or a push; ADR-023, fetches of one repo
-  are serialised on the node) — a main validation takes none of it:
-  it runs in a scratch dir under its job's `.scratch` from the served
-  diff (ADR-034, Main validation below), a worktree only as its
-  fallback, so its job holds nothing of a validation's once it ends but
+  `<root>/.locks/<owner>--<name>.lock`, `Git.lockRoot`: `Git.LockRoot`
+  else the spec's Root else the job the dir is in — each job's own
+  `<job>/.locks`, since no clone is shared — else the checkout's
+  grandparent; released before any checkout, never held across a
+  session or a push; ADR-023, fetches of one repo are serialised on the
+  node) — a main validation takes none of it: it runs in a scratch dir
+  under its job's `.scratch` from the served diff (ADR-034, Main
+  validation below), a clone of its own only as its fallback, so its
+  job holds nothing of a validation's once it ends but
   an empty `.scratch` — and the project's
   context (`workspace.go`: `FetchContext`, `RenderIndex`, ADR-015 — on disk only the instructions of the session's own repos (`ContextOptions.Repos`), keyed by repo and path — a slug several repos share, as every AGENTS.md's `agents` is, read from the session's own checkout (`ContextOptions.Checkouts`), never by slug from the gateway, which answers one repo's body for all — each as `instructions-<owner>-<repo>-<path>.md` (`contextFileName`: the path without `.md`, so one repo's two paths of one slug are two files), and, in INDEX.md, its own goal (`ContextOptions.Goal`: statement, acceptance, items; none for research); no ADR, PRD or TRD body is fetched; INDEX.md is a screen with no document table and no other goal — what is on disk, `mesh_search`/`mesh_document`/`mesh_documents`/`mesh_projects`/`mesh_items` for the rest, the ADRs and TRD binding, one count line; node.yaml `context:` (`ContextConfig`, re-read each tick, `Loop.ContextBudget`) `bytes_max` is the cap, default 80KB, INDEX.md included, an instructions document past it left whole to INDEX.md as binding, to fetch (`Context.Dropped`), and the cap held on what is written — `RenderIndex` never past the room the files leave (the goal's item table cut at a row with the rest to `mesh_items`, then its statement and acceptance; at last a cut), `Context.fit` again in `WriteContext`, which measures what it rendered and writes nothing past the cap, and clears `.mesh/context` first, an empty context included; past the 40KB target (`ContextBytesTarget`) a session logs `ContextWritten.TargetWarning`; `doc_bytes_max` holds each instructions document),
   evaluate, plan and research sessions, the service install (`launchd` /
@@ -558,23 +515,28 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   label, started; `Layout.OpenJob`, `openJob`, refused for an unserved
   org, a scope with no `ConnectionID` or another connection), its
   `checkout/`, `eval/`, `rebase/`, `plan/`, `research/`,
-  `<what>-<attempt>/`, `.scratch/`, `kept-sessions/`, `resume/`, `mcp/`
-  and `homes/`; every connection (`Scope.ConnectionID`, from the node's
-  answer, runsheet ADR 066) has `~/.mesh/connections/<id>/` with its
-  shared clones (`repos/`), package stores (`store/`) and repo locks
-  (`.locks/`). `mesh node start` always sets `Layout` (`nodeLayout`);
+  `<what>-<attempt>/`, `.scratch/`, `kept-sessions/`, `resume/`, `mcp/`,
+  `homes/`, its own package stores (`store/{pnpm,npm}`) and repo locks
+  (`.locks/`). Nothing is shared between jobs (ADR-039, amended
+  2026-10-22): each checkout, evaluation and rebase, and a candidate's
+  or main validation's fallback checkout (`<job>/candidate-<n>`,
+  `<item>-main/main-<n>`, `addDetachedClone`), is a complete clone of
+  its own; the node keeps nothing per connection, and `job.json` names
+  the connection (`Scope.ConnectionID`, from the node's answer, runsheet
+  ADR 066) only so the sweep can drop a job whose connection is gone.
+  `mesh node start` always sets `Layout` (`nodeLayout`);
   `WorkRoot` is the jobs tree, and a nil `Layout` is only the tests'
   work-root layout. Helpers: `itemSpec`/`ItemSpec`/`evalSpec`
-  (`WorkspaceSpec.Job`: `Dir()` is `<job>/checkout`, `Root` the
-  connection's dir for its locks, `Repos` its clones), `planDirFor`,
+  (`WorkspaceSpec.Job`: `Dir()` is `<job>/checkout`, `Root` the job's
+  dir for its locks, `Repos` ""), `planDirFor`,
   `researchDirFor`, `batchDirFor`, `scratchRootFor`, `keptRootFor`,
-  `mcpRootFor`, `orgSandbox` (the connection's stores), `Runner.resumes`
-  (the job's `resume/`); `lockRoot`/`reposRootFor`/`sharedClone` find an
-  item or batch job's connection from its `job.json`
-  (`itemConnectionOf`). A pod is confined to its job and its connection
+  `mcpRootFor`, `jobSandbox` (the job's own stores; the node's sandbox
+  has none), `Runner.resumes` (the job's `resume/`); `lockRoot` is the
+  job's dir, and `reposRootFor` "" for a dir in a job, so `sharedClone`
+  names none. A pod is confined to its job's directory alone
   (`confineTo` → `confinementOf` → `Sandbox.WithConfinement`,
-  `sandbox.Confinement`, `Session.CheckedMounts`: every mount resolved
-  inside one of them, else `*sandbox.MountOutsideJobError`,
+  `sandbox.Confinement` with one root, `Session.CheckedMounts`: every
+  mount resolved inside it, else `*sandbox.MountOutsideJobError`,
   `ErrMountOutsideJob`); a multi-org node with no sandbox runs nothing
   on the host (`HostFallback`, `sandbox_required`). `PlanJobSweep` judges
   each job by its `job.json` (and drops a job whose connection is gone,
@@ -587,7 +549,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `TestTwoOrgsSandboxedNodeNeitherOrgReadsTheOthersFiles` runs two
   orgs' builds, plans and research on one sandboxed node and asserts
   each session's mounts, kept root and token file are its own job's
-  and connection's and every mount of the other org's is refused.
+  and every mount of the other org's is refused.
   There is one run mode (ADR-039, One layout and one mode): one
   `claude -p` session per job; `node start --mode` is deprecated and
   refuses anything but `poll` (`runPollMode`).
@@ -648,7 +610,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   claim whose last evaluation failed (`retryAfterEvaluation`,
   `internal/node/retryturn.go`) resume it — `Job.Resume`, the
   transcript restored by `harness.RestoreTranscript`, same adapter,
-  credential and worktree (`Runner.resumable`) — with one message,
+  credential and checkout (`Runner.resumable`) — with one message,
   `harness.RetryTurnPrompt` (what failed, where, the acceptance); else
   a fresh session gets the build prompt and the same message, logged
   and noted `item <label>: session not resumed (<reason>); fresh session
@@ -1116,10 +1078,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   warn past 20G left; the start-up sweep's roots are every job's
   `.scratch`, `Layout.ScratchRoots`), `dead_checkout`
   (`JobDeadCheckoutCheck`: an item job's checkout, evaluation clone or
-  rebase worktree whose item, read by id, is merged, done,
+  rebase clone whose item, read by id, is merged, done,
   already_done, cancelled, superseded or unknown, idle `DeadCheckoutIdle`
-  (1h) and not `Loop.LiveCheckout`, removed by `Git.RemoveWorkspace`,
-  gone worktrees pruned in each connection's clones under its locks; a platform that cannot answer removes nothing,
+  (1h) and not `Loop.LiveCheckout`, removed by `Git.RemoveWorkspace` and
+  nothing more — no shared clone, so no worktree registration to prune;
+  a platform that cannot answer removes nothing,
   warn) and `version` (`VersionCheck`: warn when the desired version has
   differed an hour or a dev build runs where a release is desired,
   critical when the same one has failed to update for two). Each run's
@@ -1258,12 +1221,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   — a refusal is the ordinary answer, not an error. The session works
   in a fresh checkout of its own, never the item's build checkout
   (ADR-028, A rebase gets its own worktree): `RebaseWorkspaceSpec`'s
-  `<job>/rebase`, made by `Git.AddRebaseWorktree` — a detached
-  worktree of the shared clone at `origin/<branch>`, by
-  `addDetachedWorktree` as a batch candidate's, a stale dir there
+  `<job>/rebase`, made by `Git.AddRebaseWorktree` — a clone of its own
+  checked out detached at `origin/<branch>`, by `addDetachedWorktree` →
+  `addDetachedClone` as a batch candidate's, a stale dir there
   removed first, nothing run in the item's checkout, deleted or
   dangling — on the item's token before `NewItemCredAt` `Authorize`s it
-  there; a worktree that cannot be made is a `*WorkspaceError` released
+  there; a checkout that cannot be made is a `*WorkspaceError` released
   as infrastructure (`rebaseRun.releaseInfrastructure`, held in
   `Declines`, never `FailWorkItemRebase`; a refused release leaves the
   claim to lapse; ADR-024), and the checkout is removed after
@@ -1281,7 +1244,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `Declared()` when paths and generate are set, `Covers(path)` by the
   suites' globs; paths without generate refused naming `generated`), and
   `Rebaser.tryRegenerate` (`regenerate_rebase.go`), run after the
-  worktree and its token and before `FetchContext`, the pod, the
+  checkout and its token and before `FetchContext`, the pod, the
   harness and `Credentials.Open`: the base fetched (`Git.FetchBase`),
   `regenerateRebase` (`regenerate.go`) through the validation's runner
   (`validator.start`: host, or a pod of the org's sandbox) rebases onto
@@ -1295,7 +1258,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `FinishWorkItemRebase(item, head, paths, nil)` — no account, session
   or cost; `RegenNotGenerated`, `RegenCheckFailed`, `RegenClean`, a
   load, fetch or push error logged and noted `regenerate: <why>; a
-  rebase session instead`, the worktree reset to `origin/<branch>` and
+  rebase session instead`, the checkout reset to `origin/<branch>` and
   cleaned, and the session below run unchanged
   (`regenerate_e2e_test.go`'s `TestGeneratedConflictIsRegenerated`,
   `TestNonGeneratedConflictFallsThrough`, `-tags e2e`). The node
@@ -1696,7 +1659,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   The validator's fetches — the diff's base (`changedPaths`) and a newer
   head (`fetchHead`) — run on `ItemCred.ForFetch`'s token and the build's
   push on `ForPush`'s, each by `OnItemToken` (`GIT_CONFIG_COUNT` at the
-  command's scope, never the shared clone's config), whatever the
+  command's scope, never a clone's config), whatever the
   checkout's helper holds by then (ADR-001's amendment). **An
   environment failure names its kind** (`internal/validate/envkind.go`,
   `docs/adr/adr-030-an-environment-failure-names-its-kind.md`): the
@@ -1779,10 +1742,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   under the `evaluate` cap, its run a `mainJob` (`startMainJob`,
   `runMainJob`) counted in `Running()`, `sessions()` and
   `runningOf(evaluate)`; a refused claim is ordinary and silent. A batch
-  runs `Loop.ValidateBatch` = `Runner.ValidateCandidate`: the candidate a
-  detached worktree of the shared clone at
+  runs `Loop.ValidateBatch` = `Runner.ValidateCandidate`: the candidate's
+  fallback checkout a clone of its own in its batch job, checked out
+  detached at
   `~/.mesh/jobs/<mergeBatchId>/candidate-<attempt>` (`batchDirFor`,
-  `Git.AddCandidateWorktree`; a fetched head other than the batch's sha
+  `Git.AddCandidateWorktree` → `addDetachedClone`; a fetched head other than the batch's sha
   `*CandidateHeadError`, nothing run), the suites the diff from
   `origin/<defaultBranch>` selects plus the `always` ones run in an
   `OpenSessionPod` pod of kind `validate` with its services
@@ -1790,7 +1754,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `Loop.ValidateMain` = `Runner.ValidateMainRequest`: the merge commit at
   `~/.mesh/jobs/<workItemId>-main/main-<attempt>` (`mainJobID`, its own
   job beside the item's, which the sweep may have removed;
-  `Git.AddCommitWorktree`; not on the default branch
+  `Git.AddCommitWorktree` → `addDetachedClone`, a clone of its own; not
+  on the default branch
   `*CommitNotOnBranchError`), suites by the merge's diff from its first
   parent (`validationTarget.diffFrom`), attested as the item's, no
   `mergeBatchId`. A batch's candidate is fetched on the batch token
@@ -1805,7 +1770,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `checkBatchToken` refuses, empty, malformed (`tokenShape`) or for
   another repo — fetches nothing and fails the validation `github token for merge batch <n>: …` (ADR-032's
   amendment 2026-10-14). A request runs on the operator's credentials.
-  The worktree is removed on every path. **Both are first validated
+  The checkout is removed on every path. **Both are first validated
   from the served diff** (`internal/node/serveddiff.go`,
   `checkoutServed`, ADR-034,
   `docs/adr/adr-034-a-node-validates-from-a-served-diff-with-a-shared-cache.md`,
@@ -1817,13 +1782,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   merge base materialised from the node's one shared tree cache
   (`internal/node/sharedcache.go`, `SharedCache`: `SharedCacheRoot()`,
   `<user cache dir>/mesh/cache`, `blobs/`, `trees/`, `commits/` by sha,
-  a miss filled once from the repo's shared clone else the `BlobSource`,
+  a miss filled once from the validating job's own clone (`WithClone`,
+  `jobCheckoutOf`; never another job's) else the `BlobSource`,
   `GitDataSource`; `Runner.ServedDiff`, `NewServedDiffCache`) into
   `MakeScratch(ScratchRoot(WorkRoot), "served", <subject>)`, the diff
   applied through the cache (`ApplyDiff`) and checked against the
   commit's tree (`checkMaterialized`) — logged `<prefix>: materialised
   <sha7> from <base7> and <n> changed file(s) of the served diff` — no
-  worktree, no fetch, no repo lock; the suites chosen by the compare's
+  clone, no fetch, no repo lock; the suites chosen by the compare's
   paths, the scratch removed on every path (`validator.removeScratch`,
   after a sandboxed run's pod). The cache's hits and misses
   (`CacheCounts`) persist to `~/.mesh/node.cache`
@@ -1836,7 +1802,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   -cache`, still over the finding `cache over cap: <size> of <cap>`,
   once until back under. A diff past the cap, a truncated tree, no
   minted token (a request today), no cache, no parent or a tree
-  mismatch takes the worktree above, `<prefix>: served diff: <reason>;
+  mismatch takes the clone above, `<prefix>: served diff: <reason>;
   validating from a worktree (said once per run)` (`servedFallback`,
   `noteServedFallback`). A sandboxed validation's pod mounts
   `sandbox.ValidationCache` (`RunSpec.Cache`): its scratch rw (TMPDIR,
@@ -1964,18 +1930,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `harness.ClaudeCode` runs `claude` in the session's own rootless
   Podman pod (`Sandbox.Open` → `Session.Run` → `Close`) from the node
   image: mounts only the workspace and a temporary HOME (the MCP config
-  file, `CLAUDE_CONFIG_DIR`, `GH_CONFIG_DIR`, `.gitconfig`) — and, for
-  a worktree, its shared clone's git dir read-write at its own path
-  (`sandbox.GitCommonDir`, "" for a full clone) with its
-  `.git/worktrees` read-only over it and only the session's own entry
-  (`sandbox.GitDir`) read-write over that, so a `git worktree prune` in
-  the pod, where every sibling's work tree is absent, deletes no live
-  entry (`worktreeMounts`, deepest mount wins in `agentArgs`; ADR-034,
-  `docs/adr/adr-034-a-session-cannot-prune-the-shared-clones-worktrees.md`,
-  `TestPodCannotPruneWorktrees`; pruning stays the node's, on the host
-  under the repo lock), and its connection's
-  pnpm store and npm cache, `~/.mesh/connections/<id>/store/{pnpm,npm}`
-  (`orgSandbox`, `PackageStores`, `sandbox.WithStores`, `sandbox.Stores`: `npm_config_store_dir`,
+  file, `CLAUDE_CONFIG_DIR`, `GH_CONFIG_DIR`, `.gitconfig`) — a job's
+  workspace a complete clone of its own, so no git dir outside it is
+  mounted (`sandbox.GitCommonDir` "" for a full clone; `worktreeMounts`
+  serves only the tests' work-root worktrees) — and its job's own
+  pnpm store and npm cache, `~/.mesh/jobs/<id>/store/{pnpm,npm}`
+  (`jobSandbox`, `PackageStores`, `sandbox.WithStores`, `sandbox.Stores`;
+  the node's sandbox has no store of its own: `npm_config_store_dir`,
   `pnpm_config_store_dir`, `PNPM_HOME`, `npm_config_cache` in
   `BaseEnv`; separate mounts, so pnpm copies rather than hardlinks in
   a pod, EXDEV, ADR-028) — an env
