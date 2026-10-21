@@ -205,4 +205,3 @@ func equalWindows(a, b []gateway.WindowTarget) bool {
 	}
 	return true
 }
-

@@ -81,11 +81,13 @@ type jobKindKey struct{}
 // WithJobKind marks ctx's claim-time reads as the job kind's (runsheet
 // ADR 061 §4): an item's repository token, accounts and tools are the
 // session the kind names — a build's write token, an evaluation's read
-// one.
+// one. It starts a session start's exchange: the reads under ctx share
+// one jobAccess (JobAccess).
 func WithJobKind(ctx context.Context, kind string) context.Context {
 	if kind == "" {
 		return ctx
 	}
+	ctx = context.WithValue(ctx, exchangesKey{}, &exchanges{})
 	return context.WithValue(ctx, jobKindKey{}, kind)
 }
 

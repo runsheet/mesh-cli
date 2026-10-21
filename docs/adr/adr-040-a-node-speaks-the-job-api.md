@@ -54,10 +54,11 @@ evaluation's or rebase's as theirs), a plan's and a research's tokens
 per repository, a candidate's batch token, and a main validation's read
 token of the merged item's repository (`MainValidationToken`), which it
 fetches on instead of the operator's login. An access entry the platform
-did not serve is the read's refusal, naming why. The client holds a
-whole answer (every entry served) for 30 seconds, never into a
-repository token's last five minutes, and drops it on the subject's
-claim or finish, so a session's start asks the exchange once. A person's `mesh join`,
+did not serve is the read's refusal, naming why. A session's start
+(its context, `gateway.WithJobKind`) holds a whole answer (every entry
+served) for up to 30 seconds, never into a repository token's last five
+minutes, so the start asks the exchange once; the next start asks
+again. A person's `mesh join`,
 which holds no job, still asks its item token itself.
 
 ### A validation finishes once

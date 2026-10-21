@@ -53,12 +53,6 @@ type Client struct {
 	Source  TokenSource
 	HTTP    *http.Client
 
-	// access holds each job's last whole exchange (JobAccess) for
-	// jobAccessReuse, so a session's claim-time reads — its repository
-	// token, its accounts, its tools — are one jobAccess.
-	accessMu sync.Mutex
-	access   map[string]heldAccess
-
 	// itemsWithoutModel is set once the gateway has refused the
 	// WorkItemIndex fields items-carry-a-model added (an older
 	// platform): every later item read asks for workItemFields alone.

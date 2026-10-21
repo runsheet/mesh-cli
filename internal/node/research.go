@@ -147,6 +147,7 @@ func ResearchDir(root, projectSlug, directionSlug string) string {
 func (d *Director) Research(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope) error {
 	// the node a finish is handed back by (finishJob, runsheet ADR 061)
 	ctx = gateway.WithNodeID(ctx, scope.NodeID)
+	ctx = gateway.WithJobKind(ctx, "runsheet/research")
 	if len(project.RepoIDs) == 0 {
 		return fmt.Errorf("project %s has no repos enrolled; nothing to research", project.Slug)
 	}

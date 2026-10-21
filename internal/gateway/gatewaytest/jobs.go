@@ -13,8 +13,8 @@ import (
 // raised until a node claims it as Kind, answered by its finish.
 type ThreadTurn struct {
 	ID, Product, ThreadKey, OrgID, ProjectID, Role, Kind, Body, Ask string
-	Status                                                         string
-	NodeID                                                         string
+	Status                                                          string
+	NodeID                                                          string
 	// Answer and Proposal are the finish's.
 	Answer, Proposal string
 	// Credentials are the model accounts jobAccess serves the turn, as

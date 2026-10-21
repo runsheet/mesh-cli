@@ -13,7 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
+	"sync"
 	"time"
 )
 
@@ -119,7 +119,6 @@ func (in ClaimJobInput) asMap() map[string]any {
 // holds it, the subject is not ready) is a *Error the old claim's
 // refusal is.
 func (c *Client) ClaimJob(ctx context.Context, in ClaimJobInput) (*JobBrief, error) {
-	c.forgetAccess(in.Subject)
 	var out struct {
 		Answer struct {
 			Status string    `json:"status"`
@@ -245,9 +244,9 @@ func (a *JobAccess) RepoToken() (*GitHubToken, error) {
 	return &ts[0], nil
 }
 
-// jobAccessReuse is how long a job's exchange answers its claim-time
-// reads before the next is asked: long enough for one session's start,
-// never past a repository token's last five minutes.
+// jobAccessReuse is how long a session start's exchange answers its
+// other claim-time reads: never past a repository token's last five
+// minutes.
 const jobAccessReuse = 30 * time.Second
 
 type heldAccess struct {
@@ -255,16 +254,30 @@ type heldAccess struct {
 	until  time.Time
 }
 
+// exchanges holds one session start's whole exchanges (WithJobKind), so
+// its claim-time reads — its repository token, its accounts, its tools
+// — are one jobAccess. The next start, its own context, asks again.
+type exchanges struct {
+	mu   sync.Mutex
+	held map[string]heldAccess
+}
+
+type exchangesKey struct{}
+
 // JobAccess is the one exchange for the job of kind on subject, the
 // harness it runs with: what the job's access names, to the node
-// holding its claim. A whole answer (every entry served) is reused for
-// the session's other claim-time reads for jobAccessReuse.
+// holding its claim. Within one session start (a context WithJobKind
+// marked) a whole answer, every entry served, is reused.
 func (c *Client) JobAccess(ctx context.Context, kind string, subject JobSubject, harness string) (*JobAccess, error) {
+	box, _ := ctx.Value(exchangesKey{}).(*exchanges)
+	if box == nil {
+		return c.jobAccess(ctx, kind, subject, harness)
+	}
 	key := nodeIDFrom(ctx) + " " + kind + " " + subject.Type + " " + subject.ID + " " + harness
 	now := time.Now()
-	c.accessMu.Lock()
-	held, ok := c.access[key]
-	c.accessMu.Unlock()
+	box.mu.Lock()
+	held, ok := box.held[key]
+	box.mu.Unlock()
 	if ok && now.Before(held.until) {
 		return held.answer, nil
 	}
@@ -280,31 +293,13 @@ func (c *Client) JobAccess(ctx context.Context, kind string, subject JobSubject,
 			}
 		}
 	}
-	c.accessMu.Lock()
-	if c.access == nil {
-		c.access = map[string]heldAccess{}
+	box.mu.Lock()
+	if box.held == nil {
+		box.held = map[string]heldAccess{}
 	}
-	for k, h := range c.access {
-		if !now.Before(h.until) {
-			delete(c.access, k)
-		}
-	}
-	c.access[key] = heldAccess{answer: acc, until: until}
-	c.accessMu.Unlock()
+	box.held[key] = heldAccess{answer: acc, until: until}
+	box.mu.Unlock()
 	return acc, nil
-}
-
-// forgetAccess drops subject's held exchanges: a claim or a finish
-// starts or ends the session they answered.
-func (c *Client) forgetAccess(subject JobSubject) {
-	suffix := " " + subject.Type + " " + subject.ID + " "
-	c.accessMu.Lock()
-	defer c.accessMu.Unlock()
-	for k := range c.access {
-		if strings.Contains(k, suffix) {
-			delete(c.access, k)
-		}
-	}
 }
 
 func (c *Client) jobAccess(ctx context.Context, kind string, subject JobSubject, harness string) (*JobAccess, error) {
@@ -333,7 +328,6 @@ func (c *Client) jobAccess(ctx context.Context, kind string, subject JobSubject,
 // finish takes less the subject and the node. It answers the platform's
 // receipt.
 func (c *Client) FinishJob(ctx context.Context, nodeID, kind string, subject JobSubject, finish map[string]any) (map[string]any, error) {
-	c.forgetAccess(subject)
 	in := map[string]any{"nodeId": nodeID, "subject": map[string]any{"type": subject.Type, "id": subject.ID}, "finish": finish}
 	if kind != "" {
 		in["kind"] = kind

@@ -175,6 +175,7 @@ func (p *Planner) Plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	ctx = actorContext(ctx, p.Cfg, gateway.RolePlanner)
 	// the node a finish is handed back by (finishJob, runsheet ADR 061)
 	ctx = gateway.WithNodeID(ctx, scope.NodeID)
+	ctx = gateway.WithJobKind(ctx, "runsheet/plan")
 	p.mu.Lock()
 	if p.attempts == nil {
 		p.attempts = map[string]int{}
