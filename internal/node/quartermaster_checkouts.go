@@ -64,25 +64,12 @@ func DeadCheckoutCheck(gw Gateway, git *Git, root string, live func(dir string) 
 
 // JobDeadCheckoutCheck is DeadCheckoutCheck over the node's jobs
 // (ADR-039): every item job's checkout, evaluation clone and rebase
-// worktree, its item's status read by id, and every connection's shared
-// clones pruned under that connection's locks.
+// clone, its item's status read by id.
 func JobDeadCheckoutCheck(gw Gateway, git *Git, l *Layout, live func(dir string) bool) Check {
 	return func(ctx context.Context, now time.Time) []Finding {
-		prune := func(ctx context.Context) (int, []string) {
-			var n int
-			var notes []string
-			conns, _ := os.ReadDir(l.ConnectionsDir())
-			for _, e := range conns {
-				c, err := l.Connection(e.Name())
-				if err != nil || !e.IsDir() {
-					continue
-				}
-				k, ns := pruneGoneWorktrees(ctx, git, c.Repos, c.Dir)
-				n += k
-				notes = append(notes, ns...)
-			}
-			return n, notes
-		}
+		// every job's checkout is a clone of its own: no shared clone
+		// holds a registration to prune
+		prune := func(context.Context) (int, []string) { return 0, nil }
 		return []Finding{deadCheckouts(ctx, gw, git, l.JobsDir(), jobCheckouts(l), prune, live, now)}
 	}
 }

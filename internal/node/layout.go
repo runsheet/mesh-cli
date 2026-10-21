@@ -4,11 +4,12 @@ package node
 // superseding ADR-034's per-org roots). Every unit of work a node holds
 // — an item, a goal's plan, a research direction, a merge batch — has
 // its own job directory, ~/.mesh/jobs/<job-id>/, named by a job.json
-// that says whose it is; every connection (runsheet ADR 066: a tenant
-// and a product) has its own caches, ~/.mesh/connections/<connection-id>/,
-// the shared clones and package stores its jobs' checkouts and installs
-// are made from. No path carries an org's or a product's name; every
-// key is a uuid the platform gave.
+// that says whose it is (its connection, runsheet ADR 066: a tenant and
+// a product): its clones, its package store, its scratch, its kept
+// streams. Nothing in it is shared with another job, so no job can read
+// or poison another's; what jobs share is the node's content-addressed
+// cache, which the node fills and no pod mounts. No path carries an
+// org's or a product's name; every key is an id the platform gave.
 
 import (
 	"encoding/json"
@@ -24,14 +25,11 @@ import (
 	"projectmesh.io/mesh-cli/internal/harness"
 )
 
-// JobsDirName and ConnectionsDirName are the two trees under ~/.mesh.
 const (
-	JobsDirName        = "jobs"
-	ConnectionsDirName = "connections"
+	// JobsDirName is the jobs tree under ~/.mesh.
+	JobsDirName = "jobs"
 	// JobFile names a job directory's owner.
 	JobFile = "job.json"
-	// ConnectionFile names a connection directory's connection.
-	ConnectionFile = "connection.json"
 )
 
 // Units of work a job directory holds.
@@ -42,7 +40,7 @@ const (
 	JobBatch    = "batch"
 )
 
-// Layout is the node's two trees under Dir (~/.mesh).
+// Layout is the node's jobs tree under Dir (~/.mesh).
 type Layout struct {
 	Dir string
 }
@@ -59,10 +57,7 @@ func DefaultLayout() (*Layout, error) {
 // JobsDir is the parent of every job directory.
 func (l *Layout) JobsDir() string { return filepath.Join(l.Dir, JobsDirName) }
 
-// ConnectionsDir is the parent of every connection's caches.
-func (l *Layout) ConnectionsDir() string { return filepath.Join(l.Dir, ConnectionsDirName) }
-
-// ValidateKey refuses a job or connection key that is not one path
+// ValidateKey refuses a job key that is not one path
 // segment: empty, "." or "..", or carrying a path separator, a NUL or
 // surrounding space — any of which would put its directory outside its
 // tree or on another's.
@@ -96,6 +91,8 @@ type JobDirs struct {
 	MCP string
 	// Homes is where a sandboxed session's HOME is made.
 	Homes string
+	// Store is the job's own pnpm store and npm cache (PackageStores).
+	Store string
 }
 
 // Job are the directories of the job keyed id.
@@ -112,17 +109,18 @@ func (l *Layout) Job(id string) (JobDirs, error) {
 		Resume:  filepath.Join(dir, "resume"),
 		MCP:     filepath.Join(dir, "mcp"),
 		Homes:   filepath.Join(dir, "homes"),
+		Store:   filepath.Join(dir, "store"),
 	}, nil
 }
 
-// Checkout is an item's build checkout, which every build attempt, its
-// validation and a resume share.
+// Checkout is an item's build checkout, a clone of its own, which every
+// build attempt, its validation and a resume share.
 func (j JobDirs) Checkout() string { return filepath.Join(j.Dir, "checkout") }
 
 // Eval is an item's evaluation's own clone.
 func (j JobDirs) Eval() string { return filepath.Join(j.Dir, "eval") }
 
-// Rebase is an item's rebase's own worktree.
+// Rebase is an item's rebase's own clone.
 func (j JobDirs) Rebase() string { return filepath.Join(j.Dir, "rebase") }
 
 // Plan is a goal's planner's directory.
@@ -137,41 +135,19 @@ func (j JobDirs) Attempt(what string, attempt int) string {
 	return filepath.Join(j.Dir, fmt.Sprintf("%s-%d", what, attempt))
 }
 
-// ConnectionDirs are one connection's caches.
-type ConnectionDirs struct {
-	// ID is the connection's id (runsheet's ids.NodeConnectionID).
-	ID string
-	// Dir is ~/.mesh/connections/<id>; its .locks hold the repo locks.
-	Dir string
-	// Repos holds the shared clones, <repos>/<owner>/<name>.
-	Repos string
-	// Store is the pnpm store and npm cache (PackageStores).
-	Store string
-}
-
-// Connection are the caches of the connection keyed id.
-func (l *Layout) Connection(id string) (ConnectionDirs, error) {
-	if err := ValidateKey(id); err != nil {
-		return ConnectionDirs{}, err
-	}
-	dir := filepath.Join(l.ConnectionsDir(), id)
-	return ConnectionDirs{ID: id, Dir: dir, Repos: filepath.Join(dir, "repos"), Store: filepath.Join(dir, "store")}, nil
-}
-
-// ConnectionOf are the caches of the served org whose id is orgID: its
-// scope's connection. An org the node does not serve, or a scope the
-// platform named no connection for, is refused — never another
-// connection's caches in its place.
-func (l *Layout) ConnectionOf(scopes Scopes, orgID string) (ConnectionDirs, Scope, error) {
+// connectionOf is the scope of the served org whose id is orgID, which
+// names its connection. An org the node does not serve, or a scope the
+// platform named no connection for, is refused: a job is opened only
+// for a connection the node has.
+func connectionOf(scopes Scopes, orgID string) (Scope, error) {
 	sc, ok := scopes.ByOrg(orgID)
 	if !ok {
-		return ConnectionDirs{}, Scope{}, fmt.Errorf("layout: org id %q is not served by this node", orgID)
+		return Scope{}, fmt.Errorf("layout: org id %q is not served by this node", orgID)
 	}
 	if sc.ConnectionID == "" {
-		return ConnectionDirs{}, sc, fmt.Errorf("layout: org %s has no connection on this node's answer", sc.Name())
+		return sc, fmt.Errorf("layout: org %s has no connection on this node's answer", sc.Name())
 	}
-	c, err := l.Connection(sc.ConnectionID)
-	return c, sc, err
+	return sc, nil
 }
 
 // JobMeta is a job directory's job.json: whose the job is.
@@ -208,56 +184,29 @@ func ReadJob(dir string) (JobMeta, error) {
 	return m, nil
 }
 
-// OpenJob makes the job directory of m (keyed m.ID) and its job.json,
-// and its connection's caches and connection.json, before anything is
-// checked out in it. A job.json already there is kept as it is — the
-// job is the same work, opened again — unless it names another
-// connection, which is refused: a job's files never move between
-// connections.
-func (l *Layout) OpenJob(m JobMeta) (JobDirs, ConnectionDirs, error) {
+// OpenJob makes the job directory of m (keyed m.ID) and its job.json
+// before anything is checked out in it. A job.json already there is
+// kept as it is — the job is the same work, opened again — unless it
+// names another connection, which is refused: a job's files never move
+// between connections.
+func (l *Layout) OpenJob(m JobMeta) (JobDirs, error) {
 	j, err := l.Job(m.ID)
 	if err != nil {
-		return JobDirs{}, ConnectionDirs{}, err
-	}
-	c, err := l.Connection(m.ConnectionID)
-	if err != nil {
-		return JobDirs{}, ConnectionDirs{}, err
-	}
-	if err := writeConnection(c, m); err != nil {
-		return JobDirs{}, ConnectionDirs{}, err
+		return JobDirs{}, err
 	}
 	if old, err := ReadJob(j.Dir); err == nil {
 		if old.ConnectionID != m.ConnectionID {
-			return JobDirs{}, ConnectionDirs{}, fmt.Errorf("layout: job %s is connection %s's, not %s", m.ID, old.ConnectionID, m.ConnectionID)
+			return JobDirs{}, fmt.Errorf("layout: job %s is connection %s's, not %s", m.ID, old.ConnectionID, m.ConnectionID)
 		}
-		return j, c, nil
+		return j, nil
 	}
 	if err := os.MkdirAll(j.Dir, 0o755); err != nil {
-		return JobDirs{}, ConnectionDirs{}, err
+		return JobDirs{}, err
 	}
 	if m.Started.IsZero() {
 		m.Started = time.Now().UTC()
 	}
-	return j, c, writeJSONAtomic(filepath.Join(j.Dir, JobFile), m)
-}
-
-// connectionMeta is a connection directory's connection.json.
-type connectionMeta struct {
-	ID      string `json:"id"`
-	OrgID   string `json:"orgId"`
-	Product string `json:"product,omitempty"`
-}
-
-// writeConnection makes c's directory and its connection.json, once.
-func writeConnection(c ConnectionDirs, m JobMeta) error {
-	path := filepath.Join(c.Dir, ConnectionFile)
-	if _, err := os.Stat(path); err == nil {
-		return nil
-	}
-	if err := os.MkdirAll(c.Dir, 0o755); err != nil {
-		return err
-	}
-	return writeJSONAtomic(path, connectionMeta{ID: c.ID, OrgID: m.OrgID, Product: m.Product})
+	return j, writeJSONAtomic(filepath.Join(j.Dir, JobFile), m)
 }
 
 // writeJSONAtomic writes v to path through a temporary file renamed over
@@ -335,19 +284,6 @@ func jobOf(dir string) (string, JobMeta, bool) {
 	}
 }
 
-// connectionOfJobDir are the caches of the connection whose job holds
-// dir: ~/.mesh/connections/<id> beside the jobs tree, read from the
-// job's job.json. Not in a job, false.
-func connectionOfJobDir(dir string) (ConnectionDirs, bool) {
-	job, m, ok := jobOf(dir)
-	if !ok || ValidateKey(m.ConnectionID) != nil {
-		return ConnectionDirs{}, false
-	}
-	l := Layout{Dir: filepath.Dir(filepath.Dir(job))}
-	c, err := l.Connection(m.ConnectionID)
-	return c, err == nil
-}
-
 // SweepKeptSessions runs harness.SweepKeptSessions over every job's
 // kept sessions, each job's own only. It goes on past a job it cannot
 // read and returns the errors joined.
@@ -371,18 +307,6 @@ func (l *Layout) SweepKeptSessions(now time.Time) error {
 		}
 	}
 	return errors.Join(errs...)
-}
-
-// itemConnectionOf are the caches of the connection whose item or batch
-// job holds dir: where its checkouts' shared clones and repo locks are.
-// A plan's or research's full clones keep their own locks; not in such
-// a job, false.
-func itemConnectionOf(dir string) (ConnectionDirs, bool) {
-	_, m, ok := jobOf(dir)
-	if !ok || (m.Unit != JobItem && m.Unit != JobBatch) {
-		return ConnectionDirs{}, false
-	}
-	return connectionOfJobDir(dir)
 }
 
 // ScratchRoots are every job's scratch root, for the start-up scratch

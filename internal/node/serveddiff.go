@@ -150,13 +150,10 @@ func (r *Runner) checkoutServed(ctx context.Context, t validationTarget, c mainC
 		return "", nil, err
 	}
 	gctx := gitdata.WithToken(ctx, tok)
-	// the cache fills from this connection's clones alone (ADR-039)
+	// the cache fills from this job's own clone alone, else from GitHub
+	// (ADR-039: no clone is shared between jobs)
 	if r.Layout != nil {
-		if conn, _, err := r.Layout.ConnectionOf(r.Scopes, t.item.OrgID); err == nil {
-			gctx = WithCloneRoot(gctx, conn.Repos)
-		} else {
-			gctx = WithCloneRoot(gctx, "")
-		}
+		gctx = WithClone(gctx, jobCheckoutOf(t.dir))
 	}
 	gd := r.GitData
 	if c.atHead {

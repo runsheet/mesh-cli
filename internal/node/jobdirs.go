@@ -2,6 +2,7 @@ package node
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
@@ -10,19 +11,19 @@ import (
 
 // The sessions' paths on a node with a Layout (ADR-039): each helper
 // answers a session of one job, by the job's key — the item's, goal's,
-// direction's or batch's id — and the org's connection. A nil Layout is
-// a work root's paths (workRoot), which only the tests lay out.
+// direction's or batch's id. A nil Layout is a work root's paths
+// (workRoot), which only the tests lay out.
 
 // openJob opens the job keyed id for the served org orgID (Layout.OpenJob):
-// its directory and job.json, and the org's connection's caches. An org
-// the node does not serve, or one the platform named no connection for,
-// is refused.
-func openJob(l *Layout, scopes Scopes, orgID string, m JobMeta) (JobDirs, ConnectionDirs, error) {
-	c, sc, err := l.ConnectionOf(scopes, orgID)
+// its directory and job.json naming the org's connection. An org the
+// node does not serve, or one the platform named no connection for, is
+// refused.
+func openJob(l *Layout, scopes Scopes, orgID string, m JobMeta) (JobDirs, error) {
+	sc, err := connectionOf(scopes, orgID)
 	if err != nil {
-		return JobDirs{}, ConnectionDirs{}, err
+		return JobDirs{}, err
 	}
-	m.ConnectionID, m.OrgID, m.Product = c.ID, orgID, sc.Product
+	m.ConnectionID, m.OrgID, m.Product = sc.ConnectionID, orgID, sc.Product
 	return l.OpenJob(m)
 }
 
@@ -32,17 +33,17 @@ func itemJobMeta(item gateway.WorkItem, label string) JobMeta {
 }
 
 // itemSpec puts spec in item's job (ADR-039): its checkout
-// <job>/checkout, a worktree of the item's connection's clone, the
-// connection's repo locks. Without a Layout, spec as it is.
+// <job>/checkout, a clone of its own under the job's repo locks. Without
+// a Layout, spec as it is.
 func itemSpec(l *Layout, scopes Scopes, item gateway.WorkItem, label string, spec WorkspaceSpec) (WorkspaceSpec, error) {
 	if l == nil {
 		return spec, nil
 	}
-	j, c, err := openJob(l, scopes, item.OrgID, itemJobMeta(item, label))
+	j, err := openJob(l, scopes, item.OrgID, itemJobMeta(item, label))
 	if err != nil {
 		return spec, err
 	}
-	spec.Job, spec.Root, spec.Repos = j.Dir, c.Dir, c.Repos
+	spec.Job, spec.Path, spec.Root, spec.Repos = j.Dir, j.Checkout(), j.Dir, ""
 	return spec, nil
 }
 
@@ -91,44 +92,37 @@ func mcpRootFor(l *Layout, id string) string {
 	return ""
 }
 
-// orgSandbox is the sandbox a session of orgID opens its pod on: sb on
-// that org's connection's own package store (PackageStores,
-// sandbox.WithStores), so its pod mounts and its env names only its
-// connection's pnpm store and npm cache. An org the node does not serve
-// is refused, never given another's store. A nil sb is nil; no Layout
-// is sb itself.
-func orgSandbox(sb *sandbox.Sandbox, l *Layout, scopes Scopes, orgID string) (*sandbox.Sandbox, error) {
-	if sb == nil || l == nil {
-		return sb, nil
+// jobSandbox is the sandbox a session working in dir opens its pod on:
+// sb on the job's own package store (PackageStores, sandbox.WithStores),
+// so its pod mounts and its env names only its job's pnpm store and npm
+// cache, which no other job writes. A dir in no job (the tests' work
+// root) is sb itself; a nil sb is nil.
+func jobSandbox(sb *sandbox.Sandbox, dir string) *sandbox.Sandbox {
+	if sb == nil {
+		return nil
 	}
-	c, _, err := l.ConnectionOf(scopes, orgID)
-	if err != nil {
-		return nil, err
+	job, _, ok := jobOf(dir)
+	if !ok {
+		return sb
 	}
-	return sb.WithStores(PackageStores(c.Store)), nil
+	return sb.WithStores(PackageStores(filepath.Join(job, "store")))
 }
 
 // confinementOf is what a session working in dir is confined to: its
-// job's directory and its connection's caches, when dir is in a job
-// (job.json names the connection), else nothing.
+// job's directory, when dir is in a job, else nothing.
 func confinementOf(dir string) sandbox.Confinement {
 	job, m, ok := jobOf(dir)
 	if !ok {
 		return sandbox.Confinement{}
 	}
-	c, ok := connectionOfJobDir(dir)
-	if !ok {
-		// a job naming no connection mounts its own directory alone
-		return sandbox.Confinement{Job: m.ID, Roots: []string{job}, Homes: filepath.Join(job, "homes")}
-	}
-	return sandbox.Confinement{Job: m.ID, Roots: []string{job, c.Dir}, Homes: filepath.Join(job, "homes")}
+	return sandbox.Confinement{Job: m.ID, Roots: []string{job}, Homes: filepath.Join(job, "homes")}
 }
 
 // confineTo is sb with its sessions confined to the job that holds dir
-// (confinementOf, Sandbox.WithConfinement); a dir in no job, or a nil
-// sb, is sb.
+// (confinementOf, Sandbox.WithConfinement) on the job's own store
+// (jobSandbox); a dir in no job, or a nil sb, is sb.
 func confineTo(sb *sandbox.Sandbox, dir string) *sandbox.Sandbox {
-	return sb.WithConfinement(confinementOf(dir))
+	return jobSandbox(sb, dir).WithConfinement(confinementOf(dir))
 }
 
 // planDirFor is where goal's planner works: <job>/plan in the goal's
@@ -137,7 +131,7 @@ func planDirFor(l *Layout, scope Scope, goal gateway.Goal, workRoot string) (str
 	if l == nil {
 		return PlanDir(workRoot, goal.Slug), nil
 	}
-	j, _, err := openJob(l, Scopes{scope}, scope.ID, JobMeta{ID: goal.ID, Unit: JobPlan, GoalID: goal.ID, Label: goal.Slug})
+	j, err := openJob(l, Scopes{scope}, scope.ID, JobMeta{ID: goal.ID, Unit: JobPlan, GoalID: goal.ID, Label: goal.Slug})
 	if err != nil {
 		return "", err
 	}
@@ -150,7 +144,7 @@ func researchDirFor(l *Layout, scope Scope, project gateway.Project, direction g
 	if l == nil {
 		return ResearchDir(workRoot, project.Slug, direction.Slug), nil
 	}
-	j, _, err := openJob(l, Scopes{scope}, scope.ID, JobMeta{ID: direction.ID, Unit: JobResearch, DirectionID: direction.ID, Label: project.Slug + "/" + direction.Slug})
+	j, err := openJob(l, Scopes{scope}, scope.ID, JobMeta{ID: direction.ID, Unit: JobResearch, DirectionID: direction.ID, Label: project.Slug + "/" + direction.Slug})
 	if err != nil {
 		return "", err
 	}
@@ -159,13 +153,12 @@ func researchDirFor(l *Layout, scope Scope, project gateway.Project, direction g
 
 // batchDirFor is where an attempt of a batch-like job checks out (a
 // merge batch's candidate, a merged item's main validation): in the
-// job keyed id, <job>/<what>-<attempt>, its spec's locks and clone the
-// org's connection's; else legacy under workRoot.
+// job keyed id, <job>/<what>-<attempt>; else legacy under workRoot.
 func batchDirFor(l *Layout, scopes Scopes, orgID, id, what string, attempt int, label string, legacy func(root string) string, workRoot string) (string, error) {
 	if l == nil {
 		return legacy(workRoot), nil
 	}
-	j, _, err := openJob(l, scopes, orgID, JobMeta{ID: id, Unit: JobBatch, BatchID: id, Label: label})
+	j, err := openJob(l, scopes, orgID, JobMeta{ID: id, Unit: JobBatch, BatchID: id, Label: label})
 	if err != nil {
 		return "", err
 	}
@@ -187,16 +180,30 @@ func validationJobID(t validationTarget) string {
 }
 
 // evalSpec puts an evaluation's spec (EvalWorkspaceSpec) in item's job:
-// its own clone at <job>/eval, the connection's locks. Without a Layout,
+// its own clone at <job>/eval, under the job's locks. Without a Layout,
 // spec as it is.
 func evalSpec(l *Layout, scopes Scopes, item gateway.WorkItem, label string, spec WorkspaceSpec) (WorkspaceSpec, error) {
 	if l == nil {
 		return spec, nil
 	}
-	j, c, err := openJob(l, scopes, item.OrgID, itemJobMeta(item, label))
+	j, err := openJob(l, scopes, item.OrgID, itemJobMeta(item, label))
 	if err != nil {
 		return spec, err
 	}
-	spec.Job, spec.Path, spec.Root, spec.Repos = j.Dir, j.Eval(), c.Dir, c.Repos
+	spec.Job, spec.Path, spec.Root, spec.Repos = j.Dir, j.Eval(), j.Dir, ""
 	return spec, nil
+}
+
+// jobCheckoutOf is the build checkout of the job holding dir, when it is
+// a clone: what a validation of that job's head may read objects from.
+func jobCheckoutOf(dir string) string {
+	job, _, ok := jobOf(dir)
+	if !ok {
+		return ""
+	}
+	co := filepath.Join(job, "checkout")
+	if _, err := os.Stat(filepath.Join(co, ".git")); err != nil {
+		return ""
+	}
+	return co
 }

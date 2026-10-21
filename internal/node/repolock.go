@@ -59,11 +59,10 @@ func repoFileName(key string) string {
 }
 
 // lockRoot is the root the lock files of dir's repo live under:
-// LockRoot when set, else the given root (an item spec's, its
-// connection's directory), else the connection of the item or batch job
-// dir is in (ADR-039), else dir's grandparent — the plan's own
-// directory for a plan's <job>/plan/repos/<name>, the work root for a
-// <root>/<goal>/<seq>.
+// LockRoot when set, else the given root (an item spec's, its job's
+// directory), else the job dir is in (ADR-039: every job's locks its
+// own, since no clone is shared), else dir's grandparent — the work root
+// for a <root>/<goal>/<seq>.
 func (g *Git) lockRoot(root, dir string) string {
 	if g.LockRoot != "" {
 		return g.LockRoot
@@ -71,8 +70,8 @@ func (g *Git) lockRoot(root, dir string) string {
 	if root != "" {
 		return root
 	}
-	if c, ok := itemConnectionOf(dir); ok {
-		return c.Dir
+	if job, _, ok := jobOf(dir); ok {
+		return job
 	}
 	return filepath.Dir(filepath.Dir(dir))
 }

@@ -40,7 +40,7 @@ func twoJobsKept(t *testing.T, now time.Time) (l *Layout, expired, young []strin
 	l = testLayout(t)
 	scopes := connected(Scopes{{Login: "acme", ID: "org-a"}, {Login: "grapevine", ID: "org-b"}})
 	for _, sc := range scopes {
-		j, _, err := openJob(l, scopes, sc.ID, JobMeta{ID: "item-" + sc.Name(), Unit: JobItem, ItemID: "item-" + sc.Name()})
+		j, err := openJob(l, scopes, sc.ID, JobMeta{ID: "item-" + sc.Name(), Unit: JobItem, ItemID: "item-" + sc.Name()})
 		if err != nil {
 			t.Fatal(err)
 		}

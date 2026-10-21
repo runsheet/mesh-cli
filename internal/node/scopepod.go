@@ -57,11 +57,8 @@ func openScopePod(ctx context.Context, sb *sandbox.Sandbox, l *Layout, served Sc
 	if sb == nil {
 		return nil, HostFallback(nil, served, scope.ID, dir)
 	}
-	osb, err := orgSandbox(sb, l, Scopes{scope}, scope.ID)
-	if err != nil {
-		return nil, &PodStartError{Kind: kind, Label: label, Err: fmt.Errorf("package store: %w", err)}
-	}
-	osb = confineTo(osb, dir)
+	// the job's own store and its directory alone (confineTo)
+	osb := confineTo(sb, dir)
 	sess, err := osb.Open(label, string(kind), sandbox.GitIdentity{})
 	if err != nil {
 		return nil, &PodStartError{Kind: kind, Label: label, Err: err}

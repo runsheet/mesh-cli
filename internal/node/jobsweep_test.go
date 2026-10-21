@@ -53,7 +53,7 @@ func newJobWorld(t *testing.T) *jobWorld {
 // job opens a job of m in acme and writes a file in it.
 func (w *jobWorld) job(m JobMeta) JobDirs {
 	w.t.Helper()
-	j, _, err := openJob(w.l, w.scopes, "org-a", m)
+	j, err := openJob(w.l, w.scopes, "org-a", m)
 	if err != nil {
 		w.t.Fatal(err)
 	}

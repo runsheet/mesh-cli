@@ -83,9 +83,8 @@ type SharedCache struct {
 	// build cache, counted against MaxBytes and cleaned last.
 	Root string
 	// ReposRoot is where the shared clones are when a call's ctx names
-	// none (WithCloneRoot): "" asks no clone. A node with a Layout
-	// leaves it "" — one connection's validation reads only its own
-	// connection's clones (ADR-039).
+	// no clone (WithClone): "" asks none. A node with a Layout leaves it
+	// "" — a validation reads only its own job's clone (ADR-039).
 	ReposRoot string
 	// Source fills what the shared clone cannot; nil, such a miss is an
 	// error.
@@ -396,28 +395,28 @@ func (c *SharedCache) cachedTree(commit string) (CacheTree, bool) {
 	return t, true
 }
 
-// cloneRootKey carries on a ctx the repos root a cache call may read
-// clones from (WithCloneRoot).
-type cloneRootKey struct{}
+// cloneKey carries on a ctx the one clone a cache call may read objects
+// from (WithClone).
+type cloneKey struct{}
 
-// WithCloneRoot marks ctx with the repos root of the connection a
-// validation runs for: the shared cache fills from that connection's
-// clones and no other's.
-func WithCloneRoot(ctx context.Context, reposRoot string) context.Context {
-	return context.WithValue(ctx, cloneRootKey{}, reposRoot)
+// WithClone marks ctx with the clone of the job a validation runs for,
+// "" for none: the shared cache fills from that clone and no other's.
+func WithClone(ctx context.Context, dir string) context.Context {
+	return context.WithValue(ctx, cloneKey{}, dir)
 }
 
-// clonePath is repo's shared clone under ctx's repos root
-// (WithCloneRoot), else ReposRoot, when it is there; else "".
+// clonePath is the clone ctx names (WithClone), else repo's shared clone
+// under ReposRoot, when it is there; else "".
 func (c *SharedCache) clonePath(ctx context.Context, repo string) string {
-	root := c.ReposRoot
-	if r, ok := ctx.Value(cloneRootKey{}).(string); ok {
-		root = r
+	dir := ""
+	if d, ok := ctx.Value(cloneKey{}).(string); ok {
+		dir = d
+	} else if c.ReposRoot != "" && repo != "" {
+		dir = SharedClonePath(c.ReposRoot, repo)
 	}
-	if root == "" || repo == "" {
+	if dir == "" {
 		return ""
 	}
-	dir := SharedClonePath(root, repo)
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 		return ""
 	}

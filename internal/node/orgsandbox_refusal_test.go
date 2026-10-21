@@ -110,21 +110,20 @@ func TestRunItemOnAOneOrgNodeWithSandboxOffRuns(t *testing.T) {
 	}
 }
 
-// A checkout in a job confines its pod to the job and its
-// connection's caches (ADR-039); a directory in no job — a connection's
-// clone, a job directory with no job.json, anything outside the jobs
-// tree — confines nothing.
+// A checkout in a job confines its pod to the job's directory alone
+// (ADR-039); a directory in no job — a job directory with no job.json,
+// anything outside the jobs tree — confines nothing.
 func TestConfinementOfACheckout(t *testing.T) {
 	l := testLayout(t)
 	scopes := connected(Scopes{{Login: "acme", ID: "org-a"}})
-	j, c, err := openJob(l, scopes, "org-a", JobMeta{ID: "item-1", Unit: JobItem, ItemID: "item-1"})
+	j, err := openJob(l, scopes, "org-a", JobMeta{ID: "item-1", Unit: JobItem, ItemID: "item-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := sandbox.Confinement{Job: "item-1", Roots: []string{j.Dir, c.Dir}, Homes: j.Homes}
+	want := sandbox.Confinement{Job: "item-1", Roots: []string{j.Dir}, Homes: j.Homes}
 	for _, dir := range []string{j.Checkout(), j.Eval(), j.Attempt("candidate", 2)} {
 		got := confinementOf(dir)
-		if got.Job != want.Job || got.Homes != want.Homes || len(got.Roots) != 2 || got.Roots[0] != want.Roots[0] || got.Roots[1] != want.Roots[1] {
+		if got.Job != want.Job || got.Homes != want.Homes || len(got.Roots) != 1 || got.Roots[0] != want.Roots[0] {
 			t.Errorf("confinementOf(%s) = %+v, want %+v", dir, got, want)
 		}
 	}
@@ -132,7 +131,7 @@ func TestConfinementOfACheckout(t *testing.T) {
 	if err := os.MkdirAll(bare, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, dir := range []string{filepath.Join(c.Repos, "o", "n"), bare, t.TempDir()} {
+	for _, dir := range []string{bare, t.TempDir()} {
 		if got := confinementOf(dir); !got.IsZero() {
 			t.Errorf("confinementOf(%s) = %+v, want none", dir, got)
 		}

@@ -84,7 +84,7 @@ func TestServerRoutesEachListenerToItsOwnHandler(t *testing.T) {
 func TestAdminHandlerAnswersTheLoop(t *testing.T) {
 	l := testLayout(t)
 	scopes := connected(Scopes{{Login: "acme", ID: "org-a", Cap: 2}})
-	if _, _, err := openJob(l, scopes, "org-a", JobMeta{ID: "item-1", Unit: JobItem, ItemID: "item-1", Label: "ship-it/1"}); err != nil {
+	if _, err := openJob(l, scopes, "org-a", JobMeta{ID: "item-1", Unit: JobItem, ItemID: "item-1", Label: "ship-it/1"}); err != nil {
 		t.Fatal(err)
 	}
 	loop := &Loop{Cfg: &Config{Name: "box", Slug: "box", NodeID: "node-a", Capacity: Fixed(3)}, Scopes: scopes, Version: "v1"}

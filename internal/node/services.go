@@ -22,10 +22,8 @@ type SessionPod struct {
 	logf func(string, ...any)
 }
 
-// openOrgSessionPod is OpenSessionPod on the sandbox of the org whose
-// id is orgID (orgSandbox): the session's pod mounts and names its own
-// connection's package store. An org the node does not serve opens
-// nothing.
+// openOrgSessionPod is OpenSessionPod for a session of the org whose id
+// is orgID: its pod mounts and names its own job's package store.
 // With no sandbox on a node serving two or more orgs it opens nothing
 // and is a *HostFallbackError, whatever the session's kind (ADR 066,
 // decision 10: more than one tenant means every session is sandboxed) —
@@ -34,11 +32,8 @@ func openOrgSessionPod(ctx context.Context, sb *sandbox.Sandbox, l *Layout, scop
 	if err := HostFallback(sb, scopes, orgID, dir); err != nil {
 		return nil, err
 	}
-	osb, err := orgSandbox(sb, l, scopes, orgID)
-	if err != nil {
-		return nil, fmt.Errorf("package store: %w", err)
-	}
-	return OpenSessionPod(ctx, osb, dir, label, kind, git, logf)
+	// the job's own store, its directory alone (OpenSessionPod's confineTo)
+	return OpenSessionPod(ctx, sb, dir, label, kind, git, logf)
 }
 
 // OpenSessionPod resolves the services the checkout at dir declares

@@ -365,12 +365,16 @@ func (g *Git) AddCommitWorktree(ctx context.Context, repo, dir, branch, sha stri
 }
 
 // addDetachedWorktree fetches branch into the shared clone, asks check
-// of it, and adds a detached worktree of sha at dir.
+// of it, and adds a detached worktree of sha at dir. A dir in a job is a
+// clone of its own instead (addDetachedClone, ADR-039).
 func (g *Git) addDetachedWorktree(ctx context.Context, repo, dir, branch, sha string, check func(clone, ref string) error) error {
 	if _, err := os.Stat(dir); err == nil {
 		if err := g.RemoveWorkspace(ctx, dir); err != nil {
 			return err
 		}
+	}
+	if _, _, ok := jobOf(dir); ok {
+		return g.addDetachedClone(ctx, repo, dir, branch, sha, check)
 	}
 	root, key := g.lockRoot("", dir), RepoLockKey(repo)
 	clone := SharedClonePath(g.reposRootFor(dir), repo)
@@ -398,5 +402,30 @@ func (g *Git) addDetachedWorktree(ctx context.Context, repo, dir, branch, sha st
 		return err
 	}
 	_, err = g.run(ctx, clone, "git", "worktree", "add", "--quiet", "--detach", dir, sha)
+	return err
+}
+
+// addDetachedClone is addDetachedWorktree for a dir in a job (ADR-039):
+// repo cloned into dir alone, branch fetched into it, check asked of
+// it, sha checked out detached — no shared clone, no other job's
+// objects.
+func (g *Git) addDetachedClone(ctx context.Context, repo, dir, branch, sha string, check func(clone, ref string) error) error {
+	root, key := g.lockRoot("", dir), RepoLockKey(repo)
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		return err
+	}
+	clone := g.cloneCommand(ctx, repo, dir, "--no-checkout")
+	if _, err := g.fetchLocked(ctx, root, key, filepath.Dir(dir), clone[0], clone[1:]...); err != nil {
+		os.RemoveAll(dir)
+		return err
+	}
+	ref := "refs/remotes/origin/" + branch
+	if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--quiet", "origin", "+refs/heads/"+branch+":"+ref); err != nil {
+		return err
+	}
+	if err := check(dir, ref); err != nil {
+		return err
+	}
+	_, err := g.run(ctx, dir, "git", "checkout", "--quiet", "--detach", sha)
 	return err
 }

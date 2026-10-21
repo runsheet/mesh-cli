@@ -1489,12 +1489,8 @@ func (r *Runner) adoptedPod(s FoundSession, item gateway.WorkItem) *SessionPod {
 	if _, err := os.Stat(s.State.Home); err != nil {
 		return nil
 	}
-	// the adopted session's own org's store, as its Open had (orgSandbox)
-	sb, err := orgSandbox(r.Sandbox, r.Layout, r.Scopes, item.OrgID)
-	if err != nil {
-		r.logf("item %s: adopted pod: package store: %v; validating in a fresh session", s.State.Label, err)
-		return nil
-	}
+	// the adopted session's own job's store, as its Open had (jobSandbox)
+	sb := jobSandbox(r.Sandbox, s.Dir)
 	var sess *sandbox.Session
 	if s.standingPod() {
 		sess = sb.Reattach(sandbox.Pod{Name: s.State.Pod}, s.State.Home, s.State.Label)
