@@ -147,6 +147,9 @@ type Fake struct {
 	// Unsupported names mutations the fake answers as a platform that
 	// predates them: the schema's "Cannot query field" error.
 	Unsupported map[string]bool
+	// downstream is the older call's answer a job call passes on when it
+	// was no 200 (jobs.go).
+	downstream *httptest.ResponseRecorder
 	// UnknownFields names fields the fake's schema does not have, as a
 	// platform older than them: a read selecting one is refused with
 	// "Cannot query field", a command whose input (or an item of it)
@@ -1362,6 +1365,14 @@ func (f *Fake) githubTokens(w http.ResponseWriter, field, arg string, vars map[s
 		}
 		projectID, _ = direction["projectId"].(string)
 		rows = f.ResearchGitHubTokens[id]
+	}
+	if rows == nil {
+		// a goal or direction no test served tokens for: one per project
+		// repo, as runsheet mints them
+		exp := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+		for _, name := range f.projectRepoNames(projectID) {
+			rows = append(rows, map[string]any{"token": "ghs_" + strings.ReplaceAll(name, "/", "_"), "expiresAt": exp, "repository": name})
+		}
 	}
 	have := map[string]bool{}
 	for _, row := range rows {

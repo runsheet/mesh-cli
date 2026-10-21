@@ -84,22 +84,22 @@ func TestServedDiffValidationsShareOneCacheAndLeaveNoResidueE2E(t *testing.T) {
 	}
 	runs := []run{
 		{name: "main request", suites: "api", validate: func() (string, error) {
-			att, err := s.r.validateMainRequest(ctx, s.req, &gateway.GitHubToken{Token: s.gh.token, Repository: "acme/widgets"})
+			att, err := handedBack(t, s.r, "main", s.req.WorkItemID)(s.r.validateMainRequest(ctx, s.req, &gateway.GitHubToken{Token: s.gh.token, Repository: "acme/widgets"}))
 			return att.Commit, err
 		}},
 		{name: "batch 7", suites: "api", validate: func() (string, error) {
 			claimBatch(t, s.r, s.batch)
-			att, err := s.r.ValidateCandidate(ctx, s.batch)
+			att, err := handedBack(t, s.r, "candidate", s.batch.MergeBatchID)(s.r.ValidateCandidate(ctx, s.batch))
 			return att.Commit, err
 		}},
 		{name: "batch 8", suites: "api,web", wantBlobs: []string{blobOf(b8.SHA, "web/page.go"), blobOf(b8.SHA, "web/big8.bin")}, validate: func() (string, error) {
 			claimBatch(t, s.r, b8)
-			att, err := s.r.ValidateCandidate(ctx, b8)
+			att, err := handedBack(t, s.r, "candidate", b8.MergeBatchID)(s.r.ValidateCandidate(ctx, b8))
 			return att.Commit, err
 		}},
 		{name: "batch 9", suites: "api,web", wantBlobs: []string{blobOf(b9.SHA, "web/page.go"), blobOf(b9.SHA, "web/big9.bin")}, validate: func() (string, error) {
 			claimBatch(t, s.r, b9)
-			att, err := s.r.ValidateCandidate(ctx, b9)
+			att, err := handedBack(t, s.r, "candidate", b9.MergeBatchID)(s.r.ValidateCandidate(ctx, b9))
 			return att.Commit, err
 		}},
 	}

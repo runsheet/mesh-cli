@@ -2,7 +2,9 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -105,7 +107,7 @@ func assertWorktreeGone(t *testing.T, r *Runner, batch gateway.MainValidationBat
 // the commit the batch's sha.
 func TestCandidateGreenIsAttestedWithMergeBatchID(t *testing.T) {
 	r, f, batch, _, logs := candidateRunner(t, oneStepYML("true"))
-	att, err := r.validateCandidate(context.Background(), batch, nil)
+	att, err := handedBack(t, r, "candidate", batch.MergeBatchID)(r.validateCandidate(context.Background(), batch, nil))
 	if err != nil {
 		t.Fatalf("validateCandidate: %v\n%s", err, logs.String())
 	}
@@ -130,9 +132,6 @@ func TestCandidateGreenIsAttestedWithMergeBatchID(t *testing.T) {
 	if len(commands) != 1 || commands[0].(map[string]any)["exitCode"] != float64(0) {
 		t.Fatalf("commands = %v", commands)
 	}
-	if !strings.Contains(logs.String(), "attestation recorded "+short(batch.SHA)) {
-		t.Fatalf("no recorded line:\n%s", logs.String())
-	}
 	assertWorktreeGone(t, r, batch)
 }
 
@@ -140,7 +139,7 @@ func TestCandidateGreenIsAttestedWithMergeBatchID(t *testing.T) {
 // verdict, and the run is no error.
 func TestCandidateRedSuiteIsARedAttestation(t *testing.T) {
 	r, f, batch, _, logs := candidateRunner(t, oneStepYML("exit 1"))
-	att, err := r.validateCandidate(context.Background(), batch, nil)
+	att, err := handedBack(t, r, "candidate", batch.MergeBatchID)(r.validateCandidate(context.Background(), batch, nil))
 	if err != nil {
 		t.Fatalf("validateCandidate: %v\n%s", err, logs.String())
 	}
@@ -174,7 +173,7 @@ func TestCandidateHeadOtherThanBatchSHAIsRefused(t *testing.T) {
 	gitRun(t, moved, "commit", "--quiet", "-m", "later")
 	gitRun(t, moved, "push", "--quiet", "origin", batch.CandidateBranch)
 
-	_, err := r.validateCandidate(context.Background(), batch, nil)
+	_, err := handedBack(t, r, "candidate", batch.MergeBatchID)(r.validateCandidate(context.Background(), batch, nil))
 	var he *CandidateHeadError
 	if !errors.As(err, &he) {
 		t.Fatalf("err = %v, want a *CandidateHeadError", err)
@@ -196,7 +195,7 @@ func TestCandidateHeadOtherThanBatchSHAIsRefused(t *testing.T) {
 // caller fails the batch's validation and never calls it red.
 func TestCandidateEnvironmentFailureIsReturnedWithItsKind(t *testing.T) {
 	r, f, batch, _, _ := candidateRunner(t, oneStepYML("exit 124"))
-	_, err := r.validateCandidate(context.Background(), batch, nil)
+	_, err := handedBack(t, r, "candidate", batch.MergeBatchID)(r.validateCandidate(context.Background(), batch, nil))
 	if err == nil {
 		t.Fatal("want the environment failure")
 	}
@@ -207,4 +206,35 @@ func TestCandidateEnvironmentFailureIsReturnedWithItsKind(t *testing.T) {
 		t.Fatalf("attestations = %d, want none", n)
 	}
 	assertWorktreeGone(t, r, batch)
+}
+
+// handedBack records a validation's attestation as its finish does
+// (finishJob's attestation, recordValidationAttestation on the platform),
+// when the validation produced one. The claim's end with it is the
+// loop's (mainJob.finish), tested by the loop's tests.
+func handedBack(t *testing.T, r *Runner, subject, id string) func(validate.Attestation, error) (validate.Attestation, error) {
+	t.Helper()
+	return func(att validate.Attestation, err error) (validate.Attestation, error) {
+		if err != nil {
+			return att, err
+		}
+		gw, ok := r.GW.(interface {
+			Query(ctx context.Context, q string, vars map[string]any, out any) error
+		})
+		if !ok {
+			t.Fatalf("the runner's gateway sends no query")
+		}
+		body, _ := json.Marshal(gatewayAttestation(att))
+		var in map[string]any
+		_ = json.Unmarshal(body, &in)
+		arg := "workItemId"
+		if subject == "candidate" {
+			arg, in["mergeBatchId"] = "mergeBatchId", id
+		}
+		q := fmt.Sprintf("mutation($id: UUID!, $in: Map!) { recordValidationAttestation(%s: $id, input: $in) }", arg)
+		if qerr := gw.Query(context.Background(), q, map[string]any{"id": id, "in": in}, nil); qerr != nil {
+			t.Fatalf("record the %s's attestation: %v", subject, qerr)
+		}
+		return att, nil
+	}
 }

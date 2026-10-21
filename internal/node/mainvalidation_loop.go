@@ -291,6 +291,7 @@ func (l *Loop) runMainJob(ctx context.Context, j mainJob) {
 		l.logf("%s: finish refused: %v", j.label, err)
 		return
 	}
+	l.logf("%s: attestation recorded %s %s", j.label, short(att.Commit), attestedSuites(att))
 	l.logf("%s: finished", j.label)
 }
 

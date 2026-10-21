@@ -271,17 +271,17 @@ func TestTwoOrgsSandboxedNodeNeitherOrgReadsTheOthersFiles(t *testing.T) {
 	forbid := func(org string) map[string]string {
 		o := orgs[other[org]]
 		m := map[string]string{
-			"job":            o.old.Dir,
-			"clone":          o.old.Checkout(),
-			"clone git dir":  filepath.Join(o.old.Checkout(), ".git"),
-			"kept sessions":  o.old.Kept,
-			"pnpm store":     filepath.Join(o.old.Store, "pnpm"),
-			"npm cache":      filepath.Join(o.old.Store, "npm"),
-			"mcp data":       o.old.MCP,
-			"mcp token":      filepath.Join(o.old.MCP, "sessions", "old", harness.TokenFileName),
-			"homes":          o.old.Homes,
-			"the jobs tree":  layout.JobsDir(),
-			"the mesh dir":   mesh,
+			"job":           o.old.Dir,
+			"clone":         o.old.Checkout(),
+			"clone git dir": filepath.Join(o.old.Checkout(), ".git"),
+			"kept sessions": o.old.Kept,
+			"pnpm store":    filepath.Join(o.old.Store, "pnpm"),
+			"npm cache":     filepath.Join(o.old.Store, "npm"),
+			"mcp data":      o.old.MCP,
+			"mcp token":     filepath.Join(o.old.MCP, "sessions", "old", harness.TokenFileName),
+			"homes":         o.old.Homes,
+			"the jobs tree": layout.JobsDir(),
+			"the mesh dir":  mesh,
 		}
 		if j, err := layout.Job(o.item.ID); err == nil {
 			if _, err := os.Stat(j.Checkout()); err == nil {

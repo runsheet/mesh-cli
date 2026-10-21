@@ -483,6 +483,7 @@ func (r *Rebaser) afterRebase(ctx context.Context, rb *rebaseRun, acct *SessionA
 	// the rebased head is a commit no attestation names: the platform
 	// carries none forward (runsheet ADR 032, The honesty check, rule 1)
 	r.validateRebased(ctx, rb, acct, head)
+	ctx = gateway.WithNodeID(ctx, nodeIDOf(r.Scopes, rb.item.OrgID, r.Cfg))
 	if err := acct.Carried(r.GW.FinishWorkItemRebase(ctx, rb.item.ID, head, out.Files, acct.Report(result))); err != nil {
 		// a finish the platform did not take still ends the claim
 		return fail(fmt.Errorf("the rebase landed at %s, but finishing it failed: %w", short(head), err))

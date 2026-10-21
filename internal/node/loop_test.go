@@ -63,12 +63,6 @@ func seed(t *testing.T) *gatewaytest.Fake {
 	f.Bodies["acme/mesh/adr-001"] = "# ADR 001"
 	f.Bodies["acme/mesh/prd"] = "# PRD"
 	f.Bodies["acme/mesh/agents"] = "# AGENTS"
-	// plans fetch on the operator's gh unless a test serves the goal's
-	// plan tokens (plan_token_test.go, adr-022)
-	f.Unsupported["planGitHubToken"] = true
-	// and research the same, unless a test serves the direction's
-	// research tokens (research_token_test.go, adr-022)
-	f.Unsupported["researchGitHubToken"] = true
 	t.Cleanup(f.Close)
 	return f
 }
@@ -845,6 +839,7 @@ func TestLoopPoisonedItemDoesNotStarveTheQueue(t *testing.T) {
 	// the build of the poisoned item finishes; the fresh ones run on
 	loop.Dispatch = func(ctx context.Context, it gateway.WorkItem) {
 		if it.ID == "poisoned" {
+			ctx := gateway.WithNodeID(ctx, nodeIDOf(loop.Scopes, it.OrgID, loop.Cfg))
 			if err := gw.FinishWorkItem(ctx, it.ID, "mesh/g-9", "abc123", 0, nil); err != nil {
 				t.Errorf("finish: %v", err)
 			}
@@ -852,6 +847,7 @@ func TestLoopPoisonedItemDoesNotStarveTheQueue(t *testing.T) {
 	}
 	// and every evaluation of it fails
 	loop.Evaluate = func(ctx context.Context, it gateway.WorkItem) {
+		ctx = gateway.WithNodeID(ctx, nodeIDOf(loop.Scopes, it.OrgID, loop.Cfg))
 		if err := gw.EvaluateWorkItem(ctx, it.ID, false, "VERDICT: FAIL", nil, 0, nil, gateway.EvaluateChoice{}); err != nil {
 			t.Errorf("evaluate: %v", err)
 		}

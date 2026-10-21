@@ -56,6 +56,9 @@ func (f *Fake) jobAPI(w http.ResponseWriter, r *http.Request, q string, vars map
 	in, _ := vars["in"].(map[string]any)
 	subject, _ := in["subject"].(map[string]any)
 	isThread := subject["type"] == "thread"
+	f.downstream = nil
+	defer func() { f.downstream = nil }()
+	w = &downstreamWriter{ResponseWriter: w, f: f}
 	switch {
 	case strings.Contains(q, "threadSessionIndexs("):
 		rows := []map[string]any{}
@@ -114,6 +117,11 @@ func (f *Fake) jobAPI(w http.ResponseWriter, r *http.Request, q string, vars map
 func (f *Fake) call(r *http.Request, q string, vars map[string]any, bearer string) (map[string]any, []string) {
 	rec := httptest.NewRecorder()
 	f.serve(rec, r, q, vars, bearer)
+	if rec.Code != http.StatusOK && f.downstream == nil {
+		// a gateway down for the older call is down for the job call
+		f.downstream = rec
+		return nil, []string{fmt.Sprintf("fake: the older call answered %d", rec.Code)}
+	}
 	var out struct {
 		Data   map[string]any `json:"data"`
 		Errors []struct {
@@ -316,7 +324,13 @@ func (f *Fake) jobAccessAliases(r *http.Request, in map[string]any, bearer strin
 	case "runsheet/validate candidate":
 		token("mutation($id: UUID!) { issueItemRepoToken(mergeBatchId: $id) }", "issueItemRepoToken")
 	case "runsheet/validate main":
-		token("mutation($id: UUID!) { issueItemRepoToken(workItemId: $id) }", "issueItemRepoToken")
+		// a read token of the merged item's repo, whatever the item's
+		// status: the validation holds the claim, not the item
+		if tok := f.GitHubTokens[id]; tok != nil {
+			out["repo"] = copyRow(tok)
+		} else {
+			missing = append(missing, map[string]any{"access": "repo", "reason": "no GitHub installation reaches the item's repo"})
+		}
 	default:
 		return nil, fmt.Errorf("jobAccess: no such job")
 	}
@@ -376,4 +390,46 @@ func (f *Fake) finishThreadJob(w http.ResponseWriter, in map[string]any) {
 	t.Proposal, _ = fin["proposal"].(string)
 	t.Status = "answered"
 	writeData(w, map[string]any{"finishJob": map[string]any{"status": "finished"}})
+}
+
+// downstreamWriter answers a job call as the older call it routed to
+// answered when that was no 200 (a 503, a stall's status): the status
+// and body are the older call's, not the job call's own.
+type downstreamWriter struct {
+	http.ResponseWriter
+	f    *Fake
+	done bool
+}
+
+func (d *downstreamWriter) WriteHeader(code int) {
+	if d.passed() {
+		return
+	}
+	d.ResponseWriter.WriteHeader(code)
+}
+
+func (d *downstreamWriter) Write(b []byte) (int, error) {
+	if d.passed() {
+		return len(b), nil
+	}
+	return d.ResponseWriter.Write(b)
+}
+
+// passed writes the older call's answer once, and reports whether it did.
+func (d *downstreamWriter) passed() bool {
+	rec := d.f.downstream
+	if rec == nil {
+		return false
+	}
+	if !d.done {
+		d.done = true
+		for k, vs := range rec.Header() {
+			for _, v := range vs {
+				d.ResponseWriter.Header().Add(k, v)
+			}
+		}
+		d.ResponseWriter.WriteHeader(rec.Code)
+		_, _ = d.ResponseWriter.Write(rec.Body.Bytes())
+	}
+	return true
 }

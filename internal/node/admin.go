@@ -21,25 +21,25 @@ import (
 
 // NodeStatus is GET /status.
 type NodeStatus struct {
-	NodeID     string               `json:"nodeId,omitempty"`
-	Name       string               `json:"name,omitempty"`
-	Slug       string               `json:"slug,omitempty"`
-	Version    string               `json:"version,omitempty"`
-	Commit     string               `json:"commit,omitempty"`
-	PID        int                  `json:"pid"`
-	Started    time.Time            `json:"started"`
-	Condition  string               `json:"condition,omitempty"`
-	Draining   bool                 `json:"draining"`
-	Runtime    *RuntimeState        `json:"runtime,omitempty"`
-	Capacity   int                  `json:"capacity"`
-	Running    int                  `json:"running"`
-	Validating int                  `json:"validating"`
-	Health     string               `json:"health,omitempty"`
-	Update     string               `json:"updateError,omitempty"`
-	Connection []StatusConnection   `json:"connections"`
+	NodeID     string                `json:"nodeId,omitempty"`
+	Name       string                `json:"name,omitempty"`
+	Slug       string                `json:"slug,omitempty"`
+	Version    string                `json:"version,omitempty"`
+	Commit     string                `json:"commit,omitempty"`
+	PID        int                   `json:"pid"`
+	Started    time.Time             `json:"started"`
+	Condition  string                `json:"condition,omitempty"`
+	Draining   bool                  `json:"draining"`
+	Runtime    *RuntimeState         `json:"runtime,omitempty"`
+	Capacity   int                   `json:"capacity"`
+	Running    int                   `json:"running"`
+	Validating int                   `json:"validating"`
+	Health     string                `json:"health,omitempty"`
+	Update     string                `json:"updateError,omitempty"`
+	Connection []StatusConnection    `json:"connections"`
 	Sessions   []gateway.NodeSession `json:"sessions"`
-	Held       []StatusHeld         `json:"held"`
-	Findings   []Finding            `json:"findings"`
+	Held       []StatusHeld          `json:"held"`
+	Findings   []Finding             `json:"findings"`
 }
 
 // StatusConnection is one org the node serves, by its connection.

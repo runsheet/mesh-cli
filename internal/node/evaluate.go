@@ -215,6 +215,7 @@ func (e *Evaluator) failDiff(ctx context.Context, item gateway.WorkItem, label, 
 	notes = truncate(notes, 4000)
 	e.logf("item %s: not evaluated, failed: %s", label, notes)
 	stopHeartbeat(ctx)
+	ctx = gateway.WithNodeID(ctx, nodeIDOf(e.Scopes, item.OrgID, e.Cfg))
 	if err := e.GW.EvaluateWorkItem(ctx, item.ID, false, notes, nil, 0, nil, gateway.EvaluateChoice{}); err != nil {
 		return fmt.Errorf("record verdict: %w", err)
 	}
@@ -831,6 +832,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	acct.SetEvaluation(ev.res.Goal.Priority, evaluators)
 	// no heartbeat after the verdict
 	stopHeartbeat(ctx)
+	ctx = gateway.WithNodeID(ctx, nodeIDOf(e.Scopes, item.OrgID, e.Cfg))
 	if err := acct.Carried(e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, failed, Cents(cost), usage, gateway.EvaluateChoice{EvaluatedModel: fam.model})); err != nil {
 		if verdictCalled && gateway.IsRefusal(err) && !gateway.IsUnsupported(err) {
 			// the hosted mesh_verdict already recorded it, so the item is
@@ -968,6 +970,7 @@ func (e *Evaluator) logReadings(label, notes string) {
 func (e *Evaluator) noVerdict(ctx context.Context, ev evalRun, reason string, cost float64, usage *gateway.UsageReport, fallback func() error) error {
 	reason = truncate(reason, 4000)
 	stopHeartbeat(ctx)
+	ctx = gateway.WithNodeID(ctx, nodeIDOf(e.Scopes, ev.item.OrgID, e.Cfg))
 	err := e.GW.EvaluateWorkItemNoVerdict(ctx, ev.item.ID, reason, Cents(cost), usage, gateway.EvaluateChoice{EvaluatedModel: ev.fam.model})
 	if errors.Is(err, gateway.ErrNoVerdictOutcome) {
 		if e.NoVerdict.First("") {

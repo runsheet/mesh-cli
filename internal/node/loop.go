@@ -292,7 +292,7 @@ type Loop struct {
 	// every threadKindsEvery, for which kind a thread turn is.
 	threadKinds   map[string]gateway.JobKind
 	threadKindsAt time.Time
-	rebasing    map[string]bool
+	rebasing      map[string]bool
 	// validating is the main validations running, by mergeBatchId or,
 	// for a merged item's, workItemId: each a session against the
 	// capacity (Running).

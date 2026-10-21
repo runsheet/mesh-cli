@@ -19,7 +19,7 @@ func priorAttemptsFixture(t *testing.T) (*gatewaytest.Fake, *Evaluator, *fakeHar
 	f := seed(t)
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: Fixed(1)}
 	gw := gateway.New(f.URL(), "rs_test")
-	ctx := context.Background()
+	ctx := gateway.WithNodeID(context.Background(), cfg.NodeID)
 	f.WorkItems[item1]["status"] = "evaluating"
 	f.WorkItems[item1]["nodeId"] = cfg.NodeID
 	f.WorkItems[item1]["branch"] = "mesh/ship-it-1"

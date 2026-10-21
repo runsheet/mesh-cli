@@ -1219,6 +1219,7 @@ func (t *buildTail) finish(ctx context.Context, state *sessionsteps.State) error
 					rep.Validation = t.v.usage()
 				}
 			}
+			ctx = gateway.WithNodeID(ctx, nodeIDOf(r.Scopes, item.OrgID, r.Cfg))
 			return b.acct.Carried(r.validationUsage(r.GW.FinishWorkItem(ctx, itemID, branch, sha, b.cost.delta(), b.acct.Report(result), b.description(ctx))))
 		},
 	}

@@ -81,7 +81,7 @@ func TestCandidateFetchedOnTheBatchsMintedToken(t *testing.T) {
 	r, f, batch, _, logs := candidateRunner(t, oneStepYML("true"))
 	w := recordFetches(r)
 	claimBatch(t, r, batch)
-	if _, err := r.ValidateCandidate(context.Background(), batch); err != nil {
+	if _, err := handedBack(t, r, "candidate", batch.MergeBatchID)(r.ValidateCandidate(context.Background(), batch)); err != nil {
 		t.Fatalf("ValidateCandidate: %v\n%s", err, logs.String())
 	}
 	if n := len(f.CallsNamed("issueItemRepoToken")); n != 1 {
@@ -135,7 +135,7 @@ func TestCandidateTokenNearExpiryIsReMintedBeforeTheFetch(t *testing.T) {
 		{Token: "ghs_fresh", ExpiresAt: time.Now().Add(time.Hour), Repository: "acme/widgets", Access: "read"},
 	}}
 	r.GW = gw
-	if _, err := r.ValidateCandidate(context.Background(), batch); err != nil {
+	if _, err := handedBack(t, r, "candidate", batch.MergeBatchID)(r.ValidateCandidate(context.Background(), batch)); err != nil {
 		t.Fatalf("ValidateCandidate: %v\n%s", err, logs.String())
 	}
 	if gw.mints < 2 {
@@ -146,31 +146,6 @@ func TestCandidateTokenNearExpiryIsReMintedBeforeTheFetch(t *testing.T) {
 	}
 }
 
-// A platform whose issueItemRepoToken takes no mergeBatchId fetches on
-// the operator's own login — no token on the fetch — said once for the
-// run however many batches.
-func TestCandidateOnAnOldPlatformFetchesOnTheOperatorsLogin(t *testing.T) {
-	r, f, batch, _, logs := candidateRunner(t, oneStepYML("true"))
-	w := recordFetches(r)
-	r.BatchFallback = &TokenFallback{}
-	f.Unsupported["issueItemRepoToken.mergeBatchId"] = true
-	for range 2 {
-		if _, err := r.ValidateCandidate(context.Background(), batch); err != nil {
-			t.Fatalf("ValidateCandidate: %v\n%s", err, logs.String())
-		}
-	}
-	if len(w.fetches) != 2 || w.fetches[0] != nil || w.fetches[1] != nil {
-		t.Fatalf("fetch envs = %v, want two with no token", w.fetches)
-	}
-	out := logs.String()
-	if n := strings.Count(out, "the platform issues no merge batch token; fetching candidates on the operator's own login"); n != 1 {
-		t.Fatalf("fallback said %d times, want once:\n%s", n, out)
-	}
-	if !strings.Contains(out, "merge batch 7 (acme/widgets): candidate fetched on the operator's own login") {
-		t.Fatalf("no fetched-on-the-operator line:\n%s", out)
-	}
-}
-
 // A mint the platform refuses is the validation's error naming the
 // token: nothing is fetched — on the operator's login or any other —
 // run or attested.
@@ -178,7 +153,7 @@ func TestCandidateTokenRefusedFetchesNothing(t *testing.T) {
 	r, f, batch, _, logs := candidateRunner(t, oneStepYML("true"))
 	w := recordFetches(r)
 	// the batch's validation is not claimed: the platform refuses the token
-	_, err := r.ValidateCandidate(context.Background(), batch)
+	_, err := handedBack(t, r, "candidate", batch.MergeBatchID)(r.ValidateCandidate(context.Background(), batch))
 	if err == nil || !gateway.IsRefusal(err) || !strings.Contains(err.Error(), "github token for merge batch 7") {
 		t.Fatalf("err = %v, want a refusal naming the batch's token", err)
 	}
@@ -234,7 +209,7 @@ func TestCandidateTokenRefreshRefusedFetchesNothing(t *testing.T) {
 	w := recordFetches(r)
 	gw := staleThenRefused(r.GW.(*gateway.Client))
 	r.GW = gw
-	_, err := r.ValidateCandidate(context.Background(), batch)
+	_, err := handedBack(t, r, "candidate", batch.MergeBatchID)(r.ValidateCandidate(context.Background(), batch))
 	if err == nil || !strings.HasPrefix(err.Error(), "github token for merge batch 7: refresh github token: ") {
 		t.Fatalf("err = %v, want the refused refresh naming the batch's token", err)
 	}
@@ -306,7 +281,7 @@ func TestCandidateBaseFetchTokenRefreshRefusedFetchesNothing(t *testing.T) {
 	gw := freshThenRefused(r.GW.(*gateway.Client))
 	r.GW = gw
 	expireAfterCandidate(w, gw)
-	_, err := r.ValidateCandidate(context.Background(), batch)
+	_, err := handedBack(t, r, "candidate", batch.MergeBatchID)(r.ValidateCandidate(context.Background(), batch))
 	if err == nil || !strings.HasPrefix(err.Error(), "github token for merge batch 7: refresh github token: ") {
 		t.Fatalf("err = %v, want the refused refresh naming the batch's token\n%s", err, logs.String())
 	}
@@ -338,7 +313,7 @@ func TestCandidateBaseFetchedOnTheRenewedToken(t *testing.T) {
 	}}
 	r.GW = gw
 	expireAfterCandidate(w, gw)
-	if _, err := r.ValidateCandidate(context.Background(), batch); err != nil {
+	if _, err := handedBack(t, r, "candidate", batch.MergeBatchID)(r.ValidateCandidate(context.Background(), batch)); err != nil {
 		t.Fatalf("ValidateCandidate: %v\n%s", err, logs.String())
 	}
 	if len(w.bases) != 1 || helperToken(w.bases[0]) != "ghs_renewed" {
@@ -455,7 +430,7 @@ func TestBatchBaseFetchRenewedForAnotherRepoFailsTheValidation(t *testing.T) {
 	}}
 	expireAfterCandidate(w, gw)
 	r.GW = gw
-	_, err := r.ValidateCandidate(context.Background(), batch)
+	_, err := handedBack(t, r, "candidate", batch.MergeBatchID)(r.ValidateCandidate(context.Background(), batch))
 	if err == nil || !strings.Contains(err.Error(), "issued for acme/gadgets, the batch is on acme/widgets") {
 		t.Fatalf("err = %v, want the wrong-repo renewal", err)
 	}

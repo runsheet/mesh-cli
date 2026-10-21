@@ -386,7 +386,7 @@ func commandNames(t *testing.T, call gatewaytest.Call) []string {
 func TestServedDiffBatchCandidateValidatesWithoutAClone(t *testing.T) {
 	s := newServedFixture(t)
 	claimBatch(t, s.r, s.batch)
-	att, err := s.r.ValidateCandidate(context.Background(), s.batch)
+	att, err := handedBack(t, s.r, "candidate", s.batch.MergeBatchID)(s.r.ValidateCandidate(context.Background(), s.batch))
 	if err != nil {
 		t.Fatalf("ValidateCandidate: %v\n%s", err, s.logs.String())
 	}
@@ -422,7 +422,7 @@ func TestServedDiffBatchCandidateValidatesWithoutAClone(t *testing.T) {
 func TestServedDiffMainRequestValidatesWithoutAClone(t *testing.T) {
 	s := newServedFixture(t)
 	s.gh.token = "ghs_item1"
-	att, err := s.r.validateMainRequest(context.Background(), s.req, &gateway.GitHubToken{Token: "ghs_item1", Repository: "acme/widgets"})
+	att, err := handedBack(t, s.r, "main", s.req.WorkItemID)(s.r.validateMainRequest(context.Background(), s.req, &gateway.GitHubToken{Token: "ghs_item1", Repository: "acme/widgets"}))
 	if err != nil {
 		t.Fatalf("validateMainRequest: %v\n%s", err, s.logs.String())
 	}
@@ -515,7 +515,7 @@ func TestServedDiffTooLargeFallsBackToTheWorktree(t *testing.T) {
 	s.gh.tooLarge = true
 	claimBatch(t, s.r, s.batch)
 	for i := 0; i < 2; i++ {
-		att, err := s.r.ValidateCandidate(context.Background(), s.batch)
+		att, err := handedBack(t, s.r, "candidate", s.batch.MergeBatchID)(s.r.ValidateCandidate(context.Background(), s.batch))
 		if err != nil {
 			t.Fatalf("ValidateCandidate: %v\n%s", err, s.logs.String())
 		}

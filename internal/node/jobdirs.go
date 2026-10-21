@@ -214,6 +214,9 @@ func nodeIDOf(scopes Scopes, orgID string, cfg *Config) string {
 	if sc, ok := scopes.ByOrg(orgID); ok && sc.NodeID != "" {
 		return sc.NodeID
 	}
+	if len(scopes) == 1 && scopes[0].NodeID != "" {
+		return scopes[0].NodeID
+	}
 	if cfg != nil {
 		return cfg.NodeID
 	}

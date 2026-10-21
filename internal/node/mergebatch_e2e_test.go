@@ -372,47 +372,4 @@ func TestNodeFetchesABatchCandidateOnItsMintedToken(t *testing.T) {
 			t.Errorf("node.log says the operator's login fetched:\n%s", out)
 		}
 	})
-
-	// a platform whose issueItemRepoToken takes no mergeBatchId: the
-	// remote takes the operator's login alone, and the candidate is
-	// fetched, validated and attested on it
-	t.Run("platform mints none", func(t *testing.T) {
-		loop, r, f, batch, logs, heads, remote := tokenRemoteNode(t, operatorToken)
-		r.BatchFallback = &TokenFallback{}
-		f.Unsupported["issueItemRepoToken.mergeBatchId"] = true
-		runUntil(t, loop, logs, func() bool {
-			return len(f.CallsNamed("finishMergeBatchValidation"))+len(f.CallsNamed("failMergeBatchValidation")) > 0
-		})
-		if fail := f.CallsNamed("failMergeBatchValidation"); len(fail) != 0 {
-			t.Fatalf("the validation failed: %v\n%s", fail[0].Input["reason"], logs.String())
-		}
-		for _, p := range remote.passwords() {
-			if p != operatorToken {
-				t.Fatalf("the remote was sent %q, want the operator's login alone", p)
-			}
-		}
-		if len(remote.passwords()) == 0 {
-			t.Fatalf("the remote was sent no credential:\n%s", logs.String())
-		}
-		if got := heads.all(); len(got) != 1 || got[0] != batch.SHA {
-			t.Fatalf("the suites ran on %v, want once on %s", got, batch.SHA)
-		}
-		atts := batchAttestations(f)
-		if len(atts) != 1 || atts[0].Input["mergeBatchId"] != batchID {
-			t.Fatalf("batch attestations = %+v, want one with mergeBatchId %s", atts, batchID)
-		}
-		if fin := f.CallsNamed("finishMergeBatchValidation"); len(fin) != 1 || fin[0].Input["sha"] != batch.SHA {
-			t.Fatalf("finish calls = %+v, want one on %s", fin, batch.SHA)
-		}
-		out := logs.String()
-		for _, want := range []string{
-			"the platform issues no merge batch token; fetching candidates on the operator's own login",
-			"merge batch 7 (acme/widgets): candidate fetched on the operator's own login",
-			label + "finished",
-		} {
-			if !strings.Contains(out, want) {
-				t.Errorf("node.log lacks %q:\n%s", want, out)
-			}
-		}
-	})
 }
