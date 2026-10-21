@@ -4891,6 +4891,25 @@ func retryOnTransient(ctx context.Context, fn func() error) error {
 	return err
 }
 
+// IsTransient reports whether err is the gateway's absence rather than
+// its answer: a transport error, a timeout, or a 429/5xx (isTransient).
+// A refusal is not.
+func IsTransient(err error) bool { return err != nil && isTransient(err) }
+
+// RetryCommand sends a command that must land — a failed or released
+// item the node would otherwise leave claimed — again on a transient
+// answer, as retryRead does a read: within budget counted from the
+// first try, waiting backoff's entries between tries, each try under
+// tryTimeout. A refusal or success returns at once; the budget spent
+// returns the last answer wrapped "after N tries over <elapsed>: …".
+func RetryCommand(ctx context.Context, budget time.Duration, backoff []time.Duration, tryTimeout time.Duration, fn func(context.Context) error) error {
+	tries, elapsed, spent, err := retryTransient(ctx, budget, backoff, tryTimeout, fn)
+	if spent {
+		return fmt.Errorf("after %d tries over %s: %w", tries, elapsed.Round(time.Millisecond), err)
+	}
+	return err
+}
+
 // ReadRetryFor is the time budget of a read's retries (retryRead),
 // counted from the first try, under the same rule as
 // AttestationRetryFor. A test shortens it to run fast.

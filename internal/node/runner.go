@@ -1078,6 +1078,10 @@ func (t *buildTail) end(ctx context.Context) error {
 			reportFailure(r.Tripline, tripline.HarnessUnavailable, runErr, item, label, repoOf(b.res), gateway.RoleBuilder)
 		}
 		b.report(ctx, "harness error: "+runErr.Error())
+		b.reportToolUse(ctx, *result)
+		if note := b.acct.UseNote(*result); note != "" {
+			runErr = fmt.Errorf("%w (%s)", runErr, note)
+		}
 		return t.stop(r.fail(ctx, item, runErr))
 	}
 	result.Text = b.acct.Redact(result.Text)
@@ -1086,6 +1090,9 @@ func (t *buildTail) end(ctx context.Context) error {
 		b.report(ctx, "session ended without success: "+result.Text)
 		b.reportToolUse(ctx, *result)
 		failed := fmt.Errorf("session ended without success: %s", truncate(result.Text, 500))
+		if note := b.acct.UseNote(*result); note != "" {
+			failed = fmt.Errorf("%w (%s)", failed, note)
+		}
 		reportFailure(r.Tripline, tripline.SessionFailed, failed, item, label, repoOf(b.res), gateway.RoleBuilder)
 		return t.stop(r.fail(ctx, item, failed))
 	}
@@ -1106,11 +1113,24 @@ func (t *buildTail) end(ctx context.Context) error {
 	if !fin.called {
 		evidence, already = harness.ParseAlreadyDone(result.Text)
 	}
+	if !fin.called && !already && !result.HandedBack && !r.hasCommit(b.dir, b.spec.BaseRef)() {
+		// a session that says it is done but called no mesh_finish and
+		// committed nothing past its base — its runsheet server down, say
+		// — has nothing to validate or finish: failed with its text and
+		// its tool use, never an empty finish (a handed-back session's
+		// empty finish is the platform's to route back)
+		failed := fmt.Errorf("session ended with no mesh_finish call and nothing committed past %s: %s", b.spec.BaseRef, truncate(result.Text, 500))
+		if note := b.acct.UseNote(*result); note != "" {
+			failed = fmt.Errorf("%w (%s)", failed, note)
+		}
+		reportFailure(r.Tripline, tripline.SessionFailed, failed, item, label, repoOf(b.res), gateway.RoleBuilder)
+		return t.stop(r.fail(ctx, item, failed))
+	}
 	if already {
 		// main already holds the work (adr-003): no push, no branch, and
 		// the evaluator checks the evidence on the base ref
 		if err := b.acct.Carried(r.GW.FinishWorkItemAlreadyDone(ctx, item.ID, truncate(b.acct.Redact(evidence), 4000), b.cost.delta(), b.acct.Report(*result), b.description(ctx))); err != nil {
-			return t.stop(fmt.Errorf("finish %s: %w", label, err))
+			return t.stop(r.finishRefused(ctx, item, label, err))
 		}
 		r.logf("item %s: finished already done ($%.2f): %s", label, result.CostUSD, truncate(evidence, 200))
 		return t.stop(nil)
@@ -1215,7 +1235,7 @@ func (t *buildTail) finish(ctx context.Context, state *sessionsteps.State) error
 		return t.stop(r.fail(ctx, item, err))
 	}
 	if err != nil {
-		return t.stop(fmt.Errorf("finish %s: %w", label, err))
+		return t.stop(r.finishRefused(ctx, item, label, err))
 	}
 	fr, _ := state.Results[sessionsteps.FinishStepName].(*sessionsteps.FinishResult)
 	switch {
@@ -1487,10 +1507,72 @@ func (r *Runner) fail(ctx context.Context, item gateway.WorkItem, cause error) e
 	// an environment failure's reason opens with its kind (adr-030)
 	reason := validate.Reason(cause)
 	r.logf("item %s: failed: %s", item.ID, reason)
-	if err := r.GW.FailWorkItem(ctx, item.ID, truncate(reason, 2000)); err != nil && !errors.Is(err, context.Canceled) {
+	reason = truncate(reason, 2000)
+	err := sendReport(ctx, func(ctx context.Context) error { return r.GW.FailWorkItem(ctx, item.ID, reason) })
+	if err == nil || ctx.Err() != nil {
+		return cause
+	}
+	// the item is never left claimed for the platform's stall sweep: a
+	// fail refused, or one the gateway never answered inside the minute,
+	// is logged with the gateway's answer and the claim released naming
+	// the reason
+	if gateway.IsRefusal(err) && !gateway.IsTransient(err) {
+		r.logf("item %s: fail refused: %v", item.ID, err)
+	} else {
 		r.logf("item %s: fail: %v", item.ID, err)
 	}
+	r.releaseNaming(ctx, item, reason)
 	return cause
+}
+
+// ReportRetryFor bounds the node's tries at a command that ends a
+// session's claim — a fail, a release — counted from the first: a
+// session's end reaches the platform inside it, never left to the stall
+// sweep. ReportBackoff is the wait between tries, ReportTryTimeout each
+// try's bound. A test shortens them.
+var (
+	ReportRetryFor   = 60 * time.Second
+	ReportBackoff    = []time.Duration{1 * time.Second, 2 * time.Second, 5 * time.Second, 10 * time.Second}
+	ReportTryTimeout = 20 * time.Second
+)
+
+// sendReport sends a claim-ending command, again on a transient answer,
+// within ReportRetryFor.
+func sendReport(ctx context.Context, fn func(context.Context) error) error {
+	return gateway.RetryCommand(ctx, ReportRetryFor, ReportBackoff, ReportTryTimeout, fn)
+}
+
+// releaseNaming releases item's claim with reason after a fail or a
+// finish the platform did not take, logging a refusal with its answer.
+func (r *Runner) releaseNaming(ctx context.Context, item gateway.WorkItem, reason string) {
+	sc, _ := r.Scopes.ByOrg(item.OrgID)
+	err := sendReport(ctx, func(ctx context.Context) error { return r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason) })
+	switch {
+	case err == nil:
+		r.logf("item %s: released: %s", item.ID, truncate(reason, 200))
+	case ctx.Err() != nil:
+	case gateway.IsRefusal(err) && !gateway.IsTransient(err):
+		r.logf("item %s: release refused: %v", item.ID, err)
+	default:
+		r.logf("item %s: release: %v", item.ID, err)
+	}
+}
+
+// finishRefused answers a finish the platform did not take: logged with
+// the gateway's answer and the claim released naming it, so the item is
+// never left claimed for the stall sweep; a done ctx sends nothing.
+func (r *Runner) finishRefused(ctx context.Context, item gateway.WorkItem, label string, err error) error {
+	err = fmt.Errorf("finish %s: %w", label, err)
+	if ctx.Err() != nil {
+		return err
+	}
+	if gateway.IsRefusal(err) && !gateway.IsTransient(err) {
+		r.logf("item %s: finish refused: %v", label, err)
+	} else {
+		r.logf("item %s: finish: %v", label, err)
+	}
+	r.releaseNaming(ctx, item, err.Error())
+	return err
 }
 
 func truncate(s string, n int) string {
