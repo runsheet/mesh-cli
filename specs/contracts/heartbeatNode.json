@@ -1,5 +1,5 @@
 {
-  "description": "heartbeatNode: every heartbeat carries the platform's answer to who owns the node and which orgs it now serves too, not only at registration — an enterprise's node picks up an org attached later with no restart. Each scope's shares is the enterprise's per-org weight — a setting on the enterprise the platform serves as part of the owner contract, absent or 0 meaning equal shares; foghornid carries none here, serving equally with whatever floor the node computes for the rest. The runsheet goal a-node-has-an-owner serves this same shape at /contracts/heartbeatNode.json — the platform side of the contract. Its input's `holding.orgs` is each served org's share of the node (mesh-cli ADR-023, Reporting): `org` (its login, else slug), `orgId`, `floor` (the slots its weight gives it), `held` (the builds, plans and research it holds there) and `ready` (the ready items its last listing returned, -1 when that read failed); always a list, sent only when the platform's holding input takes `orgs`. Its `holding.kinds` is the kinds of session the node takes (mesh-cli ADR-025): kind names alone, no cap, in the fixed order build, evaluate, rebase, plan, research — every kind when node.yaml names none; always a list, sent only when the platform's holding input takes `kinds`, and the summary opens `takes <kinds>; ` when fewer than every kind is taken.",
+  "description": "heartbeatNode: every heartbeat carries the platform's answer to who owns the node and which orgs it now serves too, not only at registration — an enterprise's node picks up an org attached later with no restart. Each scope's shares is the enterprise's per-org weight — a setting on the enterprise the platform serves as part of the owner contract, absent or 0 meaning equal shares; foghornid carries none here, serving equally with whatever floor the node computes for the rest. The runsheet goal a-node-has-an-owner serves this same shape at /contracts/heartbeatNode.json — the platform side of the contract. Its input's `holding.orgs` is each served org's share of the node (mesh-cli ADR-023, Reporting): `org` (its login, else slug), `orgId`, `floor` (the slots its weight gives it), `held` (the builds, plans and research it holds there) and `ready` (the ready items its last listing returned, -1 when that read failed); always a list, sent only when the platform's holding input takes `orgs`. Its `holding.kinds` is the kinds of session the node takes (mesh-cli ADR-025): kind names alone, no cap, in the fixed order build, evaluate, rebase, plan, research — every kind when node.yaml names none; always a list, sent only when the platform's holding input takes `kinds`, and the summary opens `takes <kinds>; ` when fewer than every kind is taken. Each scope's cap is the node's connection to the org's cap on its concurrent sessions there (runsheet ADR 066, decision 11): 0 is none; a stop's reason may also be connection revoked (ADR 066, decision 8).",
   "input": {
     "aggregateId": "b99be3f5-2f54-54a7-9af5-49d9bfc96744",
     "namespace": "runsheet",
@@ -77,28 +77,32 @@
         "login": "runsheet",
         "slug": "runsheet",
         "accountId": "66666666-6666-4666-8666-666666666666",
-        "shares": 2
+        "shares": 2,
+        "cap": 0
       },
       {
         "orgId": "77777777-7777-4777-8777-777777777777",
         "login": "wardroomid",
         "slug": "wardroomid",
         "accountId": "88888888-8888-4888-8888-888888888888",
-        "shares": 1
+        "shares": 1,
+        "cap": 0
       },
       {
         "orgId": "99999999-9999-4999-8999-999999999999",
         "login": "",
         "slug": "grapevine",
         "accountId": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa",
-        "shares": 1
+        "shares": 1,
+        "cap": 0
       },
       {
         "orgId": "cccccccc-3333-4333-8333-cccccccccccc",
         "login": "foghornid",
         "slug": "foghornid",
         "accountId": "dddddddd-4444-4444-8444-dddddddddddd",
-        "shares": 0
+        "shares": 0,
+        "cap": 0
       }
     ]
   }
