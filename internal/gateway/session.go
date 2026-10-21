@@ -76,8 +76,10 @@ func (c *Client) SessionCredentials(ctx context.Context, ref SessionRef, nodeID 
 // a secret.
 func (c *Client) Session(ctx context.Context, ref SessionRef, nodeID string) (*Session, error) {
 	ctx = withNodeID(ctx, nodeID)
-	if ref.ThreadID != "" {
-		return c.jobSession(ctx, ref)
+	// every session's accounts and tools are its job's exchange
+	// (jobAccess, runsheet ADR 061 §4)
+	if kind, subject, ok := jobOfRef(ref); ok {
+		return c.jobSession(ctx, kind, subject)
 	}
 	f, err := fieldsFor(ref)
 	if err != nil {
@@ -354,8 +356,8 @@ func (s *Session) String() string {
 // (jobAccess, runsheet ADR 061 §4): a thread turn's model accounts, as
 // itemCredentials answers them, and its runsheet tools, as itemTools
 // does.
-func (c *Client) jobSession(ctx context.Context, ref SessionRef) (*Session, error) {
-	acc, err := c.JobAccess(ctx, ref.JobKind, JobSubject{Type: "thread", ID: ref.ThreadID}, "")
+func (c *Client) jobSession(ctx context.Context, kind string, subject JobSubject) (*Session, error) {
+	acc, err := c.JobAccess(ctx, kind, subject, "")
 	if err != nil {
 		return nil, err
 	}
@@ -383,4 +385,19 @@ func (c *Client) jobSession(ctx context.Context, ref SessionRef) (*Session, erro
 		}
 	}
 	return s, nil
+}
+
+// jobOfRef is the job a session ref is: its kind and subject.
+func jobOfRef(ref SessionRef) (string, JobSubject, bool) {
+	switch {
+	case ref.ThreadID != "":
+		return ref.JobKind, JobSubject{Type: "thread", ID: ref.ThreadID}, true
+	case ref.ItemID != "" && ref.Kind != "":
+		return "runsheet/" + ref.Kind, JobSubject{Type: "item", ID: ref.ItemID}, true
+	case ref.GoalID != "":
+		return "runsheet/plan", JobSubject{Type: "goal", ID: ref.GoalID}, true
+	case ref.DirectionID != "":
+		return "runsheet/research", JobSubject{Type: "direction", ID: ref.DirectionID}, true
+	}
+	return "", JobSubject{}, false
 }

@@ -761,9 +761,23 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 	f.requests++
 	f.sweepStalls()
-	if f.jobAPI(w, q, req.Variables) {
+	if f.jobAPI(w, r, q, req.Variables, bearer) {
 		return
 	}
+	f.serve(w, r, q, req.Variables, bearer)
+}
+
+// gqlRequest is a request's query and variables.
+type gqlRequest struct {
+	Query     string
+	Variables map[string]any
+}
+
+// serve answers one GraphQL request q with variables vars; f.mu is held.
+// The job API's calls on runsheet's kinds (jobs.go) are served again
+// through it as the older mutation they route to.
+func (f *Fake) serve(w http.ResponseWriter, r *http.Request, q string, vars map[string]any, bearer string) {
+	req := gqlRequest{Query: q, Variables: vars}
 	switch {
 	case strings.HasPrefix(q, "mutation { signIn"):
 		f.SignInCalls++

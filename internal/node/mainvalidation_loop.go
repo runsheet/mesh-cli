@@ -56,6 +56,9 @@ type mainValidationGateway interface {
 	ClaimWorkItemMainValidation(ctx context.Context, itemID, nodeID, harness string) error
 	FinishWorkItemMainValidation(ctx context.Context, itemID, sha string) error
 	FailWorkItemMainValidation(ctx context.Context, itemID, reason string) error
+	// FinishValidationJob hands the attestation back and ends the claim
+	// in one (runsheet ADR 061's finishJob).
+	FinishValidationJob(ctx context.Context, subject, id, nodeID string, att gateway.ValidationAttestation) (map[string]any, error)
 }
 
 // errBatchClaimLost and errBatchOverrun are why a running batch
@@ -84,7 +87,7 @@ type mainJob struct {
 	id, label, claimed string
 	run                func(ctx context.Context) (validate.Attestation, error)
 	claim              func(ctx context.Context) error
-	finish             func(ctx context.Context, sha string) error
+	finish             func(ctx context.Context, att validate.Attestation) error
 	fail               func(ctx context.Context, reason string) error
 }
 
@@ -96,8 +99,9 @@ func batchJob(l *Loop, gw mainValidationGateway, b gateway.MainValidationBatch, 
 		claim: func(ctx context.Context) error {
 			return gw.ClaimMergeBatchValidation(ctx, b.MergeBatchID, nodeID, l.adapter())
 		},
-		finish: func(ctx context.Context, sha string) error {
-			return gw.FinishMergeBatchValidation(ctx, b.MergeBatchID, nodeID, sha)
+		finish: func(ctx context.Context, att validate.Attestation) error {
+			_, err := gw.FinishValidationJob(ctx, "candidate", b.MergeBatchID, nodeID, gatewayAttestation(att))
+			return err
 		},
 		fail: func(ctx context.Context, reason string) error {
 			return gw.FailMergeBatchValidation(ctx, b.MergeBatchID, nodeID, reason)
@@ -112,8 +116,9 @@ func requestJob(l *Loop, gw mainValidationGateway, r gateway.MainValidationReque
 		claim: func(ctx context.Context) error {
 			return gw.ClaimWorkItemMainValidation(ctx, r.WorkItemID, nodeID, l.adapter())
 		},
-		finish: func(ctx context.Context, sha string) error {
-			return gw.FinishWorkItemMainValidation(ctx, r.WorkItemID, sha)
+		finish: func(ctx context.Context, att validate.Attestation) error {
+			_, err := gw.FinishValidationJob(ctx, "main", r.WorkItemID, nodeID, gatewayAttestation(att))
+			return err
 		},
 		fail: func(ctx context.Context, reason string) error {
 			return gw.FailWorkItemMainValidation(ctx, r.WorkItemID, reason)
@@ -284,7 +289,7 @@ func (l *Loop) runMainJob(ctx context.Context, j mainJob) {
 		colour = "red"
 	}
 	l.logf("%s: attested %s (%s)", j.label, colour, attestedSuites(att))
-	if err := j.finish(context.WithoutCancel(ctx), att.Commit); err != nil {
+	if err := j.finish(context.WithoutCancel(ctx), att); err != nil {
 		l.logf("%s: finish refused: %v", j.label, err)
 		return
 	}
@@ -402,8 +407,28 @@ func checkBatchToken(batch gateway.MainValidationBatch, tok *gateway.GitHubToken
 	return nil
 }
 
-// ValidateMainRequest is validateMainRequest on the operator's own
-// credentials, as ValidateCandidate: what the loop's ValidateMain runs.
+// mainTokenMinter is the gateway's main validation token, from the
+// exchange (*gateway.Client).
+type mainTokenMinter interface {
+	MainValidationToken(ctx context.Context, itemID, nodeID string) (*gateway.GitHubToken, error)
+}
+
+// ValidateMainRequest is validateMainRequest on the merged item's read
+// token from the exchange (jobAccess), what the loop's ValidateMain
+// runs: a mint refused or failing is the validation's error, never the
+// operator's login instead. A gateway that mints none runs on the
+// operator's login, as before.
 func (r *Runner) ValidateMainRequest(ctx context.Context, req gateway.MainValidationRequest) (validate.Attestation, error) {
-	return r.validateMainRequest(ctx, req, nil)
+	m, ok := r.GW.(mainTokenMinter)
+	if !ok {
+		return r.validateMainRequest(ctx, req, nil)
+	}
+	sc, _ := r.Scopes.ByOrg(req.OrgID)
+	tok, err := m.MainValidationToken(ctx, req.WorkItemID, sc.NodeID)
+	if err != nil {
+		err = fmt.Errorf("github token for %s: %w", mainRequestLabel(req), err)
+		r.logf("%v; not fetched", err)
+		return validate.Attestation{}, err
+	}
+	return r.validateMainRequest(ctx, req, tok)
 }

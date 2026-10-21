@@ -145,6 +145,8 @@ func ResearchDir(root, projectSlug, directionSlug string) string {
 // Any other error means nothing was handed in — the claim goes stale and
 // another tick, or another node, tries again.
 func (d *Director) Research(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope) error {
+	// the node a finish is handed back by (finishJob, runsheet ADR 061)
+	ctx = gateway.WithNodeID(ctx, scope.NodeID)
 	if len(project.RepoIDs) == 0 {
 		return fmt.Errorf("project %s has no repos enrolled; nothing to research", project.Slug)
 	}
@@ -586,6 +588,7 @@ func trimAll(list []string) []string {
 // one started (ADR 009): followed to its end, or read from its file when
 // it is gone, and handed in as Research hands in its own.
 func (d *Director) AdoptResearch(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope, s FoundSession) error {
+	ctx = gateway.WithNodeID(ctx, scope.NodeID)
 	at, ok := d.Harness.(harness.Attacher)
 	if !ok {
 		stopFound(d.logf, project.Slug+"/"+direction.Slug, s)

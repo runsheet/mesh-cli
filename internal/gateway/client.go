@@ -455,6 +455,12 @@ func MutationInput(aggregateID string, input map[string]any) map[string]any {
 func (c *Client) MutateFields(ctx context.Context, field, aggregateID string, input map[string]any, fields string, out any) error {
 	in := MutationInput(aggregateID, input)
 	c.withActor(ctx, field, in)
+	// a claim or finish of runsheet's kinds is the job system's (jobroute.go)
+	if out == nil {
+		if routed, err := c.routeJob(ctx, field, in); routed {
+			return err
+		}
+	}
 	typ := strings.ToUpper(field[:1]) + field[1:] + "Input"
 	q := fmt.Sprintf("mutation($in: %s!) { %s(input: $in) { %s } }", typ, field, fields)
 	if out == nil {
@@ -3771,6 +3777,11 @@ type GitHubToken struct {
 // refusal). A platform without the mutation answers IsUnsupported, and
 // the caller falls back to the operator's own GitHub login.
 func (c *Client) IssueItemRepoToken(ctx context.Context, itemID, nodeID string) (*GitHubToken, error) {
+	// a node's session asks the exchange, as its kind (WithJobKind); a
+	// person's `mesh join` holds no job and asks the token itself
+	if kind := jobKindFrom(ctx); kind != "" {
+		return c.jobRepoToken(withNodeID(ctx, nodeID), kind, JobSubject{Type: "item", ID: itemID})
+	}
 	// The platform serves issueItemRepoToken(workItemId: UUID!): Map —
 	// {token, expiresAt, repo, access, permissions} — not a command with
 	// an input object; the node's claim is what authorises it, so the
@@ -3791,9 +3802,7 @@ func (c *Client) IssueItemRepoToken(ctx context.Context, itemID, nodeID string) 
 // answers IsUnsupported. nodeID is kept for the interface: the platform
 // knows the node from the bearer.
 func (c *Client) IssueMergeBatchRepoToken(ctx context.Context, batch MainValidationBatch, nodeID string) (*GitHubToken, error) {
-	_ = nodeID
-	q := `mutation($id: UUID!) { issueItemRepoToken(mergeBatchId: $id) }`
-	return c.issueRepoToken(ctx, q, batch.MergeBatchID, "merge batch")
+	return c.jobRepoToken(withNodeID(ctx, nodeID), "runsheet/validate", JobSubject{Type: "candidate", ID: batch.MergeBatchID})
 }
 
 // issueRepoToken sends one of issueItemRepoToken's two forms, q naming
@@ -3847,16 +3856,14 @@ func (c *Client) issueRepoToken(ctx context.Context, q, id, what string) (*GitHu
 // GitHub login. nodeID is kept for the interface: the platform knows
 // the node from the bearer.
 func (c *Client) PlanGitHubTokens(ctx context.Context, goalID, nodeID string) ([]GitHubToken, error) {
-	_ = nodeID
-	return c.sessionGitHubTokens(ctx, "planGitHubToken", "goalId", goalID)
+	return c.jobRepoTokens(withNodeID(ctx, nodeID), "runsheet/plan", JobSubject{Type: "goal", ID: goalID})
 }
 
 // ResearchGitHubTokens is PlanGitHubTokens for a direction's research
 // session, held by its own research claim rather than a goal's plan
 // claim.
 func (c *Client) ResearchGitHubTokens(ctx context.Context, directionID, nodeID string) ([]GitHubToken, error) {
-	_ = nodeID
-	return c.sessionGitHubTokens(ctx, "researchGitHubToken", "directionId", directionID)
+	return c.jobRepoTokens(withNodeID(ctx, nodeID), "runsheet/research", JobSubject{Type: "direction", ID: directionID})
 }
 
 // RegistryToken is a credential that reads images from one registry,
