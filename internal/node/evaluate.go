@@ -137,7 +137,11 @@ type Evaluator struct {
 	// Sandbox, when set, runs the session in its own pod with the
 	// services its checkout declares (as Runner.Sandbox).
 	Sandbox *sandbox.Sandbox
-	Log     *log.Logger
+	// HeartbeatEvery is how often an evaluation heartbeats its item,
+	// claim to verdict (evalHeartbeat); 0 is node.yaml's
+	// evaluate.heartbeat_every, else DefaultEvaluationHeartbeatEvery.
+	HeartbeatEvery time.Duration
+	Log            *log.Logger
 }
 
 // kindModelBudget is node.yaml's budgets: figure for kind and model —
@@ -209,6 +213,7 @@ func (e *Evaluator) failDiff(ctx context.Context, item gateway.WorkItem, label, 
 	}
 	notes = truncate(notes, 4000)
 	e.logf("item %s: not evaluated, failed: %s", label, notes)
+	stopHeartbeat(ctx)
 	if err := e.GW.EvaluateWorkItem(ctx, item.ID, false, notes, nil, 0, nil, gateway.EvaluateChoice{}); err != nil {
 		return fmt.Errorf("record verdict: %w", err)
 	}
@@ -242,6 +247,18 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	}
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
 	ctx = WithLockHolder(ctx, label)
+	// the node holds the evaluation from here until its verdict: the
+	// item heartbeats all the while, whatever the session says, so a
+	// long suite is never stalled (runsheet ADR 018's amendment
+	// 2026-10-18)
+	ctx, hb := e.startHeartbeat(ctx, item.ID, label, evalPhaseCheckout)
+	defer hb.end()
+	return e.claimLost(hb, label, e.evaluate(ctx, item, res, label))
+}
+
+// evaluate is Evaluate's work once the item is resolved and its
+// heartbeat runs on ctx.
+func (e *Evaluator) evaluate(ctx context.Context, item gateway.WorkItem, res *Resolved, label string) error {
 	// the family it runs on, before anything is prepared: a pinned
 	// family with no headroom waits in evaluating (ADR 011)
 	fam, err := e.family(ctx, item, res.Goal.Priority, label)
@@ -477,6 +494,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	} else {
 		e.logf("item %s: evaluate on %s: %s (%d bytes of diff)", label, fam.logName(), branch, len(diff))
 	}
+	setEvalPhase(ctx, evalPhaseSession)
 	h := e.Harness
 	// the session outlives this process: a restart adopts it (ADR 009) —
 	// a Codex one in its pod on a sandboxed node, by its state's adapter
@@ -575,8 +593,8 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	item, label, acct := ev.item, ev.label, ev.acct
 	// what the agent left running goes in the verdict's notes; an end
 	// that records no verdict only logs it and holds it for the item's
-	// next one, since the platform takes no progress note on an item in
-	// evaluating (ADR 008, The session's end). Logged before a done ctx
+	// next one, since a progress note is the evaluation's heartbeat,
+	// not its record (ADR 008, The session's end). Logged before a done ctx
 	// returns: a deadline kills the unit too, and a detach kills nothing.
 	left := e.LeftRunning
 	if left == nil {
@@ -797,6 +815,8 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 		}
 	}
 	acct.SetEvaluation(ev.res.Goal.Priority, evaluators)
+	// no heartbeat after the verdict
+	stopHeartbeat(ctx)
 	if err := acct.Carried(e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, failed, Cents(cost), usage, gateway.EvaluateChoice{EvaluatedModel: fam.model})); err != nil {
 		if verdictCalled && gateway.IsRefusal(err) && !gateway.IsUnsupported(err) {
 			// the hosted mesh_verdict already recorded it, so the item is
@@ -933,6 +953,7 @@ func (e *Evaluator) logReadings(label, notes string) {
 // evaluating with.
 func (e *Evaluator) noVerdict(ctx context.Context, ev evalRun, reason string, cost float64, usage *gateway.UsageReport, fallback func() error) error {
 	reason = truncate(reason, 4000)
+	stopHeartbeat(ctx)
 	err := e.GW.EvaluateWorkItemNoVerdict(ctx, ev.item.ID, reason, Cents(cost), usage, gateway.EvaluateChoice{EvaluatedModel: ev.fam.model})
 	if errors.Is(err, gateway.ErrNoVerdictOutcome) {
 		if e.NoVerdict.First("") {
@@ -981,10 +1002,14 @@ func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, 
 	ctx = WithLockHolder(ctx, label)
 	endProxy := adoptProxy(ctx, e.Proxies, e.Credentials, e.MCP, tools.RoleFor(string(harness.KindEvaluate)), e.runtimes(), gateway.SessionRef{Kind: string(harness.KindEvaluate), ItemID: item.ID, GoalID: item.GoalID}, s, "item "+label, e.logf)
 	defer endProxy(ctx)
+	// adopted, the node holds the evaluation again: it heartbeats until
+	// the verdict, as a started one does
+	ctx, hb := e.startHeartbeat(ctx, item.ID, label, evalPhaseSession)
+	defer hb.end()
 	e.logf("item %s: adopted its %s evaluation on %s (pid %d)", label, s.Liveness(), fam.logName(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
 	changed, cfg := e.touched(ctx, label, s.State.Workspace, res.BaseRef(), defaultBranchOf(res), item.Outcome == gateway.OutcomeAlreadyDone)
-	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: s.State.Model, fam: fam, dir: s.State.Workspace, adopted: true, prior: e.priorAttempts(ctx, item, label), changed: changed, setting: cfg.setting(), protected: cfg.ProtectedPaths}, result, err)
+	return e.claimLost(hb, label, e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: s.State.Model, fam: fam, dir: s.State.Workspace, adopted: true, prior: e.priorAttempts(ctx, item, label), changed: changed, setting: cfg.setting(), protected: cfg.ProtectedPaths}, result, err))
 }
 
 // opinion is the second evaluation's outcome: its verdict and notes, or
@@ -1018,6 +1043,11 @@ type opinion struct {
 // that stands in for a session that saw no context.
 func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, job harness.Job, role string) opinion {
 	label := ev.label
+	if role == "second opinion" {
+		setEvalPhase(ctx, evalPhaseSecondOpinion)
+	} else {
+		setEvalPhase(ctx, evalPhaseSession)
+	}
 	h := e.Harness
 	var acct *SessionAccount
 	sc, _ := e.Scopes.ByOrg(ev.item.OrgID)
@@ -1687,6 +1717,7 @@ func (e *Evaluator) contextBudget() ContextConfig {
 // start always has.
 func (e *Evaluator) releaseInfrastructure(ctx context.Context, item gateway.WorkItem, label string, we *WorkspaceError) error {
 	sc, _ := e.Scopes.ByOrg(item.OrgID)
+	stopHeartbeat(ctx)
 	err := ReleaseOnInfrastructure(ctx, e.GW, item.ID, sc.NodeID, label, we, func(string) {
 		e.logf("item %s: not evaluated, the node's condition; left in evaluating", label)
 	}, e.logf)

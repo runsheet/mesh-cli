@@ -56,8 +56,8 @@ func stopFound(logf func(string, ...any), subject string, s FoundSession) {
 
 // LeftRunning holds the killed sentences of an item's evaluations that
 // recorded no verdict — a timeout, an error, no verdict, no context —
-// until one does: the platform takes no progress note on an item in
-// evaluating, so the next verdict's notes carry them. A nil one holds
+// until one does: an evaluation's progress note is its heartbeat, not
+// its record, so the next verdict's notes carry them. A nil one holds
 // nothing.
 type LeftRunning struct {
 	mu    sync.Mutex
