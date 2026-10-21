@@ -318,3 +318,51 @@ func TestWriteShares(t *testing.T) {
 		t.Fatal("node.shares left after Stopped")
 	}
 }
+
+// A connection's cap (ADR 066, decision 11): A capped at 1 with four
+// urgent items ready, B nothing ready, capacity 4: A is claimed once,
+// however much of the node is free. Uncapped (0), A takes every free
+// slot, as
+// TestClaimReadySharesSpareGoesToPriority has it. With B capped at 1
+// and A not, B gets its one and A the rest.
+func TestClaimReadyConnectionCap(t *testing.T) {
+	t.Run("a capped org stops at its cap", func(t *testing.T) {
+		p := sharesFake(t, false)
+		loop, logs := p.sharesLoop(4)
+		for i := range loop.Scopes {
+			if loop.Scopes[i].ID == orgID {
+				loop.Scopes[i].Cap = 1
+			}
+		}
+		if got := p.claimsByOrg(loop); got[orgID] != 1 {
+			t.Fatalf("claims by org %v, want A 1\n%s", got, logs)
+		}
+	})
+	t.Run("a capped org leaves the rest to the other", func(t *testing.T) {
+		p := sharesFake(t, true)
+		loop, logs := p.sharesLoop(4)
+		for i := range loop.Scopes {
+			if loop.Scopes[i].ID == org2 {
+				loop.Scopes[i].Cap = 1
+			}
+		}
+		if got := p.claimsByOrg(loop); got[org2] != 1 || got[orgID] != 3 {
+			t.Fatalf("claims by org %v, want A 3 and B 1\n%s", got, logs)
+		}
+	})
+}
+
+// atConnectionCap: no cap is never at it; a cap is reached at held.
+func TestAtConnectionCap(t *testing.T) {
+	sc := Scope{Login: "acme", ID: "org-a"}
+	if _, at := atConnectionCap(sc, map[string]int{"org-a": 9}); at {
+		t.Fatal("an uncapped connection was at its cap")
+	}
+	sc.Cap = 2
+	if _, at := atConnectionCap(sc, map[string]int{"org-a": 1}); at {
+		t.Fatal("at 1 of 2")
+	}
+	if why, at := atConnectionCap(sc, map[string]int{"org-a": 2}); !at || why != "acme's connection is at its cap of 2 sessions" {
+		t.Fatalf("at 2 of 2: %q %v", why, at)
+	}
+}

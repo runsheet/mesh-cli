@@ -364,3 +364,15 @@ func (l *Loop) noteReady(scopes Scopes, listed [][]gateway.WorkItem, failed []bo
 	l.readyByOrg = ready
 	l.mu.Unlock()
 }
+
+// atConnectionCap says whether the node holds as many of the org's
+// sessions (held, heldByOrg's count: builds, plans and research) as the
+// org's connection caps it at (Scope.Cap, ADR 066 decision 11), and why,
+// as a held report reads it. A cap of 0 is none: the fair share floors
+// alone decide, and capacity another org leaves idle is the org's to use.
+func atConnectionCap(sc Scope, held map[string]int) (string, bool) {
+	if sc.Cap <= 0 || held[sc.ID] < sc.Cap {
+		return "", false
+	}
+	return fmt.Sprintf("%s's connection is at its cap of %d sessions", sc.Name(), sc.Cap), true
+}

@@ -2229,11 +2229,11 @@ func rebaser(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harnes
 }
 
 func planner(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, workRoot string, accounts *node.Credentials, logger *log.Logger) *node.Planner {
-	return &node.Planner{GW: gw, Proxies: sessionProxies, Harness: h, Sandbox: sessionSandbox, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodePlanBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.PlanModel(), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Log: logger}
+	return &node.Planner{GW: gw, Proxies: sessionProxies, Harness: h, Sandbox: sessionSandbox, Served: loop.CurrentScopes, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodePlanBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.PlanModel(), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Log: logger}
 }
 
 func director(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, workRoot string, accounts *node.Credentials, logger *log.Logger) *node.Director {
-	return &node.Director{GW: gw, Proxies: sessionProxies, Harness: h, Sandbox: sessionSandbox, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeResearchBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("research"), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Log: logger}
+	return &node.Director{GW: gw, Proxies: sessionProxies, Harness: h, Sandbox: sessionSandbox, Served: loop.CurrentScopes, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeResearchBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("research"), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Log: logger}
 }
 
 // adoptSessions takes up, before the first claim, every session under the

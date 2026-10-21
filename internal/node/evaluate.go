@@ -407,6 +407,17 @@ func (e *Evaluator) evaluate(ctx context.Context, item gateway.WorkItem, res *Re
 	if re := RuntimeErrorOf(err); re != nil {
 		return e.runtimeNoVerdict(ctx, evalRun{item: item, res: res, label: label, model: model, fam: fam, dir: dir, acct: acct}, re, harness.Result{})
 	}
+	if errors.Is(err, ErrHostServesSeveralOrgs) {
+		// no sandbox on a node serving several orgs: never on the host
+		// (ADR 066, decision 10). An item in evaluating can be neither
+		// released nor reported on, so it is left unevaluated and held
+		// off this node, as a required service that did not come up is
+		noteHostFallback(err, e.logf)
+		reason := HostFallbackReason(err)
+		e.Declines.HoldFor(item.ID, reason, time.Now(), WorkspaceReleaseHold)
+		e.logf("item %s: not evaluated, %s", label, reason)
+		return err
+	}
 	if err != nil {
 		return fmt.Errorf("services: %w", err)
 	}

@@ -87,6 +87,10 @@ type Client struct {
 	// the gateway refused it (see mutateForAnswer): until then they ask
 	// `status` alone, one request each, as before the answer existed.
 	nodeAnswerUntil atomic.Int64
+	// scopeCapUntil (unix nanoseconds) is when the answer's scopes are
+	// next asked for their `cap` (ADR 066), after a platform refused it;
+	// zero asks every time.
+	scopeCapUntil atomic.Int64
 	// nodesWithoutDesired is set once the gateway has refused
 	// NodeIndex.desiredVersion (a platform older than
 	// update-nodes-from-console): every later node read leaves it out.
@@ -1915,6 +1919,10 @@ type ScopeAnswer struct {
 	Slug      string `json:"slug"`
 	AccountID string `json:"accountId"`
 	Shares    int    `json:"shares"`
+	// Cap is the node's connection to the org's cap on concurrent
+	// sessions (ADR 066, decision 11): 0 is no cap, the node's fair share
+	// floors alone. Asked for until a platform refuses it (withScopeCap).
+	Cap int `json:"cap"`
 }
 
 // nodeAnswerFields is what RegisterNode and HeartbeatNode ask their
@@ -1930,6 +1938,13 @@ const nodeAnswerFields = "nodeId owner { kind id name } scopes { orgId login slu
 // selection on an unknown field ("Cannot query field"), so the node
 // must not ask for it blind.
 const nodeAnswerFieldsWithShares = "nodeId owner { kind id name } scopes { orgId login slug accountId shares }"
+
+// withScopeCap is fields with `cap` added to the scopes selection: the
+// connection's cap (ADR 066, decision 11), which a platform before it
+// refuses — mutateForAnswer then asks again without it.
+func withScopeCap(fields string) string {
+	return strings.Replace(fields, "scopes { orgId login slug accountId", "scopes { orgId login slug accountId cap", 1)
+}
 
 // nodeAnswerFieldsFor is nodeAnswerFields, or
 // nodeAnswerFieldsWithShares when the gateway's scopes element type
@@ -1980,11 +1995,26 @@ func (c *Client) mutateForAnswer(ctx context.Context, field, aggregateID string,
 		return nil, c.Mutate(ctx, field, aggregateID, input)
 	}
 	var payload nodeAnswerPayload
-	err := c.MutateFields(ctx, field, aggregateID, input, "status "+c.nodeAnswerFieldsFor(ctx), &payload)
+	fields := c.nodeAnswerFieldsFor(ctx)
+	withCap := time.Now().UnixNano() >= c.scopeCapUntil.Load()
+	if withCap {
+		fields = withScopeCap(fields)
+	}
+	err := c.MutateFields(ctx, field, aggregateID, input, "status "+fields, &payload)
 	if err == nil {
 		return payload.asAnswer(), nil
 	}
 	var ge *Error
+	if withCap && errors.As(err, &ge) && unknownField(ge.Message, "nodeId", "owner", "scopes", "cap") {
+		// a platform before ADR 066's caps refuses `cap` — and so the
+		// whole scopes selection, which its answer splices in: the cap
+		// alone is dropped for NodeAnswerRetry and the answer asked again
+		c.scopeCapUntil.Store(time.Now().Add(NodeAnswerRetry).UnixNano())
+		payload = nodeAnswerPayload{}
+		if err = c.MutateFields(ctx, field, aggregateID, input, "status "+c.nodeAnswerFieldsFor(ctx), &payload); err == nil {
+			return payload.asAnswer(), nil
+		}
+	}
 	if errors.As(err, &ge) && unknownField(ge.Message, "nodeId", "owner", "scopes") {
 		c.nodeAnswerUntil.Store(time.Now().Add(NodeAnswerRetry).UnixNano())
 		if err2 := c.Mutate(ctx, field, aggregateID, input); err2 != nil {

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/validate"
 )
@@ -124,5 +125,34 @@ func TestOrgRootOfACheckout(t *testing.T) {
 		if got := orgRootOf(dir); got != want {
 			t.Errorf("orgRootOf(%s) = %+v, want %+v", dir, got, want)
 		}
+	}
+}
+
+// Every kind of session is refused on the host of a node serving two
+// orgs with no sandbox (ADR 066, decision 10), not only builds and
+// rebases: the pod an evaluation or a main validation opens
+// (openOrgSessionPod) and the one a plan or research opens
+// (openScopePod, on the orgs the loop serves) are refused alike, and
+// both open nothing on a one-org node.
+func TestEverySessionKindIsRefusedOnATwoOrgHost(t *testing.T) {
+	ctx := context.Background()
+	dir := "/home/mesh/.mesh/work/ship-it/1"
+	logf := func(string, ...any) {}
+	pod, err := openOrgSessionPod(ctx, nil, nil, twoScopes, "org-a", dir, "e-1", harness.KindEvaluate, sandbox.GitIdentity{}, logf)
+	if pod != nil || !errors.Is(err, ErrHostServesSeveralOrgs) {
+		t.Fatalf("an evaluation's pod on a two-org host: %v %v", pod, err)
+	}
+	pod, err = openScopePod(ctx, nil, nil, twoScopes, twoScopes[0], dir, "p-1", harness.KindPlan, logf)
+	if pod != nil || !errors.Is(err, ErrHostServesSeveralOrgs) {
+		t.Fatalf("a plan's pod on a two-org host: %v %v", pod, err)
+	}
+	if pod, err := openOrgSessionPod(ctx, nil, nil, twoScopes[:1], "org-a", dir, "e-1", harness.KindEvaluate, sandbox.GitIdentity{}, logf); pod != nil || err != nil {
+		t.Fatalf("an evaluation on a one-org host: %v %v", pod, err)
+	}
+	if pod, err := openScopePod(ctx, nil, nil, twoScopes[:1], twoScopes[0], dir, "p-1", harness.KindResearch, logf); pod != nil || err != nil {
+		t.Fatalf("research on a one-org host: %v %v", pod, err)
+	}
+	if pod, err := openScopePod(ctx, nil, nil, nil, twoScopes[0], dir, "p-1", harness.KindPlan, logf); pod != nil || err != nil {
+		t.Fatalf("a plan with no served orgs given: %v %v", pod, err)
 	}
 }

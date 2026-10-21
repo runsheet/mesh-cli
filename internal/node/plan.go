@@ -38,6 +38,10 @@ type Planner struct {
 	// Sandbox is the node's sandbox, when its sessions run in pods: a
 	// host session (nil) gets a scratch of its own (sessionScratch).
 	Sandbox *sandbox.Sandbox
+	// Served is the orgs the node serves now (the loop's CurrentScopes):
+	// with no Sandbox and two or more of them, no session runs on the
+	// host (ADR 066, decision 10; openScopePod). Nil serves one.
+	Served func() Scopes
 	// MCP is the built-in MCP server the session gets (runsheet);
 	// the tools attached for the planner role are rendered beside it
 	// (SelectTools, trd §3 Tools).
@@ -887,7 +891,7 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, scope Scope, dir s
 	// the goal's org's pod, opened before anything runs: a pod that
 	// cannot start runs no session, never on the host in its place
 	// (ADR-034, Refusals); nil on an unsandboxed node serving one org
-	pod, err := openScopePod(ctx, p.Sandbox, p.Roots, scope, dir, job.Label, harness.KindPlan, p.logf)
+	pod, err := openScopePod(ctx, p.Sandbox, p.Roots, servedOf(p.Served), scope, dir, job.Label, harness.KindPlan, p.logf)
 	// a session the harness detached runs on in its pod (Session.Detach
 	// makes this Close nothing): the node that adopts it removes it
 	defer pod.Close()

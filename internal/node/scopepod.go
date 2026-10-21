@@ -62,16 +62,17 @@ func sessionSandbox(sb *sandbox.Sandbox, roots *OrgRootSet, scope Scope) (*sandb
 // openScopePod opens the pod a plan or research session of scope runs
 // in, working in dir: confined to the org whose work root holds dir, its
 // mounts checked and the pod created, all before any harness call. A
-// nil sb is a nil pod — the host, as today — unless roots lay out two or
-// more orgs, which is a *HostFallbackError: a host session could read
-// the other orgs' files. Every other failure is a *PodStartError; a pod
+// nil sb is a nil pod — the host, as today — unless the node serves two
+// or more orgs (served, or roots laying out more than one), which is a
+// *HostFallbackError: a host session could read the other orgs' files
+// (ADR 066, decision 10). Every other failure is a *PodStartError; a pod
 // that was opened is returned with it for the caller to Close.
-func openScopePod(ctx context.Context, sb *sandbox.Sandbox, roots *OrgRootSet, scope Scope, dir, label string, kind harness.Kind, logf func(string, ...any)) (*SessionPod, error) {
+func openScopePod(ctx context.Context, sb *sandbox.Sandbox, roots *OrgRootSet, served Scopes, scope Scope, dir, label string, kind harness.Kind, logf func(string, ...any)) (*SessionPod, error) {
 	if sb == nil {
 		if roots != nil && !roots.Single() && len(roots.Orgs()) > 1 {
 			return nil, &HostFallbackError{Org: scope.Name(), Orgs: roots.Orgs(), Path: dir}
 		}
-		return nil, nil
+		return nil, HostFallback(nil, served, scope.ID, dir)
 	}
 	osb, err := sessionSandbox(sb, roots, scope)
 	if err != nil {
@@ -124,4 +125,12 @@ func (p *Planner) releasePodFailure(ctx context.Context, goal gateway.Goal, scop
 		p.logf("goal %s: %s; plan release refused: %v", goal.Slug, oneLine(reason), rerr)
 	}
 	p.Declines.HoldFor(goal.ID, reason, time.Now(), WorkspaceReleaseHold)
+}
+
+// servedOf is the orgs served answers, none when it is nil.
+func servedOf(served func() Scopes) Scopes {
+	if served == nil {
+		return nil
+	}
+	return served()
 }

@@ -711,6 +711,10 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 		if already {
 			continue
 		}
+		if why, at := atConnectionCap(sc, orgHeld); at {
+			l.passOver(item.GoalID, "item", priorityName(r.rank), why, time.Time{})
+			continue
+		}
 		if l.capFull(capped, item.GoalID, "item", priorityName(r.rank)) {
 			continue
 		}
@@ -2417,6 +2421,10 @@ func (l *Loop) planRequested(ctx context.Context) {
 			l.NoteHeld(HeldGoal{GoalID: g.ID, Slug: g.Slug, Org: sc.Name(), Kind: "plan", Reason: reason, Since: l.heldSince(g.ID, "plan")})
 			continue
 		}
+		if why, at := atConnectionCap(sc, l.heldByOrg()); at {
+			l.passOver(g.ID, "plan", priorityName(gateway.PriorityRank(g.Priority)), why, time.Time{})
+			continue
+		}
 		actx, ok := l.accountFor(ctx, priorityName(gateway.PriorityRank(g.Priority)), true, "plan")
 		if !ok {
 			l.passOver(g.ID, "plan", priorityName(gateway.PriorityRank(g.Priority)), "", time.Time{})
@@ -2568,6 +2576,10 @@ func (l *Loop) researchDue(ctx context.Context) {
 			// api account and never on a paced one; it has no priority
 			// (""), so any credential's priorities serve it (adr-005's
 			// amendment 2026-10-02)
+			if why, at := atConnectionCap(sc, l.heldByOrg()); at {
+				l.passOver(d.ID, "research", "", why, time.Time{})
+				continue
+			}
 			actx, ok := l.accountFor(ctx, "", false, "")
 			if !ok {
 				continue
