@@ -1032,6 +1032,12 @@ type Scope struct {
 	// sessions there (ADR 066, decision 11): 0 is none — the fair share
 	// floors alone decide — and above 0 no claim starts past it.
 	Cap int
+	// ConnectionID is the node's connection to the org (ADR 066): the
+	// key of the connection's clones and package stores under
+	// ~/.mesh/connections/ (ADR-039).
+	ConnectionID string
+	// Product is the connection's product: runsheet.
+	Product string
 }
 
 // Name is what to show a person for this org: Login, or Slug when
@@ -1198,7 +1204,8 @@ func ScopesFromAnswer(a *gateway.NodeAnswer, restrict []string) (Scopes, error) 
 		}
 		found[login] = true
 		found[slug] = true
-		scopes = append(scopes, Scope{Login: sa.Login, Slug: sa.Slug, ID: sa.OrgID, AccountID: sa.AccountID, NodeID: a.NodeID, Cap: sa.Cap})
+		scopes = append(scopes, Scope{Login: sa.Login, Slug: sa.Slug, ID: sa.OrgID, AccountID: sa.AccountID, NodeID: a.NodeID, Cap: sa.Cap,
+			ConnectionID: sa.ConnectionID, Product: sa.Product})
 	}
 	if missing := missingOrgs(want, found); len(missing) > 0 {
 		return nil, fmt.Errorf("not a member of %s (the node.yaml orgs list names them)", strings.Join(missing, ", "))

@@ -1956,6 +1956,12 @@ type ScopeAnswer struct {
 	// sessions (ADR 066, decision 11): 0 is no cap, the node's fair share
 	// floors alone. Asked for until a platform refuses it (withScopeCap).
 	Cap int `json:"cap"`
+	// ConnectionID is the node's connection to the org for Product (ADR
+	// 066): the key of the connection's clones and package stores
+	// (mesh-cli ADR-039). Asked for with Cap.
+	ConnectionID string `json:"connectionId"`
+	// Product is the connection's product: runsheet.
+	Product string `json:"product"`
 }
 
 // nodeAnswerFields is what RegisterNode and HeartbeatNode ask their
@@ -1972,11 +1978,12 @@ const nodeAnswerFields = "nodeId owner { kind id name } scopes { orgId login slu
 // must not ask for it blind.
 const nodeAnswerFieldsWithShares = "nodeId owner { kind id name } scopes { orgId login slug accountId shares }"
 
-// withScopeCap is fields with `cap` added to the scopes selection: the
-// connection's cap (ADR 066, decision 11), which a platform before it
-// refuses — mutateForAnswer then asks again without it.
+// withScopeCap is fields with the connection's `cap` (ADR 066, decision
+// 11), `connectionId` and `product` added to the scopes selection, which
+// a platform before them refuses — mutateForAnswer then asks again
+// without them.
 func withScopeCap(fields string) string {
-	return strings.Replace(fields, "scopes { orgId login slug accountId", "scopes { orgId login slug accountId cap", 1)
+	return strings.Replace(fields, "scopes { orgId login slug accountId", "scopes { orgId login slug accountId cap connectionId product", 1)
 }
 
 // nodeAnswerFieldsFor is nodeAnswerFields, or

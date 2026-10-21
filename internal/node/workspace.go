@@ -37,17 +37,25 @@ type WorkspaceSpec struct {
 	// place RebuildWorktree looks when neither the shared clone's
 	// refs/heads/<branch> nor origin/<branch> is there.
 	Head string
-	// Repos, when set, is the repos root of the item's org (OrgRoots.Repos,
-	// ADR-034): the shared clone a new checkout is a worktree of is
-	// <Repos>/<owner>/<name>, whatever Git.ReposRoot says, so org A's
-	// worktree is never added from org B's clone.
+	// Repos, when set, is the repos root of the item's connection
+	// (ConnectionDirs.Repos, ADR-039): the shared clone a new checkout is
+	// a worktree of is <Repos>/<owner>/<name>, whatever Git.ReposRoot
+	// says, so one connection's worktree is never added from another's
+	// clone.
 	Repos string
+	// Job, when set, is the item's job directory (ADR-039): the checkout
+	// is <Job>/checkout, and Root is the connection's directory, whose
+	// .locks hold the repo's locks.
+	Job string
 }
 
 // Dir is the workspace directory.
 func (s WorkspaceSpec) Dir() string {
 	if s.Path != "" {
 		return s.Path
+	}
+	if s.Job != "" {
+		return filepath.Join(s.Job, "checkout")
 	}
 	return filepath.Join(s.Root, s.GoalSlug, fmt.Sprint(s.Seq))
 }
@@ -352,9 +360,11 @@ func (g *Git) sharedClone(spec WorkspaceSpec) string {
 		return ""
 	}
 	reposRoot := spec.Repos
-	if reposRoot == "" && spec.Root != "" {
-		// an org's work root names its own repos root (ADR-034)
-		reposRoot = orgReposRootOf(spec.Dir())
+	if reposRoot == "" {
+		// a job's job.json names its connection's repos root (ADR-039)
+		if c, ok := itemConnectionOf(spec.Dir()); ok {
+			reposRoot = c.Repos
+		}
 	}
 	if reposRoot == "" {
 		reposRoot = g.ReposRoot
@@ -656,13 +666,13 @@ func registeredDir(admin string) (string, bool) {
 }
 
 // reposRootFor is the repos root dir's shared clone lives under: its
-// org's (~/.mesh/orgs/<org>/repos for ~/.mesh/orgs/<org>/work/<goal>/<seq>,
-// ADR-034), else ReposRoot when set, else "repos" beside dir's work root
-// (its grandparent's parent: ~/.mesh/repos for ~/.mesh/work/<goal>/<seq>),
-// as sharedClone derives it from a spec's Root.
+// job's connection's (~/.mesh/connections/<id>/repos for a checkout in
+// ~/.mesh/jobs/<job>, ADR-039), else ReposRoot when set, else "repos"
+// beside dir's work root (its grandparent's parent: <root>/../repos for
+// <root>/<goal>/<seq>), as sharedClone derives it from a spec's Root.
 func (g *Git) reposRootFor(dir string) string {
-	if r := orgReposRootOf(dir); r != "" {
-		return r
+	if c, ok := itemConnectionOf(dir); ok {
+		return c.Repos
 	}
 	if g.ReposRoot != "" {
 		return g.ReposRoot

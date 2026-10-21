@@ -54,7 +54,7 @@ type recorder struct {
 // recorder is the item's record writer on the resume store of its org
 // (Runner.resumes); one with no store when the runner keeps none.
 func (b *buildRun) newRecorder() *recorder {
-	return &recorder{store: b.r.resumes(b.item.OrgID), itemID: b.item.ID, label: b.label, logf: b.r.logf, redact: b.acct.Redact, now: time.Now}
+	return &recorder{store: b.r.resumes(b.item.ID), itemID: b.item.ID, label: b.label, logf: b.r.logf, redact: b.acct.Redact, now: time.Now}
 }
 
 func (rc *recorder) append(kind, text string) {

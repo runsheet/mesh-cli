@@ -8,7 +8,8 @@ import (
 	"strings"
 )
 
-// RebaseSuffix ends a rebase checkout's directory: <root>/<goal>/<seq>-rebase.
+// RebaseSuffix ends a rebase checkout's directory outside a job:
+// <root>/<goal>/<seq>-rebase; in a job it is <job>/rebase.
 const RebaseSuffix = "-rebase"
 
 // RebaseWorkspaceSpec is a rebase's own checkout of the item item names:
@@ -20,6 +21,10 @@ const RebaseSuffix = "-rebase"
 // shared clone are the build's.
 func RebaseWorkspaceSpec(item WorkspaceSpec) WorkspaceSpec {
 	s := item
+	if item.Job != "" {
+		s.Path = filepath.Join(item.Job, "rebase")
+		return s
+	}
 	s.Path = filepath.Join(item.Root, item.GoalSlug, fmt.Sprintf("%d%s", item.Seq, RebaseSuffix))
 	return s
 }
@@ -28,7 +33,11 @@ func RebaseWorkspaceSpec(item WorkspaceSpec) WorkspaceSpec {
 // an adopted session an older node ran in the item's own checkout is
 // not, and that checkout is never removed after it.
 func isRebaseDir(dir string) bool {
-	return strings.HasSuffix(filepath.Clean(dir), RebaseSuffix)
+	dir = filepath.Clean(dir)
+	if _, _, ok := jobOf(dir); ok && filepath.Base(dir) == "rebase" {
+		return true
+	}
+	return strings.HasSuffix(dir, RebaseSuffix)
 }
 
 // rebaseWorktrees makes and removes a rebase's checkout (*Git).

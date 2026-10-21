@@ -1298,7 +1298,7 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 		rs := st.Resumes()
 		resumes = &rs
 	}
-	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return meshContextMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, BatchFallback: &node.TokenFallback{}, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, RuntimeBroken: loop.NoteRuntimeBroken, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Sandbox: sessionSandbox, MeshBinary: meshBinary(), State: state, Notices: validationNotices, Machine: loop.Machine, Host: loop.HostThresholds, RetryTurns: loop.NoteRetryTurn, Resumes: resumes, Tripline: loop.Tripline, Bearers: sessionBearers, Proxies: sessionProxies, Log: logger}
+	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Layout: nodeLayout, MCPFunc: func(ctx context.Context) map[string]any { return meshContextMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, BatchFallback: &node.TokenFallback{}, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, RuntimeBroken: loop.NoteRuntimeBroken, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Sandbox: sessionSandbox, MeshBinary: meshBinary(), State: state, Notices: validationNotices, Machine: loop.Machine, Host: loop.HostThresholds, RetryTurns: loop.NoteRetryTurn, Resumes: resumes, Tripline: loop.Tripline, Bearers: sessionBearers, Proxies: sessionProxies, Log: logger}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		r := *runner
 		r.Scopes = loop.CurrentScopes() // an org served since start is known to its build
@@ -1390,10 +1390,12 @@ func registerNode(ctx context.Context, cmd *cobra.Command, logger *log.Logger, u
 	if err != nil {
 		return
 	}
-	workRoot, err = node.WorkRoot()
-	if err != nil {
+	// every session works in its job's directory under ~/.mesh/jobs,
+	// every clone and store in its connection's (ADR-039)
+	if nodeLayout, err = node.DefaultLayout(); err != nil {
 		return
 	}
+	workRoot = nodeLayout.JobsDir()
 	if err = os.MkdirAll(workRoot, 0o755); err != nil {
 		return
 	}
@@ -1675,7 +1677,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	}
 	defer hub.Close()
 
-	sess := &channel.Session{Cfg: cfg, Orgs: scopes.Names(), MCPFunc: func() map[string]any { return meshContextMCP(ctx, gw) }, Tokens: tokenKeeper(), WorkDir: filepath.Join(workRoot, cfg.Slug), Exe: exe, SockPath: sock, Unattended: nodeUnattended, Model: nodeModels.For("channel"), Stderr: sessionsOut, Log: logger,
+	sess := &channel.Session{Cfg: cfg, Orgs: scopes.Names(), MCPFunc: func() map[string]any { return meshContextMCP(ctx, gw) }, Tokens: tokenKeeper(), WorkDir: filepath.Join(nodeLayout.Dir, "channel", cfg.Slug), Exe: exe, SockPath: sock, Unattended: nodeUnattended, Model: nodeModels.For("channel"), Stderr: sessionsOut, Log: logger,
 		OnText:      channelText(log.New(sessionsOut, "mesh node: ", log.LstdFlags)),
 		OnRateLimit: func(rl *harness.RateLimit) { loop.Limits.Observe(node.Account(os.Environ()), rl) }}
 	var sessMu sync.Mutex
@@ -1711,11 +1713,11 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	// one per node: the evaluations of every tick and the adopted ones
 	// share what has been said once per item
 	second := codexSecondOpinion(cfg, loop, workRoot, logger)
-	found := adoptSessions(ctx, gw, cfg, oneShot, second, loop, &node.Runner{GW: gw, Harness: oneShot, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, RuntimeBroken: loop.NoteRuntimeBroken, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Machine: loop.Machine, Host: loop.HostThresholds, Tripline: loop.Tripline, Bearers: sessionBearers, Log: logger}, workRoot, fallback, accounts, logger)
+	found := adoptSessions(ctx, gw, cfg, oneShot, second, loop, &node.Runner{GW: gw, Harness: oneShot, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Layout: nodeLayout, Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, RuntimeBroken: loop.NoteRuntimeBroken, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Machine: loop.Machine, Host: loop.HostThresholds, Tripline: loop.Tripline, Bearers: sessionBearers, Log: logger}, workRoot, fallback, accounts, logger)
 	node.SweepSandbox(ctx, sessionSandbox, found, logger.Printf)
 	sweepScratch(workRoot, found, logger)
 	loop.Evaluate = evaluateWith(gw, cfg, observed(loop, logger), second, loop, workRoot, fallback, accounts, logger)
-	mainRunner := &node.Runner{GW: gw, WS: ws, RuntimeBroken: loop.NoteRuntimeBroken, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, BatchFallback: &node.TokenFallback{}, Sandbox: sessionSandbox, Notices: validationNotices, Log: logger}
+	mainRunner := &node.Runner{GW: gw, WS: ws, RuntimeBroken: loop.NoteRuntimeBroken, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Layout: nodeLayout, Fallback: fallback, BatchFallback: &node.TokenFallback{}, Sandbox: sessionSandbox, Notices: validationNotices, Log: logger}
 	// a pushed commit is validated from GitHub's served diff through the
 	// node's shared cache, else from a worktree of the shared clone
 	if cache, err := node.NewServedDiffCache(cfg, logger.Printf); err != nil {
@@ -1725,9 +1727,6 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 		// the same cache, Go build cache included, measured and trimmed
 		// under its cap at the first tick and hourly after
 		trim := &node.CacheTrim{Cache: cache, State: cache.State, Logf: logger.Printf}
-		if root, err := node.ScratchRoot(workRoot); err == nil {
-			trim.ScratchRoot = root
-		}
 		loop.CacheTrim = trim
 	}
 	loop.ValidateBatch = mainRunner.ValidateCandidate
@@ -1738,7 +1737,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	loop.Rebase = rebaseWith(gw, cfg, observed(loop, logger), loop, loop.CurrentScopes, workRoot, fallback, accounts, logger)
 	reopenClaims(ctx, loop, workRoot, found, logger)
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
-		ready, err := readyChannelItem(ctx, gw, ws, loop.CurrentScopes(), item, workRoot, fallback, logger.Printf)
+		ready, err := readyChannelItem(ctx, gw, ws, nodeLayout, loop.CurrentScopes(), item, workRoot, fallback, logger.Printf)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -1920,17 +1919,11 @@ func nodeQuartermaster(gw node.Gateway, loop *node.Loop, workRoot, tempDir strin
 	return &node.Quartermaster{Checks: []node.Check{
 		node.NewDiskCheck(workRoot).Check,
 		scratch.Check,
-		node.DeadCheckoutCheck(gw, &node.Git{Log: sessionsOut}, workRoot, loop.LiveCheckout),
+		node.JobDeadCheckoutCheck(gw, &node.Git{Log: sessionsOut}, nodeLayout, loop.LiveCheckout),
 		node.VersionCheck(loop),
-		// every served org's kept session streams, swept whether or not
-		// a Codex session of that org starts again (ADR-034)
-		node.KeptSessionsCheck(func() *node.OrgRootSet {
-			roots, err := node.NewOrgRootSetFor(loop.CurrentScopes())
-			if err != nil {
-				return nil
-			}
-			return roots
-		}, workRoot),
+		// every job's kept session streams, swept whether or not a Codex
+		// session starts in it again (ADR-039)
+		node.KeptSessionsCheck(nodeLayout, ""),
 	}}
 }
 
@@ -1962,15 +1955,18 @@ var sessionBearers *node.SessionBearers
 var sessionProxies *node.SessionProxies
 
 // newSessionProxies is the node's SessionProxies on sessionTokens'
-// bearers, their sockets under ~/.mesh/mcp unless the session's org has
-// an MCP root of its own; nil without sessionTokens or a home.
+// bearers, each session's sockets under its job's MCP root (ADR-039);
+// nil without sessionTokens.
 func newSessionProxies(logf func(string, ...any)) *node.SessionProxies {
-	home, err := os.UserHomeDir()
-	if sessionTokens == nil || err != nil {
+	if sessionTokens == nil {
 		return nil
 	}
-	return &node.SessionProxies{Bearer: sessionTokens.Source, Root: node.SingleOrgRoots(filepath.Join(home, ".mesh")).MCP, Logf: logf}
+	return &node.SessionProxies{Bearer: sessionTokens.Source, Logf: logf}
 }
+
+// nodeLayout is the node's job and connection trees under ~/.mesh
+// (ADR-039): set by registerNode.
+var nodeLayout *node.Layout
 
 // tokenKeeper is sessionTokens as a harness's TokenKeeper, nil (never a
 // nil pointer in an interface) when there is none.
@@ -1984,14 +1980,9 @@ func tokenKeeper() harness.TokenKeeper {
 // sessionSandbox is the pod every one-shot session runs in (OpenSandbox);
 // nil runs it on the host, as `sandbox: off` does.
 // sweepScratch is the start-up scratch sweep (node.SweepScratch) of
-// workRoot's scratch root and os.TempDir(), keeping what found names.
+// every job's scratch root and os.TempDir(), keeping what found names.
 func sweepScratch(workRoot string, found []node.FoundSession, logger *log.Logger) {
-	root, err := node.ScratchRoot(workRoot)
-	if err != nil {
-		logger.Printf("scratch: sweep at start: %v", err)
-		return
-	}
-	node.SweepScratch(node.ScratchSweep{Roots: []string{root}, Sandboxed: sessionSandbox != nil, Found: found, InUse: node.WorkspaceLive}, logger.Printf)
+	node.SweepScratch(node.ScratchSweep{Roots: nodeLayout.ScratchRoots(), Sandboxed: sessionSandbox != nil, Found: found, InUse: node.WorkspaceLive}, logger.Printf)
 }
 
 var sessionSandbox *sandbox.Sandbox
@@ -2216,7 +2207,7 @@ func researchWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, loop 
 }
 
 func evaluator(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, second secondOpinion, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) *node.Evaluator {
-	return &node.Evaluator{GW: gw, Proxies: sessionProxies, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: loop.CurrentScopes(), WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Sandbox: sessionSandbox, Tripline: loop.Tripline, Log: logger,
+	return &node.Evaluator{GW: gw, Proxies: sessionProxies, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: loop.CurrentScopes(), WorkRoot: workRoot, Layout: nodeLayout, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Sandbox: sessionSandbox, Tripline: loop.Tripline, Log: logger,
 		Codex: second.h, CodexPreflight: second.preflight, CodexModel: cfg.Codex.CodexModel, CodexAccounts: second.accounts, Waits: second.waits, Blind: second.blind, NoVerdict: second.noVerdict, Splits: &node.OncePer{}, LeftRunning: second.left, Limits: second.limits, Thresholds: second.thresholds}
 }
 
@@ -2225,15 +2216,15 @@ func evaluator(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harn
 var validationNotices = &node.ValidationNotices{}
 
 func rebaser(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, scopes func() node.Scopes, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) *node.Rebaser {
-	return &node.Rebaser{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes(), WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeRebaseBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("rebase"), Fallback: fallback, Credentials: accounts, Sandbox: sessionSandbox, Notices: validationNotices, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Tripline: loop.Tripline, Log: logger}
+	return &node.Rebaser{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes(), WorkRoot: workRoot, Layout: nodeLayout, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeRebaseBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("rebase"), Fallback: fallback, Credentials: accounts, Sandbox: sessionSandbox, Notices: validationNotices, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Tripline: loop.Tripline, Log: logger}
 }
 
 func planner(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, workRoot string, accounts *node.Credentials, logger *log.Logger) *node.Planner {
-	return &node.Planner{GW: gw, Proxies: sessionProxies, Harness: h, Sandbox: sessionSandbox, Served: loop.CurrentScopes, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodePlanBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.PlanModel(), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Log: logger}
+	return &node.Planner{GW: gw, Proxies: sessionProxies, Harness: h, Sandbox: sessionSandbox, Served: loop.CurrentScopes, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, Layout: nodeLayout, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodePlanBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.PlanModel(), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Log: logger}
 }
 
 func director(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, workRoot string, accounts *node.Credentials, logger *log.Logger) *node.Director {
-	return &node.Director{GW: gw, Proxies: sessionProxies, Harness: h, Sandbox: sessionSandbox, Served: loop.CurrentScopes, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeResearchBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("research"), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Log: logger}
+	return &node.Director{GW: gw, Proxies: sessionProxies, Harness: h, Sandbox: sessionSandbox, Served: loop.CurrentScopes, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, Layout: nodeLayout, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeResearchBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("research"), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Log: logger}
 }
 
 // adoptSessions takes up, before the first claim, every session under the
@@ -2276,10 +2267,9 @@ func adoptSessions(ctx context.Context, gw *gateway.Client, cfg *node.Config, h 
 			}
 		}
 	}
-	keep := []string{cfg.Slug} // the channel session's <node-slug> dir
-	nodeWorkSweep(ctx, gw, workRoot, loop.CurrentScopes(), startLive, keep, sessionSandbox, logger.Printf)
+	nodeWorkSweep(ctx, gw, nodeLayout, loop.CurrentScopes(), startLive, sessionSandbox, logger.Printf)
 	loop.WorkSweep = func(ctx context.Context) {
-		nodeWorkSweep(ctx, gw, workRoot, loop.CurrentScopes(), loop.LiveSubjects(), keep, sessionSandbox, logger.Printf)
+		nodeWorkSweep(ctx, gw, nodeLayout, loop.CurrentScopes(), loop.LiveSubjects(), sessionSandbox, logger.Printf)
 	}
 	if len(found) == 0 {
 		return nil

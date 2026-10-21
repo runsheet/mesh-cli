@@ -35,12 +35,16 @@ type channelItem struct {
 // error fails the item, as it would a poll-mode build, except a
 // *node.CredentialError, on which the dispatch releases it
 // (node.ReleaseOnCredential).
-func readyChannelItem(ctx context.Context, gw node.Gateway, ws channelWorkspace, scopes node.Scopes, item gateway.WorkItem, workRoot string, fb *node.TokenFallback, logf func(string, ...any)) (*channelItem, error) {
+func readyChannelItem(ctx context.Context, gw node.Gateway, ws channelWorkspace, l *node.Layout, scopes node.Scopes, item gateway.WorkItem, workRoot string, fb *node.TokenFallback, logf func(string, ...any)) (*channelItem, error) {
 	res, err := node.Resolve(ctx, gw, item)
 	if err != nil {
 		return nil, fmt.Errorf("resolve: %w", err)
 	}
-	spec := node.WorkspaceSpec{Root: workRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()}
+	spec, err := node.ItemSpec(l, scopes, item, fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq),
+		node.WorkspaceSpec{Root: workRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()})
+	if err != nil {
+		return nil, fmt.Errorf("workspace: %w", err)
+	}
 	cred, err := node.NewItemCred(ctx, gw, ws, scopes, item, spec, fb, logf)
 	if err != nil {
 		return nil, err

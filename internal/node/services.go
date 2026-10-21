@@ -24,16 +24,17 @@ type SessionPod struct {
 
 // openOrgSessionPod is OpenSessionPod on the sandbox of the org whose
 // id is orgID (orgSandbox): the session's pod mounts and names its own
-// org's package store. An org the node does not serve opens nothing.
+// connection's package store. An org the node does not serve opens
+// nothing.
 // With no sandbox on a node serving two or more orgs it opens nothing
 // and is a *HostFallbackError, whatever the session's kind (ADR 066,
 // decision 10: more than one tenant means every session is sandboxed) —
 // a build, an evaluation, a rebase and a main validation alike.
-func openOrgSessionPod(ctx context.Context, sb *sandbox.Sandbox, roots *OrgRootSet, scopes Scopes, orgID, dir, label string, kind harness.Kind, git sandbox.GitIdentity, logf func(string, ...any)) (*SessionPod, error) {
+func openOrgSessionPod(ctx context.Context, sb *sandbox.Sandbox, l *Layout, scopes Scopes, orgID, dir, label string, kind harness.Kind, git sandbox.GitIdentity, logf func(string, ...any)) (*SessionPod, error) {
 	if err := HostFallback(sb, scopes, orgID, dir); err != nil {
 		return nil, err
 	}
-	osb, err := orgSandbox(sb, roots, scopes, orgID)
+	osb, err := orgSandbox(sb, l, scopes, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("package store: %w", err)
 	}
@@ -52,8 +53,8 @@ func OpenSessionPod(ctx context.Context, sb *sandbox.Sandbox, dir, label string,
 	if sb == nil {
 		return nil, nil
 	}
-	// a checkout under one org's tree gets a pod confined to it: every
-	// mount outside it refused (ADR-034, Refusals)
+	// a checkout in a job gets a pod confined to the job and its
+	// connection's caches: every mount outside them refused (ADR-039)
 	sb = confineTo(sb, dir)
 	sess, err := sb.Open(label, string(kind), git)
 	if err != nil {

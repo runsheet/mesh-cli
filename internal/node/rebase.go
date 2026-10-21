@@ -39,10 +39,11 @@ type Rebaser struct {
 	WS      Workspacer
 	Cfg     *Config
 	Scopes  Scopes
-	// Roots, when set, are each served org's own roots (ADR-034): the
-	// item's checkout, clone and scratch go under its org's, WorkRoot
-	// unused for them. Nil keeps WorkRoot for every org.
-	Roots    *OrgRootSet
+	// Layout, when set, is the node's job and connection trees (ADR-039):
+	// each item's checkout, scratch, kept stream and MCP files go in its
+	// job, its clone and store in its connection's caches, WorkRoot
+	// unused for them. Nil keeps WorkRoot (the tests' layout).
+	Layout *Layout
 	WorkRoot string
 	// BuildCache is a host validation's GOCACHE; "" is BuildCacheDir().
 	BuildCache string
@@ -142,7 +143,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	if branch == "" {
 		branch = res.Branch()
 	}
-	spec, err := orgSpec(r.Roots, r.Scopes, item.OrgID, WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: branch, BaseRef: res.BaseRef()})
+	spec, err := itemSpec(r.Layout, r.Scopes, item, label, WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: branch, BaseRef: res.BaseRef()})
 	if err != nil {
 		return fail(fmt.Errorf("workspace: %w", err))
 	}
@@ -224,7 +225,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	model := BuildModel(ctx, r.GW, item, r.Model)
 	budget, budgetSource := r.budgetWithSource(res.Goal, model)
 	r.logf("item %s: rebase budget $%.2f (%s)", label, budget, budgetSource)
-	kept, err := keptRootFor(r.Roots, r.Scopes, item.OrgID)
+	kept, err := keptRootFor(r.Layout, item.ID)
 	if err != nil {
 		return err
 	}
@@ -232,7 +233,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	// the checkout's services, started in the session's pod before its
 	// agent; the pod and its sidecars go on every way out. A required one
 	// that does not come up gives the rebase up, naming it.
-	pod, err := openOrgSessionPod(ctx, r.Sandbox, r.Roots, r.Scopes, item.OrgID, dir, job.Label, harness.KindRebase, ident.Sandbox(dir), r.logf)
+	pod, err := openOrgSessionPod(ctx, r.Sandbox, r.Layout, r.Scopes, item.OrgID, dir, job.Label, harness.KindRebase, ident.Sandbox(dir), r.logf)
 	defer pod.Close() // nothing, once the harness detached the session (Session.Detach)
 	if re := RuntimeErrorOf(err); re != nil {
 		return rb.releaseRuntime(ctx, re)
@@ -258,7 +259,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	}
 	// the session's own scratch as its TMPDIR, gone with the session
 	// (sessionScratch); a detached one's by the node that ends it
-	scratchRoot, err := scratchRootFor(r.Roots, r.Scopes, item.OrgID, r.WorkRoot)
+	scratchRoot, err := scratchRootFor(r.Layout, item.ID, r.WorkRoot)
 	if err != nil {
 		return fail(err)
 	}
@@ -522,7 +523,7 @@ func (r *Rebaser) AdoptRebase(ctx context.Context, item gateway.WorkItem, s Foun
 		rb.branch = res.Branch()
 	}
 	rb.base = res.BaseRef()
-	spec, err := orgSpec(r.Roots, r.Scopes, item.OrgID, WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: rb.branch, BaseRef: rb.base})
+	spec, err := itemSpec(r.Layout, r.Scopes, item, rb.label, WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: rb.branch, BaseRef: rb.base})
 	if err != nil {
 		return rb.fail(ctx, fmt.Errorf("workspace: %w", err))
 	}
@@ -574,7 +575,7 @@ func (r *Rebaser) contextBudget() ContextConfig {
 }
 
 func (r *Rebaser) validator() validator {
-	return validator{GW: r.GW, WS: r.WS, Scopes: r.Scopes, Sandbox: r.Sandbox, Inspect: r.Inspect, Notices: r.Notices, logf: r.logf, WorkRoot: r.WorkRoot, Roots: r.Roots, BuildCache: r.BuildCache}
+	return validator{GW: r.GW, WS: r.WS, Scopes: r.Scopes, Sandbox: r.Sandbox, Inspect: r.Inspect, Notices: r.Notices, logf: r.logf, WorkRoot: r.WorkRoot, Layout: r.Layout, BuildCache: r.BuildCache}
 }
 
 // validateRebased runs the checkout's declared validation on the head

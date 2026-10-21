@@ -44,37 +44,20 @@ func PodStartErrorOf(err error) (*PodStartError, bool) {
 	return nil, false
 }
 
-// sessionSandbox is the sandbox a plan or research of scope opens its pod
-// on: sb itself when no roots are laid out or the node serves one org,
-// else sb on scope's org's own package store. An org the node does not
-// serve is refused. A nil sb is nil.
-func sessionSandbox(sb *sandbox.Sandbox, roots *OrgRootSet, scope Scope) (*sandbox.Sandbox, error) {
-	if sb == nil || roots == nil || roots.Single() {
-		return sb, nil
-	}
-	r, err := roots.For(scope.Name())
-	if err != nil {
-		return nil, err
-	}
-	return sb.WithStores(PackageStores(r.Store)), nil
-}
-
 // openScopePod opens the pod a plan or research session of scope runs
-// in, working in dir: confined to the org whose work root holds dir, its
-// mounts checked and the pod created, all before any harness call. A
-// nil sb is a nil pod — the host, as today — unless the node serves two
-// or more orgs (served, or roots laying out more than one), which is a
-// *HostFallbackError: a host session could read the other orgs' files
-// (ADR 066, decision 10). Every other failure is a *PodStartError; a pod
-// that was opened is returned with it for the caller to Close.
-func openScopePod(ctx context.Context, sb *sandbox.Sandbox, roots *OrgRootSet, served Scopes, scope Scope, dir, label string, kind harness.Kind, logf func(string, ...any)) (*SessionPod, error) {
+// in, working in dir: on scope's connection's store, confined to the
+// job that holds dir and its connection, its mounts checked and the pod
+// created, all before any harness call. A nil sb is a nil pod — the
+// host, as today — unless the node serves two or more orgs (served),
+// which is a *HostFallbackError: a host session could read the other
+// orgs' files (ADR 066, decision 10). Every other failure is a
+// *PodStartError; a pod that was opened is returned with it for the
+// caller to Close.
+func openScopePod(ctx context.Context, sb *sandbox.Sandbox, l *Layout, served Scopes, scope Scope, dir, label string, kind harness.Kind, logf func(string, ...any)) (*SessionPod, error) {
 	if sb == nil {
-		if roots != nil && !roots.Single() && len(roots.Orgs()) > 1 {
-			return nil, &HostFallbackError{Org: scope.Name(), Orgs: roots.Orgs(), Path: dir}
-		}
 		return nil, HostFallback(nil, served, scope.ID, dir)
 	}
-	osb, err := sessionSandbox(sb, roots, scope)
+	osb, err := orgSandbox(sb, l, Scopes{scope}, scope.ID)
 	if err != nil {
 		return nil, &PodStartError{Kind: kind, Label: label, Err: fmt.Errorf("package store: %w", err)}
 	}

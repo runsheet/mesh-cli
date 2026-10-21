@@ -243,31 +243,6 @@ func (st SessionTools) UseVia(px *SessionProxies, root string, job *harness.Job,
 	return sp.End, nil
 }
 
-// mcpRootFor is the MCP root of the org whose id is orgID when roots
-// are laid out, else "" (SessionProxies.Root).
-func mcpRootFor(roots *OrgRootSet, scopes Scopes, orgID string) string {
-	if roots == nil {
-		return ""
-	}
-	r, err := roots.ForOrgID(scopes, orgID)
-	if err != nil {
-		return ""
-	}
-	return r.MCP
-}
-
-// mcpRootOfScope is mcpRootFor by the session's scope.
-func mcpRootOfScope(roots *OrgRootSet, scope Scope) string {
-	if roots == nil {
-		return ""
-	}
-	r, err := roots.For(scope.Name())
-	if err != nil {
-		return ""
-	}
-	return r.MCP
-}
-
 // adoptProxy restarts an adopted session's proxy (SessionProxies.Adopt)
 // on the tools the claim-time read hands this node for ref, selected for
 // role and runtimes as the session's start selected them, and answers
