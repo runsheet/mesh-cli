@@ -957,7 +957,7 @@ yet)` before the first trim (A host session's scratch, below).
 ### Start
 
 ```bash
-mesh node start [--mode channel|poll] [--interval 30s] [--unattended] [--max-budget-usd 10]
+mesh node start [--interval 30s] [--unattended] [--max-budget-usd 10]
 ```
 
 Every interval the node heartbeats (`HeartbeatNode`), lists the `ready`
@@ -1017,66 +1017,9 @@ restricted by node.yaml's `orgs` as it stands — or, on the legacy
 path, from the platform's `MyOrgs`: an org seen for the first time is
 registered in and served that tick, one no longer listed (or outside
 `orgs`) is dropped. A change is logged (`capacity 3 → 6`, `orgs acme →
-acme, go-apis`). In channel mode the
-goal watch of an org added this way waits for the next start; its
-planning, items and evaluations do not.
-What happens to a claimed item depends on the mode.
+acme, go-apis`).
 
-**Channel mode (default).** One persistent `claude` session runs in
-`~/.mesh/work/<node-slug>` with the Mesh channel attached:
-
-```
-claude -p --input-format stream-json --output-format stream-json --verbose --dangerously-load-development-channels server:mesh --append-system-prompt …
-```
-
-A print-mode session ends with its turn and channel events only arrive
-while a session is open, so the session runs in streaming-input mode with
-its stdin held open until the node stops: it waits for user messages, and
-each event is delivered twice — as the channel notification and as a
-`[mesh event …]` user message on stdin, so the item is worked even if the
-notification is missed. A `result` event on the stream is a turn's end
-(logged for cost), not the session's. The daemon restarts the session only
-when the process exits; on its own start and after every session restart
-it takes up every item this node still holds in `claimed`/`running` (those
-with no progress in the last interval) and pushes them again.
-
-The daemon serves the channel to Claude Code as a stdio MCP server
-(`mesh channel serve`, registered for that folder in `~/.claude.json`) and
-pushes events into the session:
-
-| Event | When |
-| --- | --- |
-| `work_item.ready` | the daemon claimed an item for this node (attributes: `item_id`, `seq`, `goal_slug`, `repo`, `base_ref`, `branch`, `workspace`; the brief and acceptance as content) |
-| `goal.paused` / `goal.cancelled` / `goal.resumed` | the goal's status changed |
-| `checkpoint` | the goal awaits a person's approval |
-
-The session reports back through the channel's tools, each a thin call on
-the gateway: `mesh_progress {item_id, note, cost_cents}`, `mesh_finish
-{item_id, branch, head_sha}` — or `mesh_finish {item_id, outcome:
-already_done, evidence}` with no branch, when main already holds the
-item's work (the merged PRs or commits that satisfy its acceptance; the
-evaluator checks them, mesh-specs ADR 003) — `mesh_fail {item_id, error}`, `mesh_evaluate
-{item_id, passed, notes}`, `mesh_context {goal_slug}` (the project's
-runsheet context documents: instructions, ADRs, PRD, TRD), `mesh_items {status}`,
-`mesh_record {item_id, summary}` (a milestone note to the platform; see below) and `reply`. The daemon
-has already cloned or fetched the repo into
-`~/.mesh/work/<goal-slug>/<seq>` and checked out `mesh/<goal-slug>-<seq>`
-by the time the event arrives. It did that on the item's own GitHub token,
-which is also the only credential the checkout's git uses. The session
-itself runs with an empty `GH_CONFIG_DIR` and no `GH_TOKEN`, so the
-operator's gh login is out of its reach. Its system prompt tells it to
-read `mesh_context` first, do each item as a fresh subagent,
-run the acceptance, commit, push, then `mesh_finish` — or `mesh_fail`. The
-daemon restarts the session if it exits; the claim stays the daemon's, so
-the lock is held before the event is pushed.
-
-Channels are a Claude Code **research preview**: custom channels load only
-with `--dangerously-load-development-channels`; they need Anthropic
-authentication through claude.ai (Max) or a Console API key and are not
-available on Bedrock, Vertex or Foundry; Team/Enterprise orgs must enable
-`channelsEnabled`. The flag syntax may change.
-
-**Poll mode** (`--mode poll`). Each claimed item runs its own
+Each claimed item runs its own
 `claude -p "<prompt>" --output-format stream-json --verbose --max-budget-usd <budget>`
 in `~/.mesh/work/<goal-slug>/<seq>` (a worktree of the repo's clone, cloned with your `gh`, branch
 `mesh/<goal-slug>-<seq>` from the base ref), with the goal's runsheet

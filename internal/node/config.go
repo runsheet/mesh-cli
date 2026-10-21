@@ -853,7 +853,6 @@ type Models struct {
 	Build    string `yaml:"build,omitempty"`
 	Evaluate string `yaml:"evaluate,omitempty"`
 	Plan     string `yaml:"plan,omitempty"`
-	Channel  string `yaml:"channel,omitempty"`
 	Research string `yaml:"research,omitempty"`
 	Rebase   string `yaml:"rebase,omitempty"`
 }
@@ -868,8 +867,6 @@ func (m Models) For(kind string) string {
 		v = m.Evaluate
 	case "plan":
 		v = m.Plan
-	case "channel":
-		v = m.Channel
 	case "research":
 		v = m.Research
 	case "rebase":
@@ -889,7 +886,7 @@ func (m Models) PlanModel() string {
 	if m.Plan != "" {
 		return m.Plan
 	}
-	if s := Strongest(m.Default, m.Build, m.Evaluate, m.Channel, m.Research); s != "" {
+	if s := Strongest(m.Default, m.Build, m.Evaluate, m.Research); s != "" {
 		return s
 	}
 	return "opus"

@@ -41,7 +41,7 @@ type Evaluator struct {
 	// each item's checkout, scratch, kept stream and MCP files go in its
 	// job, its clone and store in its connection's caches, WorkRoot
 	// unused for them. Nil keeps WorkRoot (the tests' layout).
-	Layout *Layout
+	Layout   *Layout
 	WorkRoot string
 	// BuildCache is a host session's GOCACHE; "" is BuildCacheDir().
 	BuildCache string

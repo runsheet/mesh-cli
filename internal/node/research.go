@@ -42,7 +42,7 @@ type Director struct {
 	// Layout, when set, is the node's job and connection trees (ADR-039):
 	// the session works in its goal's or direction's job. Nil keeps
 	// WorkRoot (the tests' layout).
-	Layout *Layout
+	Layout   *Layout
 	WorkRoot string
 	// BuildCache is a host session's GOCACHE; "" is BuildCacheDir().
 	BuildCache string
