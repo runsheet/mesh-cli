@@ -3060,6 +3060,40 @@ mesh goal watch ship-it            # polls every 5 s, prints item status changes
 `--org <login>` picks the org (default: the registered node's);
 `--gateway` or `MESH_GATEWAY` picks the gateway.
 
+## Publishing a product's catalogue
+
+A product gets its agents into Mesh by publishing its catalogue, and in no
+other way (runsheet ADR 067). From the product's checkout, usually in CI on
+a merge to main:
+
+```bash
+mesh product publish --dry-run     # print the bundle and the CLI's checks; sends nothing, needs no credential
+MESH_PRODUCT_CLIENT_ID=… MESH_PRODUCT_CLIENT_SECRET=… mesh product publish --version v1.4.0
+```
+
+It reads:
+
+- `.mesh/product.yml`: `product` (the slug), an optional `display_name`,
+  `mcp`, `hooks` and `triggers`.
+- `.mesh/jobs/<kind>.yml`: one kind of job each, with `harness`, `finish`,
+  `access`, `needs`, `pods`.
+- the manifest's `roles` directory (`.mesh/roles/` by default): one role
+  each, a kind with a `trigger`, an `identity` and `powers`.
+
+A kind's or role's `guidance:` names a markdown file in the checkout
+(`.mesh/agents/review.md`); the CLI sends its text, at most 64 KiB. A kind
+with `harness: none` needs none.
+
+It signs in as the product's own Latchkey client (`client_credentials` at
+`MESH_PRODUCT_ISSUER`, default `https://auth.runsheet.dev`) and sends
+everything to `PUT /mesh/v1/products/<product>/catalogue`:
+
+- Mesh checks the bundle whole: one bad kind or role refuses all of it,
+  and the error names every refused field.
+- A kind or role the bundle no longer names is retired.
+- The first publish registers the product to the client; after that only
+  that client publishes it.
+
 ## Legacy commands (mesh-api)
 
 ### Authentication Commands

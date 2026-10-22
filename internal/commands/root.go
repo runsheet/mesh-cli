@@ -21,7 +21,7 @@ func init() {
 	rootCmd.AddCommand(orgCmd, agentCmd, sessionCmd)
 	rootCmd.AddCommand(runCmd, psCmd, attachCmd, logsCmd, restartCmd, rmCmd, inspectCmd)
 	rootCmd.AddCommand(pullCmd, imagesCmd, templatesCmd, localUpdateCmd)
-	rootCmd.AddCommand(peersCmd)
+	rootCmd.AddCommand(peersCmd, productCmd)
 	rootCmd.AddCommand(emergencyStopCmd)
 }
 
