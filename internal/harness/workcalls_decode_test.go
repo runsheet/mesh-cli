@@ -1,17 +1,15 @@
 package harness
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
-// A mesh_verdict call reads as the text path's verdict: its readings
-// as READING lines on the notes, its clauses with both halves and no
-// duplicates, and a call with no readable passed is no verdict.
-func TestVerdictCall(t *testing.T) {
-	passed, notes, clauses, ok := VerdictCall(map[string]any{
+// A mesh_result verdict reads as the node records it: its readings as
+// READING lines on the notes, its clauses (failedClauses, as finishJob
+// names them, or failed_clauses) with both halves and no duplicates, and
+// a verdict with no readable passed is no verdict.
+func TestVerdictResult(t *testing.T) {
+	passed, notes, clauses, ok := VerdictResult(map[string]any{
 		"passed": false, "notes": "Two gaps.",
-		"failed_clauses": []any{
+		"failedClauses": []any{
 			map[string]any{"clause": "a", "satisfy": "do a"},
 			map[string]any{"clause": "a", "satisfy": "again"},
 			map[string]any{"clause": "b"},
@@ -24,38 +22,16 @@ func TestVerdictCall(t *testing.T) {
 	if notes != "Two gaps.\n\nREADING: under a minute || 48s" || len(ParseReadings(notes)) != 1 {
 		t.Fatalf("notes %q", notes)
 	}
-	// no failed_clauses: the notes' FAILED lines are read
-	_, _, clauses, _ = VerdictCall(map[string]any{"passed": "false", "notes": "FAILED: c || SATISFY: do c"})
+	_, _, clauses, _ = VerdictResult(map[string]any{"passed": "false", "failed_clauses": []any{map[string]any{"clause": "c", "satisfy": "do c"}}})
 	if len(clauses) != 1 || clauses[0].Clause != "c" {
-		t.Fatalf("clauses from notes %v", clauses)
+		t.Fatalf("snake_case clauses %v", clauses)
 	}
-	if _, _, _, ok := VerdictCall(map[string]any{"notes": "no passed"}); ok {
-		t.Fatal("a call with no passed read as a verdict")
+	// no clauses in the call: none, whatever the notes say (the text is
+	// not read, ADR-041)
+	if _, _, clauses, _ = VerdictResult(map[string]any{"passed": "false", "notes": "FAILED: c || SATISFY: do c"}); len(clauses) != 0 {
+		t.Fatalf("clauses read from the notes: %v", clauses)
 	}
-}
-
-// A mesh_plan call renders as the fenced block ParsePlan and its
-// siblings read; one with neither items nor split is no plan.
-func TestPlanCall(t *testing.T) {
-	text, ok := PlanCall(map[string]any{
-		"goal_id":   "g",
-		"items":     []any{map[string]any{"seq": 1, "title": "T", "repo": "o/r", "depends_on": []any{}}},
-		"questions": `[{"clause": "c", "question": "q?"}]`,
-	})
-	if !ok || !strings.HasPrefix(text, "```json\n") {
-		t.Fatalf("(%q, %v)", text, ok)
-	}
-	specs, err := ParsePlan(text)
-	if err != nil || len(specs) != 1 || specs[0].Title != "T" {
-		t.Fatalf("ParsePlan: %v %v", specs, err)
-	}
-	if q := ParsePlanQuestions(text); len(q) != 1 || q[0].Question != "q?" {
-		t.Fatalf("questions %v", q)
-	}
-	if _, ok := PlanCall(map[string]any{"goal_id": "g"}); ok {
-		t.Fatal("a call with no items read as a plan")
-	}
-	if _, ok := PlanCall(nil); ok {
-		t.Fatal("no call read as a plan")
+	if _, _, _, ok := VerdictResult(map[string]any{"notes": "no passed"}); ok {
+		t.Fatal("a verdict with no passed read as one")
 	}
 }

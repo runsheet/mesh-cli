@@ -31,22 +31,43 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   what the node's finishJob sends, after its own checks. A kind whose
   finish is the tool runs on the brief's `guidance` first, then the
   job's facts, then `Holder.FinishSection()`, the one fixed finish
-  section; its built-in role text is gone (goal-chat so far:
-  `harness.ThreadPrompt`, `GoalChatPrompt` the no-guidance fallback,
-  `ParseThreadReply` deleted). A brief with no guidance is logged once
-  per kind, `brief carries no guidance; running the built-in prompt`.
+  section; its built-in role text is gone (goal-chat: `harness.ThreadPrompt`,
+  `GoalChatPrompt` the no-guidance fallback, `ParseThreadReply` deleted;
+  evaluate: `EvaluatePrompt` = guidance, `evaluateSubject`,
+  `evaluateFinishDetail`, the verdict read by `verdictOf` from the
+  holder through `harness.VerdictResult`, `ParseVerdict` and
+  `ParseFailedClauses` deleted, the hosted `mesh_verdict` disallowed
+  (`harness.HostedDisallowed`); plan: `PlanPrompt` = guidance,
+  `planSubject`, `planChecks` (the node's plan-check rules and the model
+  rubric, kept because `plan_check.go` refuses against them),
+  `planFinishDetail`, the graph read by `readPlan` from the holder
+  through `harness.DecodePlan`/`DecodePlanQuestions`/`DecodePlanSplit`/
+  `DecodePlanCheckpoints`, `ParsePlan*`/`PlanCall` deleted). The node
+  finds a job's brief by `jobBriefOf` (`internal/node/brief.go`): the
+  brief `gateway.Client.JobBriefOf` kept at the claim, else the kind's
+  catalogue row (`JobKindOf`, read every 10 min), else empty — logged once
+  per kind, `brief carries no guidance; running the built-in prompt`
+  (`NoGuidance`). A `mesh_result` call the stream recorded but the node
+  never received is read into the holder late (`recoverResult`,
+  `Holder.Recover`), checked the same way; the final message is never
+  read. A session that handed nothing in ends `no result: the session
+  made no mesh_result call`; one that called `mesh_fail` ends `the
+  session gave the <kind> up: <why>`. Tests script a session's result
+  with `fakeHarness.result`, or let `handInScript` (`scripted_test.go`)
+  hand an older `text:` script in as the model would.
 - `internal/harness/prompt.go`: the five prompts — `BuildPrompt`,
   `EvaluatePrompt`, `PlanPrompt`, `ResearchPrompt`, `RebasePrompt`. Their
-  contract lines are load-bearing: the evaluator ends with
-  `VERDICT: PASS|FAIL` and, when it fails, one
-  `FAILED: <clause> || SATISFY: <what would satisfy it>` line per failed
-  acceptance clause above it (`ParseFailedClauses`; the node records them
-  with the verdict as `evaluateWorkItem`'s `failedClauses`, and a retry's
+  contract lines are load-bearing where a kind still has them (research,
+  rebase, build — ADR-041 moves them kind by kind): the evaluator hands
+  its verdict to `mesh_result` as `{verdict: {passed, notes,
+  failedClauses: [{clause, satisfy}], readings: [{clause, reading}]}}`
+  (the node records the clauses with the verdict as `evaluateWorkItem`'s
+  `failedClauses`, and a retry's
   evaluator is given the clauses earlier attempts named and judges that
   attempt on those and on regressions, never on a gap nobody named); a
   clause that reads the host — load, wall time, a ratio of durations —
-  is judged on its mechanism and its reading written above the verdict
-  as `READING: <clause> || <what it measured, when, under what load>`
+  is judged on its mechanism and its reading recorded, appended to the
+  notes as `READING: <clause> || <what it measured, when, under what load>`
   (`ClauseReading`, `ParseReadings`), never failed for the host's number,
   and a retry that fails a clause an earlier attempt failed opens its
   review with `fails on the same clause as attempt N: <clause>`
@@ -54,9 +75,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   prepends the line when the model forgot it — the node applies it in
   `afterEvaluate` on either family before `EvaluateWorkItem` and logs
   `fails on the same clause as attempt N`, and one `reading recorded:
-  <clause>` line per READING, which rides the notes; ADR-020), the planner ends with the JSON graph in a fenced
-  block — `items` and, beside them, `"questions": [{"clause", "question"}]`
-  for a clause no PR can satisfy (`ParsePlanQuestions`; sent with
+  <clause>` line per READING, which rides the notes; ADR-020), the planner hands its graph to `mesh_result` as
+  `{plan: {items, …}}` — `items` and, beside them, `"questions": [{"clause", "question"}]`
+  for a clause no PR can satisfy (`DecodePlanQuestions`; sent with
   `planGoal` only when its input has `questions`, `TakesPlanQuestions`,
   else each logged `plan <goal>: question for the person: …`), its rule
   3 and re-ask saying an item's acceptance names only what a PR can
@@ -221,24 +242,17 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (`TokenFacts`, `gateway.GitHubToken.Access`/`IssuedAt`), never the
   token; logged `item <label>: pushed <sha>; finished <branch> ($x)` or
   `item <label>: push refused (<token facts>): <git's words>; not
-  finished` (ADR-014's amendment 2026-10-10: push → attest → finish). The evaluator ends the same
-  way by `mesh_verdict(item_id, passed, notes, failed_clauses: [{clause,
-  satisfy}], readings: [{clause, reading}])` (EvaluatePrompt's
-  `# Finish by tool call`): `verdictOf`, on the first evaluation and
-  the second opinion of either family, takes the call as the verdict
-  with an empty final message (`harness.VerdictCall`, its readings
-  appended to the notes as `READING:` lines so `logReadings` and
-  `NoteSameClause` run as on the text), parses the text with no call,
-  logging `item <label>: no mesh_verdict call; parsed the final message`
-  once per session, and with neither is no verdict; an
-  `EvaluateWorkItem` refused after a call is `evaluated by tool call on
-  the platform`. The planner ends by `mesh_plan(goal_id, items,
-  questions)` (PlanPrompt's `# Finish by tool call`): `readPlan`
-  renders the call as the fenced block (`harness.PlanCall`) and reads
-  it through `ParsePlan` and every plan check, else parses the text,
-  logging `plan <goal>: no mesh_plan call; parsed the final message`.
-  The `VERDICT:`/`FAILED:`/`READING:` lines and the fenced JSON stay
-  load-bearing as the fallbacks. Both `mesh_finish` calls carry
+  finished` (ADR-014's amendment 2026-10-10: push → attest → finish). The evaluator and the planner end by the node's
+  `mesh_result` (ADR-041, the `internal/jobresult` bullet above): a
+  `{verdict: {passed, notes, failedClauses, readings}}` the node reads
+  through `verdictOf` on the first evaluation and the second opinion of
+  either family (readings appended to the notes as `READING:` lines so
+  `logReadings` and `NoteSameClause` run as before), a `{plan: {items,
+  questions, checkpoints, split, already_done}}` `readPlan` decodes and
+  runs through every plan check. No text of the final message is read;
+  the `VERDICT:` line the node still writes into a verdict's notes
+  (`verdictLine`, `bothNotes`) is the record's format, read back by
+  `failedVerdicts`, never the session's. Both `mesh_finish` calls carry
   a `description` — the PR body `FinishDescription` renders
   (`internal/node/finishdesc.go`): a `## Who` section naming who built
   the item (its actor, model and adapter) and who it was paired with,

@@ -1473,7 +1473,7 @@ func (r *Runner) AdoptItem(ctx context.Context, item gateway.WorkItem, s FoundSe
 	defer unbind()
 	// a proxied session's proxy died with the node that started it: one
 	// on the same socket, on the bearer just bound and the item's tools
-	endProxy := adoptProxy(ctx, r.Proxies, r.Credentials, r.mcp(ctx), tools.RoleFor(string(harness.KindBuild)), r.runtimes(), gateway.SessionRef{Kind: string(harness.KindBuild), ItemID: item.ID, GoalID: item.GoalID}, s, "item "+label, r.logf)
+	endProxy := adoptProxy(ctx, r.Proxies, r.Credentials, r.mcp(ctx), tools.RoleFor(string(harness.KindBuild)), r.runtimes(), gateway.SessionRef{Kind: string(harness.KindBuild), ItemID: item.ID, GoalID: item.GoalID}, s, "item "+label, nil, r.logf)
 	defer endProxy(ctx)
 	r.logf("item %s: adopted its %s session (%s, from byte %d)", label, s.Liveness(), where, s.State.Offset)
 	result, runErr := b.run(ctx, func(sctx context.Context, onProgress func(harness.Progress)) (harness.Result, error) {

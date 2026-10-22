@@ -16,6 +16,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/jobresult"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
 	"projectmesh.io/mesh-cli/internal/tripline"
@@ -32,11 +33,14 @@ import (
 // the same EvaluateWorkItem confirms it (the platform marks it merged,
 // with no pull request) or readies it again.
 type Evaluator struct {
-	GW      Gateway
-	Harness harness.Harness
-	WS      Workspacer
-	Cfg     *Config
-	Scopes  Scopes
+	GW Gateway
+	// noGuidance logs once per kind whose brief carries no guidance
+	// (ADR-041).
+	noGuidance NoGuidance
+	Harness    harness.Harness
+	WS         Workspacer
+	Cfg        *Config
+	Scopes     Scopes
 	// Layout, when set, is the node's job and connection trees (ADR-039):
 	// each item's checkout, scratch, kept stream and MCP files go in its
 	// job, its clone and store in its connection's caches, WorkRoot
@@ -351,6 +355,17 @@ func (e *Evaluator) evaluate(ctx context.Context, item gateway.WorkItem, res *Re
 		contextDir = ContextDir
 	}
 	prior := e.priorAttempts(ctx, item, label)
+	// the session's result reaches the node by mesh_result (ADR-041): the
+	// holder for this job, on the brief's finish and schema, its finish
+	// section the prompt's last, and the brief's guidance its first
+	brief := jobBriefOf(ctx, e.GW, EvaluateKind, item.ID)
+	holder, err := jobresult.New(EvaluateKind, cmp.Or(brief.Finish, jobresult.FinishVerdict), brief.FinishSchema)
+	if err != nil {
+		return err
+	}
+	if brief.Guidance == "" {
+		e.noGuidance.Note(EvaluateKind, e.logf)
+	}
 	in := harness.EvaluateInput{
 		ItemID: item.ID, GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalAcceptance: res.Goal.Acceptance,
 		Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
@@ -358,6 +373,7 @@ func (e *Evaluator) evaluate(ctx context.Context, item gateway.WorkItem, res *Re
 		ContextDir: contextDir, ContextFiles: files, Project: orgName + "/" + res.Project.Slug, MeshContext: len(e.MCP) > 0,
 		AlreadyDone: alreadyDone, Evidence: item.Evidence,
 		PriorAttempts: prior,
+		Guidance:      brief.Guidance, Finish: holder.FinishSection(),
 	}
 	model := fam.model
 	budget, budgetSource := e.budgetWithSource(res.Goal, model)
@@ -459,6 +475,7 @@ func (e *Evaluator) evaluate(ctx context.Context, item gateway.WorkItem, res *Re
 			e.Declines.Record(item.ID, st.Missing, runtimes, time.Now())
 			return fmt.Errorf("declined, %s", st.DeclineReason())
 		}
+		st.NodeTools = holder.Tools()
 		closeProxy, err := st.UseVia(e.Proxies, mcpRootFor(e.Layout, item.ID), &job, e.MCP, acct)
 		if err != nil {
 			return fmt.Errorf("tools: %w", err)
@@ -522,8 +539,11 @@ func (e *Evaluator) evaluate(ctx context.Context, item gateway.WorkItem, res *Re
 	// the usage report rides the verdict (afterEvaluate); Finish logs it
 	// when nothing carried it
 	defer acct.Finish(ctx, result)
-	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: model, fam: fam, dir: dir, acct: acct, second: &second, preflight: preflight, omitted: st.OmittedNote(), missing: pod.MissingNote(), prior: prior, changed: changed, setting: cfg.setting(), protected: cfg.ProtectedPaths}, result, err)
+	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: model, fam: fam, dir: dir, acct: acct, second: &second, preflight: preflight, omitted: st.OmittedNote(), missing: pod.MissingNote(), prior: prior, changed: changed, setting: cfg.setting(), protected: cfg.ProtectedPaths, result: holder}, result, err)
 }
+
+// EvaluateKind is runsheet's evaluate kind, the job an evaluation is.
+const EvaluateKind = "runsheet/evaluate"
 
 // priorAttempts reads the verdicts earlier attempts of the item were
 // given. A retry is judged on what earlier attempts failed on, so an
@@ -574,6 +594,9 @@ type evalRun struct {
 	// prior are the verdicts earlier attempts were given, for the
 	// same-clause first line (ADR-020)
 	prior []harness.PriorAttempt
+	// result holds what the session handed mesh_result (ADR-041): the
+	// verdict the node reads, or why the session gave up
+	result *jobresult.Holder
 	// changed are the files the evaluated diff changed, setting the
 	// checkout's second_opinion and protected its protected_paths, for
 	// secondOpinionWanted
@@ -642,9 +665,6 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	var notes string
 	// the clauses the deciding session failed, for the retry to fix
 	var clauses []harness.FailedClause
-	// verdictCalled: the deciding session ended by a mesh_verdict call
-	// (ADR-023), which the hosted tool may have recorded already
-	var verdictCalled bool
 	cost := result.CostUSD
 	if blind, what, broken := e.unreadable(result, acct, ev.adopted); broken {
 		other := ev.fam.other(e)
@@ -674,17 +694,16 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 		e.Blind.Forget(item.ID)
 		head = fmt.Sprintf("%s (first attempt, %s): no verdict — %s", ev.fam.name(), ev.fam.shortModel(), blind)
 		blindOn = blind
-		fam, passed, notes, clauses, verdictCalled = other, op.passed, op.notes, op.clauses, op.called
+		fam, passed, notes, clauses = other, op.passed, op.notes, op.clauses
 		cost += op.cost
 	} else {
+		recoverResult(ev.result, result, "item "+label, e.logf)
+		var why string
 		var ok bool
-		passed, notes, clauses, verdictCalled, ok = verdictOf(result, acct.Redact)
-		if !verdictCalled {
-			e.logf("item %s: %s", label, noVerdictCallLine)
-		}
+		passed, notes, clauses, why, ok = verdictOf(ev.result, acct.Redact)
 		if !ok {
-			return e.noVerdict(ctx, ev, "no VERDICT line: "+truncate(result.Text, 300), cost, usage, func() error {
-				return fmt.Errorf("evaluator session reached no verdict (%s): %s%s", result.SessionID, truncate(result.Text, 300), keptAt(result))
+			return e.noVerdict(ctx, ev, why, cost, usage, func() error {
+				return fmt.Errorf("evaluator session reached no verdict (%s): %s%s", result.SessionID, why, keptAt(result))
 			})
 		}
 		notes = strings.TrimSpace(notes)
@@ -834,14 +853,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	stopHeartbeat(ctx)
 	ctx = gateway.WithNodeID(ctx, nodeIDOf(e.Scopes, item.OrgID, e.Cfg))
 	if err := acct.Carried(e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, failed, Cents(cost), usage, gateway.EvaluateChoice{EvaluatedModel: fam.model})); err != nil {
-		if verdictCalled && gateway.IsRefusal(err) && !gateway.IsUnsupported(err) {
-			// the hosted mesh_verdict already recorded it, so the item is
-			// no longer evaluating (ADR-023)
-			left.Forget(item.ID)
-			e.logf("item %s: evaluated by tool call on the platform", label)
-			return nil
-		}
-		if !verdictCalled && evaluationNotYours(err) {
+		if evaluationNotYours(err) {
 			// another node converged on the evaluation while this session
 			// ran; its own verdict (or tool call) is the one of record, and
 			// retrying this one forever would never land it
@@ -888,7 +900,7 @@ func failedVerdicts(prior []harness.PriorAttempt) int {
 // record that slipped in from counting.
 func noVerdictRecord(notes string) bool {
 	n := strings.TrimSpace(notes)
-	return strings.HasPrefix(n, "no VERDICT line:") || strings.Contains(n, "; not a verdict")
+	return strings.HasPrefix(n, "no VERDICT line:") || strings.HasPrefix(n, "no result:") || strings.HasPrefix(n, "the session gave the evaluation up:") || strings.Contains(n, "; not a verdict")
 }
 
 // askSplit is the evaluator's ask after an item's second failed
@@ -1020,7 +1032,13 @@ func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, 
 	}
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
 	ctx = WithLockHolder(ctx, label)
-	endProxy := adoptProxy(ctx, e.Proxies, e.Credentials, e.MCP, tools.RoleFor(string(harness.KindEvaluate)), e.runtimes(), gateway.SessionRef{Kind: string(harness.KindEvaluate), ItemID: item.ID, GoalID: item.GoalID}, s, "item "+label, e.logf)
+	// a fresh holder for the adopted session (ADR-041): a verdict it
+	// handed the node before this one lived with that node
+	holder, err := jobresult.New(EvaluateKind, jobresult.FinishVerdict, "")
+	if err != nil {
+		return err
+	}
+	endProxy := adoptProxy(ctx, e.Proxies, e.Credentials, e.MCP, tools.RoleFor(string(harness.KindEvaluate)), e.runtimes(), gateway.SessionRef{Kind: string(harness.KindEvaluate), ItemID: item.ID, GoalID: item.GoalID}, s, "item "+label, holder.Tools(), e.logf)
 	defer endProxy(ctx)
 	// adopted, the node holds the evaluation again: it heartbeats until
 	// the verdict, as a started one does
@@ -1029,7 +1047,7 @@ func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, 
 	e.logf("item %s: adopted its %s evaluation on %s (pid %d)", label, s.Liveness(), fam.logName(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
 	changed, cfg := e.touched(ctx, label, s.State.Workspace, res.BaseRef(), defaultBranchOf(res), item.Outcome == gateway.OutcomeAlreadyDone)
-	return e.claimLost(hb, label, e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: s.State.Model, fam: fam, dir: s.State.Workspace, adopted: true, prior: e.priorAttempts(ctx, item, label), changed: changed, setting: cfg.setting(), protected: cfg.ProtectedPaths}, result, err))
+	return e.claimLost(hb, label, e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: s.State.Model, fam: fam, dir: s.State.Workspace, adopted: true, prior: e.priorAttempts(ctx, item, label), changed: changed, setting: cfg.setting(), protected: cfg.ProtectedPaths, result: holder}, result, err))
 }
 
 // opinion is the second evaluation's outcome: its verdict and notes, or
@@ -1049,8 +1067,6 @@ type opinion struct {
 	acct *SessionAccount
 	// clauses are the acceptance clauses it failed, empty on a pass
 	clauses []harness.FailedClause
-	// called: its verdict came from a mesh_verdict call (ADR-023)
-	called bool
 }
 
 // secondOpinion runs the evaluation's job on the other family (on):
@@ -1102,6 +1118,18 @@ func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, jo
 	}
 	job.Model = on.model
 	job.Label = label + " " + role
+	// the second session hands its verdict to a holder of its own, on a
+	// proxy of the node tools' own (the first session's proxy was its)
+	holder, err := jobresult.New(EvaluateKind, jobresult.FinishVerdict, "")
+	if err != nil {
+		return opinion{unavailable: err.Error()}
+	}
+	bin, _, _ := harness.RelayOf(e.MCP[tools.Builtin])
+	endTools, err := SessionTools{NodeTools: holder.Tools()}.serveNodeToolsAlone(mcpRootFor(e.Layout, ev.item.ID), bin, &job, nil)
+	if err != nil {
+		return opinion{unavailable: truncate(err.Error(), 300)}
+	}
+	defer endTools(ctx)
 	if on.codex {
 		if why := e.preflight(ctx, job, acct); why != "" {
 			return opinion{unavailable: "preflight " + why}
@@ -1134,15 +1162,13 @@ func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, jo
 			op.unavailable = "saw no context (" + harness.Redact(blind, job.Secrets...) + ")"
 			break
 		}
-		passed, notes, clauses, called, ok := verdictOf(result, acct.Redact)
-		if !called {
-			e.logf("item %s: %s: %s", label, role, noVerdictCallLine)
-		}
+		recoverResult(holder, result, "item "+label+" "+role, e.logf)
+		passed, notes, clauses, why, ok := verdictOf(holder, acct.Redact)
 		if !ok {
-			op.unavailable = "no verdict: " + truncate(acct.Redact(harness.Redact(result.Text, job.Secrets...)), 300)
+			op.unavailable = why
 			break
 		}
-		op.passed, op.called = passed, called
+		op.passed = passed
 		op.notes = strings.TrimSpace(harness.Redact(notes, job.Secrets...))
 		if op.notes == "" {
 			op.notes = "(no notes)"
@@ -1152,31 +1178,32 @@ func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, jo
 	return op
 }
 
-// noVerdictCallLine is logged once per evaluator session that made no
-// mesh_verdict call, its final message parsed instead (ADR-023).
-const noVerdictCallLine = "no mesh_verdict call; parsed the final message"
-
-// verdictOf reads a session's verdict: its mesh_verdict call's input when
-// it made one with a readable passed (harness.VerdictCall; called true),
-// accepted whatever the final message says, else the final message's
-// VERDICT line, the notes above it and its FAILED lines, as before
-// (ADR-023, finish by tool call). ok is false when neither gives one —
-// no verdict. redact is applied to what either says.
-func verdictOf(result harness.Result, redact func(string) string) (passed bool, notes string, clauses []harness.FailedClause, called, ok bool) {
-	if in, has := result.WorkCalls["mesh_verdict"]; has {
-		if passed, notes, clauses, ok := harness.VerdictCall(in); ok {
-			for i := range clauses {
-				clauses[i].Clause, clauses[i].Satisfy = redact(clauses[i].Clause), redact(clauses[i].Satisfy)
-			}
-			return passed, redact(notes), clauses, true, true
-		}
+// verdictOf reads a session's verdict from what it handed the node's
+// mesh_result (ADR-041): the `verdict` object's passed, notes and
+// clauses (harness.VerdictResult), redacted. ok is false, with why, when
+// the session gave the job up by mesh_fail, handed nothing in, or
+// handed in a verdict with no readable passed — no verdict, never read
+// from the final message.
+func verdictOf(holder *jobresult.Holder, redact func(string) string) (passed bool, notes string, clauses []harness.FailedClause, why string, ok bool) {
+	if holder == nil {
+		return false, "", nil, "no result holder for the session", false
 	}
-	text := redact(result.Text)
-	passed, notes, ok = harness.ParseVerdict(text)
+	if reason, failed := holder.Failed(); failed {
+		return false, "", nil, "the session gave the evaluation up: " + redact(truncate(reason, 300)), false
+	}
+	res, has := holder.Result()
+	if !has {
+		return false, "", nil, "no result: the session made no mesh_result call", false
+	}
+	verdict, _ := res["verdict"].(map[string]any)
+	passed, notes, clauses, ok = harness.VerdictResult(verdict)
 	if !ok {
-		return false, "", nil, false, false
+		return false, "", nil, "the result's verdict carries no readable passed", false
 	}
-	return passed, notes, harness.ParseFailedClauses(text), false, true
+	for i := range clauses {
+		clauses[i].Clause, clauses[i].Satisfy = redact(clauses[i].Clause), redact(clauses[i].Satisfy)
+	}
+	return passed, redact(notes), clauses, "", true
 }
 
 // ErrNoContext is an evaluation that saw no context — its built-in

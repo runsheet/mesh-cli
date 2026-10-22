@@ -100,6 +100,9 @@ while [ "$i" -le "$n" ]; do
   sleep "$pause"
   i=$((i + 1))
 done
+passed=true
+case "${SLOW_RESULT:-}" in *FAIL*) passed=false;; esac
+printf '%s\n' "{\"type\":\"assistant\",\"session_id\":\"s-slow\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_result\",\"name\":\"mcp__mesh-node__mesh_result\",\"input\":{\"verdict\":{\"passed\":$passed,\"notes\":\"${SLOW_RESULT:-all done}\"}}}]}}"
 printf '%s\n' "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"s-slow\",\"result\":\"${SLOW_RESULT:-all done}\",\"total_cost_usd\":0.42,\"num_turns\":3}"
 `
 	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {

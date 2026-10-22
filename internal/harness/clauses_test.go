@@ -8,54 +8,6 @@ import (
 	"testing"
 )
 
-// A failing evaluator names each clause it failed and what would satisfy
-// it, so the retry is told what to fix in a shape the platform stores.
-func TestParseFailedClauses(t *testing.T) {
-	for _, c := range []struct {
-		name string
-		text string
-		want []FailedClause
-	}{
-		{"plain", "review\nFAILED: tests pass || SATISFY: TestThing covers the empty case\nVERDICT: FAIL",
-			[]FailedClause{{"tests pass", "TestThing covers the empty case"}}},
-		{"a list the evaluator decorated", "- **FAILED: the trd is amended || SATISFY: specs/trd.md §6a describes it**\n",
-			[]FailedClause{{"the trd is amended", "specs/trd.md §6a describes it"}}},
-		{"SATISFY is optional", "FAILED: vet is clean || go vet ./... exits 0\n",
-			[]FailedClause{{"vet is clean", "go vet ./... exits 0"}}},
-		{"two clauses keep their order", "FAILED: b || fix b\nFAILED: a || fix a\n",
-			[]FailedClause{{"b", "fix b"}, {"a", "fix a"}}},
-		{"no clauses", "the branch is fine\nVERDICT: PASS", nil},
-		{"a clause with no separator is dropped", "FAILED: tests pass\nVERDICT: FAIL", nil},
-		{"a clause with nothing that would satisfy it is dropped", "FAILED: tests pass ||\n", nil},
-		{"a clause with no clause is dropped", "FAILED:  || fix it\n", nil},
-		{"a duplicate clause is dropped", "FAILED: a || fix a\nFAILED: a || fix a differently\n",
-			[]FailedClause{{"a", "fix a"}}},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			got := ParseFailedClauses(c.text)
-			if len(got) != len(c.want) {
-				t.Fatalf("%d clauses, want %d: %+v", len(got), len(c.want), got)
-			}
-			for i := range got {
-				if got[i] != c.want[i] {
-					t.Errorf("clause %d = %+v, want %+v", i, got[i], c.want[i])
-				}
-			}
-		})
-	}
-}
-
-// An evaluator that lists rather than judges is capped.
-func TestParseFailedClausesCapped(t *testing.T) {
-	var b strings.Builder
-	for i := 0; i < ClauseMax+10; i++ {
-		fmt.Fprintf(&b, "FAILED: clause %d || fix %d\n", i, i)
-	}
-	if got := ParseFailedClauses(b.String()); len(got) != ClauseMax {
-		t.Fatalf("%d clauses, want the %d cap", len(got), ClauseMax)
-	}
-}
-
 // A retry's evaluator is given what earlier attempts failed on and is
 // pinned to it, so an item that has answered every objection already
 // named is not failed on a fresh reading of the acceptance.
@@ -74,28 +26,25 @@ func TestEvaluatePromptPinsARetryToWhatFailedBefore(t *testing.T) {
 		"## Attempt 2",
 		"It named no clauses; its review is all there is.",
 		"7. " + evaluateRetryRule,
-		"9. End your final message",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("a retry's evaluate prompt lacks %q", want)
 		}
 	}
-	// a first attempt is told none of it, and its verdict rule stays rule 7
+	// a first attempt is told none of it, and its rules end at 6
 	first := EvaluatePrompt(EvaluateInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main"})
-	for _, never := range []string{"# What earlier attempts failed on", evaluateRetryRule, "9. End your final message"} {
+	for _, never := range []string{"# What earlier attempts failed on", evaluateRetryRule, "7. "} {
 		if strings.Contains(first, never) {
 			t.Errorf("a first attempt's evaluate prompt carries %q", never)
 		}
 	}
-	if !strings.Contains(first, "7. End your final message") {
-		t.Error("a first attempt's verdict rule is not rule 7")
-	}
 }
 
-// Both halves of the contract line reach every evaluator.
-func TestEvaluatePromptAsksForTheClauseLines(t *testing.T) {
+// Both halves of a failed clause reach every evaluator, in the finish's
+// account of `verdict.failedClauses` (ADR-041).
+func TestEvaluatePromptAsksForTheClauseHalves(t *testing.T) {
 	p := EvaluatePrompt(EvaluateInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main"})
-	for _, want := range []string{ClauseFailed, ClauseSatisfy, ClauseSep, "a clause that does not say what would satisfy it is dropped"} {
+	for _, want := range []string{"`verdict.failedClauses` is one `{clause, satisfy}` per acceptance clause you fail", "a clause without both halves is dropped"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("evaluate prompt lacks %q", want)
 		}
@@ -119,13 +68,12 @@ func TestEvaluatePromptJudgesWhatAPRCanChange(t *testing.T) {
 		"1.09, 1.13 and 1.19",
 		"all 309 tests",
 		"item 14 fails on that stale file — not on its 1.09",
-		"7. End your final message",
 	} {
 		if !strings.Contains(first, want) {
 			t.Errorf("a first attempt's evaluate prompt lacks %q", want)
 		}
 	}
-	for _, never := range []string{SameClauseLine, "8. ", "9. "} {
+	for _, never := range []string{SameClauseLine, "7. ", "8. "} {
 		if strings.Contains(first, never) {
 			t.Errorf("a first attempt's evaluate prompt carries %q", never)
 		}
@@ -138,14 +86,13 @@ func TestEvaluatePromptJudgesWhatAPRCanChange(t *testing.T) {
 		"7. " + evaluateRetryRule + "\n",
 		"8. " + evaluateSameClauseRule + "\n",
 		"the first line of your review must be `fails on the same clause as attempt N: <the clause>`",
-		"9. End your final message",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("a retry's evaluate prompt lacks %q", want)
 		}
 	}
-	if strings.Contains(p, "10. ") {
-		t.Error("a retry's evaluate prompt numbers past rule 9")
+	if strings.Contains(p, "9. ") {
+		t.Error("a retry's evaluate prompt numbers past rule 8")
 	}
 }
 
@@ -176,6 +123,29 @@ func TestParseReadings(t *testing.T) {
 	}
 }
 
+// failedClauseLines reads the FAILED/SATISFY lines of a verdict kept
+// under testdata, the shape evaluations were recorded in before the
+// result tool (ADR-041): the fixtures' clauses, for the same-clause
+// tests.
+func failedClauseLines(text string) []FailedClause {
+	var out []FailedClause
+	for _, line := range strings.Split(text, "\n") {
+		l := strings.TrimSpace(strings.Trim(strings.TrimLeft(strings.TrimSpace(line), "-*\u2022># \t"), "`*_"))
+		if !strings.HasPrefix(strings.ToUpper(l), ClauseFailed) {
+			continue
+		}
+		clause, satisfy, ok := strings.Cut(l[len(ClauseFailed):], ClauseSep)
+		if !ok {
+			continue
+		}
+		satisfy = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(satisfy), ClauseSatisfy))
+		if clause, satisfy = strings.TrimSpace(clause), strings.TrimSpace(satisfy); clause != "" && satisfy != "" {
+			out = append(out, FailedClause{Clause: clause, Satisfy: satisfy})
+		}
+	}
+	return out
+}
+
 // cifits reads a ci-fits-the-mini verdict kept under testdata (item 3
 // reuses them) and its clauses.
 func cifits(t *testing.T, item int) (string, []FailedClause) {
@@ -184,7 +154,7 @@ func cifits(t *testing.T, item int) (string, []FailedClause) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	clauses := ParseFailedClauses(string(b))
+	clauses := failedClauseLines(string(b))
 	if len(clauses) == 0 {
 		t.Fatalf("item %d's verdict names no clause", item)
 	}

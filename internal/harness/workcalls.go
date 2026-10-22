@@ -8,15 +8,15 @@ import (
 	"strings"
 )
 
-// VerdictCall reads an evaluator's mesh_verdict call (mesh-cli ADR-023,
-// sessions finish by tool call): its passed, its notes with one READING
-// line per reading appended — so the node's READING handling (ParseReadings,
-// the notes' truncation that keeps them) is the text path's — and its
-// failed clauses, each with both halves, duplicates dropped, at most
-// ClauseMax. A call naming no failed_clauses has its notes' FAILED lines
-// read instead. ok is false when the call carries no passed the node can
-// read: such a call is no verdict, and the final message is parsed.
-func VerdictCall(in map[string]any) (passed bool, notes string, clauses []FailedClause, ok bool) {
+// VerdictResult reads an evaluator's verdict as its session handed it to
+// the node's mesh_result (jobresult, ADR-041): the `verdict` object's
+// passed, its notes with one READING line per reading appended — so the
+// node's READING handling (ParseReadings, the notes' truncation that
+// keeps them) is one path — and its failed clauses (`failedClauses`, as
+// finishJob names them, or `failed_clauses`), each with both halves,
+// duplicates dropped, at most ClauseMax. ok is false when the verdict
+// carries no passed the node can read: such a result is no verdict.
+func VerdictResult(in map[string]any) (passed bool, notes string, clauses []FailedClause, ok bool) {
 	switch v := in["passed"].(type) {
 	case bool:
 		passed = v
@@ -53,7 +53,11 @@ func VerdictCall(in map[string]any) (passed bool, notes string, clauses []Failed
 		notes = strings.TrimSpace(notes + "\n\n" + strings.Join(lines, "\n"))
 	}
 	seen := map[string]bool{}
-	for _, e := range callList(in["failed_clauses"]) {
+	failed := in["failedClauses"]
+	if failed == nil {
+		failed = in["failed_clauses"]
+	}
+	for _, e := range callList(failed) {
 		clause := strings.TrimSpace(callString(e["clause"]))
 		satisfy := strings.TrimSpace(callString(e["satisfy"]))
 		if clause == "" || satisfy == "" || seen[clause] {
@@ -64,44 +68,7 @@ func VerdictCall(in map[string]any) (passed bool, notes string, clauses []Failed
 			break
 		}
 	}
-	if len(clauses) == 0 {
-		clauses = ParseFailedClauses(notes)
-	}
 	return passed, notes, clauses, true
-}
-
-// PlanCall renders a planner's mesh_plan call (mesh-cli ADR-023) as the
-// fenced JSON block its final message would end with — its items,
-// questions, checkpoints and split as given — so ParsePlan,
-// ParsePlanQuestions, ParsePlanCheckpoints and ParsePlanSplit read the
-// call exactly as they read the text, and every check after them is the
-// text path's. ok is false when the call carries neither items nor a
-// split: the final message is parsed instead.
-func PlanCall(in map[string]any) (text string, ok bool) {
-	graph := map[string]any{}
-	for _, key := range []string{"items", "questions", "checkpoints", "split"} {
-		v, has := in[key]
-		if !has || v == nil {
-			continue
-		}
-		// a client that sent the array as a JSON string
-		if s, isString := v.(string); isString {
-			var decoded any
-			if err := json.Unmarshal([]byte(s), &decoded); err != nil {
-				continue
-			}
-			v = decoded
-		}
-		graph[key] = v
-	}
-	if graph["items"] == nil && graph["split"] == nil {
-		return "", false
-	}
-	b, err := json.MarshalIndent(graph, "", "  ")
-	if err != nil {
-		return "", false
-	}
-	return "```json\n" + string(b) + "\n```", true
 }
 
 // callString is a work tool argument as a string ("" when it is not one).
@@ -145,6 +112,30 @@ const NodeWorkMCP = "mesh-node"
 var HostedFinishTools = []string{
 	"mcp__" + BuiltinMCP + "__mesh_finish",
 	"mcp__" + BuiltinMCP + "__mesh_fail",
+}
+
+// HostedVerdictTools are the hosted runsheet tools an evaluation
+// session is not allowed: its verdict is the node's mesh_result
+// (ADR-041), and runsheet refuses mesh_verdict to a session token in
+// any case.
+var HostedVerdictTools = []string{
+	"mcp__" + BuiltinMCP + "__mesh_verdict",
+}
+
+// HostedDisallowed is the hosted runsheet tools job's session is not
+// allowed, by its kind: a build's finish and fail, an evaluation's
+// verdict; none for a job without the hosted runsheet server.
+func HostedDisallowed(job Job) []string {
+	if _, ok := job.MCPServers[BuiltinMCP]; !ok {
+		return nil
+	}
+	switch job.Kind {
+	case KindBuild:
+		return HostedFinishTools
+	case KindEvaluate:
+		return HostedVerdictTools
+	}
+	return nil
 }
 
 // WorkTool is one tool of the node's own MCP server: its name, schema

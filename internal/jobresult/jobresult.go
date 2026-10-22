@@ -227,6 +227,28 @@ func (h *Holder) Fail(args map[string]any) (string, error) {
 	return "recorded: the node hands the failure in; end the session now", nil
 }
 
+// Recover takes a mesh_result call the session's stream recorded but
+// the node never received — the relay or the proxy failed between them
+// — when nothing was recorded by the node itself, checked exactly as a
+// live call is; ok says whether it was recorded. A holder that already
+// holds a result or a failure is left as it is. The stream's record is
+// the same call, read late; it is never the final message.
+func (h *Holder) Recover(args map[string]any) (recorded bool, err error) {
+	if args == nil {
+		return false, nil
+	}
+	h.mu.Lock()
+	held := h.result != nil || h.failed != ""
+	h.mu.Unlock()
+	if held {
+		return false, nil
+	}
+	if _, err := h.Call(args); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // Result is the finish the session handed in, as finishJob takes it;
 // ok is false when none was recorded (or a failure replaced it).
 func (h *Holder) Result() (map[string]any, bool) {

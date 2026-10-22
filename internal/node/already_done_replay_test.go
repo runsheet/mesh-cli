@@ -137,8 +137,10 @@ func (s *replaySessions) Run(ctx context.Context, job harness.Job, on func(harne
 		if !strings.Contains(job.Prompt, item3PR) || !s.gh.merged(item3PR) || !strings.Contains(job.Prompt, item3Merge) || !s.gh.onMain(item3Merge) {
 			verdict = "VERDICT: FAIL"
 		}
-		return harness.Result{Success: true, SessionID: "s-evaluate", CostUSD: confirmUSD,
-			Text: "PR 3 is merged, " + item3Merge + " is on origin/main, and the acceptance holds there.\n\n" + verdict}, nil
+		text := "PR 3 is merged, " + item3Merge + " is on origin/main, and the acceptance holds there.\n\n" + verdict
+		// the verdict goes to the node's mesh_result (ADR-041)
+		handInScript(job, nil, text, nil)
+		return harness.Result{Success: true, SessionID: "s-evaluate", CostUSD: confirmUSD, Text: text}, nil
 	}
 	return harness.Result{}, nil
 }

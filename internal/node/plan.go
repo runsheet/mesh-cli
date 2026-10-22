@@ -1,6 +1,7 @@
 package node
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/jobresult"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
 )
@@ -25,10 +27,13 @@ import (
 // graph handed in with PlanGoal, the session's cost with it. A goal
 // whose plan cannot be read three times is left in planning and said so.
 type Planner struct {
-	GW      Gateway
-	Harness harness.Harness
-	WS      Workspacer
-	Cfg     *Config
+	GW Gateway
+	// noGuidance logs once per kind whose brief carries no guidance
+	// (ADR-041).
+	noGuidance NoGuidance
+	Harness    harness.Harness
+	WS         Workspacer
+	Cfg        *Config
 	// Layout, when set, is the node's job and connection trees (ADR-039):
 	// the session works in its goal's or direction's job. Nil keeps
 	// WorkRoot (the tests' layout).
@@ -881,6 +886,19 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, scope Scope, dir s
 	// Tools: the served tools, so PlanPrompt can name them and say when
 	// to search.
 	in.Tools = toolHints(st.Use)
+	// the plan reaches the node by mesh_result (ADR-041): the holder for
+	// this job, on the brief's finish and schema, its finish section the
+	// prompt's last and the brief's guidance its first
+	brief := jobBriefOf(ctx, p.GW, PlanKind, goal.ID)
+	holder, err := jobresult.New(PlanKind, cmp.Or(brief.Finish, jobresult.FinishPlan), brief.FinishSchema)
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, nil, 0, acct, err
+	}
+	if brief.Guidance == "" {
+		p.noGuidance.Note(PlanKind, p.logf)
+	}
+	in.Guidance, in.Finish = brief.Guidance, holder.FinishSection()
+	st.NodeTools = holder.Tools()
 	kept, err := keptRootFor(p.Layout, goal.ID)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, nil, 0, acct, err
@@ -943,9 +961,12 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, scope Scope, dir s
 	if note := acct.UseNote(result); note != "" && err == nil {
 		p.logf("goal %s: %s", goal.Slug, note)
 	}
-	items, reasons, flags, questions, checkpoints, drafts, added, cost, err := p.readPlan(ctx, goal, dir, acct, result, err, repos, merged, in.Evidence, goalItems, replacing, len(in.Rejected) > 0, gr, hasGoalRepo, in.MaxItems)
+	items, reasons, flags, questions, checkpoints, drafts, added, cost, err := p.readPlan(ctx, goal, dir, acct, holder, result, err, repos, merged, in.Evidence, goalItems, replacing, len(in.Rejected) > 0, gr, hasGoalRepo, in.MaxItems)
 	return items, reasons, flags, questions, checkpoints, drafts, added, cost, acct, err
 }
+
+// PlanKind is runsheet's plan kind, the job a plan is.
+const PlanKind = "runsheet/plan"
 
 // readPlan is what follows a planner session, however this process came
 // to hold it: its graph read and mapped onto the project's repos, as ask
@@ -957,7 +978,7 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, scope Scope, dir s
 // item, or still names a repo other than the goal's own (hasGoalRepo,
 // ADR-023 (d)), is not handed in: it is an error naming the lineage or
 // the repo (ADR-021's amendments, ADR-023).
-func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, acct *SessionAccount, result harness.Result, err error, repos map[string]gateway.Repo, merged []int, evidence []harness.ModelEvidence, goalItems []gateway.WorkItem, replacing *gateway.WorkItem, final bool, gr gateway.Repo, hasGoalRepo bool, cap int) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, []string, []gateway.GoalDraft, []addedDep, float64, error) {
+func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, acct *SessionAccount, holder *jobresult.Holder, result harness.Result, err error, repos map[string]gateway.Repo, merged []int, evidence []harness.ModelEvidence, goalItems []gateway.WorkItem, replacing *gateway.WorkItem, final bool, gr gateway.Repo, hasGoalRepo bool, cap int) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, []string, []gateway.GoalDraft, []addedDep, float64, error) {
 	// logged before a done ctx returns: a deadline kills the unit too,
 	// and a detach kills nothing
 	logKilled(p.logf, "goal "+goal.Slug, result.KilledPerSession(), result.KillError)
@@ -974,29 +995,26 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, nil, 0, fmt.Errorf("planner session: %w", acct.RedactErr(err))
 	}
-	result.Text = acct.Redact(result.Text)
-	// the plan is the session's mesh_plan call when it made one (ADR-023),
-	// rendered as the block its final message would carry so every check
-	// below reads it as it reads the text; with none, the text is parsed
-	graph, called := harness.PlanCall(result.WorkCalls["mesh_plan"])
-	if called {
-		graph = acct.Redact(graph)
-	} else {
-		graph = result.Text
-		p.logf("plan %s: %s", goal.Slug, noPlanCallLine)
+	// the plan is what the session handed the node's mesh_result
+	// (ADR-041): the `plan` object, read by DecodePlan and its siblings
+	// and then through every check below; nothing of the final message
+	recoverResult(holder, result, "goal "+goal.Slug, p.logf)
+	graph, err := planGraphOf(holder, acct.Redact)
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, nil, 0, fmt.Errorf("planner session (%s): %w", result.SessionID, err)
 	}
 	// a `split` answer — goal drafts in place of a graph over the
 	// project's cap (ADR-023 (a)) — is read first: it has no items
-	if drafts, ok := harness.ParsePlanSplit(graph); ok {
+	if drafts, ok := harness.DecodePlanSplit(graph); ok {
 		gd, err := splitDrafts(drafts, repos, cap)
 		if err != nil {
 			return nil, nil, nil, nil, nil, nil, nil, 0, err
 		}
 		return nil, nil, nil, nil, nil, gd, nil, result.CostUSD, nil
 	}
-	specs, err := harness.ParsePlan(graph, merged...)
+	specs, err := harness.DecodePlan(graph, merged...)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, 0, fmt.Errorf("planner session (%s): %w: %s", result.SessionID, err, truncate(graph, 300))
+		return nil, nil, nil, nil, nil, nil, nil, 0, fmt.Errorf("planner session (%s): %w", result.SessionID, err)
 	}
 	items := make([]gateway.PlannedItem, 0, len(specs))
 	itemRepo := map[int]gateway.Repo{}
@@ -1101,12 +1119,47 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 	if hasGoalRepo {
 		flags = append(flags, otherRepoItems(specs, itemRepo, gr)...)
 	}
-	return items, reasons, flags, harness.ParsePlanQuestions(graph), harness.ParsePlanCheckpoints(graph), nil, added, result.CostUSD, nil
+	return items, reasons, flags, harness.DecodePlanQuestions(graph), harness.DecodePlanCheckpoints(graph), nil, added, result.CostUSD, nil
 }
 
-// noPlanCallLine is logged once per planner session that made no
-// mesh_plan call, its final message parsed instead (ADR-023).
-const noPlanCallLine = "no mesh_plan call; parsed the final message"
+// planGraphOf is the `plan` object the session handed mesh_result, its
+// strings redacted; an error names why there is none — the session gave
+// the plan up (mesh_fail) or made no call.
+func planGraphOf(holder *jobresult.Holder, redact func(string) string) (map[string]any, error) {
+	if holder == nil {
+		return nil, errors.New("no result holder for the session")
+	}
+	if why, failed := holder.Failed(); failed {
+		return nil, errors.New("the session gave the plan up: " + redact(truncate(why, 300)))
+	}
+	res, ok := holder.Result()
+	if !ok {
+		return nil, errors.New("no result: the session made no mesh_result call")
+	}
+	graph, _ := res["plan"].(map[string]any)
+	return redactGraph(graph, redact).(map[string]any), nil
+}
+
+// redactGraph is v with every string in it redacted.
+func redactGraph(v any, redact func(string) string) any {
+	switch t := v.(type) {
+	case string:
+		return redact(t)
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			out[k] = redactGraph(val, redact)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, val := range t {
+			out[i] = redactGraph(val, redact)
+		}
+		return out
+	}
+	return v
+}
 
 // explainedDeps keeps the item's dependencies that carry a because and
 // drops the rest, logging each (trd §5 phase 2, the dependency rubric):
@@ -1189,12 +1242,18 @@ func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope,
 		s.Remove()
 		return errNoAttach
 	}
-	endProxy := adoptProxy(ctx, p.Proxies, p.Credentials, p.MCP, tools.RoleFor(string(harness.KindPlan)), p.runtimes(), gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goal.ID}, s, "goal "+goal.Slug, p.logf)
+	// a fresh holder for the adopted session (ADR-041): a result it handed
+	// the node before this one lived with that node
+	holder, err := jobresult.New(PlanKind, jobresult.FinishPlan, "")
+	if err != nil {
+		return err
+	}
+	endProxy := adoptProxy(ctx, p.Proxies, p.Credentials, p.MCP, tools.RoleFor(string(harness.KindPlan)), p.runtimes(), gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goal.ID}, s, "goal "+goal.Slug, holder.Tools(), p.logf)
 	defer endProxy(ctx)
 	p.logf("goal %s: adopted its %s planner session (pid %d)", goal.Slug, s.Liveness(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
 	gr, hasGoalRepo := goalRepo(goal, project, repos)
-	items, reasons, flags, questions, checkpoints, drafts, added, cost, err := p.readPlan(ctx, goal, s.State.Workspace, nil, result, err, repos, merged, p.evidence(ctx, goal.Slug, scope, project), goalItems, replacing, true, gr, hasGoalRepo, project.ItemCap())
+	items, reasons, flags, questions, checkpoints, drafts, added, cost, err := p.readPlan(ctx, goal, s.State.Workspace, nil, holder, result, err, repos, merged, p.evidence(ctx, goal.Slug, scope, project), goalItems, replacing, true, gr, hasGoalRepo, project.ItemCap())
 	if err != nil {
 		return err
 	}

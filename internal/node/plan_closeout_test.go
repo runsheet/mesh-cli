@@ -32,7 +32,7 @@ func fleetStalls(t *testing.T, name string) string {
 // the folded graph, item 19's own acceptance carrying the doc clause, is
 // clean.
 func TestCloseOutAcceptanceFleetStallsLoudly(t *testing.T) {
-	before, err := harness.ParsePlan(fleetStalls(t, "closeout_before.json"))
+	before, err := planOf(fleetStalls(t, "closeout_before.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestCloseOutAcceptanceFleetStallsLoudly(t *testing.T) {
 		t.Errorf("flag lacks the AGENTS.md rule: %q", flags[0])
 	}
 
-	after, err := harness.ParsePlan(fleetStalls(t, "closeout_after.json"))
+	after, err := planOf(fleetStalls(t, "closeout_after.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -135,7 +135,53 @@ func (c *Client) ClaimJob(ctx context.Context, in ClaimJobInput) (*JobBrief, err
 	if out.Answer.Job == nil {
 		return nil, fmt.Errorf("claimJob %s %s: %s, no job in the answer", in.Subject.Type, in.Subject.ID, out.Answer.Status)
 	}
+	c.keepBrief(out.Answer.Job)
 	return out.Answer.Job, nil
+}
+
+// maxBriefs bounds the briefs a client keeps: a node holds a few dozen
+// jobs at once, never hundreds, so past it the oldest are let go.
+const maxBriefs = 256
+
+// keepBrief keeps a claimed job's brief for JobBriefOf: a claim the
+// node's code sends as an older mutation (routeJob) reads its guidance,
+// finish and finishSchema back by the job's kind and subject.
+func (c *Client) keepBrief(b *JobBrief) {
+	if b == nil || b.Subject.ID == "" {
+		return
+	}
+	c.briefsMu.Lock()
+	defer c.briefsMu.Unlock()
+	if c.briefs == nil {
+		c.briefs = map[string]*JobBrief{}
+	}
+	if len(c.briefs) >= maxBriefs {
+		c.briefs = map[string]*JobBrief{}
+	}
+	c.briefs[briefKey(b.Kind, b.Subject)] = b
+}
+
+func briefKey(kind string, subject JobSubject) string {
+	return kind + " " + subject.Type + " " + subject.ID
+}
+
+// JobBriefOf is the brief claimJob answered for the job of kind on
+// subject, while this client holds it (kept at the claim, let go at the
+// finish); ok is false for a job this client did not claim, or one
+// claimed on a platform before the brief — the node then runs the
+// kind's built-in prompt (ADR-041).
+func (c *Client) JobBriefOf(kind string, subject JobSubject) (*JobBrief, bool) {
+	c.briefsMu.Lock()
+	defer c.briefsMu.Unlock()
+	b, ok := c.briefs[briefKey(kind, subject)]
+	return b, ok
+}
+
+// forgetBrief lets a finished job's brief go.
+func (c *Client) forgetBrief(kind string, subject JobSubject) {
+	c.briefsMu.Lock()
+	defer c.briefsMu.Unlock()
+	delete(c.briefs, briefKey(kind, subject))
 }
 
 // JobNotServed is an access entry the platform has no token for yet,
@@ -342,6 +388,7 @@ func (c *Client) FinishJob(ctx context.Context, nodeID, kind string, subject Job
 	if err := c.Query(ctx, `mutation($in: Map!) { finishJob(input: $in) }`, map[string]any{"in": in}, &out); err != nil {
 		return nil, err
 	}
+	c.forgetBrief(kind, subject)
 	return out.Receipt, nil
 }
 
@@ -362,6 +409,34 @@ type JobKind struct {
 	// FinishSchema is the product's schema for its part of the result
 	// (ADR 067 decision 10); "" when the kind has none.
 	FinishSchema string `json:"finishSchema"`
+}
+
+// jobKindsEvery is how long a client's read of the catalogue answers
+// JobKindOf before it reads again.
+const jobKindsEvery = 10 * time.Minute
+
+// JobKindOf is kind's row of the catalogue — its guidance, finish and
+// finishSchema for a job this client did not claim through claimJob (a
+// job the loop claimed on another path, an adopted session), read once
+// per jobKindsEvery and kept; ok is false for a kind the catalogue has
+// not or a read that failed (the node then runs its built-in prompt,
+// ADR-041).
+func (c *Client) JobKindOf(ctx context.Context, kind string) (JobKind, bool) {
+	c.kindsMu.Lock()
+	kinds, at := c.kinds, c.kindsAt
+	c.kindsMu.Unlock()
+	if kinds == nil || time.Since(at) >= jobKindsEvery {
+		got, err := c.JobKinds(ctx)
+		if err != nil {
+			return JobKind{}, false
+		}
+		c.kindsMu.Lock()
+		c.kinds, c.kindsAt = got, time.Now()
+		c.kindsMu.Unlock()
+		kinds = got
+	}
+	k, ok := kinds[kind]
+	return k, ok
 }
 
 // JobKinds reads the catalogue, by slug.

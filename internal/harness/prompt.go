@@ -278,6 +278,15 @@ type EvaluateInput struct {
 	// first and empty on a first attempt. They pin the retry's verdict
 	// (evaluateRetryRule).
 	PriorAttempts []PriorAttempt
+	// Guidance is the kind's guidance text as the brief carries it
+	// (runsheet ADR 067 decision 7, ADR-041): the evaluator's role,
+	// published by the product. It goes first, and the node's built-in
+	// role text goes; "" (a platform before the guidance) runs the
+	// built-in text instead.
+	Guidance string
+	// Finish is the one fixed section every session ends on: how this
+	// job finishes (jobresult.FinishSection), by the node's mesh_result.
+	Finish string
 }
 
 // Verdict lines the evaluator ends with; ParseVerdict reads them.
@@ -437,49 +446,68 @@ var evaluateHostRule = fmt.Sprintf("A clause whose truth depends on the host you
 // clause or escalates instead of rebuilding the same thing (ADR-020).
 var evaluateSameClauseRule = fmt.Sprintf("When you fail a clause an earlier attempt above already failed on, the first line of your review must be `%s N: <the clause>`, N that attempt's number: a second failure on the same clause says the clause, not the build, needs changing.", SameClauseLine)
 
-// EvaluatePrompt renders the evaluator's prompt (mesh-specs trd §3.4): a
-// fresh session, the diff and the acceptance, an adversarial review that
-// runs the acceptance check itself and ends with a verdict line. An
-// already_done item (AlreadyDone) gets the evidence and the acceptance
-// to check on the base ref instead of a diff, under the same ADRs and
-// with the same verdict line (mesh ADR 003 decision 1).
+// EvaluatePrompt renders the evaluator's prompt (mesh-specs trd §3.4):
+// the brief's guidance first, then the job's facts — the item and its
+// acceptance, the branch and its diff (or the already_done claim and its
+// evidence, mesh ADR 003 decision 1), the context, what earlier attempts
+// failed on, the pod's services — then the finish: the verdict handed to
+// the node's mesh_result (ADR-041). A brief with no guidance runs the
+// node's built-in role text and rules in the guidance's place.
 func EvaluatePrompt(in EvaluateInput) string {
 	var b strings.Builder
-	if in.AlreadyDone {
+	guided := strings.TrimSpace(in.Guidance) != ""
+	switch {
+	case guided:
+		b.WriteString(strings.TrimSpace(in.Guidance) + "\n\n")
+	case in.AlreadyDone:
 		fmt.Fprintf(&b, "You are the evaluator of item %d of goal %q (%s), checking another session's claim that the item is already done: that %s already holds its work, so nothing was built. You did not make the claim; assume it is wrong until the evidence says otherwise.\n\n", in.Seq, in.GoalTitle, in.GoalSlug, in.BaseRef)
-	} else {
+	default:
 		fmt.Fprintf(&b, "You are the evaluator of item %d of goal %q (%s), reviewing a branch another session built. You did not write it; assume it is wrong until the evidence says otherwise.\n\n", in.Seq, in.GoalTitle, in.GoalSlug)
 	}
-	fmt.Fprintf(&b, "# Item %d: %s\n\n", in.Seq, in.Title)
+	evaluateSubject(&b, in)
+	if !guided {
+		evaluateRules(&b, in)
+	}
+	b.WriteString(in.Finish)
+	evaluateFinishDetail(&b, in)
+	return b.String()
+}
+
+// evaluateSubject writes the job's facts: the item, the goal's
+// acceptance, the branch and its diff or the already_done claim, the
+// context, what earlier attempts failed on, and the pod's services.
+func evaluateSubject(b *strings.Builder, in EvaluateInput) {
+	fmt.Fprintf(b, "# Item %d of goal %q (%s): %s\n\n", in.Seq, in.GoalTitle, in.GoalSlug, in.Title)
 	if strings.TrimSpace(in.Brief) != "" {
-		fmt.Fprintf(&b, "## Brief\n\n%s\n\n", strings.TrimSpace(in.Brief))
+		fmt.Fprintf(b, "## Brief\n\n%s\n\n", strings.TrimSpace(in.Brief))
 	}
 	if strings.TrimSpace(in.Acceptance) != "" {
-		fmt.Fprintf(&b, "## Acceptance (this item)\n\n%s\n\n", strings.TrimSpace(in.Acceptance))
+		fmt.Fprintf(b, "## Acceptance (this item)\n\n%s\n\n", strings.TrimSpace(in.Acceptance))
 	}
 	if strings.TrimSpace(in.GoalAcceptance) != "" {
-		fmt.Fprintf(&b, "## Acceptance (the goal)\n\n%s\n\n", strings.TrimSpace(in.GoalAcceptance))
+		fmt.Fprintf(b, "## Acceptance (the goal)\n\n%s\n\n", strings.TrimSpace(in.GoalAcceptance))
 	}
 	if in.AlreadyDone {
-		fmt.Fprintf(&b, "# The claim\n\nThe builder pushed no branch: it finished the item already_done, saying %s already satisfies the acceptance. Its evidence:\n\n", in.BaseRef)
+		fmt.Fprintf(b, "# The claim\n\nThe builder pushed no branch: it finished the item already_done, saying %s already satisfies the acceptance. Its evidence:\n\n", in.BaseRef)
 		if ev := strings.TrimSpace(in.Evidence); ev != "" {
-			fmt.Fprintf(&b, "```\n%s\n```\n\n", ev)
+			fmt.Fprintf(b, "```\n%s\n```\n\n", ev)
 		} else {
 			b.WriteString("(none given — a claim without evidence cannot be confirmed)\n\n")
 		}
-		fmt.Fprintf(&b, "You are in %s with `origin/%s` checked out (detached) and its full history. There is no diff: check the claim on %s.\n\n", in.Repo, in.BaseRef, in.BaseRef)
+		fmt.Fprintf(b, "You are in %s with `origin/%s` checked out (detached) and its full history. There is no diff: check the claim on %s.\n\n", in.Repo, in.BaseRef, in.BaseRef)
+		fmt.Fprintf(b, "What proves the claim: every cited pull request is merged into %[1]s (`gh pr view <url> --json state,mergeCommit,baseRefName`) and every cited SHA is on it (`git merge-base --is-ancestor <sha> origin/%[1]s`); a citation that is not on %[1]s, or evidence that cites nothing, fails it. Judge the acceptance against what %[1]s holds now, not what the evidence claims, and when you fail it say exactly what is missing on %[1]s, so the next builder builds that.\n\n", in.BaseRef)
 	} else {
-		fmt.Fprintf(&b, "# The branch\n\nYou are in %s with `%s` checked out at the commit the builder pushed; the diff below is `git diff origin/%s...HEAD`.\n\n", in.Repo, in.Branch, in.BaseRef)
+		fmt.Fprintf(b, "# The branch\n\nYou are in %s with `%s` checked out at the commit the builder pushed; the diff below is `git diff origin/%s...HEAD`.\n\n", in.Repo, in.Branch, in.BaseRef)
 		if strings.TrimSpace(in.Diff) == "" {
 			b.WriteString("The diff is empty: the branch changed nothing.\n\n")
 		} else {
-			fmt.Fprintf(&b, "```diff\n%s\n```\n\n", strings.TrimSpace(in.Diff))
+			fmt.Fprintf(b, "```diff\n%s\n```\n\n", strings.TrimSpace(in.Diff))
 		}
 	}
 	if in.ContextDir != "" {
-		fmt.Fprintf(&b, "# The context\n\nThe project's instructions and decisions are in `%s/`", in.ContextDir)
+		fmt.Fprintf(b, "# The context\n\nThe project's instructions and decisions are in `%s/`", in.ContextDir)
 		if len(in.ContextFiles) > 0 {
-			fmt.Fprintf(&b, " (%s)", strings.Join(in.ContextFiles, ", "))
+			fmt.Fprintf(b, " (%s)", strings.Join(in.ContextFiles, ", "))
 		}
 		b.WriteString(": the instructions and the ADRs bound the builder; the PRD and TRD are the design.")
 		if in.MeshContext {
@@ -492,25 +520,31 @@ func EvaluatePrompt(in EvaluateInput) string {
 	if len(in.PriorAttempts) > 0 {
 		b.WriteString("# What earlier attempts failed on\n\nThis item was built and failed before. Each attempt below is an earlier evaluation of it — the clauses it failed, and its review.\n\n")
 		for _, p := range in.PriorAttempts {
-			fmt.Fprintf(&b, "## Attempt %d\n\n", p.Attempt)
+			fmt.Fprintf(b, "## Attempt %d\n\n", p.Attempt)
 			for _, c := range p.Clauses {
-				fmt.Fprintf(&b, "- %s — satisfied by: %s\n", c.Clause, c.Satisfy)
+				fmt.Fprintf(b, "- %s — satisfied by: %s\n", c.Clause, c.Satisfy)
 			}
 			if len(p.Clauses) == 0 {
 				b.WriteString("It named no clauses; its review is all there is.\n")
 			}
 			if n := strings.TrimSpace(p.Notes); n != "" {
-				fmt.Fprintf(&b, "\n%s\n", n)
+				fmt.Fprintf(b, "\n%s\n", n)
 			}
 			b.WriteString("\n")
 		}
 	}
-	servicesSection(&b, in.Services)
+	servicesSection(b, in.Services)
+}
+
+// evaluateRules is the node's built-in rule list, the fallback for a
+// brief with no guidance: what runsheet's evaluator guidance says, as
+// the node said it before the platform published it.
+func evaluateRules(b *strings.Builder, in EvaluateInput) {
 	b.WriteString("# Rules\n\n")
 	if in.AlreadyDone {
-		fmt.Fprintf(&b, "1. Check the evidence on %[1]s: every cited pull request is merged into %[1]s (`gh pr view <url> --json state,mergeCommit,baseRefName`) and every cited SHA is on it (`git merge-base --is-ancestor <sha> origin/%[1]s`). A citation that is not on %[1]s, or evidence that cites nothing, fails the claim.\n", in.BaseRef)
-		fmt.Fprintf(&b, "2. Judge the item's acceptance, literally, every clause, against what %[1]s holds now — not what the evidence or a commit message claims — and run the acceptance check yourself on %[1]s when it names one (tests, a build, a command). Read the repository's own instructions (AGENTS.md, CLAUDE.md) for how. Work on %[1]s that goes against an ADR or the instructions does not satisfy the item, whatever the acceptance says.\n", in.BaseRef)
-		b.WriteString("3. Look for what the claim skips: a clause of the brief or the acceptance no cited change covers, work that was later reverted, a check that passes only because it tests nothing. When you fail it, say exactly what is missing on " + in.BaseRef + ", so the next builder builds that.\n")
+		fmt.Fprintf(b, "1. Check the evidence on %[1]s: every cited pull request is merged into %[1]s and every cited SHA is on it. A citation that is not on %[1]s, or evidence that cites nothing, fails the claim.\n", in.BaseRef)
+		fmt.Fprintf(b, "2. Judge the item's acceptance, literally, every clause, against what %[1]s holds now — not what the evidence or a commit message claims — and run the acceptance check yourself on %[1]s when it names one (tests, a build, a command). Read the repository's own instructions (AGENTS.md, CLAUDE.md) for how. Work on %[1]s that goes against an ADR or the instructions does not satisfy the item, whatever the acceptance says.\n", in.BaseRef)
+		b.WriteString("3. Look for what the claim skips: a clause of the brief or the acceptance no cited change covers, work that was later reverted, a check that passes only because it tests nothing.\n")
 	} else {
 		b.WriteString("1. Judge the item's acceptance, literally: every clause, against what the diff does — not what its messages claim. A change that goes against an ADR or the instructions fails, whatever the acceptance says.\n")
 		b.WriteString("2. Run the acceptance check yourself when it names one (tests, a build, a command). Read the repository's own instructions (AGENTS.md, CLAUDE.md) for how.\n")
@@ -519,64 +553,18 @@ func EvaluatePrompt(in EvaluateInput) string {
 	b.WriteString("4. Change nothing: no edits, no commits, no pushes, nothing outside this workspace. You are a reviewer.\n")
 	b.WriteString("5. " + evaluateUnverifiableRule + "\n")
 	b.WriteString("6. " + evaluateHostRule + "\n")
-	n := 7
 	if len(in.PriorAttempts) > 0 {
-		fmt.Fprintf(&b, "%d. %s\n", n, evaluateRetryRule)
-		fmt.Fprintf(&b, "%d. %s\n", n+1, evaluateSameClauseRule)
-		n += 2
+		b.WriteString("7. " + evaluateRetryRule + "\n")
+		b.WriteString("8. " + evaluateSameClauseRule + "\n")
 	}
-	fmt.Fprintf(&b, "%d. End your final message with a short review — what holds, what does not, what is unverifiable, and exactly what a retry must fix. When you fail it, write one line per failed acceptance clause, `%s <the clause, as the acceptance words it> %s %s <what would satisfy it>`, above the verdict; a clause that does not say what would satisfy it is dropped, so write both halves. Then one last line that is either `%s` or `%s`. Pass only when every clause of the acceptance you can check holds.\n", n, ClauseFailed, ClauseSep, ClauseSatisfy, VerdictPass, VerdictFail)
-	verdictByToolCall(&b, in)
-	return b.String()
+	b.WriteString("\n")
 }
 
-// verdictByToolCall tells the evaluator to end by calling the hosted
-// mesh_verdict tool (mesh-cli ADR-023): the call is the verdict, and the
-// final message's `VERDICT:`, `FAILED:` and `READING:` lines stay the
-// fallback contract the node parses when the session made no call.
-func verdictByToolCall(b *strings.Builder, in EvaluateInput) {
-	item := in.ItemID
-	if item == "" {
-		item = fmt.Sprintf("<the id of item %d of %s>", in.Seq, in.GoalSlug)
-	}
-	b.WriteString("\n# Finish by tool call\n\n")
-	fmt.Fprintf(b, "End the session by calling the runsheet server's `mesh_verdict` tool, once, as your last action: `mesh_verdict(item_id=%q, passed=<true or false>, notes=<your review>, failed_clauses=[{\"clause\": <the clause, as the acceptance words it>, \"satisfy\": <what would satisfy it>}], readings=[{\"clause\": <a host clause>, \"reading\": <what you measured, when, under what load>}])` — `failed_clauses` one entry per failed clause when you fail it, else empty; `readings` one per host clause (rule 6). The call is the verdict. ", item)
-	fmt.Fprintf(b, "Write the review and its lines in your final message as well: if the tool is not there or the call errors, the node reads the `%s` or `%s` line, the `%s` lines and the `%s` lines from it.\n", VerdictPass, VerdictFail, ClauseFailed, ClauseReading)
-}
-
-// ParseFailedClauses reads the FAILED/SATISFY lines of an evaluator's
-// final message, in the order written and at most ClauseMax of them. A
-// line missing either half is dropped rather than sent: the platform
-// refuses a clause without what would satisfy it, and one malformed line
-// must not cost the whole verdict. Duplicates are dropped too.
-func ParseFailedClauses(text string) []FailedClause {
-	var out []FailedClause
-	seen := map[string]bool{}
-	for _, line := range strings.Split(text, "\n") {
-		l := strings.TrimLeft(strings.TrimSpace(line), "-*\u2022># \t")
-		l = strings.TrimSpace(strings.Trim(l, "`*_"))
-		if !strings.HasPrefix(strings.ToUpper(l), ClauseFailed) {
-			continue
-		}
-		clause, satisfy, ok := strings.Cut(strings.TrimSpace(l[len(ClauseFailed):]), ClauseSep)
-		if !ok {
-			continue
-		}
-		satisfy = strings.TrimSpace(satisfy)
-		if strings.HasPrefix(strings.ToUpper(satisfy), ClauseSatisfy) {
-			satisfy = strings.TrimSpace(satisfy[len(ClauseSatisfy):])
-		}
-		clause = strings.TrimSpace(strings.Trim(strings.TrimSpace(clause), "`*_"))
-		satisfy = strings.TrimSpace(strings.Trim(satisfy, "`*_"))
-		if clause == "" || satisfy == "" || seen[clause] {
-			continue
-		}
-		seen[clause] = true
-		if out = append(out, FailedClause{Clause: clause, Satisfy: satisfy}); len(out) == ClauseMax {
-			break
-		}
-	}
-	return out
+// evaluateFinishDetail says what the verdict's fields carry, after the
+// finish section: the result's shape is the node's, whatever the
+// guidance says (runsheet ADR 067 decision 10).
+func evaluateFinishDetail(b *strings.Builder, in EvaluateInput) {
+	fmt.Fprintf(b, "\n`verdict.notes` is your review: what holds, what does not, what is unverifiable, and exactly what a retry must fix. `verdict.failedClauses` is one `{clause, satisfy}` per acceptance clause you fail — the clause as the acceptance words it, and what would satisfy it; a clause without both halves is dropped — and empty when you pass. `verdict.readings` is one `{clause, reading}` per clause that reads the host (load, wall time, a ratio of durations): what you measured, when, under what load; such a clause is recorded, never failed for the host's number. Pass only when every clause of the acceptance you can check holds.\n")
 }
 
 // ParseReadings reads the READING lines of an evaluator's final message,
@@ -659,23 +647,6 @@ func NoteSameClause(notes string, prior []PriorAttempt, clauses []FailedClause) 
 	return line + "\n\n" + notes
 }
 
-// ParseVerdict reads the evaluator's final message: the last verdict line
-// decides; the text before it is the notes. ok is false when no verdict
-// line is there — an evaluation that reached no verdict is not one.
-func ParseVerdict(text string) (passed bool, notes string, ok bool) {
-	lines := strings.Split(strings.TrimSpace(text), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		l := strings.TrimSpace(strings.Trim(strings.TrimSpace(lines[i]), "`*_"))
-		switch {
-		case strings.EqualFold(l, VerdictPass):
-			return true, strings.TrimSpace(strings.Join(lines[:i], "\n")), true
-		case strings.EqualFold(l, VerdictFail):
-			return false, strings.TrimSpace(strings.Join(lines[:i], "\n")), true
-		}
-	}
-	return false, "", false
-}
-
 // PlanInput is what a planner prompt is made of: the goal, its project's
 // context and repos, and the budget the graph has to fit.
 // ToolHint is one tool a research or plan session is served beside
@@ -744,6 +715,14 @@ type PlanInput struct {
 	// MaxItems: the re-ask asks the planner to answer `split` — goal
 	// drafts, not items (ADR-023, planSizeRule).
 	OverCap bool
+	// Guidance is the kind's guidance text as the brief carries it
+	// (runsheet ADR 067 decision 7, ADR-041): the planner's role,
+	// published by the product, first in the prompt; "" runs the node's
+	// built-in role text instead.
+	Guidance string
+	// Finish is the one fixed section every session ends on: how this
+	// job finishes (jobresult.FinishSection), by the node's mesh_result.
+	Finish string
 }
 
 // ModelEvidence is one repo/model row of the scorecard: how often that
@@ -1031,29 +1010,52 @@ func toolsSection(hints []ToolHint, use func(ToolHint) string) string {
 }
 
 // PlanPrompt renders the planner's prompt (mesh-specs prd, the planner;
-// trd §5 phase 2): read the context and the repos, then compile the goal
-// into a graph of items — each one fresh session's work with a checkable
-// acceptance — and end with the graph as JSON.
+// trd §5 phase 2): the brief's guidance first, then the job's facts —
+// the goal, a re-ask's flags, the items so far, the item a narrow
+// re-plan splits, the project's repos and context, the tools — then
+// what the node checks before it hands a plan in, and the finish: the
+// graph handed to the node's mesh_result (ADR-041). A brief with no
+// guidance runs the node's built-in role text and rules in its place.
 func PlanPrompt(in PlanInput) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "You are the planner of goal %q (%s) for %s, project %s. You compile the goal into a graph of work items; other sessions, each fresh, do the items one at a time, and an evaluator judges each against its acceptance before a pull request opens.\n\n", in.GoalTitle, in.GoalSlug, in.Org, in.Project)
-	fmt.Fprintf(&b, "# Goal: %s\n\n", in.GoalTitle)
+	guided := strings.TrimSpace(in.Guidance) != ""
+	if guided {
+		b.WriteString(strings.TrimSpace(in.Guidance) + "\n\n")
+	} else {
+		fmt.Fprintf(&b, "You are the planner of goal %q (%s) for %s, project %s. You compile the goal into a graph of work items; other sessions, each fresh, do the items one at a time, and an evaluator judges each against its acceptance before a pull request opens.\n\n", in.GoalTitle, in.GoalSlug, in.Org, in.Project)
+	}
+	planSubject(&b, in)
+	if guided {
+		planChecks(&b, in)
+	} else {
+		planRules(&b, in)
+	}
+	b.WriteString(in.Finish)
+	planFinishDetail(&b, in)
+	return b.String()
+}
+
+// planSubject writes the job's facts: the goal, the last plan's block
+// and flags, the items so far, the item a narrow re-plan replaces, the
+// project's repos and context, and the tools.
+func planSubject(b *strings.Builder, in PlanInput) {
+	fmt.Fprintf(b, "# Goal: %s (%s) for %s, project %s\n\n", in.GoalTitle, in.GoalSlug, in.Org, in.Project)
 	if strings.TrimSpace(in.Statement) != "" {
-		fmt.Fprintf(&b, "## Statement\n\n%s\n\n", strings.TrimSpace(in.Statement))
+		fmt.Fprintf(b, "## Statement\n\n%s\n\n", strings.TrimSpace(in.Statement))
 	}
 	if strings.TrimSpace(in.Acceptance) != "" {
-		fmt.Fprintf(&b, "## Acceptance (the goal)\n\n%s\n\n", strings.TrimSpace(in.Acceptance))
+		fmt.Fprintf(b, "## Acceptance (the goal)\n\n%s\n\n", strings.TrimSpace(in.Acceptance))
 	}
 	if in.BudgetCents > 0 {
-		fmt.Fprintf(&b, "## Budget\n\n$%.2f for the whole goal, every session included. A build session costs about $3–8, an evaluation $1–3.\n\n", float64(in.BudgetCents)/100)
+		fmt.Fprintf(b, "## Budget\n\n$%.2f for the whole goal, every session included. A build session costs about $3–8, an evaluation $1–3.\n\n", float64(in.BudgetCents)/100)
 	}
 	if strings.TrimSpace(in.Blocked) != "" {
-		fmt.Fprintf(&b, "## The last plan blocked\n\n%s\n\nPlan around it.\n\n", strings.TrimSpace(in.Blocked))
+		fmt.Fprintf(b, "## The last plan blocked\n\n%s\n\nPlan around it.\n\n", strings.TrimSpace(in.Blocked))
 	}
 	if len(in.Rejected) > 0 {
 		b.WriteString("## Your last answer was flagged\n\nThe node checked your graph before handing it in and flagged these items — an acceptance naming what no evaluator can see or a reading of the host as a merge gate, or a model the scorecard says does not work on its repo:\n\n")
 		for _, r := range in.Rejected {
-			fmt.Fprintf(&b, "- %s\n", strings.TrimSpace(r))
+			fmt.Fprintf(b, "- %s\n", strings.TrimSpace(r))
 		}
 		b.WriteString("\n" + planAcceptanceRule + " " + planHostRule + " " + planSplitRule + " " + planSizeRule + " " + planCloseOutRule + " " + planCutOverRule + " " + planRepoRule + " " + planFilesRule + " " + planSharedDocsRule)
 		if in.OverCap {
@@ -1061,7 +1063,7 @@ func PlanPrompt(in PlanInput) string {
 			if cap <= 0 {
 				cap = 8
 			}
-			fmt.Fprintf(&b, " Your graph has more items than the project's cap of %d: answer `split`, not `items` — goal drafts partitioning the goal, each at most %d items and one repo; this is the last ask.\n\n", cap, cap)
+			fmt.Fprintf(b, " Your graph has more items than the project's cap of %d: answer `split`, not `items` — goal drafts partitioning the goal, each at most %d items and one repo; this is the last ask.\n\n", cap, cap)
 		} else {
 			b.WriteString(" Write the whole graph again with those acceptances and models rewritten; this is the last ask.\n\n")
 		}
@@ -1069,24 +1071,24 @@ func PlanPrompt(in PlanInput) string {
 	if len(in.Existing) > 0 {
 		b.WriteString("## The items so far\n\nYour plan replaces only the live items; merged items stay. Merged items are done: your items may depend on their seqs. Failed and cancelled items stay in the record; do their work again differently if it is still needed. Anything still live is replaced by your plan.\n\n")
 		for _, it := range in.Existing {
-			fmt.Fprintf(&b, "- %d. %s — %s", it.Seq, it.Title, it.Status)
+			fmt.Fprintf(b, "- %d. %s — %s", it.Seq, it.Title, it.Status)
 			if pr := strings.TrimSpace(it.PRURL); pr != "" {
-				fmt.Fprintf(&b, " (%s)", pr)
+				fmt.Fprintf(b, " (%s)", pr)
 			}
 			if strings.TrimSpace(it.Note) != "" {
-				fmt.Fprintf(&b, ": %s", strings.TrimSpace(it.Note))
+				fmt.Fprintf(b, ": %s", strings.TrimSpace(it.Note))
 			}
 			b.WriteString("\n")
 			if spent(it.Status) {
 				if it.LineageRootSeq > 0 && it.LineageAttempt > 0 {
-					fmt.Fprintf(&b, "  lineage %d, attempt %d of 3\n", it.LineageRootSeq, it.LineageAttempt)
+					fmt.Fprintf(b, "  lineage %d, attempt %d of 3\n", it.LineageRootSeq, it.LineageAttempt)
 				}
 				if a := strings.TrimSpace(it.Acceptance); a != "" {
-					fmt.Fprintf(&b, "  Acceptance: %s\n", indentLines(a, "  "))
+					fmt.Fprintf(b, "  Acceptance: %s\n", indentLines(a, "  "))
 				}
 			}
 		}
-		fmt.Fprintf(&b, "\nNumber your items from %d.\n\n", in.NextSeq)
+		fmt.Fprintf(b, "\nNumber your items from %d.\n\n", in.NextSeq)
 		var merged []ExistingItem
 		for _, it := range in.Existing {
 			if it.Status == "merged" {
@@ -1096,11 +1098,11 @@ func PlanPrompt(in PlanInput) string {
 		if len(merged) > 0 {
 			b.WriteString("## What main already holds\n\nThese items of the goal merged; their work is on main:\n\n")
 			for _, it := range merged {
-				fmt.Fprintf(&b, "- %d. %s", it.Seq, it.Title)
+				fmt.Fprintf(b, "- %d. %s", it.Seq, it.Title)
 				if pr := strings.TrimSpace(it.PRURL); pr != "" {
-					fmt.Fprintf(&b, " — %s", pr)
+					fmt.Fprintf(b, " — %s", pr)
 				} else if br := strings.TrimSpace(it.Branch); br != "" {
-					fmt.Fprintf(&b, " — branch `%s`", br)
+					fmt.Fprintf(b, " — branch `%s`", br)
 				}
 				b.WriteString("\n")
 			}
@@ -1108,20 +1110,20 @@ func PlanPrompt(in PlanInput) string {
 		}
 	}
 	if r := in.Replacing; r != nil {
-		fmt.Fprintf(&b, "## Split this item\n\nThis is a narrow re-plan: your plan replaces item %d alone, %q, which failed its evaluations; every other item stays, and the platform re-points its dependents onto your items (runsheet ADR 023's lineage).", r.Seq, r.Title)
+		fmt.Fprintf(b, "## Split this item\n\nThis is a narrow re-plan: your plan replaces item %d alone, %q, which failed its evaluations; every other item stays, and the platform re-points its dependents onto your items (runsheet ADR 023's lineage).", r.Seq, r.Title)
 		if r.LineageRootSeq > 0 && r.LineageAttempt > 0 {
-			fmt.Fprintf(&b, " It is lineage %d, attempt %d of 3.", r.LineageRootSeq, r.LineageAttempt)
+			fmt.Fprintf(b, " It is lineage %d, attempt %d of 3.", r.LineageRootSeq, r.LineageAttempt)
 		}
 		b.WriteString("\n\n")
 		if a := strings.TrimSpace(r.Acceptance); a != "" {
-			fmt.Fprintf(&b, "Its acceptance:\n\n%s\n\n", a)
+			fmt.Fprintf(b, "Its acceptance:\n\n%s\n\n", a)
 		}
 		if len(in.ReplacingClauses) > 0 {
 			b.WriteString("The clauses its evaluations failed, oldest first:\n\n")
 			for _, c := range in.ReplacingClauses {
-				fmt.Fprintf(&b, "- %s", strings.TrimSpace(c.Clause))
+				fmt.Fprintf(b, "- %s", strings.TrimSpace(c.Clause))
 				if s := strings.TrimSpace(c.Satisfy); s != "" {
-					fmt.Fprintf(&b, " — would be satisfied by: %s", s)
+					fmt.Fprintf(b, " — would be satisfied by: %s", s)
 				}
 				b.WriteString("\n")
 			}
@@ -1133,14 +1135,14 @@ func PlanPrompt(in PlanInput) string {
 	if len(in.Repos) > 0 {
 		b.WriteString("Its repos are checked out here, read-only, at their default branch, with its recent history:\n\n")
 		for _, name := range sortedKeys(in.Repos) {
-			fmt.Fprintf(&b, "- `%s` in `%s/`\n", name, in.Repos[name])
+			fmt.Fprintf(b, "- `%s` in `%s/`\n", name, in.Repos[name])
 		}
 		b.WriteString("\n")
 	}
 	if in.ContextDir != "" {
-		fmt.Fprintf(&b, "The project's context is in `%s/`", in.ContextDir)
+		fmt.Fprintf(b, "The project's context is in `%s/`", in.ContextDir)
 		if len(in.ContextFiles) > 0 {
-			fmt.Fprintf(&b, " (%s)", strings.Join(in.ContextFiles, ", "))
+			fmt.Fprintf(b, " (%s)", strings.Join(in.ContextFiles, ", "))
 		}
 		b.WriteString(": the instructions and the ADRs are binding, the PRD and TRD are the design. Read them first, then the repos' own AGENTS.md, CLAUDE.md and README.\n\n")
 	} else {
@@ -1150,8 +1152,34 @@ func PlanPrompt(in PlanInput) string {
 		b.WriteString(contextRule(in.ContextDir, in.Org+"/"+in.Project) + "\n\n")
 	}
 	b.WriteString(toolsSection(in.Tools, planToolUse))
+}
+
+// planChecks is what the node checks before it hands a plan in, told to
+// a session that runs on the brief's guidance: the plan check's rules
+// (internal/node/plan_check.go flags or refuses a graph against each),
+// the dependency rubric, and the model rubric with the scorecard's
+// evidence. The role is the guidance's; these are the node's own
+// refusals, said so the graph is not asked for twice.
+func planChecks(b *strings.Builder, in PlanInput) {
+	b.WriteString("# What the node checks before it hands the plan in\n\n")
+	b.WriteString("The node reads your graph before anything reaches the platform and asks once more, naming the items, when a check fails; a second answer that still fails a refusal below is refused outright.\n\n")
+	for _, rule := range []string{planAcceptanceRule, planHostRule, planSplitRule, planSizeRule, planCloseOutRule, planCutOverRule, planRepoRule, planFilesRule, planSharedDocsRule, planDependencyRule, planGoalDocRule} {
+		b.WriteString("- " + rule + "\n")
+	}
+	if in.MeshContext {
+		b.WriteString("- Each item's brief names, by slug, the two or three documents the builder must fetch with `mesh_document` — found with `mesh_search` while you plan.\n")
+	}
+	b.WriteString("\n")
+	planModelRubric(b, in)
+}
+
+// planRules is the node's built-in rule list, the fallback for a brief
+// with no guidance: what runsheet's planner guidance says, as the node
+// said it before the platform published it, the plan check's rules under
+// rule 3.
+func planRules(b *strings.Builder, in PlanInput) {
 	b.WriteString("# Check main first\n\n")
-	fmt.Fprintf(&b, "Before you write a graph, find out what main already holds of this goal's work. For each repo, search its recent merged pull requests and the commits on its default branch since the goal was set — `gh pr list --repo <owner/name> --state merged --limit 50` (add `--search` with the goal's words, and the `mesh/%s-` branches), and `git log --oneline` in its checkout, which carries the default branch's recent history — by title, by the brief's words, and by the files the acceptance names.\n\n", in.GoalSlug)
+	fmt.Fprintf(b, "Before you write a graph, find out what main already holds of this goal's work. For each repo, search its recent merged pull requests and the commits on its default branch since the goal was set — `gh pr list --repo <owner/name> --state merged --limit 50` (add `--search` with the goal's words, and the `mesh/%s-` branches), and `git log --oneline` in its checkout, which carries the default branch's recent history — by title, by the brief's words, and by the files the acceptance names.\n\n", in.GoalSlug)
 	b.WriteString("Leave out work main already has. When main may already hold an item's work but you cannot tell it satisfies the acceptance, keep the item and say in its brief that an already_done check is expected: the builder checks main first and, if the acceptance holds there, finishes it already_done with the merged PRs or commits as evidence instead of building it again.\n\n")
 	b.WriteString("# Rules\n\n")
 	b.WriteString("1. Read before you plan: what exists, what the design says, where the goal's work lands, and what main already holds (above).\n")
@@ -1159,7 +1187,7 @@ func PlanPrompt(in PlanInput) string {
 	if maxItems <= 0 {
 		maxItems = 8
 	}
-	fmt.Fprintf(&b, "2. Each item is one fresh session's work in one repo on one branch: small enough to finish and evaluate in one sitting, large enough to be worth a pull request. Two to %d items.\n", maxItems)
+	fmt.Fprintf(b, "2. Each item is one fresh session's work in one repo on one branch: small enough to finish and evaluate in one sitting, large enough to be worth a pull request. Two to %d items.\n", maxItems)
 	b.WriteString("3. Each item's brief says what to do and where, naming files and functions where it helps; its acceptance is what an evaluator can check — a test that passes, a command's output, a document with named sections — never a feeling.\n")
 	b.WriteString("   " + planAcceptanceRule + "\n")
 	b.WriteString("   " + planHostRule + "\n")
@@ -1179,7 +1207,16 @@ func PlanPrompt(in PlanInput) string {
 	b.WriteString("6. Change nothing in the repos: you plan, you do not build.\n")
 	b.WriteString("   " + planGoalDocRule + "\n")
 	b.WriteString("7. Design keeps pace with code: an item that changes an aggregate, a policy, a process, or a public contract (a gateway field, an API, a console route) also amends the ADR or TRD section that describes it, in the same item and pull request; a decision no ADR covers gets a new ADR at the next free number in that repo. Say so in the item's brief and acceptance. Every new document carries frontmatter with a one-line `summary:`.\n")
-	b.WriteString("8. Each item names the model its session runs on, as `model`, with a one-line `model_reason`:\n")
+	b.WriteString("8. ")
+	planModelRubric(b, in)
+	b.WriteString("\n")
+}
+
+// planModelRubric names each item's model and the scorecard's evidence
+// for the choice: the node reads `model` and drops one it cannot run
+// (PlannableModel) or the scorecard refutes (modelAgainstEvidence).
+func planModelRubric(b *strings.Builder, in PlanInput) {
+	b.WriteString("Each item names the model its session runs on, as `model`, with a one-line `model_reason`:\n")
 	b.WriteString("   - `haiku` for mechanical items: docs-only, a version bump, a rename.\n")
 	b.WriteString("   - `sonnet` for a well-specified change in one package with tests to copy.\n")
 	b.WriteString("   - `opus` for anything cross-cutting, concurrency, migrations, security, a failing item's retry, or when unsure.\n")
@@ -1188,29 +1225,22 @@ func PlanPrompt(in PlanInput) string {
 		b.WriteString("   | Repo | Model | First-pass | Items | Cost/item |\n")
 		b.WriteString("   | --- | --- | --- | --- | --- |\n")
 		for _, ev := range in.Evidence {
-			fmt.Fprintf(&b, "   | %s | %s | %.2f | %d | $%.2f |\n", ev.Repo, ev.Model, ev.FirstPass, ev.Items, float64(ev.CostPerItemCents)/100)
+			fmt.Fprintf(b, "   | %s | %s | %.2f | %d | $%.2f |\n", ev.Repo, ev.Model, ev.FirstPass, ev.Items, float64(ev.CostPerItemCents)/100)
 		}
 		b.WriteString("\n")
 	}
 	b.WriteString("   A model whose first-pass on a repo is under 0.5 over five or more items is not chosen for that repo; prefer the model with the best first-pass at the lowest cost per item; the goal docs in the context name models that worked.\n")
-	b.WriteString("9. End your final message with the graph as a JSON object in a ```json fenced block, and nothing after it. Its `questions` is empty unless a clause of the goal is one no pull request can satisfy (rule 3); each is {\"clause\": \"…\", \"question\": \"…\"}, for the person to answer:\n\n")
-	b.WriteString("```json\n{\"items\": [{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\", \"files\": [\"…\"]}, {\"seq\": 2, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [{\"seq\": 1, \"because\": \"uses the … item 1 adds\"}], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\", \"files\": [\"…\"], \"writes_shared_docs\": true}], \"questions\": []}\n```\n")
-	planByToolCall(&b, in)
-	return b.String()
 }
 
-// planByToolCall tells the planner to end by calling the hosted
-// mesh_plan tool (mesh-cli ADR-023): the call is the plan, and the
-// final message's fenced JSON stays the fallback contract the node
-// parses when the session made no call.
-func planByToolCall(b *strings.Builder, in PlanInput) {
-	goal := in.GoalID
-	if goal == "" {
-		goal = fmt.Sprintf("<the id of goal %s>", in.GoalSlug)
+// planFinishDetail says what the plan's fields carry, after the finish
+// section: the result's shape is the node's, whatever the guidance says
+// (runsheet ADR 067 decision 10).
+func planFinishDetail(b *strings.Builder, in PlanInput) {
+	cap := in.MaxItems
+	if cap <= 0 {
+		cap = 8
 	}
-	b.WriteString("\n# Finish by tool call\n\n")
-	fmt.Fprintf(b, "End the session by calling the runsheet server's `mesh_plan` tool, once, as your last action: `mesh_plan(goal_id=%q, items=<the graph's items>, questions=<its questions>)`, each item the same object as in the JSON block above (seq, title, brief, acceptance, depends_on, repo, base_ref, model, model_reason, and atomic or precondition when it has one), and `checkpoints` or `split` beside them when rule 3 asks for them. The call is the plan. ", goal)
-	b.WriteString("Write the ```json fenced block in your final message as well: if the tool is not there or the call errors, the node reads the graph from it.\n")
+	fmt.Fprintf(b, "\n`plan.items` is the graph: each item `{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [{\"seq\": 1, \"because\": \"uses the … item 1 adds\"}], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\", \"files\": [\"…\"]}`, with `writes_shared_docs: true` on the one item that writes the shared documents, `atomic: \"<reason>\"` on an item that cannot be halved, and `precondition: \"<clause>\"` on one that waits on a person or production. Beside it: `plan.questions`, one `{\"clause\", \"question\"}` per clause no pull request can satisfy (empty otherwise); `plan.checkpoints`, `[\"pr\"]` when the goal itself waits on a person to approve each pull request; `plan.already_done`, one `{\"clause\", \"evidence\"}` per acceptance clause main already satisfies; and, in place of `items` when the graph would be over the project's cap of %d, `plan.split`: goal drafts `{\"slug\", \"title\", \"statement\", \"acceptance\", \"repo\"}`, each at most %d items and one repo.\n", cap, cap)
 }
 
 // spent says whether an item of the plan before is one a re-plan may not
@@ -1241,78 +1271,39 @@ func sortedKeys(m map[string]string) []string {
 	return keys
 }
 
-// planCandidates is every place the graph might be in the planner's
-// message, best first: each fenced block from the last to the first,
-// then the whole text. Trying them in turn rather than taking the last
-// fence marker is what makes a graph survive an item whose own brief or
-// acceptance mentions a fence — the marker inside the JSON is the last
-// one in the message, and reading from it yields a fragment (seen
-// 2026-09-22: three goals' plans lost that way, each after a five-minute
-// session).
-func planCandidates(text string) []string {
-	raw := strings.TrimSpace(text)
-	const fence = "```"
-	var marks []int
-	for i := 0; ; {
-		j := strings.Index(raw[i:], fence)
-		if j < 0 {
-			break
-		}
-		marks = append(marks, i+j)
-		i += j + len(fence)
+// planGraph decodes one field of the `plan` object the session handed
+// mesh_result into v: the field as JSON, or, for a client that sent it
+// as a JSON string, that string decoded. ok is false when the field is
+// absent or null.
+func planGraph(graph map[string]any, key string, v any) (ok bool, err error) {
+	raw, has := graph[key]
+	if !has || raw == nil {
+		return false, nil
 	}
-	trim := func(body string) string {
-		// drop the language tag on the opening line
-		if nl := strings.IndexByte(body, '\n'); nl >= 0 {
-			if head := strings.TrimSpace(body[:nl]); head == "" || !strings.ContainsAny(head, "{[") {
-				body = body[nl+1:]
-			}
+	if s, isString := raw.(string); isString {
+		if strings.TrimSpace(s) == "" {
+			return false, nil
 		}
-		return strings.TrimSpace(body)
+		return true, json.Unmarshal([]byte(s), v)
 	}
-	var out []string
-	// every span between two markers, the latest close first and, for a
-	// given close, the earliest open first — so the whole block wins over
-	// a fragment starting at a fence the JSON itself mentions
-	for j := len(marks) - 1; j >= 1; j-- {
-		for i := 0; i < j; i++ {
-			if body := trim(raw[marks[i]+len(fence) : marks[j]]); body != "" {
-				out = append(out, body)
-			}
-		}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return true, err
 	}
-	// an unclosed final block: everything after the last marker
-	if n := len(marks); n > 0 {
-		if body := trim(raw[marks[n-1]+len(fence):]); body != "" {
-			out = append(out, body)
-		}
-	}
-	return append(out, raw)
+	return true, json.Unmarshal(b, v)
 }
 
-// ParsePlan reads the planner's final message: the graph in a fenced block
-// (or the whole text when it is JSON) as {"items": [...]} or a bare
-// array. It checks the graph's shape — seqs, titles, dependencies on
-// other items or on the merged seqs given — but not the repos, which
-// the caller knows.
-func ParsePlan(text string, merged ...int) ([]PlannedSpec, error) {
+// DecodePlan reads the planner's graph — the `plan` object its session
+// handed mesh_result (ADR-041) — as its items, {"items": [...]}. It
+// checks the graph's shape — seqs, titles, dependencies on other items
+// or on the merged seqs given — but not the repos, which the caller
+// knows.
+func DecodePlan(graph map[string]any, merged ...int) ([]PlannedSpec, error) {
 	var items []PlannedSpec
-	for _, raw := range planCandidates(text) {
-		var wrapped struct {
-			Items []PlannedSpec `json:"items"`
-		}
-		if err := json.Unmarshal([]byte(raw), &wrapped); err == nil && len(wrapped.Items) > 0 {
-			items = wrapped.Items
-			break
-		}
-		var bare []PlannedSpec
-		if err := json.Unmarshal([]byte(raw), &bare); err == nil && len(bare) > 0 {
-			items = bare
-			break
-		}
-	}
-	if len(items) == 0 {
-		return nil, fmt.Errorf("no graph in the planner's message")
+	if ok, err := planGraph(graph, "items", &items); err != nil {
+		return nil, fmt.Errorf("the plan's items: %w", err)
+	} else if !ok || len(items) == 0 {
+		return nil, fmt.Errorf("no items in the plan")
 	}
 	seqs := map[int]bool{}
 	for _, it := range items {
@@ -1346,28 +1337,22 @@ type PlanQuestion struct {
 	Question string `json:"question"`
 }
 
-// ParsePlanQuestions reads the `questions` beside `items` in the
-// planner's graph, from the same candidates ParsePlan reads; a question
-// without both halves is dropped, and none is nil.
-func ParsePlanQuestions(text string) []PlanQuestion {
-	for _, raw := range planCandidates(text) {
-		var wrapped struct {
-			Items     []json.RawMessage `json:"items"`
-			Questions []PlanQuestion    `json:"questions"`
-		}
-		if err := json.Unmarshal([]byte(raw), &wrapped); err != nil || len(wrapped.Items) == 0 {
-			continue
-		}
-		var out []PlanQuestion
-		for _, q := range wrapped.Questions {
-			q.Clause, q.Question = strings.TrimSpace(q.Clause), strings.TrimSpace(q.Question)
-			if q.Clause != "" && q.Question != "" {
-				out = append(out, q)
-			}
-		}
-		return out
+// DecodePlanQuestions reads the `questions` beside `items` in the
+// planner's graph; a question without both halves is dropped, and none
+// is nil.
+func DecodePlanQuestions(graph map[string]any) []PlanQuestion {
+	var qs []PlanQuestion
+	if ok, err := planGraph(graph, "questions", &qs); !ok || err != nil {
+		return nil
 	}
-	return nil
+	var out []PlanQuestion
+	for _, q := range qs {
+		q.Clause, q.Question = strings.TrimSpace(q.Clause), strings.TrimSpace(q.Question)
+		if q.Clause != "" && q.Question != "" {
+			out = append(out, q)
+		}
+	}
+	return out
 }
 
 // GoalDraft is one goal-sized slice of a plan over the project's cap
@@ -1382,59 +1367,46 @@ type GoalDraft struct {
 	Repo       string `json:"repo"`
 }
 
-// ParsePlanSplit reads a planner's `split` answer — `{"split": [...]}`
-// beside, or instead of, `items` — from the same candidates ParsePlan
-// reads (planCandidates). ok is false when no candidate has a `split`
-// array, so a graph answered as `items` (no `split` at all) is not
-// mistaken for an empty split, and a `split` answer with no `items` is
-// not a parse error the way ParsePlan would call it.
-func ParsePlanSplit(text string) (drafts []GoalDraft, ok bool) {
-	for _, raw := range planCandidates(text) {
-		var wrapped struct {
-			Split []GoalDraft `json:"split"`
-		}
-		if err := json.Unmarshal([]byte(raw), &wrapped); err != nil || wrapped.Split == nil {
+// DecodePlanSplit reads a planner's `split` answer — `{"split": [...]}`
+// beside, or instead of, `items`. ok is false when the graph has no
+// `split` array, so a graph answered as `items` is not mistaken for an
+// empty split, and a `split` answer with no `items` is not the error
+// DecodePlan would call it.
+func DecodePlanSplit(graph map[string]any) (drafts []GoalDraft, ok bool) {
+	var list []GoalDraft
+	if has, err := planGraph(graph, "split", &list); !has || err != nil {
+		return nil, false
+	}
+	out := []GoalDraft{}
+	for _, d := range list {
+		d.Slug, d.Title = strings.TrimSpace(d.Slug), strings.TrimSpace(d.Title)
+		d.Statement, d.Acceptance = strings.TrimSpace(d.Statement), strings.TrimSpace(d.Acceptance)
+		d.Repo = strings.TrimSpace(d.Repo)
+		if d.Slug == "" || d.Title == "" || d.Repo == "" {
 			continue
 		}
-		var out []GoalDraft
-		for _, d := range wrapped.Split {
-			d.Slug, d.Title = strings.TrimSpace(d.Slug), strings.TrimSpace(d.Title)
-			d.Statement, d.Acceptance = strings.TrimSpace(d.Statement), strings.TrimSpace(d.Acceptance)
-			d.Repo = strings.TrimSpace(d.Repo)
-			if d.Slug == "" || d.Title == "" || d.Repo == "" {
-				continue
-			}
-			out = append(out, d)
-		}
-		return out, true
+		out = append(out, d)
 	}
-	return nil, false
+	return out, true
 }
 
-// ParsePlanCheckpoints reads the `checkpoints` beside `items` in the
+// DecodePlanCheckpoints reads the `checkpoints` beside `items` in the
 // planner's graph (ADR-023, planCutOverRule): a `pr` checkpoint says the
 // goal itself waits on a person to confirm the pull request (or its
-// effect in production) rather than putting that wait on one item. From
-// the same candidates ParsePlan reads, in ParsePlanQuestions's own
-// style; a graph with none has none.
-func ParsePlanCheckpoints(text string) []string {
-	for _, raw := range planCandidates(text) {
-		var wrapped struct {
-			Items       []json.RawMessage `json:"items"`
-			Checkpoints []string          `json:"checkpoints"`
-		}
-		if err := json.Unmarshal([]byte(raw), &wrapped); err != nil || len(wrapped.Items) == 0 {
-			continue
-		}
-		var out []string
-		for _, c := range wrapped.Checkpoints {
-			if c = strings.TrimSpace(c); c != "" {
-				out = append(out, c)
-			}
-		}
-		return out
+// effect in production) rather than putting that wait on one item. A
+// graph with none has none.
+func DecodePlanCheckpoints(graph map[string]any) []string {
+	var cps []string
+	if ok, err := planGraph(graph, "checkpoints", &cps); !ok || err != nil {
+		return nil
 	}
-	return nil
+	var out []string
+	for _, c := range cps {
+		if c = strings.TrimSpace(c); c != "" {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // ResearchInput is what a research session is given: the project, the
@@ -1705,6 +1677,54 @@ func quoteAll(ss []string) []string {
 		out[i] = "`" + s + "`"
 	}
 	return out
+}
+
+// planCandidates is every place a JSON block might be in a research
+// session's message, best first: each fenced block from the last to the
+// first, then the whole text (ParseProposals, ParsePitches; the plan's
+// own reading is DecodePlan, from the mesh_result call). Trying them in
+// turn rather than taking the last fence marker is what makes a block
+// survive text that mentions a fence (seen 2026-09-22: three goals'
+// plans lost that way, each after a five-minute session).
+func planCandidates(text string) []string {
+	raw := strings.TrimSpace(text)
+	const fence = "```"
+	var marks []int
+	for i := 0; ; {
+		j := strings.Index(raw[i:], fence)
+		if j < 0 {
+			break
+		}
+		marks = append(marks, i+j)
+		i += j + len(fence)
+	}
+	trim := func(body string) string {
+		// drop the language tag on the opening line
+		if nl := strings.IndexByte(body, '\n'); nl >= 0 {
+			if head := strings.TrimSpace(body[:nl]); head == "" || !strings.ContainsAny(head, "{[") {
+				body = body[nl+1:]
+			}
+		}
+		return strings.TrimSpace(body)
+	}
+	var out []string
+	// every span between two markers, the latest close first and, for a
+	// given close, the earliest open first — so the whole block wins over
+	// a fragment starting at a fence the JSON itself mentions
+	for j := len(marks) - 1; j >= 1; j-- {
+		for i := 0; i < j; i++ {
+			if body := trim(raw[marks[i]+len(fence) : marks[j]]); body != "" {
+				out = append(out, body)
+			}
+		}
+	}
+	// an unclosed final block: everything after the last marker
+	if n := len(marks); n > 0 {
+		if body := trim(raw[marks[n-1]+len(fence):]); body != "" {
+			out = append(out, body)
+		}
+	}
+	return append(out, raw)
 }
 
 // ParseProposals reads a research session's goals out of its final

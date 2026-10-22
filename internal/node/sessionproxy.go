@@ -182,7 +182,7 @@ func upstreamsOf(specs map[string]tools.UpstreamSpec, builtinURL string, bearer 
 // names that use no longer has is left out and named in missing: the
 // proxy answers it as no MCP server. Nil and no error when the state
 // names no proxy.
-func (px *SessionProxies) Adopt(st sessionunit.State, builtin map[string]any, use []tools.Tool) (sp *SessionProxy, missing []string, err error) {
+func (px *SessionProxies) Adopt(st sessionunit.State, builtin map[string]any, use []tools.Tool, nodeTools []mcptool.Tool) (sp *SessionProxy, missing []string, err error) {
 	if st.Proxy == nil || st.Proxy.Socket == "" {
 		return nil, nil, nil
 	}
@@ -198,7 +198,18 @@ func (px *SessionProxies) Adopt(st sessionunit.State, builtin map[string]any, us
 		return nil, nil, err
 	}
 	named := make(map[string]tools.UpstreamSpec, len(st.Proxy.Servers))
+	serveNode := false
 	for _, name := range st.Proxy.Servers {
+		if name == harness.NodeWorkMCP {
+			// the node's own tools (ADR-041): served again from nodeTools,
+			// a fresh holder's; what the session handed the node before
+			// this one is that node's
+			serveNode = len(nodeTools) > 0
+			if !serveNode {
+				missing = append(missing, name)
+			}
+			continue
+		}
 		spec, ok := specs[name]
 		if !ok {
 			missing = append(missing, name)
@@ -219,6 +230,9 @@ func (px *SessionProxies) Adopt(st sessionunit.State, builtin map[string]any, us
 	}
 	p := sessionproxy.New(upstreamsOf(named, url, bearer, px.keyOf(meta)))
 	p.Logf = px.Logf
+	if serveNode {
+		p.Add(harness.NodeWorkMCP, sessionproxy.InProcess{Handler: &mcptool.Handler{Name: harness.NodeWorkMCP, Tools: nodeTools}})
+	}
 	if err := px.listen(p, st.Proxy.Socket); err != nil {
 		return nil, missing, fmt.Errorf("sessionproxy: listen %s: %w", st.Proxy.Socket, err)
 	}
@@ -284,7 +298,7 @@ func (st SessionTools) UseVia(px *SessionProxies, root string, job *harness.Job,
 // session whose state names no proxy, or a node with none, restarts
 // nothing. A failure is logged: the session runs on, its MCP calls
 // unanswered, rather than its build being lost.
-func adoptProxy(ctx context.Context, px *SessionProxies, creds *Credentials, builtin map[string]any, role string, runtimes []string, ref gateway.SessionRef, s FoundSession, label string, logf func(string, ...any)) func(context.Context) {
+func adoptProxy(ctx context.Context, px *SessionProxies, creds *Credentials, builtin map[string]any, role string, runtimes []string, ref gateway.SessionRef, s FoundSession, label string, nodeTools []mcptool.Tool, logf func(string, ...any)) func(context.Context) {
 	noop := func(context.Context) {}
 	if s.State.Proxy == nil {
 		return noop
@@ -303,7 +317,7 @@ func adoptProxy(ctx context.Context, px *SessionProxies, creds *Credentials, bui
 			use = SelectTools(builtin, read.Tools, role, runtimes).Use
 		}
 	}
-	sp, missing, err := px.Adopt(s.State, builtin, use)
+	sp, missing, err := px.Adopt(s.State, builtin, use, nodeTools)
 	if err != nil {
 		logf("%s: adopted proxy: %v", label, err)
 		return noop
@@ -352,20 +366,27 @@ func (st SessionTools) serveNodeToolsAlone(root, bin string, job *harness.Job, a
 		}
 		bin = exe
 	}
+	// under root when its socket path fits a unix socket's bound
+	// (mcprelay.MaxSocketPath), else in the temporary directory, else
+	// /tmp: a host session dials any path, and only a pod needs the
+	// socket under its mounts, which a session proxied by SessionProxies
+	// has
 	var dir string
 	var err error
-	// under root when its socket path fits a unix socket's bound
-	// (mcprelay.MaxSocketPath), else in the temporary directory: a host
-	// session dials any path, and only a pod needs the socket under its
-	// mounts, which a session proxied by SessionProxies has
-	if root != "" && len(filepath.Join(root, "px", "0123456789", ProxySocketName)) <= mcprelay.MaxSocketPath {
+	fits := func(base string) bool {
+		return len(filepath.Join(base, "mesh-nodetools-0123456789", ProxySocketName)) <= mcprelay.MaxSocketPath
+	}
+	switch {
+	case root != "" && fits(filepath.Join(root, "px")):
 		base := filepath.Join(root, "px")
 		if err := os.MkdirAll(base, 0o700); err != nil {
 			return noop, fmt.Errorf("node tools: %w", err)
 		}
 		dir, err = os.MkdirTemp(base, "")
-	} else {
+	case fits(os.TempDir()):
 		dir, err = os.MkdirTemp("", "mesh-nodetools-")
+	default:
+		dir, err = os.MkdirTemp("/tmp", "mesh-nodetools-")
 	}
 	if err != nil {
 		return noop, fmt.Errorf("node tools: %w", err)

@@ -53,6 +53,7 @@ func (h *streamHarness) Run(_ context.Context, job harness.Job, on func(harness.
 	if text != "" {
 		res.Text = text
 	}
+	handInScript(job, nil, res.Text, res.WorkCalls)
 	return res, nil
 }
 

@@ -54,7 +54,13 @@ func planClaudeScript(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	last, err := json.Marshal(map[string]any{"type": "assistant", "session_id": "s-plan", "message": map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": text}}}})
+	// the graph goes to the node's mesh_result on the stream (ADR-041), the
+	// text beside it as the message the planner wrote
+	graph := map[string]any{"items": []any{map[string]any{"seq": 1, "title": "Do it", "brief": "Do it.", "acceptance": "go test ./... passes", "depends_on": []any{}, "repo": "acme/widgets"}}}
+	last, err := json.Marshal(map[string]any{"type": "assistant", "session_id": "s-plan", "message": map[string]any{"role": "assistant", "content": []any{
+		map[string]any{"type": "text", "text": text},
+		map[string]any{"type": "tool_use", "id": "toolu_plan", "name": "mcp__mesh-node__mesh_result", "input": map[string]any{"plan": graph}},
+	}}})
 	if err != nil {
 		t.Fatal(err)
 	}

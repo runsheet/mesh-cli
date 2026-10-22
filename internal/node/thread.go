@@ -17,7 +17,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/crash"
@@ -61,9 +60,8 @@ type ThreadRunner struct {
 	BuildCache string
 	Log        interface{ Printf(string, ...any) }
 
-	mu sync.Mutex
-	// noGuidance is each kind noteNoGuidance has logged.
-	noGuidance map[string]bool
+	// noGuidance logs once per kind whose brief carries no guidance.
+	noGuidance NoGuidance
 }
 
 func (t *ThreadRunner) logf(format string, args ...any) {
@@ -103,25 +101,6 @@ func (t *ThreadRunner) Run(ctx context.Context, turn gateway.ThreadTurn, kind st
 	}
 	t.logf("%s: %s", label, what)
 	return nil
-}
-
-// noGuidanceLine is logged once per kind whose brief carries no
-// guidance: a platform before runsheet ADR 067 published it, whose
-// turns run on the node's built-in prompt.
-const noGuidanceLine = "brief carries no guidance; running the built-in prompt"
-
-// noteNoGuidance logs noGuidanceLine once per kind.
-func (t *ThreadRunner) noteNoGuidance(kind string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.noGuidance == nil {
-		t.noGuidance = map[string]bool{}
-	}
-	if t.noGuidance[kind] {
-		return
-	}
-	t.noGuidance[kind] = true
-	t.logf("%s: %s", kind, noGuidanceLine)
 }
 
 // answer runs the turn's session and reads its result: what the session
@@ -179,7 +158,7 @@ func (t *ThreadRunner) answer(ctx context.Context, turn gateway.ThreadTurn, kind
 	}
 	st.NodeTools = holder.Tools()
 	if strings.TrimSpace(brief.Guidance) == "" {
-		t.noteNoGuidance(kind)
+		t.noGuidance.Note(kind, t.logf)
 	}
 	prompt := prompter(harness.ThreadInput{Org: sc.Name(), Project: projectSlug, Transcript: tr, MeshContext: len(t.MCP) > 0, Tools: toolNames(st),
 		Guidance: brief.Guidance, Finish: holder.FinishSection()})
