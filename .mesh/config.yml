@@ -1,0 +1,16 @@
+# Mesh's settings for this repository (runsheet ADR 021 and its
+# amendments). Only append_paths is set: every key left out falls back to
+# the project's setting, then the platform's default, exactly as if this
+# file did not exist.
+
+# Documents a pull request's overlap with main may be settled in process
+# rather than reworked (runsheet ADR 017's amendment, "A document overlap
+# is not a conflict"): both sides only adding lines to one of these is no
+# conflict a session or a person need see. AGENTS.md and README.md are
+# this repo's two most-changed files (203 and 172 of the commits to main
+# in the 30 days to 2026-10-22). Code and any other file still take the
+# rebase path.
+append_paths:
+  - "AGENTS.md"
+  - "README.md"
+  - "docs/adr/**"
