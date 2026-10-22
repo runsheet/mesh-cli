@@ -338,3 +338,48 @@ func (c *Claims) ExpiresAt() time.Time {
 	}
 	return time.Unix(c.Expiry, 0)
 }
+
+// ClientCredentials is RFC 6749 §4.4's grant: a confidential client's own
+// token, its id and secret sent as HTTP Basic. The CLI's own ClientID is
+// not used; the client is the one named. A product publishes its
+// catalogue to Mesh as itself this way (runsheet ADR 067 §§5–6).
+func (c *Client) ClientCredentials(ctx context.Context, tokenEndpoint, clientID, secret string) (string, error) {
+	if strings.TrimSpace(tokenEndpoint) == "" {
+		return "", errors.New("latchkey: no token endpoint")
+	}
+	if strings.TrimSpace(clientID) == "" || secret == "" {
+		return "", errors.New("latchkey: a client's id and secret are both needed")
+	}
+	form := url.Values{}
+	form.Set("grant_type", "client_credentials")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.SetBasicAuth(url.QueryEscape(clientID), url.QueryEscape(secret))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.http().Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		oe := &Error{Status: resp.StatusCode}
+		if err := json.Unmarshal(raw, oe); err != nil || oe.Code == "" {
+			return "", fmt.Errorf("latchkey: %s: %s: %s", tokenEndpoint, resp.Status, strings.TrimSpace(string(raw)))
+		}
+		return "", oe
+	}
+	var out struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return "", fmt.Errorf("latchkey: decode %s: %w", tokenEndpoint, err)
+	}
+	if out.AccessToken == "" {
+		return "", errors.New("latchkey: the client_credentials grant returned no access token")
+	}
+	return out.AccessToken, nil
+}
