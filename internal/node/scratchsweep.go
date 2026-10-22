@@ -22,10 +22,11 @@ import (
 // (mesh-session-*), a session's GH_CONFIG_DIR (mesh-gh-*) and
 // CLAUDE_CONFIG_DIR (mesh-claude-*), and an image pull's, build's and
 // push's work dirs (mesh-node-pull-*, mesh-node-image-*,
-// mesh-node-push-*). mesh-home-* is added on a host node only: on a
+// mesh-node-push-*), and a session's node-tools socket dir when its
+// job's MCP root is too long a path for one (mesh-nodetools-*). mesh-home-* is added on a host node only: on a
 // sandboxed one the sandbox's sweep knows which HOME a running
 // container mounts.
-var HostScratchPrefixes = []string{"mesh-session-", "mesh-gh-", "mesh-claude-", "mesh-node-pull-", "mesh-node-image-", "mesh-node-push-"}
+var HostScratchPrefixes = []string{"mesh-session-", "mesh-gh-", "mesh-claude-", "mesh-node-pull-", "mesh-node-image-", "mesh-node-push-", "mesh-nodetools-"}
 
 // ScratchSweep is one start-up sweep of the host's scratch.
 type ScratchSweep struct {

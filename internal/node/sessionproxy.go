@@ -11,6 +11,8 @@ import (
 	"projectmesh.io/mesh-cli/internal/dpop"
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/mcprelay"
+	"projectmesh.io/mesh-cli/internal/mcptool"
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
 	"projectmesh.io/mesh-cli/internal/sessionunit"
 	"projectmesh.io/mesh-cli/internal/tools"
@@ -237,7 +239,10 @@ func (st SessionTools) UseVia(px *SessionProxies, root string, job *harness.Job,
 	noop := func(context.Context) {}
 	bin, url, ok := harness.RelayOf(builtin[tools.Builtin])
 	if px == nil || !ok {
-		return noop, st.UseTools(job, builtin, acct)
+		if err := st.UseTools(job, builtin, acct); err != nil {
+			return noop, err
+		}
+		return st.serveNodeToolsAlone(root, bin, job, acct)
 	}
 	var sp *SessionProxy
 	shim := func(name string) map[string]any { return harness.ProxyRelay(bin, sp.Socket, name) }
@@ -254,6 +259,7 @@ func (st SessionTools) UseVia(px *SessionProxies, root string, job *harness.Job,
 		sp.Close()
 		return noop, err
 	}
+	st.serveNodeTools(sp, servers, shim, job)
 	job.MCPServers = servers
 	job.Tools = nil
 	// the values stay redacted from what the session prints
@@ -308,4 +314,79 @@ func adoptProxy(ctx context.Context, px *SessionProxies, creds *Credentials, bui
 	}
 	logf("%s", line)
 	return sp.End
+}
+
+// serveNodeTools serves st.NodeTools — the node's own mesh_result and
+// mesh_fail for the session (jobresult, ADR-041) — on sp as
+// harness.NodeWorkMCP, an in-process upstream (sessionproxy.InProcess),
+// and names the server in servers through shim, so the session reaches
+// the node's tools on the one path it reaches every other server. The
+// job keeps the tools too (Job.NodeTools), for a harness standing in for
+// a session. Nothing is served for a session with no node tools.
+func (st SessionTools) serveNodeTools(sp *SessionProxy, servers map[string]any, shim func(name string) map[string]any, job *harness.Job) {
+	if len(st.NodeTools) == 0 || sp == nil || sp.p == nil {
+		return
+	}
+	sp.p.Add(harness.NodeWorkMCP, sessionproxy.InProcess{Handler: &mcptool.Handler{Name: harness.NodeWorkMCP, Tools: st.NodeTools}})
+	servers[harness.NodeWorkMCP] = shim(harness.NodeWorkMCP)
+	job.NodeTools = st.NodeTools
+}
+
+// serveNodeToolsAlone serves st.NodeTools on a proxy of their own when
+// the session's other servers are not proxied (no SessionProxies, or a
+// built-in that is no relay): a socket under root's px directory (a
+// temporary directory when root is ""), fronting NodeWorkMCP alone, and
+// its ProxyRelay entry beside the job's servers on bin (this process's
+// executable when the built-in named none). The returned end closes it.
+// A session with no node tools gets nothing and a no-op end.
+func (st SessionTools) serveNodeToolsAlone(root, bin string, job *harness.Job, acct *SessionAccount) (func(context.Context), error) {
+	noop := func(context.Context) {}
+	if len(st.NodeTools) == 0 {
+		return noop, nil
+	}
+	job.NodeTools = st.NodeTools
+	if bin == "" {
+		exe, err := os.Executable()
+		if err != nil {
+			return noop, fmt.Errorf("node tools: %w", err)
+		}
+		bin = exe
+	}
+	var dir string
+	var err error
+	// under root when its socket path fits a unix socket's bound
+	// (mcprelay.MaxSocketPath), else in the temporary directory: a host
+	// session dials any path, and only a pod needs the socket under its
+	// mounts, which a session proxied by SessionProxies has
+	if root != "" && len(filepath.Join(root, "px", "0123456789", ProxySocketName)) <= mcprelay.MaxSocketPath {
+		base := filepath.Join(root, "px")
+		if err := os.MkdirAll(base, 0o700); err != nil {
+			return noop, fmt.Errorf("node tools: %w", err)
+		}
+		dir, err = os.MkdirTemp(base, "")
+	} else {
+		dir, err = os.MkdirTemp("", "mesh-nodetools-")
+	}
+	if err != nil {
+		return noop, fmt.Errorf("node tools: %w", err)
+	}
+	p := sessionproxy.New(map[string]sessionproxy.Upstream{
+		harness.NodeWorkMCP: sessionproxy.InProcess{Handler: &mcptool.Handler{Name: harness.NodeWorkMCP, Tools: st.NodeTools}},
+	})
+	sock := filepath.Join(dir, ProxySocketName)
+	if err := p.Listen(sock); err != nil {
+		os.RemoveAll(dir)
+		return noop, fmt.Errorf("node tools: listen %s: %w", sock, err)
+	}
+	sp := &SessionProxy{Dir: dir, Socket: sock, p: p}
+	servers := make(map[string]any, len(job.MCPServers)+1)
+	for k, v := range job.MCPServers {
+		servers[k] = v
+	}
+	servers[harness.NodeWorkMCP] = harness.ProxyRelay(bin, sock, harness.NodeWorkMCP)
+	job.MCPServers = servers
+	if acct != nil && acct.proxy == nil {
+		acct.proxy = sp
+	}
+	return sp.End, nil
 }

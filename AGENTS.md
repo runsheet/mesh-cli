@@ -17,6 +17,24 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
 
 ## How it is shaped
 
+- `internal/jobresult` and `internal/mcptool`: how a session's result
+  reaches the node (ADR-041, runsheet ADR 067 decision 10). A
+  `jobresult.Holder` per job (`New(kind, finish, finishSchema)`) serves
+  the session `mesh_result` and `mesh_fail` on the node's own server
+  `mesh-node` (`harness.NodeWorkMCP`) through the session's proxy
+  (`SessionTools.NodeTools` → `UseVia` → `sessionproxy.InProcess`, an
+  `mcptool.Handler`); `mesh_result` takes the finish's shape (the keys
+  runsheet's finishJob takes: `{answer and/or proposal}`, `{verdict}`,
+  …), validates the product's part against the brief's `finishSchema`
+  (`github.com/google/jsonschema-go`), refuses a call that does not fit
+  with the reason, and holds the accepted one — `Holder.Result()` is
+  what the node's finishJob sends, after its own checks. A kind whose
+  finish is the tool runs on the brief's `guidance` first, then the
+  job's facts, then `Holder.FinishSection()`, the one fixed finish
+  section; its built-in role text is gone (goal-chat so far:
+  `harness.ThreadPrompt`, `GoalChatPrompt` the no-guidance fallback,
+  `ParseThreadReply` deleted). A brief with no guidance is logged once
+  per kind, `brief carries no guidance; running the built-in prompt`.
 - `internal/harness/prompt.go`: the five prompts — `BuildPrompt`,
   `EvaluatePrompt`, `PlanPrompt`, `ResearchPrompt`, `RebasePrompt`. Their
   contract lines are load-bearing: the evaluator ends with

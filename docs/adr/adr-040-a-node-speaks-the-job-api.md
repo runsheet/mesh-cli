@@ -82,7 +82,9 @@ step.
 
 The prompts are still the node's (`internal/harness/prompt*.go`): a
 kind's guidance (`agent:builder`, …) served by the product, and the one
-step runner for every kind, are the rest of goal `a-node-runs-any-job`.
+step runner for every kind, are the rest of goal `a-node-runs-any-job`
+— taken up by [ADR-041](adr-041-a-session-hands-its-result-to-the-node-by-tool-call.md),
+kind by kind.
 The older platform fallbacks of the routed reads (a platform without
 `itemTools`, `planGitHubToken`, `issueItemRepoToken`'s batch form) are
 gone with them: runsheet serves the job API.

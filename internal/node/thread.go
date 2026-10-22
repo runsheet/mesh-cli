@@ -17,11 +17,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/crash"
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/jobresult"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
 )
@@ -58,6 +60,10 @@ type ThreadRunner struct {
 	WorkRoot   string
 	BuildCache string
 	Log        interface{ Printf(string, ...any) }
+
+	mu sync.Mutex
+	// noGuidance is each kind noteNoGuidance has logged.
+	noGuidance map[string]bool
 }
 
 func (t *ThreadRunner) logf(format string, args ...any) {
@@ -83,37 +89,56 @@ func (t *ThreadRunner) Run(ctx context.Context, turn gateway.ThreadTurn, kind st
 	}
 	label := kind + " " + turn.ThreadKey
 	t.logf("%s: answering %s", sc.Name(), label)
-	reply, err := t.answer(ctx, turn, kind, sc, brief, prompter, label)
+	finish, err := t.answer(ctx, turn, kind, sc, brief, prompter, label)
 	if err != nil {
 		t.logf("%s: %v; answering that", label, err)
-		reply = harness.ThreadReply{Answer: "I couldn't answer this time: " + truncate(err.Error(), 400)}
-	}
-	finish := map[string]any{"answer": reply.Answer}
-	if reply.Answer == "" {
-		delete(finish, "answer")
-	}
-	if reply.Proposal != "" {
-		finish["proposal"] = reply.Proposal
+		finish = map[string]any{"answer": "I couldn't answer this time: " + truncate(err.Error(), 400)}
 	}
 	if _, err := t.GW.FinishJob(ctx, sc.NodeID, kind, subject, finish); err != nil {
 		return fmt.Errorf("%s: finish: %w", label, err)
 	}
 	what := "answered"
-	if reply.Proposal != "" {
+	if _, proposed := finish["proposal"]; proposed {
 		what = "answered with a proposal"
 	}
 	t.logf("%s: %s", label, what)
 	return nil
 }
 
-// answer runs the turn's session and reads its reply.
-func (t *ThreadRunner) answer(ctx context.Context, turn gateway.ThreadTurn, kind string, sc Scope, brief *gateway.JobBrief, prompter func(harness.ThreadInput) string, label string) (harness.ThreadReply, error) {
+// noGuidanceLine is logged once per kind whose brief carries no
+// guidance: a platform before runsheet ADR 067 published it, whose
+// turns run on the node's built-in prompt.
+const noGuidanceLine = "brief carries no guidance; running the built-in prompt"
+
+// noteNoGuidance logs noGuidanceLine once per kind.
+func (t *ThreadRunner) noteNoGuidance(kind string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.noGuidance == nil {
+		t.noGuidance = map[string]bool{}
+	}
+	if t.noGuidance[kind] {
+		return
+	}
+	t.noGuidance[kind] = true
+	t.logf("%s: %s", kind, noGuidanceLine)
+}
+
+// answer runs the turn's session and reads its result: what the session
+// handed the node's mesh_result (jobresult, ADR-041), as finishJob takes
+// it. A session that called mesh_fail, or handed in nothing, is an error
+// naming why, which Run answers.
+func (t *ThreadRunner) answer(ctx context.Context, turn gateway.ThreadTurn, kind string, sc Scope, brief *gateway.JobBrief, prompter func(harness.ThreadInput) string, label string) (map[string]any, error) {
 	if brief.Thread == nil {
-		return harness.ThreadReply{}, errors.New("the brief carries no thread")
+		return nil, errors.New("the brief carries no thread")
 	}
 	tr, err := harness.ParseThreadTranscript(brief.Thread.Body)
 	if err != nil {
-		return harness.ThreadReply{}, err
+		return nil, err
+	}
+	holder, err := jobresult.New(kind, brief.Finish, brief.FinishSchema)
+	if err != nil {
+		return nil, err
 	}
 	projectID, projectSlug := brief.Thread.ProjectID, ""
 	if projectID != "" {
@@ -130,17 +155,17 @@ func (t *ThreadRunner) answer(ctx context.Context, turn gateway.ThreadTurn, kind
 		thread, _, _ := strings.Cut(brief.Thread.Ask, "#")
 		j, err := openJob(t.Layout, Scopes{sc}, sc.ID, JobMeta{ID: jobID, Unit: JobThread, ThreadID: thread, Label: label})
 		if err != nil {
-			return harness.ThreadReply{}, err
+			return nil, err
 		}
 		workspace = filepath.Join(j.Dir, "work")
 	}
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
-		return harness.ThreadReply{}, err
+		return nil, err
 	}
 	acct, err := t.Credentials.Open(withSubject(ctx, sc, projectID, projectSlug),
 		gateway.SessionRef{Kind: string(harness.KindThread), ThreadID: turn.ID, JobKind: kind}, sc.NodeID, Adapter(t.Harness))
 	if err != nil {
-		return harness.ThreadReply{}, fmt.Errorf("no model account: %w", err)
+		return nil, fmt.Errorf("no model account: %w", err)
 	}
 	acct.SetLabel(label, string(harness.KindThread))
 	defer acct.Cleanup()
@@ -150,12 +175,17 @@ func (t *ThreadRunner) answer(ctx context.Context, turn gateway.ThreadTurn, kind
 	}
 	st := SelectTools(t.MCP, acct.Tools, tools.RoleFor(string(harness.KindThread)), runtimes)
 	if len(st.Missing) > 0 {
-		return harness.ThreadReply{}, errors.New("declined, " + st.DeclineReason())
+		return nil, errors.New("declined, " + st.DeclineReason())
 	}
-	prompt := prompter(harness.ThreadInput{Org: sc.Name(), Project: projectSlug, Transcript: tr, MeshContext: len(t.MCP) > 0, Tools: toolNames(st)})
+	st.NodeTools = holder.Tools()
+	if strings.TrimSpace(brief.Guidance) == "" {
+		t.noteNoGuidance(kind)
+	}
+	prompt := prompter(harness.ThreadInput{Org: sc.Name(), Project: projectSlug, Transcript: tr, MeshContext: len(t.MCP) > 0, Tools: toolNames(st),
+		Guidance: brief.Guidance, Finish: holder.FinishSection()})
 	kept, err := keptRootFor(t.Layout, jobID)
 	if err != nil {
-		return harness.ThreadReply{}, err
+		return nil, err
 	}
 	budget := t.BudgetUSD
 	if budget <= 0 {
@@ -165,7 +195,7 @@ func (t *ThreadRunner) answer(ctx context.Context, turn gateway.ThreadTurn, kind
 		Timeout: t.Timeout, MCPServers: t.MCP, Model: t.Model, KeptRoot: kept}
 	scratchRoot, err := scratchRootFor(t.Layout, jobID, t.WorkRoot)
 	if err != nil {
-		return harness.ThreadReply{}, fmt.Errorf("session scratch: %w", err)
+		return nil, fmt.Errorf("session scratch: %w", err)
 	}
 	pod, err := openScopePod(ctx, t.Sandbox, t.Layout, servedOf(t.Served), sc, workspace, label, harness.KindThread, t.logf)
 	defer pod.Close()
@@ -173,18 +203,18 @@ func (t *ThreadRunner) answer(ctx context.Context, turn gateway.ThreadTurn, kind
 		if errors.Is(err, ErrHostServesSeveralOrgs) {
 			noteHostFallback(err, t.logf)
 		}
-		return harness.ThreadReply{}, err
+		return nil, err
 	}
 	pod.Apply(&job)
 	scratch, err := sessionScratch(t.Sandbox, scratchRoot, t.BuildCache, harness.KindThread, jobID, &job)
 	if err != nil {
-		return harness.ThreadReply{}, fmt.Errorf("session scratch: %w", err)
+		return nil, fmt.Errorf("session scratch: %w", err)
 	}
 	defer RemoveScratch(scratch)
 	acct.Apply(&job)
 	closeProxy, err := st.UseVia(t.Proxies, mcpRootFor(t.Layout, jobID), &job, t.MCP, acct)
 	if err != nil {
-		return harness.ThreadReply{}, fmt.Errorf("tools: %w", err)
+		return nil, fmt.Errorf("tools: %w", err)
 	}
 	defer closeProxy(ctx)
 	job.Meta = harness.SessionMeta{NodeID: sc.NodeID, TempDirs: sessionTempDirs(job, acct)}
@@ -192,12 +222,32 @@ func (t *ThreadRunner) answer(ctx context.Context, turn gateway.ThreadTurn, kind
 	defer acct.Finish(ctx, result)
 	defer harness.RemoveSession(workspace)
 	if err != nil {
-		return harness.ThreadReply{}, fmt.Errorf("session: %w", err)
+		return nil, fmt.Errorf("session: %w", err)
 	}
-	if !result.Success {
-		return harness.ThreadReply{}, fmt.Errorf("the session ended unsuccessfully: %s", truncate(result.Text, 300))
+	if why, failed := holder.Failed(); failed {
+		return nil, errors.New(acct.Redact(why))
 	}
-	return harness.ParseThreadReply(result.Text)
+	finish, ok := holder.Result()
+	if !ok {
+		if !result.Success {
+			return nil, fmt.Errorf("the session ended unsuccessfully: %s", truncate(acct.Redact(result.Text), 300))
+		}
+		return nil, errors.New("the session handed in no result (no mesh_result call)")
+	}
+	return redactFinish(finish, acct.Redact), nil
+}
+
+// redactFinish is finish with every string value redacted.
+func redactFinish(finish map[string]any, redact func(string) string) map[string]any {
+	out := make(map[string]any, len(finish))
+	for k, v := range finish {
+		if s, ok := v.(string); ok {
+			out[k] = redact(s)
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // toolNames are the session's served tools by name, for its prompt.

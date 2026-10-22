@@ -46,7 +46,8 @@ var returned = []string{
 	"Mcp-Protocol-Version",
 }
 
-// Upstream is one server the proxy fronts: Remote, Runsheet or Local.
+// Upstream is one server the proxy fronts: Remote, Runsheet, Local or
+// InProcess.
 type Upstream interface {
 	endpoint() string
 	// authorize sets the upstream's own credential on out, the request
@@ -370,6 +371,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	if l, ok := u.(Local); ok {
 		p.serveLocal(w, req, name, l, body)
+		return
+	}
+	if ip, ok := u.(InProcess); ok {
+		p.serveInProcess(w, req, name, ip, body)
 		return
 	}
 	resp, err := p.forward(req, u, body, false)

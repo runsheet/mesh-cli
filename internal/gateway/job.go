@@ -63,6 +63,10 @@ type JobBrief struct {
 	Pods      []JobPod       `json:"pods"`
 	Finish    string         `json:"finish"`
 	Guidance  string         `json:"guidance"`
+	// FinishSchema is the product's JSON Schema for its part of the
+	// result (runsheet ADR 067 decision 10): the proposal of an
+	// answer-or-proposal kind. "" when the kind has none.
+	FinishSchema string `json:"finishSchema"`
 	// Claim is the older claim the platform routed this one to.
 	Claim string `json:"claim"`
 	// Thread is a thread job's turn: the product, the role, the project
@@ -355,6 +359,9 @@ type JobKind struct {
 	Needs    string   `json:"needs"`
 	Pods     string   `json:"pods"`
 	Guidance string   `json:"guidance"`
+	// FinishSchema is the product's schema for its part of the result
+	// (ADR 067 decision 10); "" when the kind has none.
+	FinishSchema string `json:"finishSchema"`
 }
 
 // JobKinds reads the catalogue, by slug.

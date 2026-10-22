@@ -20,6 +20,10 @@ type ThreadTurn struct {
 	// Credentials are the model accounts jobAccess serves the turn, as
 	// itemCredentials rows.
 	Credentials []map[string]any
+	// Guidance and FinishSchema are the kind's, as the brief carries them
+	// (runsheet ADR 067): the guidance text and the product's schema for
+	// the proposal, "" for none.
+	Guidance, FinishSchema string
 }
 
 // RaiseThreadTurn adds a raised turn.
@@ -360,6 +364,7 @@ func (f *Fake) claimThreadJob(w http.ResponseWriter, in map[string]any) {
 		"kind": t.Kind, "subject": map[string]any{"type": "thread", "id": t.ID}, "code": map[string]any{"form": "none"},
 		"harness": "claude-code", "harnesses": []string{"claude-code"}, "access": []string{"runsheet", "model"},
 		"finish": "answer-or-proposal", "pods": []map[string]any{{"name": "goal-chat", "from": "kind", "code": false}},
+		"guidance": t.Guidance, "finishSchema": t.FinishSchema,
 		"claim": "claimThreadSession", "thread": map[string]any{"product": t.Product, "role": t.Role, "threadKey": t.ThreadKey,
 			"ask": t.Ask, "body": t.Body, "projectId": t.ProjectID}}}})
 }

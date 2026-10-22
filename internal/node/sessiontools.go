@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/mcptool"
 	"projectmesh.io/mesh-cli/internal/tools"
 )
 
@@ -30,6 +31,11 @@ type SessionTools struct {
 	// what the agent's MCP client said, which for a server the proxy
 	// could not reach is only that it failed.
 	ProxyError func(name string) string
+	// NodeTools are the node's own tools for the session — mesh_result
+	// and mesh_fail, a jobresult.Holder's (ADR-041) — served on
+	// harness.NodeWorkMCP through the session's proxy (UseVia). None for
+	// a session whose finish is the node's alone (a build).
+	NodeTools []mcptool.Tool
 }
 
 // SelectTools is tools.Select for the session's role and the node's
