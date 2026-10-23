@@ -1,6 +1,7 @@
 package catalogue
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +28,8 @@ func acme() map[string]string {
 	return map[string]string{
 		".mesh/product.yml":         "product: acme\ndisplay_name: Acme\ntriggers: [thread]\nmcp:\n  url: https://api.acme.test/mcp\n  audience: https://api.acme.test/mcp\n",
 		".mesh/jobs/review.yml":     "kind: review\nharness: [claude-code, codex]\nfinish: verdict\naccess: [acme]\nguidance: .mesh/agents/review.md\n",
+		".mesh/jobs/triage.yml":     "kind: triage\nharness: claude-code\nfinish: result\nguidance: .mesh/agents/review.md\nfinish_schema: .mesh/schemas/triage.json\n",
+		".mesh/schemas/triage.json": "{\n  \"type\": \"object\",\n  \"required\": [\"severity\"],\n  \"properties\": {\"severity\": {\"enum\": [\"low\", \"high\"]}}\n}\n",
 		".mesh/jobs/deploy.yml":     "kind: deploy\nharness: none\nfinish: deploy-record\n",
 		".mesh/roles/assistant.yml": "kind: assistant\nharness: claude-code\nfinish: answer-or-proposal\ntrigger: thread\nidentity: Acme's assistant\npowers: [answer]\nguidance: .mesh/agents/assistant.md\n",
 		".mesh/agents/review.md":    "You review one change for Acme.\n",
@@ -45,8 +48,23 @@ func TestLoadBuildsTheBundle(t *testing.T) {
 	if b.Product != "acme" || b.Manifest.DisplayName != "Acme" || b.Manifest.MCP.Audience != "https://api.acme.test/mcp" || b.Source.Commit != "c1" {
 		t.Fatalf("manifest: %+v", b)
 	}
-	if len(b.Kinds) != 2 || b.Kinds[0].Kind != "deploy" || b.Kinds[0].Guidance != "" || b.Kinds[1].Guidance != "You review one change for Acme.\n" {
+	if len(b.Kinds) != 3 || b.Kinds[0].Kind != "deploy" || b.Kinds[0].Guidance != "" || b.Kinds[1].Guidance != "You review one change for Acme.\n" {
 		t.Fatalf("kinds: %+v", b.Kinds)
+	}
+	// a kind's finish_schema is the JSON file's text, a kind without one
+	// carries none (runsheet ADR 067 decision 10)
+	if b.Kinds[2].Kind != "triage" || !strings.HasPrefix(b.Kinds[2].FinishSchema, "{\n  \"type\": \"object\"") || !strings.Contains(b.Kinds[2].FinishSchema, `"severity"`) {
+		t.Fatalf("triage's finish_schema: %q", b.Kinds[2].FinishSchema)
+	}
+	if b.Kinds[1].FinishSchema != "" || b.Kinds[0].FinishSchema != "" {
+		t.Fatalf("a kind without a finish_schema carries one: %+v", b.Kinds)
+	}
+	raw, _ := json.Marshal(b.Kinds[2])
+	if !strings.Contains(string(raw), `"finish_schema":"{`) {
+		t.Fatalf("the bundle names it finish_schema: %s", raw)
+	}
+	if raw, _ = json.Marshal(b.Kinds[1]); strings.Contains(string(raw), "finish_schema") {
+		t.Fatalf("a kind without a finish_schema sends the key: %s", raw)
 	}
 	if len(b.Roles) != 1 || b.Roles[0].Trigger != "thread" || b.Roles[0].Guidance != "You answer one thread.\n" || b.Roles[0].Harness[0] != "claude-code" {
 		t.Fatalf("roles: %+v", b.Roles)
@@ -89,5 +107,47 @@ func TestLoadRefusesGuidanceOutsideTheCheckout(t *testing.T) {
 	files[".mesh/jobs/review.yml"] = "kind: review\nharness: claude-code\nfinish: verdict\nguidance: ../../etc/passwd.md\n"
 	if _, err := Load(checkout(t, files), Source{}); err == nil || !strings.Contains(err.Error(), "outside the checkout") {
 		t.Fatalf("want outside the checkout, got %v", err)
+	}
+}
+
+// TestLoadRefusesABadFinishSchema: a finish_schema that names no JSON
+// file, climbs out of the checkout, does not exist, is not a JSON object
+// (an array, prose) or does not resolve as a JSON Schema is refused
+// naming the kind and the reason, each at once.
+func TestLoadRefusesABadFinishSchema(t *testing.T) {
+	files := acme()
+	delete(files, ".mesh/jobs/triage.yml")
+	kind := func(name, ref string) string {
+		return "kind: " + name + "\nharness: claude-code\nfinish: result\nguidance: .mesh/agents/review.md\nfinish_schema: " + ref + "\n"
+	}
+	files[".mesh/jobs/a.yml"] = kind("a", ".mesh/schemas/a.yml")
+	files[".mesh/jobs/b.yml"] = kind("b", "../../etc/passwd.json")
+	files[".mesh/jobs/c.yml"] = kind("c", ".mesh/schemas/missing.json")
+	files[".mesh/jobs/d.yml"] = kind("d", ".mesh/schemas/d.json")
+	files[".mesh/schemas/d.json"] = "[\"not\", \"an\", \"object\"]\n"
+	files[".mesh/jobs/e.yml"] = kind("e", ".mesh/schemas/e.json")
+	files[".mesh/schemas/e.json"] = "severity: high\n"
+	files[".mesh/jobs/f.yml"] = kind("f", ".mesh/schemas/f.json")
+	files[".mesh/schemas/f.json"] = "{\"type\": \"object\", \"properties\": {\"x\": {\"$ref\": \"https://elsewhere.test/schema.json\"}}}\n"
+	_, err := Load(checkout(t, files), Source{})
+	probs, ok := err.(Problems)
+	if !ok {
+		t.Fatalf("want Problems, got %v", err)
+	}
+	for _, want := range []string{
+		`a.yml: finish_schema ".mesh/schemas/a.yml" names no JSON file`,
+		`b.yml: finish_schema "../../etc/passwd.json" is outside the checkout`,
+		"c.yml: finish_schema .mesh/schemas/missing.json does not exist",
+		"d.yml: finish_schema .mesh/schemas/d.json is not a JSON object",
+		"e.yml: finish_schema .mesh/schemas/e.json is not a JSON object",
+		"f.yml: finish_schema .mesh/schemas/f.json does not resolve as a JSON Schema",
+	} {
+		if !strings.Contains(probs.Error(), want) {
+			t.Errorf("missing %q in:\n%s", want, probs.Error())
+		}
+	}
+	// a good schema beside them is not refused
+	if strings.Contains(probs.Error(), "review.yml") {
+		t.Errorf("review.yml refused:\n%s", probs.Error())
 	}
 }
