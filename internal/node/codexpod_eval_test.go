@@ -54,8 +54,14 @@ func codexPodRuntime(mcpGetFails bool, codexSays string) *sandbox.Fake {
 			_, _ = io.Copy(io.Discard, spec.Stdin)
 			text, _ := json.Marshal(codexSays)
 			fmt.Fprintf(spec.Stdout, `{"type":"thread.started","thread_id":"t1"}`+"\n"+
-				`{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":%s}}`+"\n"+
-				`{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5}}`+"\n", text)
+				`{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":%s}}`+"\n", text)
+			// the verdict goes to the node's mesh_result (ADR-041), on the
+			// stream as the mcp_tool_call Codex records
+			if v := scriptedVerdict(codexSays); v != nil {
+				args, _ := json.Marshal(map[string]any{"verdict": v})
+				fmt.Fprintf(spec.Stdout, `{"type":"item.completed","item":{"id":"i2","type":"mcp_tool_call","server":"mesh-node","tool":"mesh_result","status":"completed","arguments":%s,"result":{"content":[{"type":"text","text":"recorded"}]}}}`+"\n", args)
+			}
+			fmt.Fprint(spec.Stdout, `{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5}}`+"\n")
 		default:
 			return sandbox.Exit{Code: 127}, nil
 		}

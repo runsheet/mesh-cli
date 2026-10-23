@@ -181,3 +181,50 @@ func TestFinishSection(t *testing.T) {
 		t.Fatalf("shape %s", sh)
 	}
 }
+
+// A mesh_result call the stream recorded but the node never received is
+// recovered into an empty holder, checked as a live call is; a holder
+// that already holds a result or a failure keeps what it has, and a
+// call that does not fit is refused and not recorded (ADR-041).
+func TestRecoverReadsTheStreamsCallOnceAndChecksIt(t *testing.T) {
+	h, err := New("runsheet/evaluate", FinishVerdict, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := h.Recover(nil); ok || err != nil {
+		t.Fatalf("no call recovered as (%v, %v)", ok, err)
+	}
+	if ok, err := h.Recover(map[string]any{"plan": map[string]any{}}); ok || err == nil {
+		t.Fatalf("a call of the wrong shape recovered as (%v, %v)", ok, err)
+	}
+	if _, has := h.Result(); has {
+		t.Fatal("a refused call was recorded")
+	}
+	verdict := map[string]any{"verdict": map[string]any{"passed": true, "notes": "Holds."}}
+	if ok, err := h.Recover(verdict); !ok || err != nil {
+		t.Fatalf("(%v, %v)", ok, err)
+	}
+	got, has := h.Result()
+	if !has || got["verdict"].(map[string]any)["notes"] != "Holds." {
+		t.Fatalf("result %v %v", got, has)
+	}
+	// held already: a second recovery changes nothing
+	if ok, err := h.Recover(map[string]any{"verdict": map[string]any{"passed": false, "notes": "Later."}}); ok || err != nil {
+		t.Fatalf("a held holder recovered again: (%v, %v)", ok, err)
+	}
+	if got, _ := h.Result(); got["verdict"].(map[string]any)["notes"] != "Holds." {
+		t.Fatalf("the first result was replaced: %v", got)
+	}
+	// a session that gave up keeps its failure; the stream's call is not
+	// read over it
+	failed, _ := New("runsheet/evaluate", FinishVerdict, "")
+	if _, err := failed.Fail(map[string]any{"error": "gave up"}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := failed.Recover(verdict); ok || err != nil {
+		t.Fatalf("a failed holder recovered: (%v, %v)", ok, err)
+	}
+	if _, has := failed.Result(); has {
+		t.Fatal("a failed holder holds a result")
+	}
+}

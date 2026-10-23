@@ -248,6 +248,12 @@ type fakeHarness struct {
 	// workCalls are the mesh-work tool inputs a run reports
 	// (Result.WorkCalls, ADR-023).
 	workCalls map[string]map[string]any
+	// result, when set, is what the session hands the node's mesh_result
+	// (ADR-041); results, when set, are the next runs' in turn, before
+	// result. With neither, the script (text, workCalls) is handed in as
+	// the session would (handInScript).
+	result  map[string]any
+	results []map[string]any
 	// onRun, when set, is told each job as its run starts.
 	onRun func(harness.Job)
 }
@@ -263,11 +269,17 @@ func (h *fakeHarness) Run(ctx context.Context, job harness.Job, on func(harness.
 	if len(h.texts) > 0 {
 		text, h.texts = h.texts[0], h.texts[1:]
 	}
+	result := h.result
+	if len(h.results) > 0 {
+		result, h.results = h.results[0], h.results[1:]
+	}
 	onRun := h.onRun
+	workCalls := h.workCalls
 	h.mu.Unlock()
 	if onRun != nil {
 		onRun(job)
 	}
+	handInScript(job, result, text, workCalls)
 	if on == nil {
 		on = func(harness.Progress) {}
 	}
@@ -455,7 +467,12 @@ type harnessFunc func(context.Context, harness.Job, func(harness.Progress)) (har
 
 func (h harnessFunc) Name() string { return "fake" }
 func (h harnessFunc) Run(ctx context.Context, job harness.Job, on func(harness.Progress)) (harness.Result, error) {
-	return h(ctx, job, on)
+	res, err := h(ctx, job, on)
+	if err == nil {
+		// a scripted session hands its script in through mesh_result
+		handInScript(job, nil, res.Text, res.WorkCalls)
+	}
+	return res, err
 }
 
 func waitFor(t *testing.T, cond func() bool) {

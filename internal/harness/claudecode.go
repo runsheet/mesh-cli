@@ -94,9 +94,11 @@ func (c *ClaudeCode) Args(job Job) []string {
 		// a build finishes on the node's own tools, never the hosted
 		// ones: the node pushes before the finish is handed in
 		args = append(args, MCPArgs(withNodeWork(job.MCPServers, c.hostWorkServer()))...)
-		args = append(args, "--disallowedTools", strings.Join(HostedFinishTools, ","))
 	} else {
 		args = append(args, MCPArgs(job.MCPServers)...)
+	}
+	if hosted := HostedDisallowed(job); len(hosted) > 0 {
+		args = append(args, "--disallowedTools", strings.Join(hosted, ","))
 	}
 	args = append(args, c.ExtraArgs...)
 	return args
@@ -172,15 +174,15 @@ func mcpConfig(servers map[string]any) ([]byte, string, bool) {
 // own finish tools run as WorkScript beside that file (sandboxServers).
 func (c *ClaudeCode) SandboxArgs(job Job, mcpPath string) []string {
 	servers := sandboxServers(job, mcpPath)
-	finishes := nodeFinishes(job)
+	hosted := HostedDisallowed(job)
 	job.MCPServers = nil
 	args := c.Args(job)
 	if _, allowed, ok := mcpConfig(servers); ok {
 		// the MCP flags go where Args puts them, before ExtraArgs
 		at := len(args) - len(c.ExtraArgs)
 		mcp := []string{"--mcp-config", mcpPath, "--allowedTools", allowed}
-		if finishes {
-			mcp = append(mcp, "--disallowedTools", strings.Join(HostedFinishTools, ","))
+		if len(hosted) > 0 {
+			mcp = append(mcp, "--disallowedTools", strings.Join(hosted, ","))
 		}
 		args = append(args[:at:at], append(mcp, args[at:]...)...)
 	}

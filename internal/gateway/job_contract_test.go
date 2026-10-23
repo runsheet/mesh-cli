@@ -170,3 +170,36 @@ func TestThreadMessagesReadsTheContract(t *testing.T) {
 		t.Fatalf("thread %+v, contract %v", th, sample)
 	}
 }
+
+// The brief claimJob answers is kept for the node's code to read back
+// by kind and subject (JobBriefOf) while this client holds the job, and
+// let go at its finish (ADR-041); a job this client never claimed has
+// none.
+func TestJobBriefIsKeptFromTheClaimToTheFinish(t *testing.T) {
+	fx := readJobFixture(t, "claimJob")
+	var in struct {
+		Input map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal(fx.Input, &in); err != nil {
+		t.Fatal(err)
+	}
+	gw, _ := fixtureServer(t, "claimJob", fx.Result)
+	subject, _ := in.Input["subject"].(map[string]any)
+	str := func(m map[string]any, k string) string { s, _ := m[k].(string); return s }
+	sub := gateway.JobSubject{Type: str(subject, "type"), ID: str(subject, "id")}
+	kind := str(in.Input, "kind")
+	if _, ok := gw.JobBriefOf(kind, sub); ok {
+		t.Fatal("a brief before the claim")
+	}
+	brief, err := gw.ClaimJob(context.Background(), gateway.ClaimJobInput{NodeID: str(in.Input, "nodeId"), Kind: kind, Subject: sub, Harness: str(in.Input, "harness")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept, ok := gw.JobBriefOf(kind, sub)
+	if !ok || kept != brief || kept.Guidance != brief.Guidance {
+		t.Fatalf("kept %+v, want the claim's brief %+v", kept, brief)
+	}
+	if _, ok := gw.JobBriefOf("runsheet/other", sub); ok {
+		t.Fatal("a brief of another kind")
+	}
+}

@@ -89,11 +89,12 @@ func TestBuildSessionFinishesOnTheNodesOwnTools(t *testing.T) {
 	if got := res.WorkCalls["mesh_finish"]; !reflect.DeepEqual(got, finishInput) {
 		t.Errorf("WorkCalls[mesh_finish] = %v, want %v", got, finishInput)
 	}
-	// evaluations and plans finish on the hosted tools, as before
-	for _, kind := range []Kind{KindEvaluate, KindPlan} {
+	// an evaluation's verdict is the node's mesh_result (ADR-041): the
+	// hosted mesh_verdict is disallowed; a plan keeps the hosted tools
+	for kind, disallowed := range map[Kind]string{KindEvaluate: strings.Join(HostedVerdictTools, ","), KindPlan: ""} {
 		job := Job{Kind: kind, MCPServers: servers}
 		for name, args := range map[string][]string{"Args": c.Args(job), "SandboxArgs": c.SandboxArgs(job, mcpPath)} {
-			if flagAt(args, "--allowedTools") != "mcp__runsheet__*" || slices.Contains(args, "--disallowedTools") {
+			if flagAt(args, "--allowedTools") != "mcp__runsheet__*" || flagAt(args, "--disallowedTools") != disallowed {
 				t.Errorf("%s %s = %v", kind, name, args)
 			}
 		}

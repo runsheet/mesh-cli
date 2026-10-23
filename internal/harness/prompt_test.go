@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -13,8 +14,8 @@ func TestPlanPromptAcceptanceTheEvaluatorCanSee(t *testing.T) {
 		"3. Each item's brief says what to do and where, naming files and functions where it helps; its acceptance is what an evaluator can check — a test that passes, a command's output, a document with named sections — never a feeling.\n",
 		"   An item's acceptance names only what the evaluator can see at evaluation time, on that item's branch, in that item's repository: tests, commands and their output, file contents. It never names a CI check on the item's own pull request (the pull request opens only after evaluation passes), a deploy, or a file in another repository. Work like that becomes its own item in the right repo, or goes in the goal's acceptance.\n",
 		"4. depends_on names earlier seqs",
-		"9. End your final message with the graph as a JSON object in a ```json fenced block, and nothing after it. Its `questions` is empty unless a clause of the goal is one no pull request can satisfy (rule 3); each is {\"clause\": \"…\", \"question\": \"…\"}, for the person to answer:\n",
-		"```json\n{\"items\": [{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\", \"files\": [\"…\"]}, {\"seq\": 2, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [{\"seq\": 1, \"because\": \"uses the … item 1 adds\"}], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\", \"files\": [\"…\"], \"writes_shared_docs\": true}], \"questions\": []}\n```\n",
+		"`plan.items` is the graph: each item `{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [{\"seq\": 1, \"because\": \"uses the … item 1 adds\"}], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\", \"files\": [\"…\"]}`",
+		"`plan.questions`, one `{\"clause\", \"question\"}` per clause no pull request can satisfy",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("plan prompt lacks %q", want)
@@ -33,7 +34,7 @@ func TestPlanPromptHostRule(t *testing.T) {
 		for _, want := range []string{
 			"   An item's acceptance names only what a pull request can change: code, tests, docs, a script that reproduces a reading, and the reading recorded honestly. A measurement of the host — load, wall time, shard durations, a p90 over a day — is never an item's merge gate: put it in the goal doc's After section, or in its own item titled `Measure: …` whose acceptance is that the script runs and its reading is recorded, whatever the number.",
 			"A clause you cannot phrase that way is a question for the person, not an item: write it beside `items` as `\"questions\": [{\"clause\": \"…\", \"question\": \"…\"}]`.\n",
-			"\"questions\": []}\n```\n",
+			"`plan.questions`, one `{\"clause\", \"question\"}` per clause no pull request can satisfy",
 		} {
 			if !strings.Contains(p, want) {
 				t.Errorf("%s plan prompt lacks %q", name, want)
@@ -84,7 +85,7 @@ func TestPlanPromptSplitRule(t *testing.T) {
 
 // An item's `atomic` reason is kept; without one it is empty.
 func TestParsePlanAtomic(t *testing.T) {
-	items, err := ParsePlan("```json\n" + `{"items": [{"seq": 1, "title": "Schema", "repo": "o/r", "acceptance": "the migration runs", "atomic": "one migration, cannot be halved"}, {"seq": 2, "title": "Policy", "repo": "o/r", "depends_on": [{"seq": 1, "because": "uses the column item 1 adds"}]}]}` + "\n```")
+	items, err := DecodePlan(graphOf(t, `{"items": [{"seq": 1, "title": "Schema", "repo": "o/r", "acceptance": "the migration runs", "atomic": "one migration, cannot be halved"}, {"seq": 2, "title": "Policy", "repo": "o/r", "depends_on": [{"seq": 1, "because": "uses the column item 1 adds"}]}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,10 +101,10 @@ func TestParsePlanAtomic(t *testing.T) {
 // naming neither has an empty Files and a false WritesSharedDocs
 // (goal items-that-share-a-file-are-planned-in-a-line, item 1).
 func TestParsePlanFilesAndWritesSharedDocs(t *testing.T) {
-	items, err := ParsePlan("```json\n" + `{"items": [
+	items, err := DecodePlan(graphOf(t, `{"items": [
 		{"seq": 1, "title": "Build the thing", "repo": "o/r", "files": ["internal/node/plan_check.go", "internal/node/plan_check_test.go"]},
 		{"seq": 2, "title": "Write the docs", "repo": "o/r", "writes_shared_docs": true, "depends_on": [{"seq": 1, "because": "folds in item 1's notes"}]}
-	]}` + "\n```")
+	]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,6 +120,17 @@ func TestParsePlanFilesAndWritesSharedDocs(t *testing.T) {
 	if !items[1].WritesSharedDocs {
 		t.Error("item 2 writes the shared docs")
 	}
+}
+
+// graphOf is a plan's `plan` object as mesh_result takes it, from its
+// JSON text.
+func graphOf(t *testing.T, text string) map[string]any {
+	t.Helper()
+	var graph map[string]any
+	if err := json.Unmarshal([]byte(text), &graph); err != nil {
+		t.Fatal(err)
+	}
+	return graph
 }
 
 func slicesEqual(a, b []string) bool {
@@ -225,7 +237,7 @@ func TestPlanPromptReplacingItem(t *testing.T) {
 // An item's `precondition` is kept, like `atomic`; without one it is
 // empty (ADR-023, planCutOverRule).
 func TestParsePlanPrecondition(t *testing.T) {
-	items, err := ParsePlan("```json\n" + `{"items": [{"seq": 1, "title": "Ship", "repo": "o/r", "acceptance": "the release is cut", "precondition": "a person confirms the release in production"}, {"seq": 2, "title": "Other", "repo": "o/r"}]}` + "\n```")
+	items, err := DecodePlan(graphOf(t, `{"items": [{"seq": 1, "title": "Ship", "repo": "o/r", "acceptance": "the release is cut", "precondition": "a person confirms the release in production"}, {"seq": 2, "title": "Other", "repo": "o/r"}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,8 +253,7 @@ func TestParsePlanPrecondition(t *testing.T) {
 // slug, title, statement, acceptance and repo (ADR-023, planSizeRule);
 // an `items` answer with no `split` is ok=false, not an empty split.
 func TestParsePlanSplit(t *testing.T) {
-	text := "Over the cap.\n\n```json\n" + `{"split": [{"slug": "a-goal", "title": "A goal", "statement": "A is true", "acceptance": "a test proves it", "repo": "o/r"}, {"slug": "b-goal", "title": "B goal", "statement": "B is true", "acceptance": "a test proves it", "repo": "o/r2"}]}` + "\n```"
-	drafts, ok := ParsePlanSplit(text)
+	drafts, ok := DecodePlanSplit(graphOf(t, `{"split": [{"slug": "a-goal", "title": "A goal", "statement": "A is true", "acceptance": "a test proves it", "repo": "o/r"}, {"slug": "b-goal", "title": "B goal", "statement": "B is true", "acceptance": "a test proves it", "repo": "o/r2"}]}`))
 	if !ok {
 		t.Fatal("ok = false, want true")
 	}
@@ -255,8 +266,7 @@ func TestParsePlanSplit(t *testing.T) {
 	if drafts[1].Slug != "b-goal" || drafts[1].Repo != "o/r2" {
 		t.Errorf("draft 1 = %+v", drafts[1])
 	}
-	itemsText := "```json\n" + `{"items": [{"seq": 1, "title": "T", "repo": "o/r"}]}` + "\n```"
-	if got, ok := ParsePlanSplit(itemsText); ok {
+	if got, ok := DecodePlanSplit(graphOf(t, `{"items": [{"seq": 1, "title": "T", "repo": "o/r"}]}`)); ok {
 		t.Errorf("an items answer read as a split: %+v", got)
 	}
 }
@@ -265,12 +275,11 @@ func TestParsePlanSplit(t *testing.T) {
 // ParsePlanQuestions; a graph with none has none (ADR-023,
 // planCutOverRule).
 func TestParsePlanCheckpoints(t *testing.T) {
-	text := "```json\n" + `{"items": [{"seq": 1, "title": "T", "repo": "o/r"}], "checkpoints": ["pr"]}` + "\n```"
-	got := ParsePlanCheckpoints(text)
+	got := DecodePlanCheckpoints(graphOf(t, `{"items": [{"seq": 1, "title": "T", "repo": "o/r"}], "checkpoints": ["pr"]}`))
 	if len(got) != 1 || got[0] != "pr" {
 		t.Fatalf("checkpoints = %+v, want [pr]", got)
 	}
-	none := ParsePlanCheckpoints("```json\n" + `{"items": [{"seq": 1, "title": "T", "repo": "o/r"}]}` + "\n```")
+	none := DecodePlanCheckpoints(graphOf(t, `{"items": [{"seq": 1, "title": "T", "repo": "o/r"}]}`))
 	if none != nil {
 		t.Fatalf("no checkpoints read as %+v", none)
 	}
@@ -279,12 +288,11 @@ func TestParsePlanCheckpoints(t *testing.T) {
 // The questions beside the items are read; one missing a half is dropped,
 // and a graph with none has none.
 func TestParsePlanQuestions(t *testing.T) {
-	text := "Planned.\n\n```json\n{\"items\": [{\"seq\": 1, \"title\": \"T\", \"repo\": \"o/r\"}], \"questions\": [{\"clause\": \" the mini's load p90 under 1.5 × cores \", \"question\": \"Record it as not met?\"}, {\"clause\": \"half\"}]}\n```"
-	got := ParsePlanQuestions(text)
+	got := DecodePlanQuestions(graphOf(t, `{"items": [{"seq": 1, "title": "T", "repo": "o/r"}], "questions": [{"clause": " the mini's load p90 under 1.5 × cores ", "question": "Record it as not met?"}, {"clause": "half"}]}`))
 	if len(got) != 1 || got[0] != (PlanQuestion{Clause: "the mini's load p90 under 1.5 × cores", Question: "Record it as not met?"}) {
 		t.Fatalf("questions = %+v", got)
 	}
-	if q := ParsePlanQuestions("```json\n{\"items\": [{\"seq\": 1, \"title\": \"T\", \"repo\": \"o/r\"}]}\n```"); q != nil {
+	if q := DecodePlanQuestions(graphOf(t, `{"items": [{"seq": 1, "title": "T", "repo": "o/r"}]}`)); q != nil {
 		t.Fatalf("no questions read as %+v", q)
 	}
 }
@@ -340,10 +348,9 @@ func TestPlanPromptModelRubric(t *testing.T) {
 			t.Errorf("plan prompt lacks %q", want)
 		}
 	}
-	// the JSON example, the fallback contract, is followed only by the
-	// tool-call finish (ADR-023)
-	if !strings.Contains(p, "\"model\": \"sonnet\", \"model_reason\": \"…\", \"files\": [\"…\"], \"writes_shared_docs\": true}], \"questions\": []}\n```\n\n# Finish by tool call\n\nEnd the session by calling the runsheet server's `mesh_plan` tool") {
-		t.Error("the plan prompt no longer ends with the JSON example and the mesh_plan finish")
+	// the result's fields follow the finish (ADR-041)
+	if !strings.HasSuffix(p, "each at most 8 items and one repo.\n") || !strings.Contains(p, "\n`plan.items` is the graph") {
+		t.Errorf("the plan prompt does not end with the plan's fields:\n%s", p)
 	}
 }
 
@@ -404,11 +411,11 @@ func TestPlanPromptDependencyRubric(t *testing.T) {
 
 // A depends_on entry is {"seq", "because"}, or a bare seq with no because.
 func TestParsePlanDependencyShapes(t *testing.T) {
-	items, err := ParsePlan("```json\n{\"items\": [" +
-		`{"seq": 1, "title": "A", "repo": "o/r"},` +
-		`{"seq": 2, "title": "B", "repo": "o/r"},` +
-		`{"seq": 3, "title": "C", "repo": "o/r", "depends_on": [{"seq": 1, "because": "uses the Foo type item 1 adds"}, 2]}` +
-		"]}\n```")
+	items, err := DecodePlan(graphOf(t, `{"items": [`+
+		`{"seq": 1, "title": "A", "repo": "o/r"},`+
+		`{"seq": 2, "title": "B", "repo": "o/r"},`+
+		`{"seq": 3, "title": "C", "repo": "o/r", "depends_on": [{"seq": 1, "because": "uses the Foo type item 1 adds"}, 2]}`+
+		`]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,11 +423,15 @@ func TestParsePlanDependencyShapes(t *testing.T) {
 	if got := items[2].DependsOn; len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("depends_on = %+v, want %+v", got, want)
 	}
-	if _, err := ParsePlan(`[{"seq": 1, "title": "A", "repo": "o/r", "depends_on": [{"seq": 4, "because": "x"}]}]`); err == nil {
+	if _, err := DecodePlan(graphOf(t, `{"items": [{"seq": 1, "title": "A", "repo": "o/r", "depends_on": [{"seq": 4, "because": "x"}]}]}`)); err == nil {
 		t.Error("a dependency on no item parsed")
 	}
-	if _, err := ParsePlan(`[{"seq": 2, "title": "B", "repo": "o/r", "depends_on": [{"seq": 1, "because": "x"}]}]`, 1); err != nil {
+	if _, err := DecodePlan(graphOf(t, `{"items": [{"seq": 2, "title": "B", "repo": "o/r", "depends_on": [{"seq": 1, "because": "x"}]}]}`), 1); err != nil {
 		t.Errorf("a dependency on a merged seq: %v", err)
+	}
+	// a client that sent the items as a JSON string
+	if items, err := DecodePlan(map[string]any{"items": `[{"seq": 1, "title": "A", "repo": "o/r"}]`}); err != nil || len(items) != 1 {
+		t.Errorf("items as a string: %v %v", items, err)
 	}
 }
 
@@ -428,7 +439,8 @@ func TestEvaluatePromptUnverifiableClause(t *testing.T) {
 	p := EvaluatePrompt(EvaluateInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main"})
 	for _, want := range []string{
 		"5. A clause you cannot check at evaluation time — a CI check on this item's pull request (it opens only after you pass), a deploy, a file in another repository — is reported in your review as unverifiable, not failed, and the item is not failed on that clause alone. Every clause you can check you still check.\n",
-		"7. End your final message with a short review — what holds, what does not, what is unverifiable, and exactly what a retry must fix. When you fail it, write one line per failed acceptance clause, `FAILED: <the clause, as the acceptance words it> || SATISFY: <what would satisfy it>`, above the verdict; a clause that does not say what would satisfy it is dropped, so write both halves. Then one last line that is either `VERDICT: PASS` or `VERDICT: FAIL`. Pass only when every clause of the acceptance you can check holds.\n",
+		"`verdict.notes` is your review: what holds, what does not, what is unverifiable, and exactly what a retry must fix. `verdict.failedClauses` is one `{clause, satisfy}` per acceptance clause you fail",
+		"Pass only when every clause of the acceptance you can check holds.\n",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("evaluate prompt lacks %q", want)
@@ -593,8 +605,8 @@ func TestPromptsCarryTheServicesLine(t *testing.T) {
 	if want := "The diff is empty: the branch changed nothing.\n\n# Services\n\n" + line + "\n\n# Rules\n\n1. Judge"; !strings.Contains(eval, want) {
 		t.Errorf("evaluate prompt lacks\n%s\n---\n%s", want, eval)
 	}
-	if !strings.Contains(eval, "Pass only when every clause of the acceptance you can check holds.\n\n# Finish by tool call\n\nEnd the session by calling the runsheet server's `mesh_verdict` tool") || !strings.Contains(eval, "`"+VerdictPass+"` or `"+VerdictFail+"`") {
-		t.Error("the verdict contract line moved")
+	if !strings.Contains(eval, "6. "+evaluateHostRule+"\n\n\n`verdict.notes` is your review") || strings.Contains(eval, VerdictPass) {
+		t.Errorf("the rules do not end on the finish:\n%s", eval)
 	}
 	rebase := RebasePrompt(RebaseInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main", Services: line})
 	if want := "# Services\n\n" + line + "\n\n# The runbook\n\n"; !strings.Contains(rebase, want) {
@@ -703,33 +715,46 @@ func TestBuildPromptNotesToFoldIn(t *testing.T) {
 	}
 }
 
-// The evaluator and the planner end by calling mesh_verdict and
-// mesh_plan, their final-message contracts kept as the fallback the node
-// parses when no call was made (ADR-023).
-func TestPromptsFinishByToolCall(t *testing.T) {
-	eval := EvaluatePrompt(EvaluateInput{ItemID: "item-7", GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main"})
-	for _, want := range []string{
-		"`mesh_verdict(item_id=\"item-7\", passed=<true or false>, notes=<your review>, failed_clauses=[{\"clause\":",
-		"readings=[{\"clause\": <a host clause>, \"reading\":",
-		"`" + VerdictPass + "` or `" + VerdictFail + "`",
-		ClauseFailed, ClauseReading,
-	} {
+// The evaluator and the planner run on the brief's guidance when it
+// carries one (ADR-041): the guidance first, verbatim, then the job's
+// facts, then the node's checks and the finish — none of the node's
+// role text, no contract line, no hosted tool named.
+func TestPromptsRunOnTheBriefsGuidance(t *testing.T) {
+	finish := "# How this job finishes\n\nCall the mesh-node server's `mesh_result` tool once.\n"
+	eval := EvaluatePrompt(EvaluateInput{ItemID: "item-7", GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main", Diff: "+x",
+		PriorAttempts: []PriorAttempt{{Attempt: 1, Clauses: []FailedClause{{"a", "b"}}}}, Guidance: "You are the evaluator.\n\n1. Judge literally.\n", Finish: finish})
+	if !strings.HasPrefix(eval, "You are the evaluator.\n\n1. Judge literally.\n\n# Item 1 of goal \"G\" (g): T") {
+		t.Fatalf("the evaluate prompt does not open with the guidance:\n%s", eval)
+	}
+	for _, want := range []string{"# The branch", "```diff\n+x\n```", "# What earlier attempts failed on", "- a — satisfied by: b", finish, "`verdict.failedClauses`", "`verdict.readings`"} {
 		if !strings.Contains(eval, want) {
-			t.Errorf("evaluate prompt lacks %q", want)
+			t.Errorf("the guided evaluate prompt lacks %q", want)
 		}
 	}
-	plan := PlanPrompt(PlanInput{GoalID: "goal-3", GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p"})
-	for _, want := range []string{
-		"`mesh_plan(goal_id=\"goal-3\", items=<the graph's items>, questions=<its questions>)`",
-		"End your final message with the graph as a JSON object in a ```json fenced block",
-		"Write the ```json fenced block in your final message as well",
-	} {
+	for _, gone := range []string{"You are the evaluator of item", "# Rules", evaluateUnverifiableRule, evaluateHostRule, evaluateRetryRule, evaluateSameClauseRule, "mesh_verdict", VerdictPass, ClauseFailed} {
+		if strings.Contains(eval, gone) {
+			t.Errorf("the guided evaluate prompt still carries %q", gone)
+		}
+	}
+	plan := PlanPrompt(PlanInput{GoalID: "goal-3", GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", Repos: map[string]string{"o/r": "repos/r"}, MeshContext: true,
+		Tools: []ToolHint{{Name: "brave"}}, Guidance: "You are the planner.\n", Finish: finish})
+	if !strings.HasPrefix(plan, "You are the planner.\n\n# Goal: G (g) for o, project p\n") {
+		t.Fatalf("the plan prompt does not open with the guidance:\n%s", plan)
+	}
+	for _, want := range []string{"- `o/r` in `repos/r/`", "mesh_search", "# Your tools", "- `brave`:", "# What the node checks before it hands the plan in", "- " + planHostRule, "- " + planSharedDocsRule, "Each item names the model its session runs on", finish, "`plan.items` is the graph", "`plan.already_done`", "`plan.split`"} {
 		if !strings.Contains(plan, want) {
-			t.Errorf("plan prompt lacks %q", want)
+			t.Errorf("the guided plan prompt lacks %q", want)
 		}
 	}
-	if p := PlanPrompt(PlanInput{GoalSlug: "g"}); !strings.Contains(p, "mesh_plan(goal_id=\"<the id of goal g>\"") {
-		t.Error("a plan prompt with no goal id does not name the goal by its slug")
+	for _, gone := range []string{"You are the planner of goal", "# Rules", "# Check main first", "1. Read before you plan", "mesh_plan", "```json"} {
+		if strings.Contains(plan, gone) {
+			t.Errorf("the guided plan prompt still carries %q", gone)
+		}
+	}
+	// without guidance the built-in text runs, ending on the finish
+	fallback := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", Finish: finish})
+	if !strings.Contains(fallback, "You are the planner of goal") || !strings.Contains(fallback, "# Rules\n\n1. Read before you plan") || !strings.Contains(fallback, finish) || strings.Contains(fallback, "```json") {
+		t.Errorf("the built-in plan prompt:\n%s", fallback)
 	}
 }
 

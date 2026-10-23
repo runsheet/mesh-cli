@@ -30,7 +30,7 @@ func cifits(t *testing.T, name string) string {
 // proves the balance by planned seconds, measures the load in a
 // `Measure:` item and asks the person about the p90 clause.
 func TestHostReadingAcceptanceCIFitsTheMini(t *testing.T) {
-	before, err := harness.ParsePlan(cifits(t, "cifits_before.json"))
+	before, err := planOf(cifits(t, "cifits_before.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestHostReadingAcceptanceCIFitsTheMini(t *testing.T) {
 		}
 	}
 
-	after, err := harness.ParsePlan(cifits(t, "cifits_after.json"))
+	after, err := planOf(cifits(t, "cifits_after.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,11 +70,11 @@ func TestHostReadingAcceptanceCIFitsTheMini(t *testing.T) {
 		t.Error("a load threshold outside a Measure item is not flagged")
 	}
 
-	qs := harness.ParsePlanQuestions(cifits(t, "cifits_after.json"))
+	qs := harness.DecodePlanQuestions(fencedJSON(cifits(t, "cifits_after.json")))
 	if len(qs) != 1 || qs[0].Clause != "the mini's load p90 under 1.5 × cores" || !strings.Contains(qs[0].Question, "no pull request can satisfy") {
 		t.Fatalf("questions = %+v", qs)
 	}
-	if qs := harness.ParsePlanQuestions(cifits(t, "cifits_before.json")); qs != nil {
+	if qs := harness.DecodePlanQuestions(fencedJSON(cifits(t, "cifits_before.json"))); qs != nil {
 		t.Fatalf("the before graph asks %+v", qs)
 	}
 }

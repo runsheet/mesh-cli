@@ -70,7 +70,7 @@ func TestLoopPlansRequestedGoals(t *testing.T) {
 		t.Fatalf("fetched: %v", ws.fetched)
 	}
 	p := h.jobs[0].Prompt
-	for _, want := range []string{"Build the new thing.", "the thing works", "$20.00", "`acme/widgets` in `repos/widgets/`", ContextDir, "instructions-acme-widgets-agents.md", "```json"} {
+	for _, want := range []string{"Build the new thing.", "the thing works", "$20.00", "`acme/widgets` in `repos/widgets/`", ContextDir, "instructions-acme-widgets-agents.md", "# How this job finishes", "`plan.items` is the graph"} {
 		if !strings.Contains(p, want) {
 			t.Fatalf("prompt lacks %q:\n%s", want, p)
 		}
@@ -163,24 +163,24 @@ func TestPlannerReplans(t *testing.T) {
 	}
 }
 
-func TestParsePlan(t *testing.T) {
+func TestPlanOfScript(t *testing.T) {
 	good := "notes\n```json\n{\"items\":[{\"seq\":1,\"title\":\"A\",\"repo\":\"o/r\"},{\"seq\":2,\"title\":\"B\",\"repo\":\"o/r\",\"depends_on\":[1]}]}\n```"
-	items, err := harness.ParsePlan(good)
+	items, err := planOf(good)
 	if err != nil || len(items) != 2 || items[1].DependsOn[0].Seq != 1 {
 		t.Fatalf("good: %v %+v", err, items)
 	}
-	onMerged, err := harness.ParsePlan(`[{"seq":3,"title":"C","repo":"o/r","depends_on":[1]}]`, 1)
+	onMerged, err := planOf(`[{"seq":3,"title":"C","repo":"o/r","depends_on":[1]}]`, 1)
 	if err != nil || len(onMerged) != 1 {
 		t.Fatalf("on merged: %v", err)
 	}
 	if items[0].Model != "" || items[0].ModelReason != "" {
 		t.Fatalf("no model: %+v", items[0])
 	}
-	withModel, err := harness.ParsePlan("```json\n[{\"seq\":1,\"title\":\"A\",\"repo\":\"o/r\",\"model\":\"haiku\",\"model_reason\":\"a rename\"}]\n```")
+	withModel, err := planOf("```json\n[{\"seq\":1,\"title\":\"A\",\"repo\":\"o/r\",\"model\":\"haiku\",\"model_reason\":\"a rename\"}]\n```")
 	if err != nil || withModel[0].Model != "haiku" || withModel[0].ModelReason != "a rename" {
 		t.Fatalf("with model: %v %+v", err, withModel)
 	}
-	bare, err := harness.ParsePlan(`[{"seq":1,"title":"A","repo":"o/r"}]`)
+	bare, err := planOf(`[{"seq":1,"title":"A","repo":"o/r"}]`)
 	if err != nil || len(bare) != 1 {
 		t.Fatalf("bare: %v %+v", err, bare)
 	}
@@ -192,7 +192,7 @@ func TestParsePlan(t *testing.T) {
 		"no repo":  "```json\n[{\"seq\":1,\"title\":\"A\"}]\n```",
 		"empty":    "```json\n{\"items\":[]}\n```",
 	} {
-		if _, err := harness.ParsePlan(bad); err == nil {
+		if _, err := planOf(bad); err == nil {
 			t.Errorf("%s: parsed", name)
 		}
 	}
@@ -490,7 +490,7 @@ func TestUnverifiableAcceptance(t *testing.T) {
 		return unverifiableAcceptance([]harness.PlannedSpec{{Seq: 4, Title: "T", Acceptance: acceptance}}, map[int]gateway.Repo{4: in}, project)
 	}
 	for _, text := range []string{prCheckPlan, otherRepoPlan} {
-		sp, err := harness.ParsePlan(text)
+		sp, err := planOf(text)
 		if err != nil {
 			t.Fatal(err)
 		}

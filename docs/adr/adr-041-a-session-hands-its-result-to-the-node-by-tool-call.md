@@ -103,3 +103,20 @@ its own kinds' guidance (`.mesh/agents/<kind>.md`).
 - goal-chat: `mesh_result` on the relay, `finishSchema` in the brief and
   the vendored fixtures (`claimJob.json`, `jobKinds.json`), the prompt
   on the brief's guidance, `ParseThreadReply` gone.
+- evaluate and plan: the verdict and the graph through `mesh_result`
+  (`verdictOf`, `readPlan` read the holder; `harness.VerdictResult`,
+  `DecodePlan` and its siblings decode the result), `ParseVerdict`,
+  `ParseFailedClauses`, `ParsePlan*` and `PlanCall` gone, the hosted
+  `mesh_verdict` disallowed for an evaluation session
+  (`harness.HostedDisallowed`); both prompts on the brief's guidance.
+  The brief reaches the node's code through `gateway.Client.JobBriefOf`
+  (kept at the claim, let go at the finish), else the kind's catalogue
+  row (`JobKindOf`), else the built-in prompt (`jobBriefOf`). A
+  `mesh_result` call the stream recorded but the node never received is
+  recovered into the holder and checked the same way (`Holder.Recover`,
+  `recoverResult`). What stays the node's for a plan: the plan check's
+  rules, the model rubric and the result's field semantics
+  (`planChecks`, `planFinishDetail`), because `plan_check.go` refuses a
+  graph against them; the hosted `mesh_plan` stays reachable, since
+  runsheet lets a planner session call it, and the node's `finishJob`
+  is the plan Mesh acts on.

@@ -82,6 +82,10 @@ type Fake struct {
 	// listed by threadSessionIndexs while raised, claimed and finished
 	// through claimJob and finishJob, their accounts from jobAccess.
 	ThreadTurns map[string]*ThreadTurn
+	// KindGuidance and KindFinishSchema are what a claimJob brief carries
+	// per kind (runsheet ADR 067): the guidance text and the product's
+	// schema for the proposal (SetKindGuidance).
+	KindGuidance, KindFinishSchema map[string]string
 	// DPoP checks every mint's proof (meshsessions.go); DPoPNonce, set,
 	// is the nonce a proof must carry, asked for with use_dpop_nonce.
 	DPoP      dpoptest.Verifier
@@ -2592,10 +2596,17 @@ func camel(s string) string {
 // only path the gateway serves.
 func (f *Fake) mesh(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == gateway.JobKindsPath {
-		writeREST(w, http.StatusOK, map[string]any{"kinds": []map[string]any{
+		// read as the rest of mesh reads the fake's maps: set up before
+		// the node runs, never under f.mu here
+		kinds := []map[string]any{
 			{"slug": "runsheet/goal-chat", "product": "runsheet", "kind": "goal-chat", "harness": []string{"claude-code", "codex"}, "finish": "answer-or-proposal", "access": []string{"runsheet", "model"}},
 			{"slug": "wardroom/thread", "product": "wardroom", "kind": "thread", "harness": []string{"claude-code", "codex"}, "finish": "answer-or-proposal", "access": []string{"wardroom", "model"}},
-		}})
+		}
+		for _, slug := range []string{"runsheet/build", "runsheet/evaluate", "runsheet/plan", "runsheet/research", "runsheet/rebase"} {
+			kinds = append(kinds, map[string]any{"slug": slug, "product": "runsheet", "kind": strings.TrimPrefix(slug, "runsheet/"), "harness": []string{"claude-code", "codex"},
+				"finish": kindFinishes[slug], "access": []string{"repo", "runsheet", "model"}, "guidance": f.KindGuidance[slug], "finishSchema": f.KindFinishSchema[slug]})
+		}
+		writeREST(w, http.StatusOK, map[string]any{"kinds": kinds})
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, gateway.MeshSessionsPath) {

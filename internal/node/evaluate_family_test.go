@@ -218,7 +218,7 @@ func TestCodexFirstClaudeSecondOpinion(t *testing.T) {
 	f, ev, claude, _, _, _ = familyFixture(t, "urgent", "opus", "", "Holds.\nVERDICT: PASS")
 	claude.text = "no verdict here"
 	in = evaluateItem1(t, f, ev)
-	if notes, _ := in["notes"].(string); in["passed"] != true || !strings.Contains(notes, "Claude second opinion unavailable: no verdict: no verdict here") {
+	if notes, _ := in["notes"].(string); in["passed"] != true || !strings.Contains(notes, "Claude second opinion unavailable: no result: the session made no mesh_result call") {
 		t.Fatalf("recorded %+v", in)
 	}
 }
@@ -565,7 +565,7 @@ func TestNoVerdictLineIsRecordedAsNoVerdict(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("%d evaluateWorkItem calls", len(calls))
 	}
-	reason := "no VERDICT line: I ran out of ideas."
+	reason := "no result: the session made no mesh_result call"
 	if !sentNoVerdict(in) || in[gateway.NoVerdictReasonField] != reason || in["costCents"] != float64(125) {
 		t.Fatalf("recorded %+v\nwant reason %q", in, reason)
 	}

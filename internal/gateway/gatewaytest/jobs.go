@@ -93,7 +93,8 @@ func (f *Fake) jobAPI(w http.ResponseWriter, r *http.Request, q string, vars map
 		}
 		kind, _ := in["kind"].(string)
 		writeData(w, map[string]any{"claimJob": map[string]any{"status": "claimed", "job": map[string]any{
-			"kind": kind, "subject": subject, "code": map[string]any{"form": "commit"}, "claim": field}}})
+			"kind": kind, "subject": subject, "code": map[string]any{"form": "commit"}, "claim": field,
+			"finish": kindFinishes[kind], "guidance": f.KindGuidance[kind], "finishSchema": f.KindFinishSchema[kind]}}})
 	case strings.Contains(q, "finishJob(input"):
 		f.Calls = append(f.Calls, Call{Name: "finishJob", Input: in, At: time.Now(), Bearer: bearer})
 		answers, err := f.finishJobAliases(r, in, bearer)
@@ -148,6 +149,31 @@ func (f *Fake) call(r *http.Request, q string, vars map[string]any, bearer strin
 // mutationQuery is an older command's query as the node's Mutate sends it.
 func mutationQuery(field string) string {
 	return fmt.Sprintf("mutation($in: %sInput!) { %s(input: $in) { status } }", strings.ToUpper(field[:1])+field[1:], field)
+}
+
+// kindFinishes is each runsheet kind's finish, as its catalogue row
+// declares it (runsheet finishjob.go's routes).
+var kindFinishes = map[string]string{
+	"runsheet/build":    "changeset",
+	"runsheet/evaluate": "verdict",
+	"runsheet/rebase":   "rebased-head",
+	"runsheet/plan":     "plan",
+	"runsheet/research": "research",
+	"runsheet/validate": "attestation",
+}
+
+// SetKindGuidance sets the guidance text and the finish_schema a kind's
+// brief carries (runsheet ADR 067), "" for none.
+func (f *Fake) SetKindGuidance(kind, guidance, finishSchema string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.KindGuidance == nil {
+		f.KindGuidance = map[string]string{}
+	}
+	if f.KindFinishSchema == nil {
+		f.KindFinishSchema = map[string]string{}
+	}
+	f.KindGuidance[kind], f.KindFinishSchema[kind] = guidance, finishSchema
 }
 
 // jobClaimAlias is the older claim a claimJob routes to, and its input.

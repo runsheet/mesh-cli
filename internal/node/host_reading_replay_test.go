@@ -201,13 +201,9 @@ func assertItem5Cut(t *testing.T, f *gatewaytest.Fake) {
 func cifitsItem14(t *testing.T, f *gatewaytest.Fake, gw *gateway.Client) {
 	t.Helper()
 	text := readTestFile(t, filepath.Join("..", "harness", "testdata", "cifits_item14_verdict.txt"))
-	passed, notes, ok := harness.ParseVerdict(text)
+	passed, notes, clauses, ok := verdictOfScript(text)
 	if !ok || passed {
 		t.Fatalf("item 14's verdict reads passed=%v ok=%v", passed, ok)
-	}
-	var clauses []gateway.FailedClause
-	for _, c := range harness.ParseFailedClauses(text) {
-		clauses = append(clauses, gateway.FailedClause{Clause: c.Clause, Satisfy: c.Satisfy})
 	}
 	if len(clauses) != 1 {
 		t.Fatalf("item 14's clauses %+v", clauses)
@@ -318,7 +314,7 @@ func TestTruncateNotesKeepsReadings(t *testing.T) {
 // Both families' notes, cut together, keep each one's reading.
 func TestBothNotesKeepReadings(t *testing.T) {
 	long := cifitsItem5LongVerdict()
-	_, notes, _ := harness.ParseVerdict(long)
+	_, notes, _, _ := verdictOfScript(long)
 	got := bothNotes(family{}, notes, true, family{codex: true}, notes, true, 3000)
 	if len(got) > 3000 || strings.Count(got, "READING: "+cifitsHostClause) != 2 {
 		t.Fatalf("%d bytes:\n%s", len(got), got)

@@ -3,6 +3,7 @@ package node
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -77,7 +78,7 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 		t.Fatal("no ADR is on disk: it is fetched")
 	}
 	p := h.jobs[0].Prompt
-	for _, want := range []string{"Write the failing test", "the test fails", "go test ./... passes", "+func TestThing", "origin/main...HEAD", harness.VerdictPass, harness.VerdictFail, "Change nothing",
+	for _, want := range []string{"Write the failing test", "the test fails", "go test ./... passes", "+func TestThing", "origin/main...HEAD", "# How this job finishes", "{verdict}", "Change nothing",
 		".mesh/context/", "instructions-acme-widgets-agents.md", "goes against an ADR", "mesh_document", `project "acme/mesh"`} {
 		if !strings.Contains(p, want) {
 			t.Fatalf("prompt lacks %q:\n%s", want, p)
@@ -110,29 +111,8 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 		t.Fatalf("no verdict must leave the item in evaluating: %v, %d calls", f.Item(item1)["status"], len(calls))
 	}
 	in := calls[2].Input
-	if !sentNoVerdict(in) || in["notes"] != "no VERDICT line: I could not tell." || in["costCents"] != float64(125) {
+	if !sentNoVerdict(in) || in["notes"] != "no result: the session made no mesh_result call" || in["costCents"] != float64(125) {
 		t.Fatalf("no-verdict call: %+v", in)
-	}
-}
-
-func TestParseVerdict(t *testing.T) {
-	cases := []struct {
-		in     string
-		passed bool
-		notes  string
-		ok     bool
-	}{
-		{"all good\n\nVERDICT: PASS", true, "all good", true},
-		{"missing the test\n**VERDICT: FAIL**", false, "missing the test", true},
-		{"VERDICT: PASS\nbut then again\nverdict: fail", false, "VERDICT: PASS\nbut then again", true},
-		{"no idea", false, "", false},
-		{"", false, "", false},
-	}
-	for _, c := range cases {
-		passed, notes, ok := harness.ParseVerdict(c.in)
-		if passed != c.passed || notes != c.notes || ok != c.ok {
-			t.Errorf("ParseVerdict(%q) = %v %q %v", c.in, passed, notes, ok)
-		}
 	}
 }
 
@@ -179,6 +159,9 @@ func (h *fakeCodexH) Run(ctx context.Context, job harness.Job, on func(harness.P
 		tools = nil
 	}
 	h.mu.Unlock()
+	if h.err == nil {
+		handInScript(job, nil, h.text, h.workCalls)
+	}
 	var calls map[string]int
 	for server, s := range tools {
 		if calls == nil {
@@ -330,7 +313,7 @@ func TestSecondOpinionUnavailable(t *testing.T) {
 		want string
 	}{
 		"error":      {&fakeCodexH{err: errors.New("harness codex: stream disconnected"), cost: 0.1}, "Codex second opinion unavailable: harness codex: stream disconnected"},
-		"no verdict": {replayCodex(t, ""), "Codex second opinion unavailable: no verdict: hello from codex"},
+		"no verdict": {replayCodex(t, ""), "Codex second opinion unavailable: no result: the session made no mesh_result call"},
 	} {
 		f, ev, _, _ := secondFixture(t, "high", "Holds.\n\nVERDICT: PASS", c.h)
 		in := evaluateItem1(t, f, ev)
@@ -381,6 +364,13 @@ func replayCodex(t *testing.T, text string) harness.Harness {
 	}
 	if text != "" {
 		data = []byte(strings.Replace(string(data), `"text":"hello from codex"`, `"text":"`+text+`"`, 1))
+		// a scripted verdict goes to the node's mesh_result on the stream
+		// (ADR-041), as the mcp_tool_call Codex records
+		if v := scriptedVerdict(strings.ReplaceAll(text, `\n`, "\n")); v != nil {
+			args, _ := json.Marshal(map[string]any{"verdict": v})
+			call := `{"type":"item.completed","item":{"id":"i_result","type":"mcp_tool_call","server":"mesh-node","tool":"mesh_result","status":"completed","arguments":` + string(args) + `,"result":{"content":[{"type":"text","text":"recorded"}]}}}` + "\n"
+			data = []byte(strings.Replace(string(data), `{"type":"turn.completed"`, call+`{"type":"turn.completed"`, 1))
+		}
 	}
 	dir := t.TempDir()
 	fixture := filepath.Join(dir, "stream.jsonl")
@@ -553,7 +543,7 @@ func TestEvaluateAlreadyDoneConfirmed(t *testing.T) {
 		"every cited pull request is merged into main",
 		"every cited SHA is on it (`git merge-base --is-ancestor <sha> origin/main`)",
 		"run the acceptance check yourself on main",
-		"goes against an ADR", ".mesh/context/", harness.VerdictPass, harness.VerdictFail, "Change nothing",
+		"goes against an ADR", ".mesh/context/", "# How this job finishes", "{verdict}", "Change nothing",
 	} {
 		if !strings.Contains(p, want) {
 			t.Fatalf("prompt lacks %q:\n%s", want, p)

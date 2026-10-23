@@ -596,7 +596,7 @@ func (d *Director) AdoptResearch(ctx context.Context, direction gateway.Directio
 		s.Remove()
 		return errNoAttach
 	}
-	endProxy := adoptProxy(ctx, d.Proxies, d.Credentials, d.MCP, tools.RoleFor(string(harness.KindResearch)), d.runtimes(), gateway.SessionRef{Kind: string(harness.KindResearch), DirectionID: direction.ID}, s, project.Slug+"/"+direction.Slug, d.logf)
+	endProxy := adoptProxy(ctx, d.Proxies, d.Credentials, d.MCP, tools.RoleFor(string(harness.KindResearch)), d.runtimes(), gateway.SessionRef{Kind: string(harness.KindResearch), DirectionID: direction.ID}, s, project.Slug+"/"+direction.Slug, nil, d.logf)
 	defer endProxy(ctx)
 	d.logf("%s/%s: adopted its %s research session (pid %d)", project.Slug, direction.Slug, s.Liveness(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)

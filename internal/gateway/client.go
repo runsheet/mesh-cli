@@ -172,6 +172,14 @@ type Client struct {
 	// questionsSchema is whether the gateway's planGoal input was last
 	// seen to take questions, kept for ScalingProbeEvery.
 	questionsSchema holdingProbe
+	// briefs are the briefs of the jobs this client holds, by kind and
+	// subject (keepBrief, JobBriefOf; ADR-041).
+	briefsMu sync.Mutex
+	briefs   map[string]*JobBrief
+	// kinds is the catalogue as JobKindOf last read it, at kindsAt.
+	kindsMu sync.Mutex
+	kinds   map[string]JobKind
+	kindsAt time.Time
 	// preconditionSchema is whether the gateway's PlannedItemInput was
 	// last seen with `precondition`, and when (TakesItemPrecondition).
 	preconditionSchema holdingProbe
