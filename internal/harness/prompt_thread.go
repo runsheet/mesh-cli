@@ -36,27 +36,54 @@ func ParseThreadTranscript(body string) (ThreadTranscript, error) {
 	return t, nil
 }
 
-// ThreadInput is what a thread turn's prompt is made of.
+// ThreadInput is what a thread turn's prompt is made of: the brief's
+// guidance, the turn's facts and the finish.
 type ThreadInput struct {
 	Org, Project string
 	Transcript   ThreadTranscript
 	// MeshContext says the runsheet tools are attached.
 	MeshContext bool
 	Tools       []string
+	// Guidance is the kind's guidance text as the brief carries it
+	// (runsheet ADR 067 decision 7): the role's instructions, published
+	// by the product. It goes first; the node adds only the job's facts
+	// and the finish after it. "" is a brief from a platform before the
+	// guidance, which gets the built-in prompt instead.
+	Guidance string
+	// Finish is the one fixed section every session ends on: how this
+	// job finishes (jobresult.FinishSection), by the node's mesh_result.
+	Finish string
 }
 
-// GoalChatPrompt is the prompt of a runsheet/goal-chat turn: the role's
-// guidance, the conversation so far, and the answer's shape — the reply
-// to the person and, when enough is known, a goal draft they set
-// themselves. The role never sets a goal.
+// ThreadPrompt is a thread turn's prompt for any kind (ADR-041, the step
+// runner): the brief's guidance first, verbatim; then the turn's facts
+// — whose thread it is, the tools beside runsheet, the transcript; then
+// the finish. Nothing of the role is the node's.
+func ThreadPrompt(in ThreadInput) string {
+	var b strings.Builder
+	if g := strings.TrimSpace(in.Guidance); g != "" {
+		b.WriteString(g)
+		b.WriteString("\n\n")
+	}
+	threadSubject(&b, in)
+	b.WriteString(in.Finish)
+	return b.String()
+}
+
+// GoalChatPrompt is the prompt of a runsheet/goal-chat turn: the
+// brief's guidance first (ThreadPrompt), or, on a brief that carries
+// none, the built-in role text the kind ran on before the platform
+// published its guidance — kept word for word as the fallback, with
+// the finish by tool call in place of the JSON block it used to end
+// with.
 func GoalChatPrompt(in ThreadInput) string {
+	if strings.TrimSpace(in.Guidance) != "" {
+		return ThreadPrompt(in)
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are runsheet's goal assistant for %s, project %s. A person is talking to you on a thread about a goal they want. Help them shape it into one runsheet can plan and build: understand what they want and why, check what already exists, ask what is unclear, and when you know enough, draft the goal.\n\n", in.Org, in.Project)
 	if in.MeshContext {
 		b.WriteString("Use the runsheet tools before you answer: `mesh_goals` for the project's goals (is this one already there, or close to one?), `mesh_documents` and `mesh_search` for its PRD, ADRs and documents. Say what you found when it matters to the person.\n\n")
-	}
-	if len(in.Tools) > 0 {
-		fmt.Fprintf(&b, "You also have: %s.\n\n", strings.Join(in.Tools, ", "))
 	}
 	b.WriteString(`How to talk:
 - Short, plain sentences. One or two questions at a time, only the ones that change the goal.
@@ -64,74 +91,46 @@ func GoalChatPrompt(in ThreadInput) string {
 - When you propose, the draft is a runsheet goal written for people: a slug (kebab-case), a title of at most 60 characters, the outcome (what is true when it is done), why it matters, who it is for, the appetite (how much it is worth, e.g. "$40" or "a day"), "done when" (what a person sees when it is done), what is not being done, a statement for the builder, and an acceptance whose every clause names its proof (a test that passes, a read and its value, a grep that returns nothing, a check or a count).
 
 `)
-	b.WriteString("The conversation so far (the last message is the person's, waiting for you):\n\n")
+	threadSubject(&b, in)
+	b.WriteString(in.Finish)
+	return b.String()
+}
+
+// threadSubject writes the turn's facts: whose thread, the tools served
+// beside runsheet, and the conversation so far.
+func threadSubject(b *strings.Builder, in ThreadInput) {
+	b.WriteString("# The thread\n\n")
+	where := in.Org
+	if in.Project != "" {
+		where += ", project " + in.Project
+	}
+	fmt.Fprintf(b, "A thread of %s", where)
+	if p := in.Transcript.Product; p != "" {
+		fmt.Fprintf(b, " on %s", p)
+	}
+	if r := in.Transcript.Role; r != "" {
+		fmt.Fprintf(b, "; you answer as its %s", r)
+	}
+	b.WriteString(". The last message is the person's, waiting for you.\n\n")
+	if len(in.Tools) > 0 {
+		fmt.Fprintf(b, "Beside the runsheet server you also have: %s.\n\n", strings.Join(in.Tools, ", "))
+	}
+	b.WriteString("## The conversation so far\n\n")
 	for _, m := range in.Transcript.Messages {
 		who := "Person"
 		if m.From == "agent" {
 			who = "You"
 		}
 		if m.Body != "" {
-			fmt.Fprintf(&b, "%s: %s\n", who, m.Body)
+			fmt.Fprintf(b, "%s: %s\n", who, m.Body)
 		}
 		if m.Proposal != "" {
 			state := "not set yet"
 			if m.Accepted {
 				state = "the person set it"
 			}
-			fmt.Fprintf(&b, "%s proposed (%s): %s\n", who, state, m.Proposal)
+			fmt.Fprintf(b, "%s proposed (%s): %s\n", who, state, m.Proposal)
 		}
 	}
-	b.WriteString(`
-End your reply with one JSON block and nothing after it:
-
-` + "```json" + `
-{"answer": "what you say to the person", "proposal": null}
-` + "```" + `
-
-or, with a draft:
-
-` + "```json" + `
-{"answer": "a sentence on the draft", "proposal": {"slug": "", "title": "", "outcome": "", "why": "", "whoFor": "", "appetite": "", "doneWhen": "", "notDoing": "", "statement": "", "acceptance": ""}}
-` + "```" + `
-`)
-	return b.String()
-}
-
-// ThreadReply is a thread turn's answer as its session ended it: what it
-// says to the person and, when it drafted one, its proposal as JSON.
-type ThreadReply struct {
-	Answer   string
-	Proposal string
-}
-
-// ParseThreadReply reads the last JSON block of a turn's final message
-// (GoalChatPrompt's shape). A message with no block is its own answer.
-func ParseThreadReply(text string) (ThreadReply, error) {
-	text = strings.TrimSpace(text)
-	i := strings.LastIndex(text, "```json")
-	if i < 0 {
-		if text == "" {
-			return ThreadReply{}, fmt.Errorf("the session said nothing")
-		}
-		return ThreadReply{Answer: text}, nil
-	}
-	block := text[i+len("```json"):]
-	if j := strings.Index(block, "```"); j >= 0 {
-		block = block[:j]
-	}
-	var out struct {
-		Answer   string          `json:"answer"`
-		Proposal json.RawMessage `json:"proposal"`
-	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(block)), &out); err != nil {
-		return ThreadReply{}, fmt.Errorf("the reply's JSON block: %w", err)
-	}
-	r := ThreadReply{Answer: strings.TrimSpace(out.Answer)}
-	if p := strings.TrimSpace(string(out.Proposal)); p != "" && p != "null" {
-		r.Proposal = p
-	}
-	if r.Answer == "" && r.Proposal == "" {
-		return ThreadReply{}, fmt.Errorf("the reply's JSON block says nothing")
-	}
-	return r, nil
+	b.WriteString("\n")
 }

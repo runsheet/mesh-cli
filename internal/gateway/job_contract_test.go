@@ -82,6 +82,52 @@ func TestClaimJobSendsAndReadsTheContract(t *testing.T) {
 		brief.Harness != result.Job["harness"] || len(brief.Pods) != len(result.Job["pods"].([]any)) || brief.Code.Form == "" {
 		t.Fatalf("brief %+v, contract %v", brief, result.Job)
 	}
+	// the kind's guidance text and its finish_schema ride the brief
+	// (runsheet ADR 067 decisions 7 and 10); the fixture names both
+	// fields, so a brief without them is a contract the node no longer
+	// reads
+	guidance, hasGuidance := result.Job["guidance"].(string)
+	schema, hasSchema := result.Job["finishSchema"].(string)
+	if !hasGuidance || !hasSchema || brief.Guidance != guidance || brief.FinishSchema != schema {
+		t.Fatalf("brief guidance %q schema %q, contract guidance %v schema %v", brief.Guidance, brief.FinishSchema, result.Job["guidance"], result.Job["finishSchema"])
+	}
+}
+
+// The job-kind catalogue's answer decodes, kind by kind: each kind's
+// slug, finish, guidance text and finish_schema (ADR 067).
+func TestJobKindsReadsTheContract(t *testing.T) {
+	fx := readJobFixture(t, "jobKinds")
+	var args struct {
+		Method, Path string
+	}
+	_ = json.Unmarshal(fx.Args, &args)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != args.Method || r.URL.Path != args.Path {
+			http.Error(w, r.Method+" "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(fx.Sample)
+	}))
+	t.Cleanup(srv.Close)
+	kinds, err := gateway.New(srv.URL, "rs_test").JobKinds(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sample struct {
+		Kinds []map[string]any `json:"kinds"`
+	}
+	_ = json.Unmarshal(fx.Sample, &sample)
+	if len(kinds) != len(sample.Kinds) {
+		t.Fatalf("%d kinds, contract %d", len(kinds), len(sample.Kinds))
+	}
+	for _, row := range sample.Kinds {
+		k, ok := kinds[row["slug"].(string)]
+		schema, hasSchema := row["finishSchema"].(string)
+		if !ok || !hasSchema || k.Finish != row["finish"] || k.Guidance != row["guidance"] || k.FinishSchema != schema || len(k.Harness) != len(row["harness"].([]any)) {
+			t.Fatalf("kind %+v, contract %v", k, row)
+		}
+	}
 }
 
 // jobAccess's answer decodes: its kind, subject, access and what was not

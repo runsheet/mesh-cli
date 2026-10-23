@@ -11,6 +11,7 @@ import (
 	"sort"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/mcptool"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/sessionunit"
 	"projectmesh.io/mesh-cli/internal/tools"
@@ -85,6 +86,14 @@ type Job struct {
 	// shape of an mcp.json's mcpServers): runsheet, for context on
 	// demand.
 	MCPServers map[string]any
+	// NodeTools are the node's own tools for this job — mesh_result and
+	// mesh_fail (internal/jobresult, mesh-cli ADR-041) — as the session
+	// reaches them on NodeWorkMCP through its sessionproxy
+	// (node.SessionTools.UseVia serves them and names the server in
+	// MCPServers). A harness running an agent does nothing with them;
+	// a test double standing in for a session calls them directly, as the
+	// session would.
+	NodeTools []mcptool.Tool
 	// Settings are Claude Code settings for this session alone (the
 	// shape of a settings.json), passed as --settings: the node's
 	// PreToolUse hook that trims long Bash output (trd §3 Tool results).

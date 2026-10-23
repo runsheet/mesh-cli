@@ -29,6 +29,7 @@
         "form": "none"
       },
       "finish": "answer-or-proposal",
+      "finishSchema": "",
       "guidance": "specs/adr-060-a-product-registers-with-mesh.md",
       "harness": "claude-code",
       "harnesses": [
