@@ -272,7 +272,9 @@ func (h *promptHarness) Run(_ context.Context, job harness.Job, _ func(harness.P
 	h.prompts = append(h.prompts, job.Prompt)
 	h.originAt = append(h.originAt, h.fx.originHead(h.t))
 	h.headAt = append(h.headAt, gitRun(h.t, job.Workspace, "rev-parse", "HEAD"))
-	return harness.Result{Success: true, SessionID: "rb-1", Text: "REBASE FAILED: the test session resolves nothing"}, nil
+	const text = "REBASE FAILED: the test session resolves nothing"
+	handInScript(job, nil, text, nil)
+	return harness.Result{Success: true, SessionID: "rb-1", Text: text}, nil
 }
 
 // TestNonGeneratedConflictFallsThrough: a conflict outside the

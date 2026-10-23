@@ -51,7 +51,9 @@ func (h *freshRebaseHarness) Run(ctx context.Context, job harness.Job, on func(h
 		{"push", "--quiet", "--force-with-lease=" + h.branch + ":origin/" + h.branch, "origin", "HEAD:refs/heads/" + h.branch},
 	} {
 		if _, err := git(args...); err != nil {
-			return harness.Result{Success: true, SessionID: "rb-1", Text: "REBASE FAILED: " + err.Error()}, nil
+			text := "REBASE FAILED: " + err.Error()
+			handInScript(job, nil, text, nil)
+			return harness.Result{Success: true, SessionID: "rb-1", Text: text}, nil
 		}
 	}
 	head, err := git("rev-parse", "HEAD")
@@ -62,8 +64,9 @@ func (h *freshRebaseHarness) Run(ctx context.Context, job harness.Job, on func(h
 	h.head = head
 	h.mu.Unlock()
 	on(harness.Progress{SessionID: "rb-1", CostUSD: 0.1})
-	return harness.Result{Success: true, SessionID: "rb-1", CostUSD: 0.1,
-		Text: fmt.Sprintf("No conflicts left.\n\nREBASED: %s\nRESOLVED: (none)", head[:12])}, nil
+	text := fmt.Sprintf("No conflicts left.\n\nREBASED: %s\nRESOLVED: (none)", head[:12])
+	handInScript(job, nil, text, nil)
+	return harness.Result{Success: true, SessionID: "rb-1", CostUSD: 0.1, Text: text}, nil
 }
 
 // A rebase runs in a fresh checkout (goal

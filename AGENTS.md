@@ -42,7 +42,18 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   rubric, kept because `plan_check.go` refuses against them),
   `planFinishDetail`, the graph read by `readPlan` from the holder
   through `harness.DecodePlan`/`DecodePlanQuestions`/`DecodePlanSplit`/
-  `DecodePlanCheckpoints`, `ParsePlan*`/`PlanCall` deleted). The node
+  `DecodePlanCheckpoints`, `ParsePlan*`/`PlanCall` deleted; research:
+  `ResearchPrompt` = guidance, the facts with `researchRoom`,
+  `researchFinishDetail`, `readResearch` reading the holder through
+  `DecodeResearchGoals`/`DecodeResearchPitches`, `ParseProposals`,
+  `ParsePitches` and `planCandidates` deleted; rebase: `RebasePrompt` =
+  guidance, the facts and the runbook, `rebasedHeadOf` reading the
+  holder through `DecodeRebasedHead`, its tools on a proxy of their own
+  (`serveNodeToolsAlone`, re-served on the recorded socket at adoption
+  by `serveNodeToolsAt`), `ParseRebase` and the `REBASED:` lines
+  deleted; build: `BuildPrompt` = guidance, the facts, `checkMainFirst`,
+  `testWhatYouTouched`, `buildWorkspace` and `finishByToolCall` — its
+  finish stays the node's `mesh_finish` and push). The node
   finds a job's brief by `jobBriefOf` (`internal/node/brief.go`): the
   brief `gateway.Client.JobBriefOf` kept at the claim, else the kind's
   catalogue row (`JobKindOf`, read every 10 min), else empty — logged once
@@ -57,8 +68,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   hand an older `text:` script in as the model would.
 - `internal/harness/prompt.go`: the five prompts — `BuildPrompt`,
   `EvaluatePrompt`, `PlanPrompt`, `ResearchPrompt`, `RebasePrompt`. Their
-  contract lines are load-bearing where a kind still has them (research,
-  rebase, build — ADR-041 moves them kind by kind): the evaluator hands
+  contract lines are load-bearing only for the build's already_done
+  fallback (`ParseAlreadyDone`, when the node's `mesh_finish` was not
+  reachable); every other kind hands its result to the node's
+  `mesh_result` (ADR-041): the evaluator hands
   its verdict to `mesh_result` as `{verdict: {passed, notes,
   failedClauses: [{clause, satisfy}], readings: [{clause, reading}]}}`
   (the node records the clauses with the verdict as `evaluateWorkItem`'s
@@ -205,10 +218,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   writer:` with its `prUrl`, the runner's `foldNotes` reading
   `GoalWorkItems`, rendered after the brief as `## Notes to fold in`;
   no platform half, the mesh-specs TRD §3 paragraph owed to a follow-up),
-  the director ends with its pitches and answers in one for a
-  propose-mode direction, its proposals in one for a set-mode one, the rebase session
-  ends with `REBASED: <sha>` and `RESOLVED: <files>` or
-  `REBASE FAILED: <why>`, the builder never pushes and checks main
+  the director hands `{research: {pitches, answers}}` to `mesh_result` for a
+  propose-mode direction, `{research: {goals}}` for a set-mode one, the rebase session
+  hands `{rebasedHead: {headSha, files}}` or gives up by `mesh_fail`
+  (ADR-041; `DecodeResearchGoals`, `DecodeResearchPitches`,
+  `DecodeRebasedHead`), the builder never pushes and checks main
   first, ending with `ALREADY DONE: <evidence>` when the acceptance
   already holds there (`ParseAlreadyDone`; the runner then finishes the
   item `already_done` with no push, adr-003). The builder ends by
@@ -698,10 +712,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   read, or a repo with no row, hands in an empty research naming it
   (`refusedToken`) the same way a refused credential does; it then
   fetches the repos and reads the context; a `propose`
-  direction's session pitches and answers (`ParsePitches`: problem,
+  direction's session pitches and answers (`DecodeResearchPitches` on the
+  `research` it handed `mesh_result`: problem,
   evidence, bet, scope, estimate, risks, alternatives, signal, and its
   answers to open questions on earlier pitches) and a `set` one
-  proposes goals (`ParseProposals`); `RecordDirectionResearch` hands
+  proposes goals (`DecodeResearchGoals`); `RecordDirectionResearch` hands
   them in with the cost — `pitches` and `answers`, or `proposals` — and
   the platform decides what becomes of them. An older platform without
   `pitches` gets the pitches as proposals (`ErrNoPitches`), no error,

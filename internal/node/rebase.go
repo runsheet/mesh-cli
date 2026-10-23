@@ -18,6 +18,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/jobresult"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 )
 
@@ -34,11 +35,14 @@ import (
 // hands the item to its builder. Every way out ends the claim: a claim
 // left held waits out the platform's 15-minute stall timer.
 type Rebaser struct {
-	GW      Gateway
-	Harness harness.Harness
-	WS      Workspacer
-	Cfg     *Config
-	Scopes  Scopes
+	GW Gateway
+	// noGuidance logs once per kind whose brief carries no guidance
+	// (ADR-041).
+	noGuidance NoGuidance
+	Harness    harness.Harness
+	WS         Workspacer
+	Cfg        *Config
+	Scopes     Scopes
 	// Layout, when set, is the node's job and connection trees (ADR-039):
 	// each item's checkout, scratch, kept stream and MCP files go in its
 	// job, its clone and store in its connection's caches, WorkRoot
@@ -249,7 +253,27 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	}
 	pod.Apply(&job)
 	in.Services = pod.Prompt()
+	// the rebased head reaches the node by mesh_result (ADR-041): the
+	// holder for this job, on the brief's finish and schema, its tools
+	// served on a proxy of their own, its finish section the prompt's
+	// last and the brief's guidance its first
+	brief := jobBriefOf(ctx, r.GW, RebaseKind, item.ID)
+	holder, err := jobresult.New(RebaseKind, cmp.Or(brief.Finish, jobresult.FinishRebasedHead), brief.FinishSchema)
+	if err != nil {
+		return fail(err)
+	}
+	if brief.Guidance == "" {
+		r.noGuidance.Note(RebaseKind, r.logf)
+	}
+	in.Guidance, in.Finish = brief.Guidance, holder.FinishSection()
 	job.Prompt = harness.RebasePrompt(in)
+	relayBin, _, _ := harness.RelayOf(r.MCP[tools.Builtin])
+	endTools, err := SessionTools{NodeTools: holder.Tools()}.serveNodeToolsAlone(mcpRootFor(r.Layout, item.ID), relayBin, &job, nil)
+	if err != nil {
+		return fail(fmt.Errorf("tools: %w", err))
+	}
+	defer endTools(ctx)
+	rb.result = holder
 	if tok := cred.Token(); tok != nil {
 		ghDir, err := NewGHConfigDir()
 		if err != nil {
@@ -314,6 +338,9 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 // rebaseRun is one rebase session as its tail needs it, whether this
 // process started it (Rebase) or adopted it (AdoptRebase).
 type rebaseRun struct {
+	// result holds what the session handed mesh_result (ADR-041): the
+	// rebased head the node reads, or why the session gave up
+	result       *jobresult.Holder
 	r            *Rebaser
 	item         gateway.WorkItem
 	label        string
@@ -436,6 +463,9 @@ func (rb *rebaseRun) run(ctx context.Context, start func(onProgress func(harness
 // rebase failed with the reason. A cancelled ctx — the node shutting
 // down — leaves the claim and the still-running session for the next
 // node to adopt; otherwise the session directory goes.
+// RebaseKind is runsheet's rebase kind, the job a rebase is.
+const RebaseKind = "runsheet/rebase"
+
 func (r *Rebaser) afterRebase(ctx context.Context, rb *rebaseRun, acct *SessionAccount, result harness.Result, runErr error) error {
 	// logged before a done ctx returns: a deadline kills the unit too
 	killedNote := logKilled(r.logf, "item "+rb.label, result.KilledPerSession(), result.KillError)
@@ -463,33 +493,60 @@ func (r *Rebaser) afterRebase(ctx context.Context, rb *rebaseRun, acct *SessionA
 	case runErr != nil:
 		return fail(fmt.Errorf("rebase session: %w", acct.RedactErr(runErr)))
 	}
-	result.Text = acct.Redact(result.Text)
-	out, ok := harness.ParseRebase(result.Text)
-	if !ok {
-		return fail(fmt.Errorf("the rebase session reached no result (%s): %s", result.SessionID, truncate(result.Text, 1000)))
-	}
-	if !out.Rebased {
-		return fail(errors.New(out.Reason))
+	// the rebased head is what the session handed the node's mesh_result
+	// (ADR-041), never its final message; a session that gave up fails
+	// the rebase with its reason
+	recoverResult(rb.result, result, "item "+label, r.logf)
+	said, files, err := rebasedHeadOf(rb.result, result.SessionID, acct.Redact)
+	if err != nil {
+		return fail(err)
 	}
 	// what origin has is the head, not what the session says it pushed
 	head, err := r.WS.PushedHead(ctx, rb.dir, branch, rb.base)
 	if err != nil {
-		return fail(fmt.Errorf("the rebase session said it pushed %s, but: %w", short(out.Head), err))
+		return fail(fmt.Errorf("the rebase session said it pushed %s, but: %w", short(said), err))
 	}
-	if !strings.HasPrefix(strings.ToLower(head), out.Head) {
-		return fail(fmt.Errorf("the rebase session said it pushed %s, but origin/%s is at %s: the push did not land", short(out.Head), branch, short(head)))
+	if !strings.HasPrefix(strings.ToLower(head), said) {
+		return fail(fmt.Errorf("the rebase session said it pushed %s, but origin/%s is at %s: the push did not land", short(said), branch, short(head)))
 	}
 	rb.report(ctx, fmt.Sprintf("rebased %s onto %s at %s", branch, rb.base, short(head)))
 	// the rebased head is a commit no attestation names: the platform
 	// carries none forward (runsheet ADR 032, The honesty check, rule 1)
 	r.validateRebased(ctx, rb, acct, head)
 	ctx = gateway.WithNodeID(ctx, nodeIDOf(r.Scopes, rb.item.OrgID, r.Cfg))
-	if err := acct.Carried(r.GW.FinishWorkItemRebase(ctx, rb.item.ID, head, out.Files, acct.Report(result))); err != nil {
+	if err := acct.Carried(r.GW.FinishWorkItemRebase(ctx, rb.item.ID, head, files, acct.Report(result))); err != nil {
 		// a finish the platform did not take still ends the claim
 		return fail(fmt.Errorf("the rebase landed at %s, but finishing it failed: %w", short(head), err))
 	}
-	r.logf("item %s: rebased %s@%s, resolved %d file(s) ($%.2f)", label, branch, short(head), len(out.Files), result.CostUSD)
+	r.logf("item %s: rebased %s@%s, resolved %d file(s) ($%.2f)", label, branch, short(head), len(files), result.CostUSD)
 	return nil
+}
+
+// rebasedHeadOf reads the head a rebase session said it pushed and the
+// files it resolved from what it handed mesh_result (ADR-041): the
+// `rebasedHead` object (harness.DecodeRebasedHead). An error is the
+// rebase's failure reason: the session gave up by mesh_fail (its words,
+// for the builder), handed nothing in, or handed in no commit sha.
+func rebasedHeadOf(holder *jobresult.Holder, sessionID string, redact func(string) string) (head string, files []string, err error) {
+	if holder == nil {
+		return "", nil, errors.New("no result holder for the rebase session")
+	}
+	if why, failed := holder.Failed(); failed {
+		return "", nil, errors.New(redact(truncate(why, 4000)))
+	}
+	res, ok := holder.Result()
+	if !ok {
+		return "", nil, fmt.Errorf("the rebase session reached no result (%s): it made no mesh_result call", sessionID)
+	}
+	rebased, _ := res["rebasedHead"].(map[string]any)
+	head, files, err = harness.DecodeRebasedHead(rebased)
+	if err != nil {
+		return "", nil, fmt.Errorf("the rebase session reached no result (%s): %w", sessionID, err)
+	}
+	for i := range files {
+		files[i] = redact(files[i])
+	}
+	return head, files, nil
 }
 
 // removeCheckout removes a rebase's own checkout and the hooks Identify
@@ -561,6 +618,22 @@ func (r *Rebaser) AdoptRebase(ctx context.Context, item gateway.WorkItem, s Foun
 	if !ok {
 		stopFound(r.logf, "item "+item.ID, s)
 		return rb.fail(ctx, errNoAttach)
+	}
+	// a fresh holder for the adopted session (ADR-041), its tools served
+	// again on the socket the session dials (state.json's proxy): a
+	// result it handed the node before this one lived with that node
+	holder, err := jobresult.New(RebaseKind, jobresult.FinishRebasedHead, "")
+	if err != nil {
+		return rb.fail(ctx, err)
+	}
+	rb.result = holder
+	if ps := s.State.Proxy; ps != nil && ps.Socket != "" {
+		endTools, err := SessionTools{NodeTools: holder.Tools()}.serveNodeToolsAt(ps.Socket)
+		if err != nil {
+			r.logf("item %s: node tools on the adopted session's socket: %v", rb.label, err)
+		} else {
+			defer endTools(ctx)
+		}
 	}
 	r.logf("item %s: adopted its %s rebase session (pid %d)", rb.label, s.Liveness(), s.State.PID)
 	result, runErr := rb.run(ctx, func(onProgress func(harness.Progress)) (harness.Result, error) {

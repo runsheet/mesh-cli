@@ -812,3 +812,58 @@ func TestRetryTurnPromptEvaluation(t *testing.T) {
 		}
 	}
 }
+
+// A research session on the brief's guidance opens with it, is told the
+// room as a fact, and carries none of the node's role text or rules;
+// without guidance the built-in text runs, ending on the finish
+// (ADR-041).
+func TestResearchPromptRunsOnTheBriefsGuidance(t *testing.T) {
+	finish := "# How this job finishes\n\nCall `mesh_result` once.\n"
+	p := ResearchPrompt(ResearchInput{Org: "o", Project: "p", Direction: "d", Room: 2, DefaultBudgetCents: 4000, Tools: []ToolHint{{Name: "brave"}}, Guidance: "You direct the project.\n", Finish: finish})
+	if !strings.HasPrefix(p, "You direct the project.\n\n# The direction\n\nd\n") {
+		t.Fatalf("the prompt does not open with the guidance:\n%s", p)
+	}
+	for _, want := range []string{"# The project", "# Your tools", "# The room\n\nThere is room for 2 goals right now", "$40.00", finish, "`research.goals` is your proposals"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the guided research prompt lacks %q", want)
+		}
+	}
+	for _, gone := range []string{"You are the director of", "# Rules", "1. Research first", "```json"} {
+		if strings.Contains(p, gone) {
+			t.Errorf("the guided research prompt still carries %q", gone)
+		}
+	}
+	pitches := ResearchPrompt(ResearchInput{Org: "o", Project: "p", Direction: "d", Room: 0, Proposes: true, Guidance: "You direct.", Finish: finish})
+	if !strings.Contains(pitches, "# The room\n\nThis direction proposes rather than sets") || !strings.Contains(pitches, "`research.pitches` is your pitches") || strings.Contains(pitches, "mesh_projects") {
+		t.Fatalf("the guided propose-mode prompt:\n%s", pitches)
+	}
+	fallback := ResearchPrompt(ResearchInput{Org: "o", Project: "p", Direction: "d", Room: 1, Finish: finish})
+	if !strings.Contains(fallback, "You are the director of o, project p") || !strings.Contains(fallback, "# Rules\n\n1. Research first") || !strings.Contains(fallback, finish) || strings.Contains(fallback, "```json") {
+		t.Fatalf("the built-in research prompt:\n%s", fallback)
+	}
+}
+
+// A build session on the brief's guidance opens with it, keeps the
+// node's own sections — check main first, test what you touched, the
+// workspace, the finish by mesh_finish — and carries none of the node's
+// role line or rules (ADR-041: the build's finish stays the node's).
+func TestBuildPromptRunsOnTheBriefsGuidance(t *testing.T) {
+	p := BuildPrompt(PromptInput{ItemID: "item-1", GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "mesh/g-1", BaseRef: "main", ContextDir: ".mesh/context", MeshContext: true, Project: "o/p", Guidance: "You build one item.\n"})
+	if !strings.HasPrefix(p, "You build one item.\n\n# Item 1: T\n") {
+		t.Fatalf("the prompt does not open with the guidance:\n%s", p)
+	}
+	for _, want := range []string{"# Check main first", "# Test what you touched", "# The workspace\n\nYou are in o/r on branch `mesh/g-1` (from `main`)", "The project's context is in `.mesh/context/`", "mesh_search", "# Finish by tool call", "`mesh_finish` tool"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the guided build prompt lacks %q", want)
+		}
+	}
+	for _, gone := range []string{"You are a Mesh node session working on item", "# Rules", "3. Commit as you go", "8. Before you stop"} {
+		if strings.Contains(p, gone) {
+			t.Errorf("the guided build prompt still carries %q", gone)
+		}
+	}
+	fallback := BuildPrompt(PromptInput{Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main"})
+	if !strings.Contains(fallback, "You are a Mesh node session working on item 1") || !strings.Contains(fallback, "# Rules\n\n1. Read the repository") || strings.Contains(fallback, "# The workspace") {
+		t.Fatalf("the built-in build prompt:\n%s", fallback)
+	}
+}

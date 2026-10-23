@@ -5,9 +5,26 @@ import (
 	"testing"
 )
 
+// researchOf is a script's fenced JSON as the `research` object the
+// session hands mesh_result (ADR-041); the fixtures were written as
+// final messages before the result tool.
+func researchOf(t *testing.T, text string) map[string]any {
+	t.Helper()
+	raw := strings.TrimSpace(text)
+	if i := strings.LastIndex(raw, "```json"); i >= 0 {
+		raw = raw[i+len("```json"):]
+		if j := strings.Index(raw, "```\n"); j >= 0 {
+			raw = raw[:j]
+		} else if j := strings.LastIndex(raw, "```"); j >= 0 {
+			raw = raw[:j]
+		}
+	}
+	return graphOf(t, strings.TrimSpace(raw))
+}
+
 // A full sample: one initiative-scoped pitch, one goal-scoped pitch,
 // and two answers to earlier open questions. Every field round-trips.
-func TestParsePitchesFullSample(t *testing.T) {
+func TestDecodePitchesFullSample(t *testing.T) {
 	text := "I read the pitch_feedback and the code.\n\n```json\n" +
 		`{"pitches": [` +
 		`{"slug": "fewer-conflicts", "title": "Fewer conflicts", "problem": "Rebases fail often.", ` +
@@ -31,7 +48,7 @@ func TestParsePitchesFullSample(t *testing.T) {
 		`"signal": {"metric": "merged", "how_measured": "count", "direction": "up", "window_days": 14}}` +
 		`], "answers": [{"pitch": "fewer-conflicts", "text": "Yes, scoped to the mini only."}, {"pitch": "faster-onboarding", "text": "No, the doc stands alone."}]}` +
 		"\n```\n"
-	out, err := ParsePitches(text)
+	out, err := DecodeResearchPitches(researchOf(t, text))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -71,9 +88,9 @@ func TestParsePitchesFullSample(t *testing.T) {
 	}
 }
 
-// The pitches survive a pitch whose own prose mentions a fence, the
-// same trap ParseProposals and ParsePlan guard against.
-func TestParsePitchesNestedFence(t *testing.T) {
+// A pitch whose own prose mentions a fence decodes like any other: the
+// result is an object, never text with fences in it.
+func TestDecodePitchesNestedFence(t *testing.T) {
 	text := "I read the code.\n\n```json\n" +
 		`{"pitches": [{"slug": "a", "title": "A", "problem": "shown with ` + "```sh\\nmesh login\\n```" + `", ` +
 		`"evidence": [{"kind": "metric", "ref": "scorecard:merged", "note": "n"}], "bet": "", ` +
@@ -81,7 +98,7 @@ func TestParsePitchesNestedFence(t *testing.T) {
 		`"estimate": {"cost_cents": 1, "days": 1, "basis": "b"}, "risks": [], "alternatives": [], ` +
 		`"signal": {"metric": "merged", "how_measured": "m", "direction": "up", "window_days": 14}}], "answers": []}` +
 		"\n```\n"
-	out, err := ParsePitches(text)
+	out, err := DecodeResearchPitches(researchOf(t, text))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -92,8 +109,8 @@ func TestParsePitchesNestedFence(t *testing.T) {
 
 // An empty list is a valid answer: nothing worth pitching is not a
 // parse failure.
-func TestParsePitchesEmptyIsAnAnswer(t *testing.T) {
-	out, err := ParsePitches("Nothing is worth pitching tonight.\n\n```json\n{\"pitches\": []}\n```")
+func TestDecodePitchesEmptyIsAnAnswer(t *testing.T) {
+	out, err := DecodeResearchPitches(map[string]any{"pitches": []any{}})
 	if err != nil {
 		t.Fatalf("an empty list is an answer: %v", err)
 	}
@@ -106,7 +123,7 @@ func pitchJSON(fields string) string {
 	return "```json\n{\"pitches\": [{" + fields + "}]}\n```"
 }
 
-func TestParsePitchesRefusals(t *testing.T) {
+func TestDecodePitchesRefusals(t *testing.T) {
 	validScope := `"scope": {"kind": "goal", "goals": [{"slug": "g", "title": "G", "statement": "s", "acceptance": "a"}]}`
 	base := `"slug": "s", "title": "T", "problem": "p", "evidence": [{"kind": "metric", "ref": "r", "note": "n"}], "bet": "", ` +
 		validScope + `, "estimate": {"cost_cents": 1, "days": 1, "basis": "b"}, "risks": [], "alternatives": [], ` +
@@ -115,7 +132,7 @@ func TestParsePitchesRefusals(t *testing.T) {
 		return strings.Replace(base, remove, replacement, 1)
 	}
 	for what, text := range map[string]string{
-		"no json at all": "I had a think and decided not to say.",
+		"no pitches key": "```json\n{\"answers\": []}\n```",
 		"no problem":     pitchJSON(withField(`"problem": "p", `, "")),
 		"goal scope with two goals": pitchJSON(withField(
 			validScope,
@@ -130,21 +147,21 @@ func TestParsePitchesRefusals(t *testing.T) {
 			`"evidence": [{"kind": "metric", "ref": "", "note": "n"}], `,
 		)),
 	} {
-		if _, err := ParsePitches(text); err == nil {
+		if _, err := DecodeResearchPitches(researchOf(t, text)); err == nil {
 			t.Fatalf("%s should be refused", what)
 		}
 	}
 }
 
 // The same slug twice in one session is one pitch: the first wins.
-func TestParsePitchesDuplicateSlugCollapsed(t *testing.T) {
+func TestDecodePitchesDuplicateSlugCollapsed(t *testing.T) {
 	one := `{"slug": "a", "title": "First", "problem": "p", "evidence": [{"kind": "metric", "ref": "r", "note": "n"}], "bet": "", ` +
 		`"scope": {"kind": "goal", "goals": [{"slug": "g", "title": "G", "statement": "s", "acceptance": "a"}]}, ` +
 		`"estimate": {"cost_cents": 1, "days": 1, "basis": "b"}, "risks": [], "alternatives": [], ` +
 		`"signal": {"metric": "merged", "how_measured": "m", "direction": "up", "window_days": 14}}`
 	two := strings.Replace(one, `"title": "First"`, `"title": "Second"`, 1)
 	text := "```json\n{\"pitches\": [" + one + ", " + two + "]}\n```"
-	out, err := ParsePitches(text)
+	out, err := DecodeResearchPitches(researchOf(t, text))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}

@@ -84,7 +84,7 @@ func TestRebaseClaimedOnceAndFinishedWithPushedHead(t *testing.T) {
 		t.Fatalf("jobs: %+v", h.jobs)
 	}
 	p := h.jobs[0].Prompt
-	for _, want := range []string{"git rebase origin/main", "git push --force-with-lease=mesh/ship-it-1:origin/mesh/ship-it-1 origin HEAD:refs/heads/mesh/ship-it-1", "func Run(ctx context.Context) {}", "The files: main.go.", harness.RebasedLine, harness.RebaseFailedLine} {
+	for _, want := range []string{"git rebase origin/main", "git push --force-with-lease=mesh/ship-it-1:origin/mesh/ship-it-1 origin HEAD:refs/heads/mesh/ship-it-1", "func Run(ctx context.Context) {}", "The files: main.go.", "`rebasedHead.headSha`", "`mesh_fail` with exactly why"} {
 		if !strings.Contains(p, want) {
 			t.Fatalf("prompt lacks %q:\n%s", want, p)
 		}
@@ -129,7 +129,7 @@ func TestRebaseUnresolvableFailsWithReason(t *testing.T) {
 		reason             string
 	}{
 		{"unresolvable", "Both sides rewrote Run.\nREBASE FAILED: " + why, "", nil, why},
-		{"unreadable", "I think it is fine now.", "", nil, "the rebase session reached no result (s-1): I think it is fine now."},
+		{"unreadable", "I think it is fine now.", "", nil, "the rebase session reached no result (s-1): it made no mesh_result call"},
 		{"push did not land", "REBASED: 1111111aaaa\nRESOLVED: main.go", "2222222bbbb", nil, "the rebase session said it pushed 1111111a, but origin/mesh/ship-it-1 is at 2222222b: the push did not land"},
 		{"not onto the base", "REBASED: 1111111aaaa\nRESOLVED: main.go", "", errors.New("origin/mesh/ship-it-1 at 1111111a does not contain origin/main"), "the rebase session said it pushed 1111111a, but: origin/mesh/ship-it-1 at 1111111a does not contain origin/main"},
 	} {
@@ -470,8 +470,9 @@ func (h *pushingRebaseHarness) Run(_ context.Context, job harness.Job, on func(h
 	h.head = head
 	h.mu.Unlock()
 	on(harness.Progress{SessionID: "rb-1", CostUSD: 0.25})
-	return harness.Result{Success: true, SessionID: "rb-1", CostUSD: 0.25,
-		Text: fmt.Sprintf("Kept both sides.\n\nREBASED: %s\nRESOLVED: api/api.go", head[:12])}, nil
+	text := fmt.Sprintf("Kept both sides.\n\nREBASED: %s\nRESOLVED: api/api.go", head[:12])
+	handInScript(job, nil, text, nil)
+	return harness.Result{Success: true, SessionID: "rb-1", CostUSD: 0.25, Text: text}, nil
 }
 
 func (h *pushingRebaseHarness) Head() string {

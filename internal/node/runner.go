@@ -66,11 +66,14 @@ func Resolve(ctx context.Context, gw Gateway, item gateway.WorkItem) (*Resolved,
 
 // Runner runs one claimed item to its end (poll mode: `claude -p`).
 type Runner struct {
-	GW      Gateway
-	Harness harness.Harness
-	WS      Workspacer
-	Cfg     *Config
-	Scopes  Scopes
+	GW Gateway
+	// noGuidance logs once per kind whose brief carries no guidance
+	// (ADR-041).
+	noGuidance NoGuidance
+	Harness    harness.Harness
+	WS         Workspacer
+	Cfg        *Config
+	Scopes     Scopes
 	// Layout, when set, is the node's job and connection trees (ADR-039):
 	// each item's checkout, scratch, kept stream and MCP files go in its
 	// job, its clone and store in its connection's caches, WorkRoot
@@ -665,6 +668,11 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	run := func(ctx context.Context, state *sessionsteps.State) error {
 		r.toolResults(&job)
 		in.Services = pod.Prompt()
+		// the brief's guidance is the builder's role (ADR-041); the finish
+		// stays the node's own mesh_finish and push
+		if in.Guidance = jobBriefOf(ctx, r.GW, BuildKind, item.ID).Guidance; in.Guidance == "" {
+			r.noGuidance.Note(BuildKind, r.logf)
+		}
 		job.Prompt = harness.BuildPrompt(in)
 		// a retry after a failed evaluation is the next turn of the session
 		// that built the item when this node kept it, else a fresh session
@@ -1679,3 +1687,6 @@ func (r *Runner) bindSessionBearer(ctx context.Context, item gateway.WorkItem, n
 	}
 	return r.Bearers.Open(ctx, item, nodeID)
 }
+
+// BuildKind is runsheet's build kind, the job a build is.
+const BuildKind = "runsheet/build"

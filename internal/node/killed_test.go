@@ -308,7 +308,7 @@ func TestPlanAndResearchExpiredContextKilledIsLogged(t *testing.T) {
 
 	logs.Reset()
 	d := &Director{Log: log.New(&logs, "", 0)}
-	if err := d.handIn(ctx, gateway.Direction{Slug: "nightly"}, gateway.Project{Slug: "mesh"}, Scope{}, t.TempDir(), nil, result, context.DeadlineExceeded); err == nil {
+	if err := d.handIn(ctx, gateway.Direction{Slug: "nightly"}, gateway.Project{Slug: "mesh"}, Scope{}, t.TempDir(), nil, nil, result, context.DeadlineExceeded); err == nil {
 		t.Fatal("an expired research hands in nothing")
 	}
 	if !strings.Contains(logs.String(), "mesh/nightly"+line) {
