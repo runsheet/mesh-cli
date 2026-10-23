@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"time"
 )
@@ -24,6 +25,38 @@ type ThreadTurn struct {
 	// (runsheet ADR 067): the guidance text and the product's schema for
 	// the proposal, "" for none.
 	Guidance, FinishSchema string
+	// Harness and Finish are the kind's as the catalogue lists it and the
+	// brief carries it: the harnesses it runs on ([claude-code, codex]
+	// when nil) and its finish (answer-or-proposal when ""). A turn of a
+	// kind the fake's catalogue does not list adds the kind to it, so a
+	// node meets a kind it has never heard of (ADR-041 decision 5).
+	Harness []string
+	Finish  string
+	// Finished is the whole finish the node handed in, as finishJob took
+	// it: the result of a kind whose finish is not answer-or-proposal.
+	Finished map[string]any
+}
+
+// turnKinds is each thread turn's kind as a catalogue row, by slug: the
+// rows the kinds listing adds or overrides. f.mu is not held.
+func (f *Fake) turnKinds() map[string]map[string]any {
+	rows := map[string]map[string]any{}
+	for _, t := range f.ThreadTurns {
+		if t.Kind == "" {
+			continue
+		}
+		harness, finish := t.Harness, t.Finish
+		if harness == nil {
+			harness = []string{"claude-code", "codex"}
+		}
+		if finish == "" {
+			finish = "answer-or-proposal"
+		}
+		product, kind, _ := strings.Cut(t.Kind, "/")
+		rows[t.Kind] = map[string]any{"slug": t.Kind, "product": product, "kind": kind, "harness": harness, "finish": finish,
+			"access": []string{product, "model"}, "guidance": t.Guidance, "finishSchema": t.FinishSchema}
+	}
+	return rows
 }
 
 // RaiseThreadTurn adds a raised turn.
@@ -385,11 +418,23 @@ func (f *Fake) claimThreadJob(w http.ResponseWriter, in map[string]any) {
 		writeErrors(w, 200, "claimThreadSession: not yours")
 		return
 	}
+	harnesses, finish := t.Harness, t.Finish
+	if harnesses == nil {
+		harnesses = []string{"claude-code", "codex"}
+	}
+	if finish == "" {
+		finish = "answer-or-proposal"
+	}
+	// the platform claims a kind on a harness it runs; another is refused
+	if adapter, _ := in["harness"].(string); adapter != "" && !slices.Contains(harnesses, adapter) {
+		writeErrors(w, 200, "claimThreadSession: the kind does not run on "+adapter)
+		return
+	}
 	t.Status, t.NodeID = "claimed", fmt.Sprint(in["nodeId"])
 	writeData(w, map[string]any{"claimJob": map[string]any{"status": "claimed", "job": map[string]any{
 		"kind": t.Kind, "subject": map[string]any{"type": "thread", "id": t.ID}, "code": map[string]any{"form": "none"},
-		"harness": "claude-code", "harnesses": []string{"claude-code"}, "access": []string{"runsheet", "model"},
-		"finish": "answer-or-proposal", "pods": []map[string]any{{"name": "goal-chat", "from": "kind", "code": false}},
+		"harness": harnesses[0], "harnesses": harnesses, "access": []string{t.Product, "model"},
+		"finish": finish, "pods": []map[string]any{{"name": t.Role, "from": "kind", "code": false}},
 		"guidance": t.Guidance, "finishSchema": t.FinishSchema,
 		"claim": "claimThreadSession", "thread": map[string]any{"product": t.Product, "role": t.Role, "threadKey": t.ThreadKey,
 			"ask": t.Ask, "body": t.Body, "projectId": t.ProjectID}}}})
@@ -417,6 +462,7 @@ func (f *Fake) finishThreadJob(w http.ResponseWriter, in map[string]any) {
 		return
 	}
 	fin, _ := in["finish"].(map[string]any)
+	t.Finished = fin
 	t.Answer, _ = fin["answer"].(string)
 	t.Proposal, _ = fin["proposal"].(string)
 	t.Status = "answered"

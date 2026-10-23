@@ -226,15 +226,23 @@ func TestThreadRunnerFallsBackToTheBuiltInPromptWithoutGuidance(t *testing.T) {
 }
 
 // The loop takes the raised turns of the kinds this node runs, each
-// once, and leaves another product's thread kind alone.
+// once: a built-in kind, and any kind the catalogue lists on this node's
+// harness (the step runner, ADR-041 decision 5). A listed kind on
+// another harness, and a kind the catalogue does not list, are left
+// alone.
 func TestLoopTakesTheThreadTurnsItRuns(t *testing.T) {
 	f := seed(t)
 	raiseChat(f, chatGuidance, "")
-	f.RaiseThreadTurn(gatewaytest.ThreadTurn{ID: turnWardroom, Product: "wardroom", ThreadKey: "general/1", OrgID: orgID, Role: "assistant", Kind: "wardroom/thread"})
+	// wardroom's assistant runs on Codex alone: not this node's
+	f.RaiseThreadTurn(gatewaytest.ThreadTurn{ID: turnWardroom, Product: "wardroom", ThreadKey: "general/1", OrgID: orgID, Role: "assistant", Kind: "wardroom/thread", Harness: []string{"codex"}})
+	// acme's triage is a kind this node has never heard of, on claude-code
+	f.RaiseThreadTurn(gatewaytest.ThreadTurn{ID: turnTriage, Product: "acme", ThreadKey: "reports/7", OrgID: orgID, Role: "triage", Kind: "acme/triage", Guidance: "You triage."})
+	// a product the catalogue does not list at all
+	f.RaiseThreadTurn(gatewaytest.ThreadTurn{ID: turnGhost, Product: "ghost", ThreadKey: "g/1", OrgID: orgID, Role: "x"})
 	gw := gateway.New(f.URL(), "rs_test")
 	var mu sync.Mutex
 	took := map[string]string{}
-	l := &Loop{GW: gw, Cfg: &Config{Slug: "n", Capacity: Fixed(2)}, Scopes: connected(Scopes{{Login: "acme", ID: orgID, NodeID: nodeA}}), Log: log.New(os.Stderr, "", 0),
+	l := &Loop{GW: gw, Cfg: &Config{Slug: "n", Capacity: Fixed(3)}, Harness: "claude-code", Scopes: connected(Scopes{{Login: "acme", ID: orgID, NodeID: nodeA}}), Log: log.New(os.Stderr, "", 0),
 		Thread: func(ctx context.Context, turn gateway.ThreadTurn, kind string, sc Scope) {
 			mu.Lock()
 			took[turn.ID] = kind
@@ -242,7 +250,141 @@ func TestLoopTakesTheThreadTurnsItRuns(t *testing.T) {
 		}}
 	l.threadsDue(context.Background())
 	l.wg.Wait()
-	if len(took) != 1 || took[turnChat] != "runsheet/goal-chat" {
+	if len(took) != 2 || took[turnChat] != "runsheet/goal-chat" || took[turnTriage] != "acme/triage" {
 		t.Fatalf("took %v", took)
+	}
+}
+
+const (
+	turnTriage = "aaaaaaaa-9999-4999-8999-aaaaaaaaaaaa"
+	turnGhost  = "aaaaaaaa-6666-4666-8666-aaaaaaaaaaaa"
+)
+
+// triageTranscript is a turn of a kind the node has never heard of.
+const triageTranscript = `{"product":"acme","role":"triage","messages":[{"seq":1,"from":"person","body":"The export page 500s for every report since Tuesday"}]}`
+
+// triageSchema is acme's finish_schema for the triage result.
+const triageSchema = `{"type":"object","required":["severity","summary"],"properties":{"severity":{"enum":["low","high"]},"summary":{"type":"string"}},"additionalProperties":false}`
+
+func raiseTriage(f *gatewaytest.Fake, guidance string, harness []string) {
+	f.RaiseThreadTurn(gatewaytest.ThreadTurn{ID: turnTriage, Product: "acme", ThreadKey: "reports/7", OrgID: orgID, ProjectID: projID,
+		Role: "triage", Kind: "acme/triage", Body: triageTranscript, Ask: "thread-7#1", Finish: "result", Harness: harness,
+		Credentials: []map[string]any{claudeCredential}, Guidance: guidance, FinishSchema: triageSchema})
+}
+
+// The step runner (ADR-041 decision 5): a turn of a kind the node has no
+// code for runs from the brief alone — the kind's guidance first in the
+// prompt and nothing of the node's role text, the transcript, the
+// finish by mesh_result on the kind's finish shape with the product's
+// finish_schema checking the result, finishJob with what was handed in.
+func TestStepRunnerRunsAKindTheNodeHasNeverHeardOf(t *testing.T) {
+	f := seed(t)
+	raiseTriage(f, "You are Acme's triage. Read the report, decide its severity, say so plainly.\n", nil)
+	h := &fakeHarness{text: "Looked."}
+	h.onRun = func(job harness.Job) {
+		// off the schema: refused to the session, naming the field
+		if _, err := callResult(t, job, map[string]any{"result": map[string]any{"severity": "medium", "summary": "export 500s"}}); err == nil {
+			t.Error("a result off the finish_schema was taken")
+		}
+		if _, err := callResult(t, job, map[string]any{"result": map[string]any{"severity": "high", "summary": "the export page 500s for every report"}}); err != nil {
+			t.Errorf("mesh_result: %v", err)
+		}
+	}
+	r, sc, logs := threadRunner(t, f, h)
+	if err := r.Run(context.Background(), gateway.ThreadTurn{ID: turnTriage, Product: "acme", ThreadKey: "reports/7", OrgID: orgID, Role: "triage"}, "acme/triage", sc); err != nil {
+		t.Fatal(err)
+	}
+	turn := f.Turn(turnTriage)
+	if turn.Status != "answered" {
+		t.Fatalf("turn %+v", turn)
+	}
+	if res, _ := turn.Finished["result"].(map[string]any); res["severity"] != "high" {
+		t.Fatalf("finishJob took %+v", turn.Finished)
+	}
+	if len(h.jobs) != 1 {
+		t.Fatalf("jobs %+v", h.jobs)
+	}
+	prompt := h.jobs[0].Prompt
+	if !strings.HasPrefix(prompt, "You are Acme's triage. Read the report, decide its severity, say so plainly.\n\n# The thread\n\nA thread of acme, project mesh on acme; you answer as its triage.") {
+		t.Fatalf("the prompt does not open with the guidance and the thread:\n%s", prompt)
+	}
+	for _, want := range []string{"The export page 500s for every report since Tuesday", "# How this job finishes", "`mesh_result` tool once", "{result}", "The product's schema for its part is the tool's input schema"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("the prompt lacks %q:\n%s", want, prompt)
+		}
+	}
+	for _, gone := range []string{"goal assistant", "How to talk", "runsheet's", "```json"} {
+		if strings.Contains(prompt, gone) {
+			t.Fatalf("the prompt carries the node's role text %q:\n%s", gone, prompt)
+		}
+	}
+	if _, ok := h.jobs[0].MCPServers[harness.NodeWorkMCP]; !ok {
+		t.Fatalf("no %s server in the job: %v", harness.NodeWorkMCP, h.jobs[0].MCPServers)
+	}
+	if strings.Contains(logs.String(), noGuidanceLine) {
+		t.Fatalf("a brief with guidance was logged as without:\n%s", logs.String())
+	}
+}
+
+// A kind with no built-in prompt and no guidance, or on a harness this
+// node does not run, is answered with why rather than run: the thread
+// is never left waiting on a node that gave up.
+func TestStepRunnerAnswersWhyItCannotRunTheKind(t *testing.T) {
+	for name, c := range map[string]struct {
+		guidance string
+		harness  []string
+		want     string
+	}{
+		"no guidance":   {"", nil, "carries no guidance, and this node has no built-in prompt for it"},
+		"other harness": {"You triage.", []string{"codex"}, "the kind does not run on"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := seed(t)
+			raiseTriage(f, c.guidance, c.harness)
+			h := &fakeHarness{text: "Looked."}
+			r, sc, _ := threadRunner(t, f, h)
+			err := r.Run(context.Background(), gateway.ThreadTurn{ID: turnTriage, Product: "acme", ThreadKey: "reports/7", OrgID: orgID, Role: "triage"}, "acme/triage", sc)
+			if name == "other harness" {
+				// the platform refuses the claim itself; nothing ran, nothing to answer
+				if err != nil || len(h.jobs) != 0 || f.Turn(turnTriage).Status != "raised" {
+					t.Fatalf("err %v, jobs %d, turn %+v", err, len(h.jobs), f.Turn(turnTriage))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			turn := f.Turn(turnTriage)
+			if len(h.jobs) != 0 || turn.Status != "answered" || !strings.Contains(turn.Answer, "I couldn't answer this time") || !strings.Contains(turn.Answer, c.want) {
+				t.Fatalf("jobs %d, turn %+v", len(h.jobs), turn)
+			}
+		})
+	}
+}
+
+// RunsThreadKind: a built-in kind is always this node's; a listed kind
+// is when its harness names the node's adapter; an unlisted kind never.
+func TestRunsThreadKind(t *testing.T) {
+	kinds := map[string]gateway.JobKind{
+		"acme/triage":     {Slug: "acme/triage", Harness: []string{"claude-code", "codex"}},
+		"wardroom/thread": {Slug: "wardroom/thread", Harness: []string{"codex"}},
+		"acme/deploy":     {Slug: "acme/deploy", Harness: []string{"none"}},
+	}
+	for _, c := range []struct {
+		kind, adapter string
+		want          bool
+	}{
+		{"runsheet/goal-chat", "claude-code", true},
+		{"acme/triage", "claude-code", true},
+		{"acme/triage", "codex", true},
+		{"wardroom/thread", "claude-code", false},
+		{"wardroom/thread", "codex", true},
+		{"acme/deploy", "", false},
+		{"acme/triage", "", true},
+		{"ghost/thread", "claude-code", false},
+	} {
+		if got := RunsThreadKind(c.kind, c.adapter, kinds); got != c.want {
+			t.Errorf("RunsThreadKind(%q, %q) = %v, want %v", c.kind, c.adapter, got, c.want)
+		}
 	}
 }
