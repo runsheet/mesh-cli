@@ -138,3 +138,15 @@ its own kinds' guidance (`.mesh/agents/<kind>.md`).
   the node's own stdio `mesh_finish`/`mesh_fail` (ADR-023's amendment),
   since the build's result is the node's push, not a session result.
   `ParseAlreadyDone` stays as that finish's fallback.
+- the step runner (decision 5): a thread turn of a kind the node has no
+  code for runs on the goal-chat path from the brief alone
+  (`ThreadRunner.Run` → `prompterFor`, `harness.ThreadPrompt`): the
+  brief's harness checked against the node's, its guidance first in the
+  prompt (a brief with none, for a kind with no built-in prompt, is
+  answered with why — there is no node text to fall back on), the
+  turn's transcript, the turn's pod, the access of the exchange, the
+  node's `mesh_result` on the kind's finish shape with the product's
+  `finish_schema`, `finishJob` with the result. The loop takes every
+  raised turn whose kind the catalogue lists on this node's harness
+  (`RunsThreadKind`), not only the kinds it has code for; a kind on
+  another harness, or one the catalogue does not list, is left alone.

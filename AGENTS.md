@@ -57,7 +57,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   finds a job's brief by `jobBriefOf` (`internal/node/brief.go`): the
   brief `gateway.Client.JobBriefOf` kept at the claim, else the kind's
   catalogue row (`JobKindOf`, read every 10 min), else empty — logged once
-  per kind, `brief carries no guidance; running the built-in prompt`
+  per kind, `brief carries no guidance; running the built-in prompt`.
+  The step runner (ADR-041 decision 5) is the thread path itself: a
+  turn of a kind the node has no code for runs from the brief alone
+  (`ThreadRunner.Run` → `prompterFor` → `harness.ThreadPrompt`, the
+  brief's harness checked against the node's by `stepRunnerTakes`, a
+  brief with no guidance for such a kind answered with why), and the
+  loop takes every raised turn whose kind the catalogue lists on this
+  node's harness (`RunsThreadKind`), not only `ThreadKinds`
   (`NoGuidance`). A `mesh_result` call the stream recorded but the node
   never received is read into the holder late (`recoverResult`,
   `Holder.Recover`), checked the same way; the final message is never

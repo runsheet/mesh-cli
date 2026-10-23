@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -27,10 +28,44 @@ import (
 	"projectmesh.io/mesh-cli/internal/tools"
 )
 
-// ThreadKinds are the thread kinds this node runs, and the prompt each
-// turn of one is asked with.
+// ThreadKinds are the thread kinds this node has a built-in prompt for,
+// the fallback a brief with no guidance runs (ADR-041). Every other
+// thread kind runs on the step runner: the same path, built from the
+// brief alone — its harness, its guidance, the turn's transcript, its
+// pods and access, mesh_result for the finish, finishJob with the
+// result (ADR-041 decision 5) — with harness.ThreadPrompt, which is the
+// guidance, the facts and the finish and nothing of the node's.
 var ThreadKinds = map[string]func(harness.ThreadInput) string{
 	"runsheet/goal-chat": harness.GoalChatPrompt,
+}
+
+// prompterFor is the prompt a turn of kind is asked with: the built-in
+// one when the node has it, else ThreadPrompt (the step runner).
+func prompterFor(kind string) func(harness.ThreadInput) string {
+	if p, ok := ThreadKinds[kind]; ok {
+		return p
+	}
+	return harness.ThreadPrompt
+}
+
+// RunsThreadKind says whether a node on adapter runs thread turns of
+// kind as the catalogue describes it (gateway.JobKind): a kind with a
+// built-in prompt, or any listed kind whose harness names the adapter —
+// the step runner runs it from the brief. A kind the catalogue does not
+// list is nobody's. An empty adapter (a loop that names none) takes any
+// listed kind with an agent harness.
+func RunsThreadKind(kind, adapter string, kinds map[string]gateway.JobKind) bool {
+	if _, ok := ThreadKinds[kind]; ok {
+		return true
+	}
+	k, ok := kinds[kind]
+	if !ok || len(k.Harness) == 0 {
+		return false
+	}
+	if adapter == "" {
+		return k.Harness[0] != "none"
+	}
+	return slices.Contains(k.Harness, adapter)
 }
 
 // ThreadGateway is what a thread turn needs of the platform.
@@ -70,12 +105,10 @@ func (t *ThreadRunner) logf(format string, args ...any) {
 	}
 }
 
-// Run claims turn as the job of kind and answers it.
+// Run claims turn as the job of kind and answers it: a kind with a
+// built-in prompt on that, any other on the step runner (prompterFor).
 func (t *ThreadRunner) Run(ctx context.Context, turn gateway.ThreadTurn, kind string, sc Scope) error {
-	prompter, ok := ThreadKinds[kind]
-	if !ok {
-		return fmt.Errorf("thread %s: this node runs no %s turns", turn.ThreadKey, kind)
-	}
+	prompter := prompterFor(kind)
 	subject := gateway.JobSubject{Type: "thread", ID: turn.ID}
 	adapter := Adapter(t.Harness)
 	brief, err := t.GW.ClaimJob(ctx, gateway.ClaimJobInput{NodeID: sc.NodeID, Kind: kind, Subject: subject, Harness: adapter})
@@ -110,6 +143,9 @@ func (t *ThreadRunner) Run(ctx context.Context, turn gateway.ThreadTurn, kind st
 func (t *ThreadRunner) answer(ctx context.Context, turn gateway.ThreadTurn, kind string, sc Scope, brief *gateway.JobBrief, prompter func(harness.ThreadInput) string, label string) (map[string]any, error) {
 	if brief.Thread == nil {
 		return nil, errors.New("the brief carries no thread")
+	}
+	if err := t.stepRunnerTakes(kind, brief); err != nil {
+		return nil, err
 	}
 	tr, err := harness.ParseThreadTranscript(brief.Thread.Body)
 	if err != nil {
@@ -216,6 +252,32 @@ func (t *ThreadRunner) answer(ctx context.Context, turn gateway.ThreadTurn, kind
 	return redactFinish(finish, acct.Redact), nil
 }
 
+// stepRunnerTakes says whether this node can run the brief of kind on
+// the step runner: a kind with no built-in prompt needs the brief's
+// guidance (there is no role text of the node's to fall back on), a
+// harness this node runs, and no code to check out — a thread job runs
+// in the turn's pod with no checkout (ADR 061 §7). The error is what the
+// turn is answered with, so the thread is never left waiting.
+func (t *ThreadRunner) stepRunnerTakes(kind string, brief *gateway.JobBrief) error {
+	if _, builtin := ThreadKinds[kind]; builtin {
+		return nil
+	}
+	if strings.TrimSpace(brief.Guidance) == "" {
+		return fmt.Errorf("the brief of kind %s carries no guidance, and this node has no built-in prompt for it", kind)
+	}
+	adapter := Adapter(t.Harness)
+	switch {
+	case !brief.HasHarness():
+		return fmt.Errorf("a %s job runs no agent (harness %q); the step runner runs sessions", kind, brief.Harness)
+	case brief.Harness != adapter && !slices.Contains(brief.Harnesses, adapter):
+		return fmt.Errorf("a %s job runs on %s, not this node's %s", kind, brief.Harness, adapter)
+	}
+	if form := brief.Code.Form; form != "" && form != "none" {
+		return fmt.Errorf("a %s job needs code (%s), which a thread job does not check out", kind, form)
+	}
+	return nil
+}
+
 // redactFinish is finish with every string value redacted.
 func redactFinish(finish map[string]any, redact func(string) string) map[string]any {
 	out := make(map[string]any, len(finish))
@@ -270,9 +332,11 @@ func (l *Loop) jobKinds(ctx context.Context, tl threadLister) map[string]gateway
 }
 
 // threadsDue takes every raised turn of the served orgs whose kind this
-// node runs (ThreadKinds), each in its own session: a turn is a person
-// waiting, so it is taken on the tick that sees it, under the
-// connection's cap and an account with headroom like any session.
+// node runs (RunsThreadKind: a built-in kind, or any catalogue kind on
+// this node's harness, run by the step runner), each in its own
+// session: a turn is a person waiting, so it is taken on the tick that
+// sees it, under the connection's cap and an account with headroom like
+// any session.
 func (l *Loop) threadsDue(ctx context.Context) {
 	if l.Thread == nil || !l.takesKind(harness.KindThread) {
 		return
@@ -290,7 +354,7 @@ func (l *Loop) threadsDue(ctx context.Context) {
 		}
 		for _, turn := range turns {
 			kind := turn.KindIn(kinds)
-			if _, runs := ThreadKinds[kind]; !runs {
+			if !RunsThreadKind(kind, l.Harness, kinds) {
 				continue
 			}
 			if why, at := atConnectionCap(sc, l.heldByOrg()); at {

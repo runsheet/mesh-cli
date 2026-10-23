@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -2605,6 +2606,19 @@ func (f *Fake) mesh(w http.ResponseWriter, r *http.Request) {
 		for _, slug := range []string{"runsheet/build", "runsheet/evaluate", "runsheet/plan", "runsheet/research", "runsheet/rebase"} {
 			kinds = append(kinds, map[string]any{"slug": slug, "product": "runsheet", "kind": strings.TrimPrefix(slug, "runsheet/"), "harness": []string{"claude-code", "codex"},
 				"finish": kindFinishes[slug], "access": []string{"repo", "runsheet", "model"}, "guidance": f.KindGuidance[slug], "finishSchema": f.KindFinishSchema[slug]})
+		}
+		// a raised turn's kind is listed as the turn describes it — its
+		// harness and finish — added when the rows above do not have it,
+		// overriding them when they do (RaiseThreadTurn)
+		extra := f.turnKinds()
+		for i, row := range kinds {
+			if t, ok := extra[row["slug"].(string)]; ok {
+				kinds[i] = t
+				delete(extra, row["slug"].(string))
+			}
+		}
+		for _, slug := range slices.Sorted(maps.Keys(extra)) {
+			kinds = append(kinds, extra[slug])
 		}
 		writeREST(w, http.StatusOK, map[string]any{"kinds": kinds})
 		return
