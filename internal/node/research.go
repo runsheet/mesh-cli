@@ -1,6 +1,7 @@
 package node
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/jobresult"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
 )
@@ -35,10 +37,13 @@ import (
 // the claim on every tick and is told to wait, the way the loop asks
 // for work items. So a refusal here is the normal answer, not an error.
 type Director struct {
-	GW      Gateway
-	Harness harness.Harness
-	WS      Workspacer
-	Cfg     *Config
+	GW Gateway
+	// noGuidance logs once per kind whose brief carries no guidance
+	// (ADR-041).
+	noGuidance NoGuidance
+	Harness    harness.Harness
+	WS         Workspacer
+	Cfg        *Config
 	// Layout, when set, is the node's job and connection trees (ADR-039):
 	// the session works in its goal's or direction's job. Nil keeps
 	// WorkRoot (the tests' layout).
@@ -242,10 +247,23 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		})
 	}
 	room := RoomFor(direction, project, goals)
+	// the research reaches the node by mesh_result (ADR-041): the holder
+	// for this job, on the brief's finish and schema, its finish section
+	// the prompt's last and the brief's guidance its first
+	brief := jobBriefOf(ctx, d.GW, ResearchKind, direction.ID)
+	holder, err := jobresult.New(ResearchKind, cmp.Or(brief.Finish, jobresult.FinishResearch), brief.FinishSchema)
+	if err != nil {
+		return err
+	}
+	if brief.Guidance == "" {
+		d.noGuidance.Note(ResearchKind, d.logf)
+	}
+	st.NodeTools = holder.Tools()
 	prompt := harness.ResearchPrompt(harness.ResearchInput{
 		Org: scope.Name(), Project: project.Slug, Direction: direction.Direction,
 		Repos: dirs, ContextDir: contextDir, ContextFiles: files, MeshContext: len(d.MCP) > 0,
 		Tools: toolHints(st.Use), Goals: existing, Room: room, Proposes: direction.Proposes(),
+		Guidance: brief.Guidance, Finish: holder.FinishSection(),
 	})
 	budget, budgetSource := d.budgetWithSource()
 	kept, err := keptRootFor(d.Layout, direction.ID)
@@ -324,8 +342,11 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	if note := acct.UseNote(result); note != "" && err == nil {
 		d.logf("%s: %s", label, note)
 	}
-	return d.handIn(ctx, direction, project, scope, dir, acct, result, err)
+	return d.handIn(ctx, direction, project, scope, dir, acct, holder, result, err)
 }
+
+// ResearchKind is runsheet's research kind, the job a research is.
+const ResearchKind = "runsheet/research"
 
 func (d *Director) runtimes() []string {
 	if d.Runtimes == nil {
@@ -413,7 +434,7 @@ func (d *Director) emptyResearch(ctx context.Context, direction gateway.Directio
 // empty research, so the claim is let go. A cancelled ctx leaves the
 // session running for the next node to adopt; otherwise its session
 // directory goes.
-func (d *Director) handIn(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope, dir string, acct *SessionAccount, result harness.Result, err error) error {
+func (d *Director) handIn(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope, dir string, acct *SessionAccount, holder *jobresult.Holder, result harness.Result, err error) error {
 	// logged before a done ctx returns: a deadline kills the unit too,
 	// and a detach kills nothing
 	logKilled(d.logf, project.Slug+"/"+direction.Slug, result.KilledPerSession(), result.KillError)
@@ -427,8 +448,10 @@ func (d *Director) handIn(ctx context.Context, direction gateway.Direction, proj
 	if err != nil {
 		return fmt.Errorf("research session: %w", acct.RedactErr(err))
 	}
-	result.Text = acct.Redact(result.Text)
-	research, notes, err := readResearch(direction, result.Text)
+	// the research is what the session handed the node's mesh_result
+	// (ADR-041), never its final message
+	recoverResult(holder, result, project.Slug+"/"+direction.Slug, d.logf)
+	research, notes, err := readResearch(direction, holder, acct.Redact)
 	if err != nil {
 		// the cost is real and the claim must be let go, so hand in an
 		// empty session rather than leaving the direction claimed: a
@@ -438,7 +461,7 @@ func (d *Director) handIn(ctx context.Context, direction gateway.Direction, proj
 		if direction.Proposes() {
 			what = "pitches"
 		}
-		note := fmt.Sprintf("the session's %s could not be read (%s): %s", what, result.SessionID, truncate(result.Text, 300))
+		note := fmt.Sprintf("the session's %s could not be read (%s): %s", what, result.SessionID, truncate(err.Error(), 300))
 		note = withUseNote(note, acct.UseNote(result))
 		if hand := acct.Carried(d.pitchFallback(d.GW.RecordDirectionResearch(ctx, direction.ID, scope.NodeID, gateway.Research{}, Cents(result.CostUSD), note, acct.Report(result)))); hand != nil {
 			d.logf("%s/%s: %v (and handing in the empty session failed: %v)", project.Slug, direction.Slug, err, hand)
@@ -496,13 +519,27 @@ func (d *Director) pitchFallback(err error) error {
 	return errors.Join(rest...)
 }
 
-// readResearch reads a session's final message by its direction's mode
-// (runsheet ADR 022): a propose direction's pitches and answers
-// (harness.ParsePitches), a set one's — or a mode-less one's — goal
-// proposals (harness.ParseProposals); with the notes the hand-in says.
-func readResearch(direction gateway.Direction, text string) (gateway.Research, string, error) {
+// readResearch reads a session's result — the `research` object it
+// handed mesh_result (ADR-041) — by its direction's mode (runsheet ADR
+// 022): a propose direction's pitches and answers
+// (harness.DecodeResearchPitches), a set one's — or a mode-less one's —
+// goal proposals (harness.DecodeResearchGoals); with the notes the
+// hand-in says. A session that gave the research up (mesh_fail), or
+// handed nothing in, is an error naming why.
+func readResearch(direction gateway.Direction, holder *jobresult.Holder, redact func(string) string) (gateway.Research, string, error) {
+	if holder == nil {
+		return gateway.Research{}, "", errors.New("no result holder for the session")
+	}
+	if why, failed := holder.Failed(); failed {
+		return gateway.Research{}, "", errors.New("the session gave the research up: " + redact(truncate(why, 300)))
+	}
+	res, ok := holder.Result()
+	if !ok {
+		return gateway.Research{}, "", errors.New("no result: the session made no mesh_result call")
+	}
+	graph, _ := redactGraph(res["research"], redact).(map[string]any)
 	if !direction.Proposes() {
-		specs, err := harness.ParseProposals(text)
+		specs, err := harness.DecodeResearchGoals(graph)
 		if err != nil {
 			return gateway.Research{}, "", err
 		}
@@ -516,7 +553,7 @@ func readResearch(direction gateway.Direction, text string) (gateway.Research, s
 		}
 		return gateway.Research{Proposals: proposals}, fmt.Sprintf("%d proposed", len(proposals)), nil
 	}
-	out, err := harness.ParsePitches(text)
+	out, err := harness.DecodeResearchPitches(graph)
 	if err != nil {
 		return gateway.Research{}, "", err
 	}
@@ -596,11 +633,17 @@ func (d *Director) AdoptResearch(ctx context.Context, direction gateway.Directio
 		s.Remove()
 		return errNoAttach
 	}
-	endProxy := adoptProxy(ctx, d.Proxies, d.Credentials, d.MCP, tools.RoleFor(string(harness.KindResearch)), d.runtimes(), gateway.SessionRef{Kind: string(harness.KindResearch), DirectionID: direction.ID}, s, project.Slug+"/"+direction.Slug, nil, d.logf)
+	// a fresh holder for the adopted session (ADR-041): a result it
+	// handed the node before this one lived with that node
+	holder, err := jobresult.New(ResearchKind, jobresult.FinishResearch, "")
+	if err != nil {
+		return err
+	}
+	endProxy := adoptProxy(ctx, d.Proxies, d.Credentials, d.MCP, tools.RoleFor(string(harness.KindResearch)), d.runtimes(), gateway.SessionRef{Kind: string(harness.KindResearch), DirectionID: direction.ID}, s, project.Slug+"/"+direction.Slug, holder.Tools(), d.logf)
 	defer endProxy(ctx)
 	d.logf("%s/%s: adopted its %s research session (pid %d)", project.Slug, direction.Slug, s.Liveness(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
-	return d.handIn(ctx, direction, project, scope, s.State.Workspace, nil, result, err)
+	return d.handIn(ctx, direction, project, scope, s.State.Workspace, nil, holder, result, err)
 }
 
 // RoomFor is how many more goals a direction has space for, given the

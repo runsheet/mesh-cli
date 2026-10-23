@@ -91,7 +91,7 @@ func TestLoopResearchesDirectedProjects(t *testing.T) {
 	p := h.jobs[0].Prompt
 	for _, want := range []string{
 		"Mesh is the place goals turn into merged pull requests.",
-		"`acme/widgets` in `repos/widgets/`", ContextDir, "```json",
+		"`acme/widgets` in `repos/widgets/`", ContextDir, "`research.goals` is your proposals",
 		"room for 2",          // three allowed, one goal running
 		"`ship-it` — Ship it", // what the project has already taken on
 	} {
@@ -434,6 +434,7 @@ func (h *barrierHarness) Run(ctx context.Context, job harness.Job, _ func(harnes
 	slug := strings.TrimSuffix(strings.TrimPrefix(job.Label, "mesh/"), " research")
 	text := "I read it.\n\n```json\n{\"goals\": [{\"slug\": \"" + slug + "-idea\", \"title\": \"An idea\"," +
 		" \"statement\": \"Do the thing.\", \"acceptance\": \"the thing is done\", \"why\": \"the direction says so\"}]}\n```"
+	handInScript(job, nil, text, nil)
 	return harness.Result{Success: true, Text: text, CostUSD: 1.25, SessionID: "s-" + slug}, nil
 }
 

@@ -120,3 +120,21 @@ its own kinds' guidance (`.mesh/agents/<kind>.md`).
   graph against them; the hosted `mesh_plan` stays reachable, since
   runsheet lets a planner session call it, and the node's `finishJob`
   is the plan Mesh acts on.
+- research and rebase: the research (`{research: {goals}}` or
+  `{research: {pitches, answers}}`) and the rebased head
+  (`{rebasedHead: {headSha, files}}`) through `mesh_result`
+  (`readResearch`, `rebasedHeadOf` read the holder;
+  `harness.DecodeResearchGoals`, `DecodeResearchPitches`,
+  `DecodeRebasedHead` decode the result), `ParseProposals`,
+  `ParsePitches`, `ParseRebase` and the `REBASED:`/`RESOLVED:`/`REBASE
+  FAILED:` lines gone; both prompts on the brief's guidance. A rebase
+  session, which has no proxied tools of its own, gets a proxy of the
+  node tools alone (`serveNodeToolsAlone`); the node that adopts it
+  serves a fresh holder on the socket its state recorded
+  (`serveNodeToolsAt`).
+- build: `BuildPrompt` opens with the brief's guidance and drops the
+  node's role line and rules; what stays is the node's — check main
+  first, test what you touched, the workspace facts, and the finish by
+  the node's own stdio `mesh_finish`/`mesh_fail` (ADR-023's amendment),
+  since the build's result is the node's push, not a session result.
+  `ParseAlreadyDone` stays as that finish's fallback.

@@ -53,16 +53,19 @@ func jobBriefOf(ctx context.Context, gw any, kind, id string) gateway.JobBrief {
 // run on the node's built-in prompt.
 const noGuidanceLine = "brief carries no guidance; running the built-in prompt"
 
-// NoGuidance logs noGuidanceLine once per kind. The zero value is ready.
+// NoGuidance logs noGuidanceLine once per kind. The zero value is ready,
+// and a copy shares the noting (the kinds map; noGuidanceMu guards every
+// NoGuidance, so a Runner or an Evaluator copied by value stays sound).
 type NoGuidance struct {
-	mu    sync.Mutex
 	kinds map[string]bool
 }
 
+var noGuidanceMu sync.Mutex
+
 // Note logs the line for kind the first time.
 func (n *NoGuidance) Note(kind string, logf func(string, ...any)) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
+	noGuidanceMu.Lock()
+	defer noGuidanceMu.Unlock()
 	if n.kinds == nil {
 		n.kinds = map[string]bool{}
 	}

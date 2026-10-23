@@ -5,14 +5,13 @@ import (
 	"testing"
 )
 
-// The director's proposals survive a proposal whose own prose mentions
-// a fence — the same trap that cost three plans on 2026-09-22, in the
-// other parser.
-func TestParseProposalsNestedFence(t *testing.T) {
+// A proposal whose own prose mentions a fence decodes like any other:
+// the result is an object, never text with fences in it.
+func TestDecodeProposalsNestedFence(t *testing.T) {
 	text := "I read the specs.\n\n```json\n{\"goals\": [{\"slug\": \"one-sign-in\", \"title\": \"One sign-in\", " +
 		"\"statement\": \"Everyone signs in once.\", \"acceptance\": \"the README shows ```sh\\nmesh login\\n``` and it works\", " +
 		"\"why\": \"the front door\"}]}\n```\n"
-	goals, err := ParseProposals(text)
+	goals, err := DecodeResearchGoals(researchOf(t, text))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -23,8 +22,8 @@ func TestParseProposalsNestedFence(t *testing.T) {
 
 // A session that decides nothing is worth doing says so, and that is an
 // answer rather than a failure.
-func TestParseProposalsEmptyIsAnAnswer(t *testing.T) {
-	goals, err := ParseProposals("Nothing is worth doing tonight; the backlog is clear.\n\n```json\n{\"goals\": []}\n```")
+func TestDecodeProposalsEmptyIsAnAnswer(t *testing.T) {
+	goals, err := DecodeResearchGoals(map[string]any{"goals": []any{}})
 	if err != nil {
 		t.Fatalf("an empty list is an answer: %v", err)
 	}
@@ -33,27 +32,26 @@ func TestParseProposalsEmptyIsAnAnswer(t *testing.T) {
 	}
 }
 
-func TestParseProposalsRefusals(t *testing.T) {
+func TestDecodeProposalsRefusals(t *testing.T) {
 	for what, text := range map[string]string{
-		"no json at all":   "I had a think and decided not to say.",
-		"no slug":          "```json\n{\"goals\": [{\"title\": \"T\", \"statement\": \"s\", \"acceptance\": \"a\"}]}\n```",
-		"no acceptance":    "```json\n{\"goals\": [{\"slug\": \"s\", \"title\": \"T\", \"statement\": \"s\"}]}\n```",
-		"no statement":     "```json\n{\"goals\": [{\"slug\": \"s\", \"title\": \"T\", \"acceptance\": \"a\"}]}\n```",
-		"prose after json": "I could not decide.",
+		"no goals key":  "```json\n{\"pitches\": []}\n```",
+		"no slug":       "```json\n{\"goals\": [{\"title\": \"T\", \"statement\": \"s\", \"acceptance\": \"a\"}]}\n```",
+		"no acceptance": "```json\n{\"goals\": [{\"slug\": \"s\", \"title\": \"T\", \"statement\": \"s\"}]}\n```",
+		"no statement":  "```json\n{\"goals\": [{\"slug\": \"s\", \"title\": \"T\", \"acceptance\": \"a\"}]}\n```",
 	} {
-		if _, err := ParseProposals(text); err == nil {
+		if _, err := DecodeResearchGoals(researchOf(t, text)); err == nil {
 			t.Fatalf("%s should be refused", what)
 		}
 	}
 }
 
-// A bare list is read as well as the wrapped object, and the same slug
-// twice in one session is one goal.
-func TestParseProposalsBareAndDeduplicated(t *testing.T) {
-	goals, err := ParseProposals("```json\n[" +
+// Goals a client sent as a JSON string are read as well as the list, and
+// the same slug twice in one session is one goal.
+func TestDecodeProposalsBareAndDeduplicated(t *testing.T) {
+	goals, err := DecodeResearchGoals(map[string]any{"goals": "[" +
 		"{\"slug\": \"a\", \"title\": \"A\", \"statement\": \"s\", \"acceptance\": \"a\"}," +
 		"{\"slug\": \"a\", \"title\": \"A again\", \"statement\": \"s\", \"acceptance\": \"a\"}," +
-		"{\"slug\": \"b\", \"title\": \"B\", \"statement\": \"s\", \"acceptance\": \"a\"}]\n```")
+		"{\"slug\": \"b\", \"title\": \"B\", \"statement\": \"s\", \"acceptance\": \"a\"}]"})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -78,10 +76,10 @@ func TestResearchPromptContract(t *testing.T) {
 		"`ship-it` — Ship it — running",
 		"`acme/widgets` in `repos/widgets/`",
 		".mesh/context", "INDEX.md, prd.md",
-		"at most 2 goals", "room for 2 right now",
+		"at most 2 goals", "room for 2 goals right now",
 		"$40.00",
 		"you research and propose, you do not build",
-		"```json\n{\"goals\": [{\"slug\"",
+		"`research.goals` is your proposals",
 		"mesh_document", "mesh_search",
 	} {
 		if !strings.Contains(p, want) {
@@ -136,8 +134,8 @@ func TestResearchPromptProposeMode(t *testing.T) {
 		"alternatives",
 		"signal",
 		"how_measured",
-		`{"pitches": [{"slug"`,
-		`"answers": [{"pitch"`,
+		"`research.pitches` is your pitches",
+		"`research.answers` is one",
 	} {
 		if !strings.Contains(p, want) {
 			t.Fatalf("prompt lacks %q:\n%s", want, p)
@@ -146,17 +144,17 @@ func TestResearchPromptProposeMode(t *testing.T) {
 	if strings.Contains(p, "Propose nothing") {
 		t.Fatalf("a propose direction is not capped by the room:\n%s", p)
 	}
-	if strings.Contains(p, `{"goals"`) {
+	if strings.Contains(p, "`research.goals`") {
 		t.Fatalf("a propose direction's contract is pitches, not goals:\n%s", p)
 	}
 	set := ResearchPrompt(ResearchInput{Org: "acme", Project: "mesh", Direction: "d", Room: 0})
 	if !strings.Contains(set, "Propose nothing, and say in your notes what you would have proposed.") || strings.Contains(set, "proposes rather than sets") {
 		t.Fatalf("a set direction at its ceiling:\n%s", set)
 	}
-	if !strings.Contains(set, `{"goals": [{"slug"`) {
+	if !strings.Contains(set, "`research.goals` is your proposals") {
 		t.Fatalf("a set direction keeps the goals contract:\n%s", set)
 	}
-	if strings.Contains(set, `"pitches"`) {
+	if strings.Contains(set, "`research.pitches`") {
 		t.Fatalf("a set direction does not pitch:\n%s", set)
 	}
 }

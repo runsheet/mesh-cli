@@ -400,6 +400,9 @@ func (st SessionTools) serveNodeToolsAlone(root, bin string, job *harness.Job, a
 		return noop, fmt.Errorf("node tools: listen %s: %w", sock, err)
 	}
 	sp := &SessionProxy{Dir: dir, Socket: sock, p: p}
+	// the relay entry names the socket, so the session's state records it
+	// (ProxyStateOf) and a node that adopts the session serves the tools
+	// there again (serveNodeToolsAt)
 	servers := make(map[string]any, len(job.MCPServers)+1)
 	for k, v := range job.MCPServers {
 		servers[k] = v
@@ -410,4 +413,24 @@ func (st SessionTools) serveNodeToolsAlone(root, bin string, job *harness.Job, a
 		acct.proxy = sp
 	}
 	return sp.End, nil
+}
+
+// serveNodeToolsAt serves st.NodeTools alone on an adopted session's
+// recorded socket (ADR-009, ADR-041): the file a dead node left is
+// removed and the proxy listens there again, so the session's next
+// mesh_result call reaches this node's holder. The returned end closes
+// the proxy; the directory is the session's, left as it was.
+func (st SessionTools) serveNodeToolsAt(sock string) (func(context.Context), error) {
+	noop := func(context.Context) {}
+	if len(st.NodeTools) == 0 {
+		return noop, nil
+	}
+	p := sessionproxy.New(map[string]sessionproxy.Upstream{
+		harness.NodeWorkMCP: sessionproxy.InProcess{Handler: &mcptool.Handler{Name: harness.NodeWorkMCP, Tools: st.NodeTools}},
+	})
+	_ = os.Remove(sock)
+	if err := p.Listen(sock); err != nil {
+		return noop, fmt.Errorf("node tools: listen %s: %w", sock, err)
+	}
+	return func(context.Context) { p.Close() }, nil
 }

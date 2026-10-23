@@ -27,6 +27,12 @@ func handInScript(job harness.Job, result map[string]any, text string, workCalls
 		return
 	}
 	if result == nil {
+		if why := scriptedFailure(text); why != "" {
+			if fail, ok := mcptool.Find(job.NodeTools, jobresult.FailTool); ok {
+				_, _ = fail.Call(context.Background(), map[string]any{"error": why})
+			}
+			return
+		}
 		result = scriptedResult(job.Kind, text, workCalls)
 	}
 	if result == nil {
@@ -54,8 +60,52 @@ func scriptedResult(kind harness.Kind, text string, workCalls map[string]map[str
 				return map[string]any{"plan": graph}
 			}
 		}
+	case harness.KindResearch:
+		if graph := fencedJSON(text); graph != nil {
+			if graph["goals"] != nil || graph["pitches"] != nil {
+				return map[string]any{"research": graph}
+			}
+		}
+	case harness.KindRebase:
+		if head, files, ok := scriptedRebase(text); ok {
+			return map[string]any{"rebasedHead": map[string]any{"headSha": head, "files": files}}
+		}
 	}
 	return nil
+}
+
+// scriptedRebase reads a script's REBASED/RESOLVED lines, the shape the
+// fixtures wrote before the result tool; ok is false with none.
+func scriptedRebase(text string) (head string, files []any, ok bool) {
+	files = []any{}
+	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+		l := strings.TrimSpace(strings.Trim(strings.TrimSpace(line), "`*_"))
+		upper := strings.ToUpper(l)
+		switch {
+		case strings.HasPrefix(upper, "REBASED:"):
+			head = strings.Trim(strings.TrimSpace(l[len("REBASED:"):]), "`*_ ")
+			ok = head != ""
+		case strings.HasPrefix(upper, "RESOLVED:"):
+			for _, f := range strings.Split(l[len("RESOLVED:"):], ",") {
+				if f = strings.TrimSpace(f); f != "" && f != "(none)" {
+					files = append(files, f)
+				}
+			}
+		}
+	}
+	return head, files, ok
+}
+
+// scriptedFailure is a script's REBASE FAILED line, "" with none: the
+// fake session's mesh_fail (handInScript).
+func scriptedFailure(text string) string {
+	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+		l := strings.TrimSpace(strings.Trim(strings.TrimSpace(line), "`*_"))
+		if strings.HasPrefix(strings.ToUpper(l), "REBASE FAILED:") {
+			return strings.TrimSpace(l[len("REBASE FAILED:"):])
+		}
+	}
+	return ""
 }
 
 // scriptedVerdict reads a script's VERDICT line, the notes above it and

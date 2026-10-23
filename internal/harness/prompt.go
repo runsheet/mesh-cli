@@ -55,6 +55,12 @@ type PromptInput struct {
 	// whose last note opens "for the docs writer:", in seq order. Empty
 	// for every other item (ADR-025).
 	FoldNotes []ItemNote
+	// Guidance is the kind's guidance text as the brief carries it
+	// (runsheet ADR 067 decision 7, ADR-041): the builder's role,
+	// published by the product, first in the prompt, the node's role
+	// line and rules gone; "" runs the built-in text. The build's finish
+	// stays the node's (finishByToolCall), whatever the guidance.
+	Guidance string
 }
 
 // ItemNote is a sibling item's note for the shared-docs writer: its
@@ -110,7 +116,12 @@ func contextRule(contextDir, project string) string {
 // commit clearly, run the acceptance check, never push.
 func BuildPrompt(in PromptInput) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "You are a Mesh node session working on item %d of goal %q (%s).\n\n", in.Seq, in.GoalTitle, in.GoalSlug)
+	guided := strings.TrimSpace(in.Guidance) != ""
+	if guided {
+		b.WriteString(strings.TrimSpace(in.Guidance) + "\n\n")
+	} else {
+		fmt.Fprintf(&b, "You are a Mesh node session working on item %d of goal %q (%s).\n\n", in.Seq, in.GoalTitle, in.GoalSlug)
+	}
 	fmt.Fprintf(&b, "# Item %d: %s\n\n", in.Seq, in.Title)
 	if strings.TrimSpace(in.Brief) != "" {
 		fmt.Fprintf(&b, "## Brief\n\n%s\n\n", strings.TrimSpace(in.Brief))
@@ -150,6 +161,11 @@ func BuildPrompt(in PromptInput) string {
 	checkMainFirst(&b, in)
 	b.WriteString(testWhatYouTouched)
 	servicesSection(&b, in.Services)
+	if guided {
+		buildWorkspace(&b, in)
+		finishByToolCall(&b, in)
+		return b.String()
+	}
 	b.WriteString("# Rules\n\n")
 	if in.ContextDir != "" {
 		fmt.Fprintf(&b, "1. Read the project's context in `%s/` first", in.ContextDir)
@@ -203,6 +219,25 @@ func finishByToolCall(b *strings.Builder, in PromptInput) {
 // the message from it is the evidence, which the node hands in as
 // mesh_finish outcome=already_done. ParseAlreadyDone reads it.
 const AlreadyDoneLine = "ALREADY DONE:"
+
+// buildWorkspace is the facts a session on the brief's guidance is told
+// in place of the node's rules (ADR-041): where it is, what the node does
+// with the branch, and where the context is.
+func buildWorkspace(b *strings.Builder, in PromptInput) {
+	b.WriteString("# The workspace\n\n")
+	fmt.Fprintf(b, "You are in %s on branch `%s` (from `%s`): work on this branch only, commit as you go, and do not push, open pull requests or touch anything outside this workspace — the node pushes the branch when you are done and runs the repository's validation on it.", in.Repo, in.Branch, in.BaseRef)
+	if in.ContextDir != "" {
+		fmt.Fprintf(b, " The project's context is in `%s/`", in.ContextDir)
+		if len(in.ContextFiles) > 0 {
+			fmt.Fprintf(b, " (%s)", strings.Join(in.ContextFiles, ", "))
+		}
+		b.WriteString(".")
+	}
+	if in.MeshContext {
+		b.WriteString(" " + contextRule(in.ContextDir, in.Project))
+	}
+	b.WriteString("\n")
+}
 
 // checkMainFirst is the builder's first step (adr-003 decision 2): look
 // on the base ref for the item's work before writing any, and hand the
@@ -1446,6 +1481,14 @@ type ResearchInput struct {
 	// the home repo's specs/strategy.md, in order; empty when the file
 	// has none. A propose-mode pitch names one of these in its bet.
 	Bets []string
+	// Guidance is the kind's guidance text as the brief carries it
+	// (runsheet ADR 067 decision 7, ADR-041): the director's role,
+	// published by the product, first in the prompt; "" runs the node's
+	// built-in role text and rules instead.
+	Guidance string
+	// Finish is the one fixed section every session ends on: how this
+	// job finishes (jobresult.FinishSection), by the node's mesh_result.
+	Finish string
 }
 
 // ExistingGoal is one goal the project has had.
@@ -1534,22 +1577,26 @@ type PitchAnswerSpec struct {
 	Text  string `json:"text"`
 }
 
-// PitchOutput is what ParsePitches reads from a propose-mode research
-// session's final message.
+// PitchOutput is what DecodeResearchPitches reads from a propose-mode
+// research session's result.
 type PitchOutput struct {
 	Pitches []PitchSpec       `json:"pitches"`
 	Answers []PitchAnswerSpec `json:"answers"`
 }
 
-// ResearchPrompt is the director's session (runsheet trd §6c): read the
-// direction, the project and what it has already done, and propose the
-// next goals worth doing. It writes nothing — the goals it proposes are
-// built by other sessions, each of which plans and builds as usual.
-//
-// Its contract line is the JSON block at the end, like the planner's.
+// ResearchPrompt is the director's session (runsheet trd §6c): the
+// brief's guidance first, then the job's facts — the direction, what the
+// project has taken on, its repos and context, the tools, the room —
+// then, with no guidance, the node's built-in role text and rules, then
+// the finish: the research handed to the node's mesh_result (ADR-041).
 func ResearchPrompt(in ResearchInput) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "You are the director of %s, project %s. Nobody is awake. Your job is to decide what this project should do next and to write the goals for it — other sessions plan each goal into items, build them, and open pull requests that are merged when they pass.\n\n", in.Org, in.Project)
+	guided := strings.TrimSpace(in.Guidance) != ""
+	if guided {
+		b.WriteString(strings.TrimSpace(in.Guidance) + "\n\n")
+	} else {
+		fmt.Fprintf(&b, "You are the director of %s, project %s. Nobody is awake. Your job is to decide what this project should do next and to write the goals for it — other sessions plan each goal into items, build them, and open pull requests that are merged when they pass.\n\n", in.Org, in.Project)
+	}
 	b.WriteString("# The direction\n\n")
 	if strings.TrimSpace(in.Direction) != "" {
 		fmt.Fprintf(&b, "%s\n\n", strings.TrimSpace(in.Direction))
@@ -1589,14 +1636,56 @@ func ResearchPrompt(in ResearchInput) string {
 		b.WriteString(contextRule(in.ContextDir, in.Org+"/"+in.Project) + "\n\n")
 	}
 	b.WriteString(toolsSection(in.Tools, researchToolUse))
-	b.WriteString("# Rules\n\n")
-	fmt.Fprintf(&b, "1. Research first. Read the direction, the design documents, the code and the open issues before you propose anything. A goal that duplicates what is there, or that the design already forbids, is worse than none.\n")
-	if in.Proposes {
-		researchPitchRules(&b, in)
-	} else {
-		researchGoalRules(&b, in)
+	researchRoom(&b, in)
+	if !guided {
+		b.WriteString("# Rules\n\n")
+		fmt.Fprintf(&b, "1. Research first. Read the direction, the design documents, the code and the open issues before you propose anything. A goal that duplicates what is there, or that the design already forbids, is worse than none.\n")
+		if in.Proposes {
+			researchPitchRules(&b, in)
+		} else {
+			researchGoalRules(&b, in)
+		}
+		b.WriteString("\n")
 	}
+	b.WriteString(in.Finish)
+	researchFinishDetail(&b, in)
 	return b.String()
+}
+
+// researchRoom is the fact every director is told, guided or not: how
+// many goals the platform has room for, and what that means for this
+// direction's mode (runsheet ADR 022).
+func researchRoom(b *strings.Builder, in ResearchInput) {
+	b.WriteString("# The room\n\n")
+	room := in.Room
+	if room < 0 {
+		room = 0
+	}
+	switch {
+	case in.Proposes:
+		fmt.Fprintf(b, "This direction proposes rather than sets: nothing you propose becomes a goal until a person accepts it, so the room is information, not a cap. The project has room for %d right now.", room)
+	case room == 0:
+		b.WriteString("There is no room for another goal right now — the project is at its ceiling. A set direction proposes nothing when there is no room.")
+	case room == 1:
+		b.WriteString("There is room for one goal right now: the platform takes at most one.")
+	default:
+		fmt.Fprintf(b, "There is room for %d goals right now: the platform takes at most that many, in your order.", room)
+	}
+	if in.DefaultBudgetCents > 0 {
+		fmt.Fprintf(b, " A goal here is usually given $%.2f.", float64(in.DefaultBudgetCents)/100)
+	}
+	b.WriteString("\n\n")
+}
+
+// researchFinishDetail says what the research's fields carry, after the
+// finish section: the result's shape is the node's, whatever the
+// guidance says (runsheet ADR 067 decision 10).
+func researchFinishDetail(b *strings.Builder, in ResearchInput) {
+	if in.Proposes {
+		b.WriteString("\n`research.pitches` is your pitches, each `{\"slug\", \"title\", \"problem\", \"evidence\": [{\"kind\", \"ref\", \"note\"}], \"bet\", \"scope\": {\"kind\": \"goal\"|\"initiative\", \"goals\": [{\"slug\", \"title\", \"statement\", \"acceptance\", \"budget_cents\"}]}, \"estimate\": {\"cost_cents\", \"days\", \"basis\"}, \"risks\", \"alternatives\", \"signal\": {\"metric\", \"how_measured\", \"direction\", \"window_days\"}}` — a pitch needs a slug, a title, a problem, at least one evidence entry with a ref, and a scope naming a goal (exactly one for kind goal); the same slug twice is one pitch. `research.answers` is one `{\"pitch\", \"text\"}` per open question you answer. An empty list is a valid answer for either.\n")
+		return
+	}
+	b.WriteString("\n`research.goals` is your proposals, most valuable first, each `{\"slug\", \"title\", \"statement\", \"acceptance\", \"why\", \"budget_cents\"}` — slug, title, statement and acceptance are needed, `budget_cents` only when the goal plainly needs more or less than usual; the same slug twice is one goal. An empty list is a valid answer: nothing worth doing.\n")
 }
 
 // researchSearchRule is the rule both researchGoalRules and
@@ -1617,7 +1706,7 @@ func researchGoalRules(b *strings.Builder, in ResearchInput) {
 	case in.Room == 1:
 		b.WriteString("2. Propose at most one goal — there is room for one. Make it the most valuable thing you found, or none if nothing is worth doing.\n")
 	default:
-		fmt.Fprintf(b, "2. Propose at most %d goals, fewer if fewer are worth doing, none if none is. There is room for %d right now.\n", in.Room, in.Room)
+		fmt.Fprintf(b, "2. Propose at most %d goals, fewer if fewer are worth doing, none if none is.\n", in.Room)
 	}
 	b.WriteString("3. Each goal is a few days' work for one person: several items' worth, one coherent piece of value. Not a task (\"rename the button\") and not a project (\"rewrite the front end\").\n")
 	b.WriteString("4. The statement says what is to be true when it is done, in the words the person who gave the direction would use. The acceptance is what someone can check — a test that passes, a command's output, a page that loads — never a feeling.\n")
@@ -1628,10 +1717,8 @@ func researchGoalRules(b *strings.Builder, in ResearchInput) {
 	b.WriteString("9. Change nothing in the repos: you research and propose, you do not build.\n")
 	b.WriteString("10. " + researchSearchRule + "\n")
 	if in.DefaultBudgetCents > 0 {
-		fmt.Fprintf(b, "11. A goal here is usually given $%.2f. Set budget_cents only when a goal plainly needs more or less; leave it out otherwise.\n", float64(in.DefaultBudgetCents)/100)
+		b.WriteString("11. Set budget_cents only when a goal plainly needs more or less than usual; leave it out otherwise.\n")
 	}
-	b.WriteString("\nEnd your final message with your proposals as a JSON object in a ```json fenced block, and nothing after it. An empty list is a valid answer:\n\n")
-	b.WriteString("```json\n{\"goals\": [{\"slug\": \"…\", \"title\": \"…\", \"statement\": \"…\", \"acceptance\": \"…\", \"why\": \"…\"}]}\n```\n")
 }
 
 // researchPitchRules writes a propose-mode direction's rules and its
@@ -1648,7 +1735,8 @@ func researchPitchRules(b *strings.Builder, in ResearchInput) {
 	if room < 0 {
 		room = 0
 	}
-	fmt.Fprintf(b, "2. This direction proposes rather than sets: nothing you propose becomes a goal until a person accepts it, so the room is information, not a cap. The project has room for %d right now. Propose what is worth doing, fewer if fewer are, none if none is; a proposal that would wait for room should say so in its why.\n", room)
+	_ = room
+	b.WriteString("2. This direction proposes rather than sets: nothing you propose becomes a goal until a person accepts it, so the room is information, not a cap. Propose what is worth doing, fewer if fewer are, none if none is; a proposal that would wait for room should say so in its why.\n")
 	fmt.Fprintf(b, "3. Before you pitch, call `mesh_projects` for this project (`mesh_projects { project: %q }`) and read your own direction's `pitch_feedback`, `bets` and `goal_history`: answer every open question of `open_questions` in your `answers`, never pitch a slug `declined` carries again, name each pitch's `bet` from `bets`, and size each `estimate` against `goal_history`.\n", in.Org+"/"+in.Project)
 	bet := "a strategy bet slug (the project's `bets`)"
 	if len(in.Bets) > 0 {
@@ -1664,10 +1752,8 @@ func researchPitchRules(b *strings.Builder, in ResearchInput) {
 	b.WriteString("11. Change nothing in the repos: you research and pitch, you do not build.\n")
 	b.WriteString("12. " + researchSearchRule + "\n")
 	if in.DefaultBudgetCents > 0 {
-		fmt.Fprintf(b, "13. A goal here is usually given $%.2f. Set a scope goal's budget_cents only when it plainly needs more or less; leave it out otherwise.\n", float64(in.DefaultBudgetCents)/100)
+		b.WriteString("13. Set a scope goal's budget_cents only when it plainly needs more or less than usual; leave it out otherwise.\n")
 	}
-	b.WriteString("\nEnd your final message with your pitches as a JSON object in a ```json fenced block, and nothing after it. An empty list is a valid answer, and so is an empty `answers` list:\n\n")
-	b.WriteString("```json\n{\"pitches\": [{\"slug\": \"…\", \"title\": \"…\", \"problem\": \"…\", \"evidence\": [{\"kind\": \"research_note\", \"ref\": \"…\", \"note\": \"…\"}], \"bet\": \"…\", \"scope\": {\"kind\": \"goal\", \"goals\": [{\"slug\": \"…\", \"title\": \"…\", \"statement\": \"…\", \"acceptance\": \"…\"}]}, \"estimate\": {\"cost_cents\": 400000, \"days\": 3, \"basis\": \"…\"}, \"risks\": [\"…\"], \"alternatives\": [\"…\"], \"signal\": {\"metric\": \"merged\", \"how_measured\": \"…\", \"direction\": \"up\", \"window_days\": 30}}], \"answers\": [{\"pitch\": \"<slug>\", \"text\": \"…\"}]}\n```\n")
 }
 
 // quoteAll backtick-quotes each string, for a list read in prose.
@@ -1679,82 +1765,17 @@ func quoteAll(ss []string) []string {
 	return out
 }
 
-// planCandidates is every place a JSON block might be in a research
-// session's message, best first: each fenced block from the last to the
-// first, then the whole text (ParseProposals, ParsePitches; the plan's
-// own reading is DecodePlan, from the mesh_result call). Trying them in
-// turn rather than taking the last fence marker is what makes a block
-// survive text that mentions a fence (seen 2026-09-22: three goals'
-// plans lost that way, each after a five-minute session).
-func planCandidates(text string) []string {
-	raw := strings.TrimSpace(text)
-	const fence = "```"
-	var marks []int
-	for i := 0; ; {
-		j := strings.Index(raw[i:], fence)
-		if j < 0 {
-			break
-		}
-		marks = append(marks, i+j)
-		i += j + len(fence)
-	}
-	trim := func(body string) string {
-		// drop the language tag on the opening line
-		if nl := strings.IndexByte(body, '\n'); nl >= 0 {
-			if head := strings.TrimSpace(body[:nl]); head == "" || !strings.ContainsAny(head, "{[") {
-				body = body[nl+1:]
-			}
-		}
-		return strings.TrimSpace(body)
-	}
-	var out []string
-	// every span between two markers, the latest close first and, for a
-	// given close, the earliest open first — so the whole block wins over
-	// a fragment starting at a fence the JSON itself mentions
-	for j := len(marks) - 1; j >= 1; j-- {
-		for i := 0; i < j; i++ {
-			if body := trim(raw[marks[i]+len(fence) : marks[j]]); body != "" {
-				out = append(out, body)
-			}
-		}
-	}
-	// an unclosed final block: everything after the last marker
-	if n := len(marks); n > 0 {
-		if body := trim(raw[marks[n-1]+len(fence):]); body != "" {
-			out = append(out, body)
-		}
-	}
-	return append(out, raw)
-}
-
-// ParseProposals reads a research session's goals out of its final
-// message. Like ParsePlan it tries every fenced span rather than the
-// last fence marker, so a proposal whose own prose mentions a fence
-// does not cost the session.
-func ParseProposals(text string) ([]ProposedSpec, error) {
+// DecodeResearchGoals reads a set direction's proposals out of the
+// `research` object the session handed mesh_result (ADR-041): its
+// `goals`, each with a slug, a title, a statement and an acceptance, the
+// same slug twice one goal. An empty list is an answer — nothing worth
+// doing — and a research with no `goals` at all is an error.
+func DecodeResearchGoals(research map[string]any) ([]ProposedSpec, error) {
 	var goals []ProposedSpec
-	found := false
-	for _, raw := range planCandidates(text) {
-		var wrapped struct {
-			Goals []ProposedSpec `json:"goals"`
-		}
-		if err := json.Unmarshal([]byte(raw), &wrapped); err == nil && len(wrapped.Goals) > 0 {
-			goals, found = wrapped.Goals, true
-			break
-		}
-		var bare []ProposedSpec
-		if err := json.Unmarshal([]byte(raw), &bare); err == nil && len(bare) > 0 {
-			goals, found = bare, true
-			break
-		}
-		// an empty list is an answer: {"goals": []} parses to nothing,
-		// and saying "nothing is worth doing" must not read as a failure
-		if err := json.Unmarshal([]byte(raw), &wrapped); err == nil && wrapped.Goals != nil {
-			found = true
-		}
-	}
-	if !found {
-		return nil, fmt.Errorf("no proposals in the director's message")
+	if ok, err := planGraph(research, "goals", &goals); err != nil {
+		return nil, fmt.Errorf("the research's goals: %w", err)
+	} else if !ok {
+		return nil, fmt.Errorf("no goals in the research")
 	}
 	slugs := map[string]bool{}
 	out := make([]ProposedSpec, 0, len(goals))
@@ -1775,34 +1796,23 @@ func ParseProposals(text string) ([]ProposedSpec, error) {
 	return out, nil
 }
 
-// ParsePitches reads a propose-mode research session's pitches and
-// answers out of its final message, in ParseProposals's own style
-// (planCandidates, a nested fence, a bare list, an empty list an
-// answer): a pitch without a slug, a title, a problem or a scope
+// DecodeResearchPitches reads a propose direction's pitches and answers
+// out of the `research` object the session handed mesh_result
+// (ADR-041): a pitch without a slug, a title, a problem or a scope
 // naming a goal is refused, so is a goal scope of two goals or an
 // evidence entry with no ref, the same slug twice is one pitch (the
-// first wins), and an answer naming no pitch or no text is dropped.
-func ParsePitches(text string) (PitchOutput, error) {
+// first wins), and an answer naming no pitch or no text is dropped. An
+// empty `pitches` list is an answer; a research with none is an error.
+func DecodeResearchPitches(research map[string]any) (PitchOutput, error) {
 	var pitches []PitchSpec
-	var answers []PitchAnswerSpec
-	found := false
-	for _, raw := range planCandidates(text) {
-		var wrapped struct {
-			Pitches []PitchSpec       `json:"pitches"`
-			Answers []PitchAnswerSpec `json:"answers"`
-		}
-		if err := json.Unmarshal([]byte(raw), &wrapped); err == nil && wrapped.Pitches != nil {
-			pitches, answers, found = wrapped.Pitches, wrapped.Answers, true
-			break
-		}
-		var bare []PitchSpec
-		if err := json.Unmarshal([]byte(raw), &bare); err == nil && len(bare) > 0 {
-			pitches, found = bare, true
-			break
-		}
+	if ok, err := planGraph(research, "pitches", &pitches); err != nil {
+		return PitchOutput{}, fmt.Errorf("the research's pitches: %w", err)
+	} else if !ok {
+		return PitchOutput{}, fmt.Errorf("no pitches in the research")
 	}
-	if !found {
-		return PitchOutput{}, fmt.Errorf("no pitches in the director's message")
+	var answers []PitchAnswerSpec
+	if _, err := planGraph(research, "answers", &answers); err != nil {
+		return PitchOutput{}, fmt.Errorf("the research's answers: %w", err)
 	}
 	slugs := map[string]bool{}
 	out := make([]PitchSpec, 0, len(pitches))
@@ -1865,17 +1875,15 @@ type RebaseInput struct {
 	MeshContext bool
 	// Services as on PromptInput.
 	Services string
+	// Guidance is the kind's guidance text as the brief carries it
+	// (runsheet ADR 067 decision 7, ADR-041): the rebase session's role,
+	// published by the product, first in the prompt; "" runs the node's
+	// built-in role text and rules instead.
+	Guidance string
+	// Finish is the one fixed section every session ends on: how this
+	// job finishes (jobresult.FinishSection), by the node's mesh_result.
+	Finish string
 }
-
-// The contract lines a rebase session ends with; ParseRebase reads them.
-// A rebase that landed ends with RebasedLine and its pushed head, then
-// ResolvedLine and the files it resolved; one that did not, with
-// RebaseFailedLine and why.
-const (
-	RebasedLine      = "REBASED:"
-	ResolvedLine     = "RESOLVED:"
-	RebaseFailedLine = "REBASE FAILED:"
-)
 
 // RebaseRunbook is the mesh-branch-rebase skill in runsheet/runsheet,
 // the runbook a rebase session follows.
@@ -1885,12 +1893,18 @@ const (
 )
 
 // RebasePrompt renders the prompt of a session of kind rebase (runsheet
-// ADR 008 step 2): its whole job is to rebase the item's branch onto its
-// base keeping both sides' intent, re-run the acceptance, push with
-// --force-with-lease and say what it did in the contract lines.
+// ADR 008 step 2): the brief's guidance first, then the job's facts —
+// the item, the conflict, the context, the services, the runbook — then,
+// with no guidance, the node's built-in role text and rules, then the
+// finish: the rebased head handed to the node's mesh_result (ADR-041).
 func RebasePrompt(in RebaseInput) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "You are a Mesh node session of kind rebase for item %d of goal %q (%s). The item's pull request passed evaluation, then its base moved and it conflicts; the integrator could not resolve it itself. Your whole job is to rebase the branch onto its base, keeping the intent of both sides, and push it. You do not change what the item does.\n\n", in.Seq, in.GoalTitle, in.GoalSlug)
+	guided := strings.TrimSpace(in.Guidance) != ""
+	if guided {
+		b.WriteString(strings.TrimSpace(in.Guidance) + "\n\n")
+	} else {
+		fmt.Fprintf(&b, "You are a Mesh node session of kind rebase for item %d of goal %q (%s). The item's pull request passed evaluation, then its base moved and it conflicts; the integrator could not resolve it itself. Your whole job is to rebase the branch onto its base, keeping the intent of both sides, and push it. You do not change what the item does.\n\n", in.Seq, in.GoalTitle, in.GoalSlug)
+	}
 	fmt.Fprintf(&b, "# Item %d: %s\n\n", in.Seq, in.Title)
 	if strings.TrimSpace(in.Brief) != "" {
 		fmt.Fprintf(&b, "## Brief\n\n%s\n\n", strings.TrimSpace(in.Brief))
@@ -1931,74 +1945,45 @@ func RebasePrompt(in RebaseInput) string {
 	b.WriteString("3. Resolve each conflicting file on its own, reading both sides and why each changed (`git log` of the base since the branch forked, the brief above). Keep both sides' intent: never drop either side's change to make the conflict go away. Generated code is regenerated from the merged source, not merged by hand. Then `git add` it and `git rebase --continue`.\n")
 	b.WriteString("4. Run the item's acceptance checks on the rebased head (the repository's AGENTS.md or CLAUDE.md says how), and fix only what the rebase broke.\n")
 	fmt.Fprintf(&b, "5. Push: `git push --force-with-lease=%s:origin/%s origin HEAD:refs/heads/%s`. If the push is refused, the branch moved under you: say so, do not force it.\n\n", in.Branch, in.Branch, in.Branch)
-	b.WriteString("# Rules\n\n")
-	b.WriteString("1. Rebase, resolve, check, push: nothing else. No new features, no refactors, no pull requests, nothing outside this workspace.\n")
-	b.WriteString("2. If a conflict cannot be resolved without dropping one side's intent, or the acceptance fails on the rebased head for a reason the rebase cannot fix, give up: `git rebase --abort`, push nothing, and say exactly why — which file, which change on each side. The builder is handed the item with your words.\n")
-	fmt.Fprintf(&b, "3. End your final message with a short account of what you resolved and how, then the contract lines, exactly and last:\n\n")
-	fmt.Fprintf(&b, "   On success, two lines — the head you pushed (`git rev-parse HEAD`) and the files you resolved by hand, comma-separated (`(none)` when the rebase needed none):\n\n   ```\n   %s <sha>\n   %s <file>, <file>\n   ```\n\n", RebasedLine, ResolvedLine)
-	fmt.Fprintf(&b, "   Otherwise one line with the reason:\n\n   ```\n   %s <why>\n   ```\n", RebaseFailedLine)
+	if !guided {
+		b.WriteString("# Rules\n\n")
+		b.WriteString("1. Rebase, resolve, check, push: nothing else. No new features, no refactors, no pull requests, nothing outside this workspace.\n")
+		b.WriteString("2. If a conflict cannot be resolved without dropping one side's intent, or the acceptance fails on the rebased head for a reason the rebase cannot fix, give up: `git rebase --abort`, push nothing, and say exactly why — which file, which change on each side. The builder is handed the item with your words.\n\n")
+	}
+	b.WriteString(in.Finish)
+	b.WriteString("\n`rebasedHead.headSha` is the commit you pushed (`git rev-parse HEAD`) and `rebasedHead.files` the files you resolved by hand, an empty list when the rebase needed none; the node reads the pushed head back from origin and hands it in with the files. When you give up, `mesh_fail` with exactly why — which file, which change on each side: the builder is handed the item with your words.\n")
 	return b.String()
-}
-
-// RebaseResult is what a rebase session's contract lines say.
-type RebaseResult struct {
-	// Rebased: the session pushed Head, having resolved Files.
-	Rebased bool
-	Head    string
-	Files   []string
-	// Reason is why it did not, when Rebased is false.
-	Reason string
 }
 
 var shaShape = regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`)
 
-// ParseRebase reads a rebase session's final message: the last contract
-// line decides. ok is false when there is none, or a REBASED line with
-// no sha — a session that cannot be read has not rebased.
-func ParseRebase(text string) (RebaseResult, bool) {
-	lines := strings.Split(strings.TrimSpace(text), "\n")
-	var files []string
-	var sawResolved bool
-	for i := len(lines) - 1; i >= 0; i-- {
-		l := strings.TrimSpace(strings.Trim(strings.TrimSpace(lines[i]), "`*_"))
-		upper := strings.ToUpper(l)
-		switch {
-		case strings.HasPrefix(upper, ResolvedLine) && !sawResolved:
-			sawResolved = true
-			files = splitFiles(l[len(ResolvedLine):])
-		case strings.HasPrefix(upper, RebaseFailedLine):
-			reason := strings.TrimSpace(l[len(RebaseFailedLine):])
-			if reason == "" {
-				reason = strings.TrimSpace(strings.Join(lines[:i], "\n"))
+// DecodeRebasedHead reads the `rebasedHead` object a rebase session
+// handed mesh_result (ADR-041): its headSha (`head_sha` too), a commit
+// sha of 7 to 64 hex digits, lower-cased, and its files, trimmed, the
+// empty ones dropped, never nil. An error names what is missing.
+func DecodeRebasedHead(rebased map[string]any) (head string, files []string, err error) {
+	head = strings.TrimSpace(callString(rebased["headSha"]))
+	if head == "" {
+		head = strings.TrimSpace(callString(rebased["head_sha"]))
+	}
+	head = strings.Trim(head, "`*_ ")
+	if !shaShape.MatchString(head) {
+		return "", nil, fmt.Errorf("rebasedHead.headSha %q is not a commit sha", head)
+	}
+	files = []string{}
+	switch v := rebased["files"].(type) {
+	case []any:
+		for _, f := range v {
+			if s := strings.TrimSpace(callString(f)); s != "" && s != "(none)" {
+				files = append(files, s)
 			}
-			if reason == "" {
-				reason = "the rebase session gave up and did not say why"
+		}
+	case string:
+		for _, s := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' || r == '\n' }) {
+			if s = strings.Trim(strings.TrimSpace(s), "`"); s != "" && s != "(none)" {
+				files = append(files, s)
 			}
-			return RebaseResult{Reason: reason}, true
-		case strings.HasPrefix(upper, RebasedLine):
-			head := strings.Trim(strings.TrimSpace(l[len(RebasedLine):]), "`*_ ")
-			if !shaShape.MatchString(head) {
-				return RebaseResult{}, false
-			}
-			if files == nil {
-				files = []string{}
-			}
-			return RebaseResult{Rebased: true, Head: strings.ToLower(head), Files: files}, true
 		}
 	}
-	return RebaseResult{}, false
-}
-
-// splitFiles reads a RESOLVED line's files: comma- or space-separated,
-// "(none)" or "none" for no file.
-func splitFiles(s string) []string {
-	files := []string{}
-	for _, f := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
-		f = strings.Trim(f, "`*_")
-		if f == "" || strings.EqualFold(f, "(none)") || strings.EqualFold(f, "none") {
-			continue
-		}
-		files = append(files, f)
-	}
-	return files
+	return strings.ToLower(head), files, nil
 }

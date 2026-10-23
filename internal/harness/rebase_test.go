@@ -6,15 +6,16 @@ import (
 	"testing"
 )
 
-// The rebase prompt's contract lines are load-bearing: ParseRebase reads
-// them, so the prompt must name them exactly as they are parsed.
+// The rebase prompt carries the job's facts and the runbook, and ends on
+// the finish: the rebased head handed to mesh_result (ADR-041).
 func TestRebasePromptContract(t *testing.T) {
 	p := RebasePrompt(RebaseInput{GoalSlug: "ship-it", GoalTitle: "Ship it", Seq: 2, Title: "Make it pass", Acceptance: "go test ./... passes",
 		Repo: "acme/widgets", Branch: "mesh/ship-it-2", BaseRef: "main", Conflict: "<<<<<<< main.go\n=======\n>>>>>>>", Files: []string{"main.go"},
-		ContextDir: ".mesh/context", ContextFiles: []string{"adr-001.md"}, Project: "acme/mesh", MeshContext: true})
+		ContextDir: ".mesh/context", ContextFiles: []string{"adr-001.md"}, Project: "acme/mesh", MeshContext: true, Finish: "# How this job finishes\n\nCall `mesh_result` once.\n"})
 	for _, want := range []string{
-		"REBASED: <sha>\n   RESOLVED: <file>, <file>",
-		"REBASE FAILED: <why>",
+		"# How this job finishes",
+		"`rebasedHead.headSha` is the commit you pushed",
+		"`mesh_fail` with exactly why",
 		"git push --force-with-lease=mesh/ship-it-2:origin/mesh/ship-it-2 origin HEAD:refs/heads/mesh/ship-it-2",
 		"a fresh checkout of acme/widgets made for this rebase alone",
 		"git rebase origin/main",
@@ -32,8 +33,10 @@ func TestRebasePromptContract(t *testing.T) {
 			t.Fatalf("rebase prompt lacks %q:\n%s", want, p)
 		}
 	}
-	if RebasedLine != "REBASED:" || ResolvedLine != "RESOLVED:" || RebaseFailedLine != "REBASE FAILED:" {
-		t.Fatal("the contract lines changed")
+	for _, gone := range []string{"REBASED:", "RESOLVED:", "REBASE FAILED:", "End your final message"} {
+		if strings.Contains(p, gone) {
+			t.Fatalf("the rebase prompt still carries the contract line %q", gone)
+		}
 	}
 	// without mesh-context the steps are the runbook, and no tool is named
 	if q := RebasePrompt(RebaseInput{Branch: "b", BaseRef: "main"}); strings.Contains(q, "mesh_document") || !strings.Contains(q, "mesh-branch-rebase skill's steps") {
@@ -41,26 +44,54 @@ func TestRebasePromptContract(t *testing.T) {
 	}
 }
 
-func TestParseRebase(t *testing.T) {
+// A rebasedHead decodes to its lower-cased head and its files, trimmed,
+// `(none)` and blanks dropped, never nil; one with no commit sha is an
+// error. Both headSha and head_sha are read, and files as a list or a
+// comma-separated string.
+func TestDecodeRebasedHead(t *testing.T) {
 	cases := []struct {
-		in   string
-		want RebaseResult
-		ok   bool
+		in    map[string]any
+		head  string
+		files []string
+		ok    bool
 	}{
-		{"Kept both enum members.\n\nREBASED: ABC1234def\nRESOLVED: main.go, specs/goal-x.md", RebaseResult{Rebased: true, Head: "abc1234def", Files: []string{"main.go", "specs/goal-x.md"}}, true},
-		{"**REBASED: abc1234**\n`RESOLVED: (none)`", RebaseResult{Rebased: true, Head: "abc1234", Files: []string{}}, true},
-		{"REBASED: abc1234", RebaseResult{Rebased: true, Head: "abc1234", Files: []string{}}, true},
-		{"main.go: both sides rewrote Run differently.\nREBASE FAILED: main.go Run: the base removed the retry the branch depends on", RebaseResult{Reason: "main.go Run: the base removed the retry the branch depends on"}, true},
-		{"main.go cannot be merged.\nREBASE FAILED:", RebaseResult{Reason: "main.go cannot be merged."}, true},
-		{"REBASED: abc1234\nthen the push was refused\nREBASE FAILED: push refused", RebaseResult{Reason: "push refused"}, true},
-		{"REBASED: not-a-sha\nRESOLVED: a.go", RebaseResult{}, false},
-		{"I rebased it.", RebaseResult{}, false},
-		{"", RebaseResult{}, false},
+		{map[string]any{"headSha": "ABC1234def", "files": []any{"main.go", " specs/goal-x.md "}}, "abc1234def", []string{"main.go", "specs/goal-x.md"}, true},
+		{map[string]any{"head_sha": "abc1234", "files": "(none)"}, "abc1234", []string{}, true},
+		{map[string]any{"headSha": "abc1234"}, "abc1234", []string{}, true},
+		{map[string]any{"headSha": "abc1234", "files": "a.go, b.go"}, "abc1234", []string{"a.go", "b.go"}, true},
+		{map[string]any{"headSha": "not-a-sha", "files": []any{"a.go"}}, "", nil, false},
+		{map[string]any{}, "", nil, false},
+		{nil, "", nil, false},
 	}
 	for _, c := range cases {
-		got, ok := ParseRebase(c.in)
-		if ok != c.ok || !reflect.DeepEqual(got, c.want) {
-			t.Errorf("ParseRebase(%q) = %+v %v; want %+v %v", c.in, got, ok, c.want, c.ok)
+		head, files, err := DecodeRebasedHead(c.in)
+		if (err == nil) != c.ok || head != c.head || !reflect.DeepEqual(files, c.files) {
+			t.Errorf("DecodeRebasedHead(%v) = %q %v %v; want %q %v ok=%v", c.in, head, files, err, c.head, c.files, c.ok)
 		}
+	}
+}
+
+// A rebase session on the brief's guidance opens with it and carries
+// none of the node's role text or rules; without guidance the built-in
+// text runs, ending on the finish (ADR-041).
+func TestRebasePromptRunsOnTheBriefsGuidance(t *testing.T) {
+	finish := "# How this job finishes\n\nCall `mesh_result` once.\n"
+	p := RebasePrompt(RebaseInput{GoalSlug: "g", GoalTitle: "G", Seq: 2, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main", Guidance: "You rebase one branch.\n", Finish: finish})
+	if !strings.HasPrefix(p, "You rebase one branch.\n\n# Item 2: T\n") {
+		t.Fatalf("the prompt does not open with the guidance:\n%s", p)
+	}
+	for _, want := range []string{"# The conflict", "# The runbook", "git rebase origin/main", finish, "`rebasedHead.headSha`"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the guided rebase prompt lacks %q", want)
+		}
+	}
+	for _, gone := range []string{"You are a Mesh node session of kind rebase", "# Rules", "1. Rebase, resolve, check, push"} {
+		if strings.Contains(p, gone) {
+			t.Errorf("the guided rebase prompt still carries %q", gone)
+		}
+	}
+	fallback := RebasePrompt(RebaseInput{Branch: "b", BaseRef: "main", Finish: finish})
+	if !strings.Contains(fallback, "You are a Mesh node session of kind rebase") || !strings.Contains(fallback, "# Rules\n\n1. Rebase, resolve, check, push") || !strings.HasSuffix(strings.TrimSpace(fallback), "the builder is handed the item with your words.") {
+		t.Fatalf("the built-in rebase prompt:\n%s", fallback)
 	}
 }

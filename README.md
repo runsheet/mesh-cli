@@ -508,8 +508,10 @@ and leaves it for a node.
   acceptance and pushes with `--force-with-lease`. The runbook is the
   mesh-branch-rebase skill in runsheet/runsheet
   (`skill-mesh-branch-rebase`, read through runsheet); the prompt
-  carries its steps for when it cannot be fetched. The session ends with
-  `REBASED: <sha>` and `RESOLVED: <files>`, or `REBASE FAILED: <why>`.
+  carries its steps for when it cannot be fetched. The session hands the
+  node its result through the node's `mesh_result` tool —
+  `{rebasedHead: {headSha, files}}` — or gives up through `mesh_fail`
+  with why (ADR-041).
 - **Finish.** The node reads the pushed head back from the remote and
   hands it in with the resolved files through `FinishWorkItemRebase`.
 - **Fail.** Anything else — no token, a failed checkout, a session that
