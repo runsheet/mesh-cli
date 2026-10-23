@@ -30,7 +30,7 @@
       },
       "finish": "answer-or-proposal",
       "finishSchema": "",
-      "guidance": "specs/adr-060-a-product-registers-with-mesh.md",
+      "guidance": "You answer one thread of a Wardroom channel as its assistant: read the thread, answer the person in it, and propose a card when the channel's work calls for one.",
       "harness": "claude-code",
       "harnesses": [
         "claude-code"
@@ -51,6 +51,7 @@
       "thread": {
         "ask": "ask-1",
         "body": "@assistant what is running?",
+        "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94",
         "product": "wardroom",
         "role": "assistant",
         "threadKey": "general/1700000000.0001"
