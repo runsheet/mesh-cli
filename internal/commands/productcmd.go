@@ -47,7 +47,8 @@ var productPublishCmd = &cobra.Command{
 	Short: "Publish this checkout's catalogue (.mesh/) to Mesh as the product's client",
 	Long: `Publish reads .mesh/product.yml, .mesh/jobs/*.yml and the manifest's roles
 directory (.mesh/roles/ by default), reads each kind's and role's guidance
-from the markdown file its guidance: names, and sends the whole catalogue to
+from the markdown file its guidance: names and its finish_schema from the
+JSON file its finish_schema: names, and sends the whole catalogue to
 PUT /mesh/v1/products/<product>/catalogue. Mesh checks it whole: one bad kind
 or role refuses all of it, and a kind or role the bundle no longer names is
 retired. The first publish of a product registers it to the client.

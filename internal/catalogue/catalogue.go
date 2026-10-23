@@ -2,13 +2,15 @@
 // checkout for `mesh product publish` (runsheet ADR 067 §6): the
 // manifest at .mesh/product.yml, each kind at .mesh/jobs/<kind>.yml and
 // each role in the manifest's roles directory, with every `guidance:`
-// read from the markdown file it names. The layout is this CLI's
+// read from the markdown file it names and every `finish_schema:` from
+// the JSON file it names. The layout is this CLI's
 // convention, not Mesh's: Mesh takes the bundle from anything that sends
 // it, and checks it again whole.
 package catalogue
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -19,6 +21,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"gopkg.in/yaml.v3"
 )
 
@@ -34,6 +37,10 @@ const DefaultRolesDir = ".mesh/roles/"
 // MaxGuidance is the most guidance text one kind or role carries, as Mesh
 // checks it.
 const MaxGuidance = 64 << 10
+
+// MaxFinishSchema is the most a kind's or role's finish_schema may be, as
+// Mesh checks it (runsheet ADR 067 decision 10).
+const MaxFinishSchema = 64 << 10
 
 var slugRule = regexp.MustCompile(`^[a-z0-9-]+$`)
 
@@ -76,15 +83,19 @@ type Hooks struct {
 	ConfirmCallback bool   `json:"confirm_callback,omitempty" yaml:"confirm_callback"`
 }
 
-// Kind is one kind of job, its guidance the text itself.
+// Kind is one kind of job, its guidance the text itself and its
+// finish_schema the JSON Schema's text (runsheet ADR 067 decision 10:
+// the product's schema for its part of the result, which Mesh and the
+// node validate a session's result against).
 type Kind struct {
-	Kind     string   `json:"kind"`
-	Harness  []string `json:"harness"`
-	Finish   string   `json:"finish"`
-	Access   []string `json:"access,omitempty"`
-	Needs    string   `json:"needs,omitempty"`
-	Pods     string   `json:"pods,omitempty"`
-	Guidance string   `json:"guidance,omitempty"`
+	Kind         string   `json:"kind"`
+	Harness      []string `json:"harness"`
+	Finish       string   `json:"finish"`
+	Access       []string `json:"access,omitempty"`
+	Needs        string   `json:"needs,omitempty"`
+	Pods         string   `json:"pods,omitempty"`
+	Guidance     string   `json:"guidance,omitempty"`
+	FinishSchema string   `json:"finish_schema,omitempty"`
 }
 
 // Role is a kind with a trigger, an identity and powers.
@@ -127,16 +138,17 @@ func (h *harness) UnmarshalYAML(n *yaml.Node) error {
 // kindFile is a kind file as written (runsheet ADR 061 §2); a role file
 // is one with the role fields beside it.
 type kindFile struct {
-	Kind     string   `yaml:"kind"`
-	Harness  harness  `yaml:"harness"`
-	Finish   string   `yaml:"finish"`
-	Access   []string `yaml:"access"`
-	Needs    string   `yaml:"needs"`
-	Pods     string   `yaml:"pods"`
-	Guidance string   `yaml:"guidance"`
-	Trigger  string   `yaml:"trigger"`
-	Identity string   `yaml:"identity"`
-	Powers   []string `yaml:"powers"`
+	Kind         string   `yaml:"kind"`
+	Harness      harness  `yaml:"harness"`
+	Finish       string   `yaml:"finish"`
+	Access       []string `yaml:"access"`
+	Needs        string   `yaml:"needs"`
+	Pods         string   `yaml:"pods"`
+	Guidance     string   `yaml:"guidance"`
+	FinishSchema string   `yaml:"finish_schema"`
+	Trigger      string   `yaml:"trigger"`
+	Identity     string   `yaml:"identity"`
+	Powers       []string `yaml:"powers"`
 }
 
 // Problems is every reason a checkout's catalogue cannot be published.
@@ -211,6 +223,11 @@ func Load(root string, src Source) (*Bundle, error) {
 				add("%s", err)
 			}
 			k.Guidance = text
+			schema, err := finishSchema(root, rel, k)
+			if err != nil {
+				add("%s", err)
+			}
+			k.FinishSchema = schema
 			out = append(out, k)
 		}
 		return out
@@ -219,7 +236,7 @@ func Load(root string, src Source) (*Bundle, error) {
 		if k.Trigger != "" || k.Identity != "" || len(k.Powers) > 0 {
 			add("%s%s.yml: a kind has no trigger, identity or powers: a role lives in the roles directory", JobsDir, k.Kind)
 		}
-		b.Kinds = append(b.Kinds, Kind{Kind: k.Kind, Harness: k.Harness, Finish: k.Finish, Access: k.Access, Needs: k.Needs, Pods: k.Pods, Guidance: k.Guidance})
+		b.Kinds = append(b.Kinds, Kind{Kind: k.Kind, Harness: k.Harness, Finish: k.Finish, Access: k.Access, Needs: k.Needs, Pods: k.Pods, Guidance: k.Guidance, FinishSchema: k.FinishSchema})
 	}
 	rolesDir := strings.TrimSuffix(cleanDir(m.Roles, DefaultRolesDir), "/") + "/"
 	for _, k := range read(rolesDir) {
@@ -234,7 +251,7 @@ func Load(root string, src Source) (*Bundle, error) {
 			add("%s: `identity` is required", rel)
 		}
 		b.Roles = append(b.Roles, Role{
-			Kind:    Kind{Kind: k.Kind, Harness: k.Harness, Finish: k.Finish, Access: k.Access, Needs: k.Needs, Pods: k.Pods, Guidance: k.Guidance},
+			Kind:    Kind{Kind: k.Kind, Harness: k.Harness, Finish: k.Finish, Access: k.Access, Needs: k.Needs, Pods: k.Pods, Guidance: k.Guidance, FinishSchema: k.FinishSchema},
 			Trigger: k.Trigger, Identity: k.Identity, Powers: k.Powers,
 		})
 	}
@@ -284,6 +301,50 @@ func guidance(root, rel string, k kindFile) (string, error) {
 		return "", fmt.Errorf("%s: guidance %s is empty", rel, clean)
 	}
 	return string(raw), nil
+}
+
+// finishSchema reads the JSON file a kind's `finish_schema:` names,
+// relative to the checkout (runsheet ADR 067 decision 10): the product's
+// JSON Schema for its part of the result, kept as a file a person
+// reviews, the bundle carrying its text. It is optional; when named it
+// must be in the checkout, at most MaxFinishSchema, and a JSON object
+// that resolves as a JSON Schema with no external references — what Mesh
+// refuses at the publish, refused here first.
+func finishSchema(root, rel string, k kindFile) (string, error) {
+	ref := strings.TrimSpace(k.FinishSchema)
+	if ref == "" {
+		return "", nil
+	}
+	if !strings.HasSuffix(ref, ".json") {
+		return "", fmt.Errorf("%s: finish_schema %q names no JSON file in the checkout (a path ending in .json, e.g. .mesh/schemas/%s.json)", rel, ref, k.Kind)
+	}
+	clean := path.Clean(strings.TrimPrefix(ref, "/"))
+	if strings.HasPrefix(clean, "../") || clean == ".." {
+		return "", fmt.Errorf("%s: finish_schema %q is outside the checkout", rel, ref)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(clean)))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("%s: finish_schema %s does not exist", rel, clean)
+		}
+		return "", fmt.Errorf("%s: finish_schema %s: %v", rel, clean, err)
+	}
+	if len(raw) > MaxFinishSchema {
+		return "", fmt.Errorf("%s: finish_schema %s is %d bytes; at most %d", rel, clean, len(raw), MaxFinishSchema)
+	}
+	text := strings.TrimSpace(string(raw))
+	var object map[string]any
+	if !strings.HasPrefix(text, "{") || json.Unmarshal([]byte(text), &object) != nil {
+		return "", fmt.Errorf("%s: finish_schema %s is not a JSON object", rel, clean)
+	}
+	var schema jsonschema.Schema
+	if err := json.Unmarshal([]byte(text), &schema); err != nil {
+		return "", fmt.Errorf("%s: finish_schema %s does not parse as a JSON Schema: %v", rel, clean, err)
+	}
+	if _, err := schema.Resolve(nil); err != nil {
+		return "", fmt.Errorf("%s: finish_schema %s does not resolve as a JSON Schema: %v", rel, clean, err)
+	}
+	return text, nil
 }
 
 func cleanDir(dir, fallback string) string {

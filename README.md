@@ -3086,6 +3086,15 @@ A kind's or role's `guidance:` names a markdown file in the checkout
 (`.mesh/agents/review.md`); the CLI sends its text, at most 64 KiB. A kind
 with `harness: none` needs none.
 
+A kind's or role's `finish_schema:` names a JSON file in the checkout
+(`.mesh/schemas/triage.json`): the product's JSON Schema for its part of
+a session's result (runsheet ADR 067 decision 10), which the node's
+`mesh_result` and Mesh's `finishJob` validate the result against. The CLI
+sends its text as the bundle's `finish_schema`, at most 64 KiB; a path
+outside the checkout, a file that is not a JSON object, or one that does
+not resolve as a JSON Schema is refused before anything is sent, and
+`--dry-run` prints it with the rest of the bundle. It is optional.
+
 It signs in as the product's own Latchkey client (`client_credentials` at
 `MESH_PRODUCT_ISSUER`, default `https://auth.runsheet.dev`) and sends
 everything to `PUT /mesh/v1/products/<product>/catalogue`:
