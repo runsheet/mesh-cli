@@ -156,6 +156,13 @@ func (r *Runner) checkoutServed(ctx context.Context, t validationTarget, c mainC
 		gctx = WithClone(gctx, jobCheckoutOf(t.dir))
 	}
 	gd := r.GitData
+	if c.pull {
+		// a pull request's head is read by its sha alone: the platform
+		// names it and checks the attestation against the pull request's
+		// head on GitHub. What the served diff cannot read of a head on a
+		// fork is the worktree's turn, which fetches the pull ref.
+		return r.checkoutServedPull(ctx, gctx, t, c)
+	}
 	if c.atHead {
 		head, err := gd.Commit(gctx, c.repo, c.branch)
 		if err != nil {
@@ -175,6 +182,27 @@ func (r *Runner) checkoutServed(ctx context.Context, t validationTarget, c mainC
 			return "", nil, &CommitNotOnBranchError{Branch: c.branch, SHA: c.sha}
 		}
 	}
+	return r.materializeServed(ctx, gctx, t, c)
+}
+
+// checkoutServedPull is checkoutServed for a pull request's head: any
+// error the read gives that is not already a fallback becomes one, so
+// the worktree fetches refs/pull/<n>/head instead.
+func (r *Runner) checkoutServedPull(ctx, gctx context.Context, t validationTarget, c mainCommit) (string, *servedTree, error) {
+	dir, served, err := r.materializeServed(ctx, gctx, t, c)
+	if err != nil {
+		if _, ok := fallbackOf(err); !ok {
+			return "", nil, &servedFallback{reason: "pull request head not served", err: err}
+		}
+	}
+	return dir, served, err
+}
+
+// materializeServed reads c.sha's commit, compares it with t's base
+// (or its first parent, t.diffFrom) and materialises it at a fresh
+// scratch dir.
+func (r *Runner) materializeServed(ctx, gctx context.Context, t validationTarget, c mainCommit) (string, *servedTree, error) {
+	gd := r.GitData
 	commit, err := gd.Commit(gctx, c.repo, c.sha)
 	if err != nil {
 		return "", nil, validate.Classify(fmt.Errorf("read %s: %w", short(c.sha), err))

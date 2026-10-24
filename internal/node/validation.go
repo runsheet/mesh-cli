@@ -119,7 +119,10 @@ type validationTarget struct {
 	cred *ItemCred
 	// batchID is the merge batch a candidate's validation attests
 	// (mainvalidation.go): set, there is no item — the upload goes by
-	// RecordBatchCandidateAttestation carrying it. repoTok, set with no
+	// RecordBatchCandidateAttestation carrying it. A hand-opened pull
+	// request's validation sets its pullRequestValidationId here too, for
+	// its scratch's name: its attestation goes back by the loop's
+	// finishJob, never by an upload. repoTok, set with no
 	// cred, is a token its fetches go out on as it is, never renewed.
 	batchID string
 	repoTok *gateway.GitHubToken
@@ -136,6 +139,10 @@ type validationTarget struct {
 	// base's place: a merged item's merge commit is diffed against its
 	// first parent, since main already holds it (mainvalidation.go).
 	diffFrom string
+	// allSuites, set, runs every suite validate.yml declares whatever the
+	// changed paths: a hand-opened pull request's head is attested whole,
+	// its diff from the default branch selecting nothing (mainvalidation.go).
+	allSuites bool
 	// served, set, is a commit materialised from GitHub's served diff
 	// at dir (serveddiff.go): no git there, so its changed paths are the
 	// compare's, its head and tree the ones read and checked.
@@ -434,6 +441,9 @@ func (vr validator) runServed(ctx context.Context, t validationTarget, v *buildV
 func (vr validator) runSteps(ctx context.Context, t validationTarget, v *buildValidation, cfg validate.Config, changed []string, head string,
 	build func([]validate.StepResult, validate.Meta) (validate.Attestation, error)) (validate.Attestation, error) {
 	steps := validate.Select(cfg, changed)
+	if t.allSuites {
+		steps = cfg.Steps
+	}
 	names := make([]string, len(steps))
 	for i, s := range steps {
 		names[i] = s.Name

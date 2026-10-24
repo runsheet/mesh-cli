@@ -65,6 +65,13 @@ type Loop struct {
 	// capacity the same way, offered after every batch. Optional; nil
 	// validates no merge commit.
 	ValidateMain func(ctx context.Context, req gateway.MainValidationRequest) (validate.Attestation, error)
+	// ValidatePullRequest validates the head of a pull request a person
+	// opened by hand on an enrolled repository, which this node claimed
+	// (Runner.ValidatePullRequest), as ValidateMain does a merge commit;
+	// it counts against capacity the same way, offered after every batch
+	// and every merged item, since it lands nothing. Optional; nil
+	// validates no pull request.
+	ValidatePullRequest func(ctx context.Context, pr gateway.MainValidationPullRequest) (validate.Attestation, error)
 	// BatchCheckEvery is how often a running batch validation reads its
 	// claim back (DefaultBatchCheckEvery when zero).
 	BatchCheckEvery time.Duration

@@ -1838,6 +1838,25 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `checkBatchToken` refuses, empty, malformed (`tokenShape`) or for
   another repo — fetches nothing and fails the validation `github token for merge batch <n>: …` (ADR-032's
   amendment 2026-10-14). A request runs on the operator's credentials.
+  A pull request a person opened by hand on an enrolled repo declaring
+  `.runsheet/validate.yml` is the third queue, `pullRequests[]`
+  (`MainValidationPullRequest`: `pullRequestValidationId`, `number`,
+  `ref` = `refs/pull/<n>/head`, `sha`, `headBranch` for logs), offered
+  after every batch and request (it lands nothing), gated apart by
+  `TakesPullRequestValidation` (`claimPullRequestValidation` and
+  `failPullRequestValidation` on Mutation; a platform without them is
+  said once and its `pullRequests` left alone while batches and requests
+  go on). It runs `Loop.ValidatePullRequest` =
+  `Runner.ValidatePullRequest` on the read token `jobAccess` serves on
+  subject `{type: pull_request}` (`PullRequestValidationToken`; a
+  refused mint fails it): the head read by its sha from the served diff,
+  else `Git.AddPullRequestWorktree` fetching the pull ref from the base
+  repo (so a fork's head comes the same way; a head other than `sha` is
+  `*PullRequestHeadError`), **every** declared suite run
+  (`validationTarget.allSuites`), and the attestation handed back by
+  `finishJob` on subject `pull_request` — the platform records it by
+  `pullRequestValidationId` and sends `finishPullRequestValidation`
+  itself. Log prefix `pr <repo>#<n>@<sha short>`.
   The checkout is removed on every path. **Both are first validated
   from the served diff** (`internal/node/serveddiff.go`,
   `checkoutServed`, ADR-034,

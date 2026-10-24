@@ -217,6 +217,10 @@ type Client struct {
 	// mainValidations and its claim, finish and fail commands (see
 	// TakesMainValidation).
 	mainValidationSchema holdingProbe
+	// pullRequestValidationSchema is whether the gateway's Mutation was
+	// last found to have claimPullRequestValidation and
+	// failPullRequestValidation (see TakesPullRequestValidation).
+	pullRequestValidationSchema holdingProbe
 	// actorSchema is, per input type, whether the gateway's command input
 	// was last found to take `actor` (see withActor).
 	actorSchema actorProbes

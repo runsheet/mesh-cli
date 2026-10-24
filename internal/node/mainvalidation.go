@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
@@ -58,6 +59,22 @@ type CommitNotOnBranchError struct {
 
 func (e *CommitNotOnBranchError) Error() string {
 	return fmt.Sprintf("merge commit %s is not on %s; not validated", short(e.SHA), e.Branch)
+}
+
+// PullRequestHeadError is a pull request whose fetched head is not the
+// validation's sha: a person pushed since the platform asked. Nothing is
+// checked out, run or attested; the platform asks again for the new head.
+type PullRequestHeadError struct {
+	Ref, Want, Got string
+}
+
+func (e *PullRequestHeadError) Error() string {
+	return fmt.Sprintf("%s is at %s, not the validation's %s; not validated", e.Ref, short(e.Got), short(e.Want))
+}
+
+// pullRequestWorktrees checks a pull request's head out (*Git).
+type pullRequestWorktrees interface {
+	AddPullRequestWorktree(ctx context.Context, repo, dir, ref, sha string) error
 }
 
 // candidateWorktrees makes and removes a candidate's checkout (*Git).
@@ -156,6 +173,50 @@ func (r *Runner) validateMainRequest(ctx context.Context, req gateway.MainValida
 		what: "merge commit on " + req.DefaultBranch, token: fmt.Sprintf("item %d", req.Seq)})
 }
 
+// PullRequestDir is where a hand-opened pull request's validation checks
+// its head out under the work root:
+// <root>/pull-requests/<pullRequestValidationId>, beside the batches'.
+func PullRequestDir(root string, pr gateway.MainValidationPullRequest) string {
+	return filepath.Join(root, "pull-requests", pr.PullRequestValidationID)
+}
+
+// validatePullRequest validates the head of a pull request a person
+// opened by hand as validateMainRequest validates a merge commit: the
+// pull request's ref (refs/pull/<n>/head, on the base repository, so a
+// head on a fork is fetched the same way) fetched on tok, refused as a
+// *PullRequestHeadError when its head is not pr.SHA, and checked out
+// detached; every suite validate.yml declares runs (allSuites), since
+// nothing selected them for this head; the attestation is pr.SHA's with
+// its tree, handed back by the loop through finishJob.
+func (r *Runner) validatePullRequest(ctx context.Context, pr gateway.MainValidationPullRequest, tok *gateway.GitHubToken) (validate.Attestation, error) {
+	label := fmt.Sprintf("pr-%d", pr.Number)
+	prefix := pullRequestLabel(pr)
+	dir, err := batchDirFor(r.Layout, r.Scopes, pr.OrgID, pr.PullRequestValidationID, "pr", 1, prefix,
+		func(root string) string { return PullRequestDir(root, pr) }, r.WorkRoot)
+	if err != nil {
+		return validate.Attestation{}, fmt.Errorf("%s: %w", prefix, err)
+	}
+	ref := pr.Ref
+	if ref == "" {
+		ref = fmt.Sprintf("refs/pull/%d/head", pr.Number)
+	}
+	t := validationTarget{
+		item:      gateway.WorkItem{OrgID: pr.OrgID, RepoID: pr.RepoID},
+		dir:       dir,
+		base:      pr.DefaultBranch,
+		prefix:    prefix,
+		label:     label,
+		session:   func() string { return "" },
+		redact:    func(err error) error { return err },
+		report:    func(_ context.Context, note string) { r.logf("%s: %s", prefix, note) },
+		batchID:   pr.PullRequestValidationID,
+		repoTok:   tok,
+		allSuites: true,
+	}
+	return r.validateCommit(ctx, t, mainCommit{repo: pr.RepoFullName, branch: ref, sha: pr.SHA, pull: true,
+		what: fmt.Sprintf("pull request #%d head", pr.Number), token: fmt.Sprintf("pull request #%d", pr.Number)})
+}
+
 // orUnnamed is s, else `unnamed`: a token whose repo or access the
 // platform did not say.
 func orUnnamed(s string) string {
@@ -169,9 +230,12 @@ func orUnnamed(s string) string {
 // repo's branch — its head when atHead (a candidate), else any commit
 // the branch holds (a merge commit main has moved past) — what the log
 // calls it, and whose token fetches it (`github token for <token>: …`).
+//
+// pull, set, is a hand-opened pull request's head: branch is then its
+// ref (refs/pull/<n>/head), fetched as it is, whose head must be sha.
 type mainCommit struct {
 	repo, branch, sha string
-	atHead            bool
+	atHead, pull      bool
 	what, token       string
 }
 
@@ -224,8 +288,9 @@ func (r *Runner) validateCommitIn(ctx context.Context, t validationTarget, c mai
 		if !ok {
 			var he *CandidateHeadError
 			var ne *CommitNotOnBranchError
+			var pe *PullRequestHeadError
 			var te *fetchTokenError
-			if errors.As(err, &he) || errors.As(err, &ne) {
+			if errors.As(err, &he) || errors.As(err, &ne) || errors.As(err, &pe) {
 				r.logf("%s: %v", prefix, err)
 			} else if errors.As(err, &te) {
 				r.logf("%s: %v; not fetched", prefix, err)
@@ -262,6 +327,13 @@ func (r *Runner) checkoutWorktree(ctx context.Context, t validationTarget, c mai
 	if c.atHead {
 		add = wt.AddCandidateWorktree
 	}
+	if c.pull {
+		pw, ok := r.WS.(pullRequestWorktrees)
+		if !ok {
+			return cleanup, ErrNoCandidateWorktrees
+		}
+		add = pw.AddPullRequestWorktree
+	}
 	fctx, err := vr.onFreshItemToken(ctx, t)
 	if err != nil {
 		err = &fetchTokenError{name: c.token, err: err}
@@ -271,7 +343,8 @@ func (r *Runner) checkoutWorktree(ctx context.Context, t validationTarget, c mai
 	if err := add(fctx, c.repo, dir, c.branch, c.sha); err != nil {
 		var he *CandidateHeadError
 		var ne *CommitNotOnBranchError
-		if errors.As(err, &he) || errors.As(err, &ne) {
+		var pe *PullRequestHeadError
+		if errors.As(err, &he) || errors.As(err, &ne) || errors.As(err, &pe) {
 			r.logf("%s: %v", prefix, err)
 			return cleanup, err
 		}
@@ -366,6 +439,37 @@ func (g *Git) AddCommitWorktree(ctx context.Context, repo, dir, branch, sha stri
 	})
 }
 
+// AddPullRequestWorktree checks a pull request's head out at dir as
+// AddCandidateWorktree checks a candidate out, but ref is a full ref of
+// the base repository (refs/pull/<n>/head), fetched into
+// refs/remotes/origin/pull/<n>/head, so a head on a fork comes the same
+// way. A head other than sha is a *PullRequestHeadError.
+func (g *Git) AddPullRequestWorktree(ctx context.Context, repo, dir, ref, sha string) error {
+	return g.addDetachedWorktree(ctx, repo, dir, ref, sha, func(clone, local string) error {
+		head, err := g.run(ctx, clone, "git", "rev-parse", "--verify", local+"^{commit}")
+		if err != nil {
+			return err
+		}
+		if head != sha {
+			return &PullRequestHeadError{Ref: ref, Want: sha, Got: head}
+		}
+		return nil
+	})
+}
+
+// fetchRefspec is the refspec addDetachedWorktree fetches branch by, and
+// the local ref it lands in: a branch name is refs/heads/<branch> into
+// refs/remotes/origin/<branch>; a full ref (refs/pull/<n>/head) is
+// fetched as it is into refs/remotes/origin/<ref less refs/>.
+func fetchRefspec(branch string) (spec, local string) {
+	if rest, ok := strings.CutPrefix(branch, "refs/"); ok {
+		local = "refs/remotes/origin/" + rest
+		return "+" + branch + ":" + local, local
+	}
+	local = "refs/remotes/origin/" + branch
+	return "+refs/heads/" + branch + ":" + local, local
+}
+
 // addDetachedWorktree fetches branch into the shared clone, asks check
 // of it, and adds a detached worktree of sha at dir. A dir in a job is a
 // clone of its own instead (addDetachedClone, ADR-039).
@@ -383,8 +487,8 @@ func (g *Git) addDetachedWorktree(ctx context.Context, repo, dir, branch, sha st
 	if err := g.syncSharedClone(ctx, root, key, repo, clone); err != nil {
 		return err
 	}
-	ref := "refs/remotes/origin/" + branch
-	if _, err := g.fetchLocked(ctx, root, key, clone, "git", "fetch", "--quiet", "origin", "+refs/heads/"+branch+":"+ref); err != nil {
+	spec, ref := fetchRefspec(branch)
+	if _, err := g.fetchLocked(ctx, root, key, clone, "git", "fetch", "--quiet", "origin", spec); err != nil {
 		return err
 	}
 	if err := check(clone, ref); err != nil {
@@ -421,8 +525,8 @@ func (g *Git) addDetachedClone(ctx context.Context, repo, dir, branch, sha strin
 		os.RemoveAll(dir)
 		return err
 	}
-	ref := "refs/remotes/origin/" + branch
-	if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--quiet", "origin", "+refs/heads/"+branch+":"+ref); err != nil {
+	spec, ref := fetchRefspec(branch)
+	if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--quiet", "origin", spec); err != nil {
 		return err
 	}
 	if err := check(dir, ref); err != nil {

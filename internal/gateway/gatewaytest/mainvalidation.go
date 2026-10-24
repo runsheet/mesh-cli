@@ -23,6 +23,17 @@ var mainValidationMutations = []string{
 	"claimWorkItemMainValidation", "finishWorkItemMainValidation", "failWorkItemMainValidation",
 }
 
+// pullRequestValidationMutations are a hand-opened pull request's
+// claim and fail, as the Mutation type lists them, and
+// pullRequestValidationCommands those and the finish the platform's
+// finishJob sends itself.
+var (
+	pullRequestValidationMutations = []string{"claimPullRequestValidation", "failPullRequestValidation"}
+	pullRequestValidationCommands  = map[string]bool{
+		"claimPullRequestValidation": true, "failPullRequestValidation": true, "finishPullRequestValidation": true,
+	}
+)
+
 var mainValidationCommands = func() map[string]bool {
 	m := map[string]bool{}
 	for _, n := range mainValidationMutations {
@@ -54,6 +65,22 @@ func (f *Fake) SeedMainValidationRequest(r gateway.MainValidationRequest) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.MainValidationRequests[r.WorkItemID] = seedRow(r)
+}
+
+// SeedPullRequestValidation puts a hand-opened pull request's validation
+// on mainValidations' pullRequests, requested and held by no node.
+func (f *Fake) SeedPullRequestValidation(p gateway.MainValidationPullRequest) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.PullRequestValidations[p.PullRequestValidationID] = seedRow(p)
+}
+
+// PullRequestValidation is a copy of the pull request validation's row,
+// as MergeBatch's.
+func (f *Fake) PullRequestValidation(id string) map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return copyRow(f.PullRequestValidations[id])
 }
 
 func seedRow(v any) map[string]any {
@@ -124,8 +151,9 @@ func (f *Fake) mainValidations(w http.ResponseWriter, vars map[string]any) {
 		return out
 	}
 	writeData(w, map[string]any{field: map[string]any{
-		"batches":  open(f.MergeBatches),
-		"requests": open(f.MainValidationRequests),
+		"batches":      open(f.MergeBatches),
+		"requests":     open(f.MainValidationRequests),
+		"pullRequests": open(f.PullRequestValidations),
 	}})
 }
 
@@ -145,6 +173,8 @@ func (f *Fake) applyMainValidation(name string, in map[string]any) error {
 	switch name {
 	case "claimWorkItemMainValidation", "finishWorkItemMainValidation", "failWorkItemMainValidation":
 		rows, what = f.MainValidationRequests, "main validation"
+	case "claimPullRequestValidation", "finishPullRequestValidation", "failPullRequestValidation":
+		rows, what = f.PullRequestValidations, "pull request validation"
 	}
 	row := rows[id]
 	if row == nil {
@@ -153,7 +183,7 @@ func (f *Fake) applyMainValidation(name string, in map[string]any) error {
 	node, _ := in["nodeId"].(string)
 	holder, _ := row[validationNode].(string)
 	switch name {
-	case "claimMergeBatchValidation", "claimWorkItemMainValidation":
+	case "claimMergeBatchValidation", "claimWorkItemMainValidation", "claimPullRequestValidation":
 		switch row[validationState] {
 		case "claimed":
 			if holder == node {
@@ -165,11 +195,11 @@ func (f *Fake) applyMainValidation(name string, in map[string]any) error {
 			return nil
 		}
 		return fmt.Errorf("the %s's validation is %s, not requested", what, row[validationState])
-	case "finishMergeBatchValidation", "finishWorkItemMainValidation":
+	case "finishMergeBatchValidation", "finishWorkItemMainValidation", "finishPullRequestValidation":
 		if row[validationState] != "claimed" {
 			return fmt.Errorf("the %s's validation is %s, not claimed", what, row[validationState])
 		}
-		if name == "finishMergeBatchValidation" && holder != node {
+		if name != "finishWorkItemMainValidation" && holder != node {
 			return fmt.Errorf("node %s has claimed the validation, not %s", holder, node)
 		}
 		sha, _ := in["sha"].(string)
@@ -177,11 +207,11 @@ func (f *Fake) applyMainValidation(name string, in map[string]any) error {
 			return fmt.Errorf("sha %s is not the validation's %s", sha, want)
 		}
 		row[validationState], row[validationSha] = "finished", sha
-	case "failMergeBatchValidation", "failWorkItemMainValidation":
+	case "failMergeBatchValidation", "failWorkItemMainValidation", "failPullRequestValidation":
 		if row[validationState] != "claimed" {
 			return fmt.Errorf("the %s's validation is %s, not claimed", what, row[validationState])
 		}
-		if name == "failMergeBatchValidation" && holder != node {
+		if name != "failWorkItemMainValidation" && holder != node {
 			return fmt.Errorf("node %s has claimed the validation, not %s", holder, node)
 		}
 		// a fail releases the claim: the validation waits for a node again
@@ -220,4 +250,25 @@ func (f *Fake) recordBatchCandidateAttestation(w http.ResponseWriter, vars map[s
 		receipt = map[string]any{"status": "ok", "commit": in["commit"], "branch": batch["candidateBranch"], "mergeBatchId": id}
 	}
 	writeData(w, map[string]any{field: receipt})
+}
+
+// recordPullRequestAttestation is recordValidationAttestation(
+// pullRequestValidationId, input), as the platform's finishJob sends it
+// for a pull_request subject: recorded as a call with
+// pullRequestValidationId and input, refused like an item's, and
+// answered {status: ok, commit, pullRequestValidationId}.
+func (f *Fake) recordPullRequestAttestation(w http.ResponseWriter, vars map[string]any, bearer string) {
+	const field = "recordValidationAttestation"
+	id, _ := vars["id"].(string)
+	in, _ := vars["in"].(map[string]any)
+	f.Calls = append(f.Calls, Call{Name: field, Input: map[string]any{"pullRequestValidationId": id, "input": in}, At: time.Now(), Bearer: bearer})
+	if msg := f.Refuse[field]; msg != "" {
+		writeErrors(w, 200, msg)
+		return
+	}
+	if f.PullRequestValidations[id] == nil {
+		writeErrors(w, 200, fmt.Sprintf("no pull request validation %s", id))
+		return
+	}
+	writeData(w, map[string]any{field: map[string]any{"status": "ok", "commit": in["commit"], "pullRequestValidationId": id}})
 }

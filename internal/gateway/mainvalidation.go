@@ -47,11 +47,34 @@ type MainValidationRequest struct {
 	RequestedAt   time.Time `json:"requestedAt"`
 }
 
-// MainValidationQueue is mainValidations' answer: every batch candidate
-// and merged item waiting on a node, across every org the node serves.
+// MainValidationPullRequest is one pull request a person opened by hand
+// on an enrolled repository declaring .runsheet/validate.yml, its head
+// waiting on a node: mainValidations' pullRequests[] entry. Ref is
+// refs/pull/<number>/head on the base repository — the head may live on
+// a fork — and SHA the head the platform asks to be attested; HeadBranch
+// is the pull request's head branch, for logs only.
+type MainValidationPullRequest struct {
+	PullRequestValidationID string    `json:"pullRequestValidationId"`
+	Number                  int64     `json:"number"`
+	OrgID                   string    `json:"orgId"`
+	RepoID                  string    `json:"repoId"`
+	RepoFullName            string    `json:"repoFullName"`
+	DefaultBranch           string    `json:"defaultBranch"`
+	HeadBranch              string    `json:"headBranch"`
+	Ref                     string    `json:"ref"`
+	SHA                     string    `json:"sha"`
+	RequestedAt             time.Time `json:"requestedAt"`
+	BudgetSeconds           int64     `json:"budgetSeconds"`
+}
+
+// MainValidationQueue is mainValidations' answer: every batch candidate,
+// merged item and hand-opened pull request waiting on a node, across
+// every org the node serves. PullRequests is empty on a platform before
+// pull request validation.
 type MainValidationQueue struct {
-	Batches  []MainValidationBatch   `json:"batches"`
-	Requests []MainValidationRequest `json:"requests"`
+	Batches      []MainValidationBatch       `json:"batches"`
+	Requests     []MainValidationRequest     `json:"requests"`
+	PullRequests []MainValidationPullRequest `json:"pullRequests"`
 }
 
 // BatchAttestationReceipt is recordValidationAttestation's answer for a
@@ -96,6 +119,33 @@ func (c *Client) TakesMainValidation(ctx context.Context) bool {
 	}
 	p.takes = true
 	return true
+}
+
+// pullRequestValidationMutationFields are what
+// TakesPullRequestValidation asks Mutation for beside the main
+// validation fields: the claim and the fail (the finish is finishJob's).
+var pullRequestValidationMutationFields = []string{"claimPullRequestValidation", "failPullRequestValidation"}
+
+// TakesPullRequestValidation is whether the gateway serves a node's
+// validation of a hand-opened pull request: TakesMainValidation, and
+// claimPullRequestValidation and failPullRequestValidation on Mutation,
+// asked by introspection apart from it and kept for ScalingProbeEvery,
+// so a platform without them still serves batches and requests. A
+// failed probe is a no, kept as long.
+func (c *Client) TakesPullRequestValidation(ctx context.Context) bool {
+	if !c.TakesMainValidation(ctx) {
+		return false
+	}
+	p := &c.pullRequestValidationSchema
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := c.now()
+	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
+		return p.takes
+	}
+	p.at = now
+	p.takes = c.typeHasFields(ctx, "Mutation", pullRequestValidationMutationFields)
+	return p.takes
 }
 
 // typeHasFields is whether the named type's introspection lists every
@@ -184,6 +234,27 @@ func (c *Client) FailWorkItemMainValidation(ctx context.Context, itemID, reason 
 	return c.mainValidationCommand(ctx, "failWorkItemMainValidation", itemID, map[string]any{"reason": reason})
 }
 
+// ClaimPullRequestValidation takes a hand-opened pull request's
+// validation, as ClaimMergeBatchValidation takes a batch's: the same
+// node again converges, another node holding it is refused (IsRefusal).
+func (c *Client) ClaimPullRequestValidation(ctx context.Context, validationID, nodeID, harness string) error {
+	return c.pullRequestValidationCommand(ctx, "claimPullRequestValidation", validationID, withHarness(map[string]any{"nodeId": nodeID}, harness))
+}
+
+// FailPullRequestValidation gives a pull request validation's claim back
+// with why the node could not validate the head — never a red verdict,
+// which an attestation carries.
+func (c *Client) FailPullRequestValidation(ctx context.Context, validationID, nodeID, reason string) error {
+	return c.pullRequestValidationCommand(ctx, "failPullRequestValidation", validationID, map[string]any{"nodeId": nodeID, "reason": reason})
+}
+
+func (c *Client) pullRequestValidationCommand(ctx context.Context, field, aggregateID string, input map[string]any) error {
+	if !c.TakesPullRequestValidation(ctx) {
+		return &Error{Message: "gateway: the platform validates no pull request", Unsupported: true}
+	}
+	return c.Mutate(ctx, field, aggregateID, input)
+}
+
 func (c *Client) mainValidationCommand(ctx context.Context, field, aggregateID string, input map[string]any) error {
 	if !c.TakesMainValidation(ctx) {
 		return errNoMainValidation()
@@ -243,9 +314,11 @@ func (c *Client) RecordBatchCandidateAttestation(ctx context.Context, batchID st
 
 // FinishValidationJob is a validate job's finish (runsheet ADR 061 §7):
 // the attestation of a candidate (subject candidate, id the merge
-// batch's) or of a merged item's merge on main (subject main, id the
-// item's), handed back once through finishJob, which records it and
-// ends the claim. It answers the attestation's receipt.
+// batch's), of a merged item's merge on main (subject main, id the
+// item's) or of a hand-opened pull request's head (subject
+// pull_request, id the pull request validation's), handed back once
+// through finishJob, which records it and ends the claim. It answers
+// the attestation's receipt.
 func (c *Client) FinishValidationJob(ctx context.Context, subject, id, nodeID string, att ValidationAttestation) (map[string]any, error) {
 	body, err := json.Marshal(att)
 	if err != nil {
@@ -277,4 +350,11 @@ func (c *Client) FinishValidationJob(ctx context.Context, subject, id, nodeID st
 // what its fetches carry instead of the operator's login.
 func (c *Client) MainValidationToken(ctx context.Context, itemID, nodeID string) (*GitHubToken, error) {
 	return c.jobRepoToken(withNodeID(ctx, nodeID), "runsheet/validate", JobSubject{Type: "main", ID: itemID})
+}
+
+// PullRequestValidationToken is a hand-opened pull request's validation's
+// read token of its repository, from the exchange (jobAccess, subject
+// pull_request): what its fetches carry instead of the operator's login.
+func (c *Client) PullRequestValidationToken(ctx context.Context, validationID, nodeID string) (*GitHubToken, error) {
+	return c.jobRepoToken(withNodeID(ctx, nodeID), "runsheet/validate", JobSubject{Type: "pull_request", ID: validationID})
 }
