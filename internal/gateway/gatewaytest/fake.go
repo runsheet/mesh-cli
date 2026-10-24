@@ -189,6 +189,14 @@ type Fake struct {
 	// it, as the platform is today, the field is left out of the
 	// introspection and a planGoal item carrying it is refused.
 	ItemPrecondition bool
+	// ItemAcceptanceChecks is a platform whose PlannedItemInput has
+	// `acceptanceChecks` (runsheet ADR 056, the platform since
+	// 2026-10-19): introspection lists it, and planGoal refuses an item
+	// that carries none — `item N (title): no acceptance: each item
+	// carries at least one {kind, check, expected}` — or a check with an
+	// unknown kind or no expected. Without it, as the platform before,
+	// the field is left out and an item carrying it is refused.
+	ItemAcceptanceChecks bool
 	// NoReplaceItem is a platform whose RequestPlanInput has no
 	// `replaceItem` (before the narrow re-plan): introspection leaves it
 	// out and a requestPlan carrying it is refused with "Unknown field".
@@ -847,8 +855,11 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request, q string, vars map[
 			return
 		}
 		fields := []any{}
-		for _, n := range []string{"acceptance", "agentSlug", "baseRef", "brief", "dependsOn", "model", "replacesDependents", "repoId", "seq", "title", gateway.ItemPreconditionField} {
+		for _, n := range []string{"acceptance", "agentSlug", "baseRef", "brief", "dependsOn", "model", "replacesDependents", "repoId", "seq", "title", gateway.ItemPreconditionField, gateway.ItemAcceptanceChecksField} {
 			if n == gateway.ItemPreconditionField && !f.ItemPrecondition {
+				continue
+			}
+			if n == gateway.ItemAcceptanceChecksField && !f.ItemAcceptanceChecks {
 				continue
 			}
 			fields = append(fields, map[string]any{"name": n})
@@ -1048,6 +1059,43 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request, q string, vars map[
 				if row, _ := it.(map[string]any); row != nil {
 					if _, ok := row[gateway.ItemPreconditionField]; ok {
 						writeErrors(w, 200, `Variable "$in" got invalid value; Unknown field "precondition" is not defined by type "PlannedItemInput".`)
+						return
+					}
+				}
+			}
+		}
+		if m[2] == "planGoal" {
+			// runsheet ADR 056: a platform with acceptanceChecks refuses an
+			// item with none, as RefuseAcceptanceChecks words it; one
+			// without refuses the field
+			items, _ := in["items"].([]any)
+			for _, it := range items {
+				row, _ := it.(map[string]any)
+				if row == nil {
+					continue
+				}
+				checks, has := row[gateway.ItemAcceptanceChecksField]
+				if !f.ItemAcceptanceChecks {
+					if has {
+						writeErrors(w, 200, `Variable "$in" got invalid value; Unknown field "acceptanceChecks" is not defined by type "PlannedItemInput".`)
+						return
+					}
+					continue
+				}
+				list, _ := checks.([]any)
+				if len(list) == 0 {
+					writeErrors(w, 200, fmt.Sprintf("PlanGoal: item %v (%v): no acceptance: each item carries at least one {kind, check, expected}", row["seq"], row["title"]))
+					return
+				}
+				for i, c := range list {
+					cm, _ := c.(map[string]any)
+					kind := fmt.Sprint(cm["kind"])
+					if kind != "command" && kind != "test" && kind != "observable" {
+						writeErrors(w, 200, fmt.Sprintf("PlanGoal: item %v (%v): acceptance[%d]: kind %q is not one of command, observable, test", row["seq"], row["title"], i, kind))
+						return
+					}
+					if strings.TrimSpace(fmt.Sprint(cm["check"])) == "" || strings.TrimSpace(fmt.Sprint(cm["expected"])) == "" {
+						writeErrors(w, 200, fmt.Sprintf("PlanGoal: item %v (%v): acceptance[%d] (%s) has no check or no expected result", row["seq"], row["title"], i, kind))
 						return
 					}
 				}

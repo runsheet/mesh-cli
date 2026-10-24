@@ -160,6 +160,10 @@ type Client struct {
 	// ownerOrgSchema is whether the gateway's RegisterNodeInput owner
 	// kind was last found to take `org` (see TakesOwnerOrg).
 	ownerOrgSchema holdingProbe
+	// acceptanceChecksSchema is whether the gateway's PlannedItemInput
+	// was last found to take `acceptanceChecks` (see
+	// TakesAcceptanceChecks).
+	acceptanceChecksSchema holdingProbe
 	// toolErrorSchema is whether the gateway's usage report's `tools`
 	// entry was last found to take `error` (see takesToolError).
 	toolErrorSchema toolErrorProbe
@@ -4027,9 +4031,15 @@ type PlannedItem struct {
 	Title      string `json:"title"`
 	Brief      string `json:"brief"`
 	Acceptance string `json:"acceptance"`
-	DependsOn  []int  `json:"dependsOn"`
-	RepoID     string `json:"repoId"`
-	BaseRef    string `json:"baseRef"`
+	// AcceptanceChecks is the acceptance as the platform takes it
+	// (runsheet ADR 056): at least one {kind, check, expected}. PlanGoal
+	// sends it as `acceptanceChecks` only when PlannedItemInput takes it
+	// (TakesAcceptanceChecks); a platform that takes it refuses an item
+	// with none.
+	AcceptanceChecks []AcceptanceCheck `json:"acceptanceChecks,omitempty"`
+	DependsOn        []int             `json:"dependsOn"`
+	RepoID           string            `json:"repoId"`
+	BaseRef          string            `json:"baseRef"`
 	// Model is the tier the planner chose for the item (opus, sonnet,
 	// haiku; runsheet trd §6a); empty leaves it to the node.
 	Model string `json:"model,omitempty"`
@@ -4044,6 +4054,26 @@ type PlannedItem struct {
 	// `precondition` only when PlannedItemInput takes it
 	// (TakesItemPrecondition).
 	Precondition string `json:"precondition,omitempty"`
+}
+
+// AcceptanceCheck is one check of an item's acceptance as PlannedItemInput
+// takes it (runsheet ADR 056): Kind command, test or observable.
+type AcceptanceCheck struct {
+	Kind     string `json:"kind"`
+	Check    string `json:"check"`
+	Expected string `json:"expected"`
+}
+
+// ItemAcceptanceChecksField is PlannedItemInput's field for an item's
+// checks (runsheet ADR 056).
+const ItemAcceptanceChecksField = "acceptanceChecks"
+
+// TakesAcceptanceChecks is whether the gateway's PlannedItemInput has
+// `acceptanceChecks` (introspected, kept for ScalingProbeEvery): a
+// platform without it is never sent the field, and the prose acceptance
+// stands alone.
+func (c *Client) TakesAcceptanceChecks(ctx context.Context) bool {
+	return c.takesInputField(ctx, &c.acceptanceChecksSchema, "PlannedItemInput", ItemAcceptanceChecksField)
 }
 
 // ItemPreconditionField is PlannedItemInput's field for the clause an
@@ -4389,11 +4419,13 @@ func (c *Client) RecordDirectionResearch(ctx context.Context, directionID, nodeI
 // gateway whose PlanGoalInput takes them (TakesPlanQuestions); the
 // caller says them otherwise.
 func (c *Client) PlanGoal(ctx context.Context, goalID, by string, items []PlannedItem, costCents int, usage *UsageReport, questions ...PlanQuestion) error {
-	withPrecondition := false
+	withPrecondition, withChecks := false, false
 	for _, it := range items {
-		if it.Precondition != "" {
+		if it.Precondition != "" && !withPrecondition {
 			withPrecondition = c.TakesItemPrecondition(ctx)
-			break
+		}
+		if len(it.AcceptanceChecks) > 0 && !withChecks {
+			withChecks = c.TakesAcceptanceChecks(ctx)
 		}
 	}
 	send := func(withModel bool) error {
@@ -4412,6 +4444,13 @@ func (c *Client) PlanGoal(ctx context.Context, goalID, by string, items []Planne
 			}
 			if withPrecondition && it.Precondition != "" {
 				row[ItemPreconditionField] = it.Precondition
+			}
+			if withChecks && len(it.AcceptanceChecks) > 0 {
+				checks := make([]map[string]any, 0, len(it.AcceptanceChecks))
+				for _, c := range it.AcceptanceChecks {
+					checks = append(checks, map[string]any{"kind": c.Kind, "check": c.Check, "expected": c.Expected})
+				}
+				row[ItemAcceptanceChecksField] = checks
 			}
 			list = append(list, row)
 		}

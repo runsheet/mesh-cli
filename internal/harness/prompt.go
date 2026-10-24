@@ -793,13 +793,19 @@ type ExistingItem struct {
 // PlannedSpec is one item of the graph the planner writes: like
 // gateway.PlannedItem but naming the repo (owner/name or name).
 type PlannedSpec struct {
-	Seq        int          `json:"seq"`
-	Title      string       `json:"title"`
-	Brief      string       `json:"brief"`
-	Acceptance string       `json:"acceptance"`
-	DependsOn  []PlannedDep `json:"depends_on"`
-	Repo       string       `json:"repo"`
-	BaseRef    string       `json:"base_ref"`
+	Seq        int    `json:"seq"`
+	Title      string `json:"title"`
+	Brief      string `json:"brief"`
+	Acceptance string `json:"acceptance"`
+	// AcceptanceChecks is the item's acceptance as the platform takes it
+	// (runsheet ADR 056): at least one {kind, check, expected}, kind one
+	// of command, test or observable. PlanGoal refuses an item with
+	// none, so the node's plan check flags one (missingAcceptanceChecks)
+	// and, on the final answer, makes one observable of the prose.
+	AcceptanceChecks []AcceptanceCheck `json:"acceptance_checks"`
+	DependsOn        []PlannedDep      `json:"depends_on"`
+	Repo             string            `json:"repo"`
+	BaseRef          string            `json:"base_ref"`
 	// Model is the model the planner chose for the item (haiku, sonnet,
 	// opus or a claude-* id), ModelReason its one line of why.
 	Model       string `json:"model"`
@@ -821,6 +827,30 @@ type PlannedSpec struct {
 	// (planSharedDocsRule); every other item's brief says not to touch
 	// them and to leave what it would have added as a note instead.
 	WritesSharedDocs bool `json:"writes_shared_docs"`
+}
+
+// AcceptanceCheck is one check of an item's acceptance (runsheet ADR
+// 056): Kind is command, test or observable; Check is the command, the
+// test's name or path, or what to observe; Expected is what passing
+// looks like. The node runs command and test checks after the build; the
+// evaluator judges every one.
+type AcceptanceCheck struct {
+	Kind     string `json:"kind"`
+	Check    string `json:"check"`
+	Expected string `json:"expected"`
+}
+
+// AcceptanceKinds are the kinds the platform knows (runsheet ADR 056).
+var AcceptanceKinds = []string{"command", "test", "observable"}
+
+// KnownAcceptanceKind says whether kind is one of AcceptanceKinds.
+func KnownAcceptanceKind(kind string) bool {
+	for _, k := range AcceptanceKinds {
+		if k == strings.ToLower(strings.TrimSpace(kind)) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsDocumentPath reports whether p is a document rather than code: a
@@ -932,6 +962,12 @@ const planDependencyRule = "An item depends on another only when it uses somethi
 // planAcceptanceRule is the planner's side of adr-004: an item's
 // acceptance names only what its evaluator can see.
 const planAcceptanceRule = "An item's acceptance names only what the evaluator can see at evaluation time, on that item's branch, in that item's repository: tests, commands and their output, file contents. It never names a CI check on the item's own pull request (the pull request opens only after evaluation passes), a deploy, or a file in another repository. Work like that becomes its own item in the right repo, or goes in the goal's acceptance."
+
+// planChecksRule is runsheet ADR 056's shape of an item's acceptance:
+// the platform refuses a plan any of whose items carries no check, so
+// every item lists at least one as `acceptance_checks`, and the prose
+// `acceptance` says the same in words.
+const planChecksRule = "Each item's acceptance is also a list, `acceptance_checks`: at least one `{\"kind\", \"check\", \"expected\"}`, kind `command` (a shell command the node runs on the branch; check is the command, expected its exit code or output), `test` (a test the node runs; check is its name or path, expected `passes`) or `observable` (what an evaluator sees — a file's content, a document's section, a route's answer; check names it, expected what it shows). An item with no check is refused by the platform; a check with no `expected` is refused too. The prose `acceptance` says the same in words."
 
 // planHostRule is the planner's half of ADR-020: an item's acceptance
 // names only what a pull request can change, a reading of the host is
@@ -1088,11 +1124,11 @@ func planSubject(b *strings.Builder, in PlanInput) {
 		fmt.Fprintf(b, "## The last plan blocked\n\n%s\n\nPlan around it.\n\n", strings.TrimSpace(in.Blocked))
 	}
 	if len(in.Rejected) > 0 {
-		b.WriteString("## Your last answer was flagged\n\nThe node checked your graph before handing it in and flagged these items — an acceptance naming what no evaluator can see or a reading of the host as a merge gate, or a model the scorecard says does not work on its repo:\n\n")
+		b.WriteString("## Your last answer was flagged\n\nThe node checked your graph before handing it in and flagged these items — an acceptance naming what no evaluator can see or a reading of the host as a merge gate, an item with no `acceptance_checks`, or a model the scorecard says does not work on its repo:\n\n")
 		for _, r := range in.Rejected {
 			fmt.Fprintf(b, "- %s\n", strings.TrimSpace(r))
 		}
-		b.WriteString("\n" + planAcceptanceRule + " " + planHostRule + " " + planSplitRule + " " + planSizeRule + " " + planCloseOutRule + " " + planCutOverRule + " " + planRepoRule + " " + planFilesRule + " " + planSharedDocsRule)
+		b.WriteString("\n" + planAcceptanceRule + " " + planChecksRule + " " + planHostRule + " " + planSplitRule + " " + planSizeRule + " " + planCloseOutRule + " " + planCutOverRule + " " + planRepoRule + " " + planFilesRule + " " + planSharedDocsRule)
 		if in.OverCap {
 			cap := in.MaxItems
 			if cap <= 0 {
@@ -1225,6 +1261,7 @@ func planRules(b *strings.Builder, in PlanInput) {
 	fmt.Fprintf(b, "2. Each item is one fresh session's work in one repo on one branch: small enough to finish and evaluate in one sitting, large enough to be worth a pull request. Two to %d items.\n", maxItems)
 	b.WriteString("3. Each item's brief says what to do and where, naming files and functions where it helps; its acceptance is what an evaluator can check — a test that passes, a command's output, a document with named sections — never a feeling.\n")
 	b.WriteString("   " + planAcceptanceRule + "\n")
+	b.WriteString("   " + planChecksRule + "\n")
 	b.WriteString("   " + planHostRule + "\n")
 	b.WriteString("   " + planSplitRule + "\n")
 	b.WriteString("   " + planSizeRule + "\n")
@@ -1275,7 +1312,7 @@ func planFinishDetail(b *strings.Builder, in PlanInput) {
 	if cap <= 0 {
 		cap = 8
 	}
-	fmt.Fprintf(b, "\n`plan.items` is the graph: each item `{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [{\"seq\": 1, \"because\": \"uses the … item 1 adds\"}], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\", \"files\": [\"…\"]}`, with `writes_shared_docs: true` on the one item that writes the shared documents, `atomic: \"<reason>\"` on an item that cannot be halved, and `precondition: \"<clause>\"` on one that waits on a person or production. Beside it: `plan.questions`, one `{\"clause\", \"question\"}` per clause no pull request can satisfy (empty otherwise); `plan.checkpoints`, `[\"pr\"]` when the goal itself waits on a person to approve each pull request; `plan.already_done`, one `{\"clause\", \"evidence\"}` per acceptance clause main already satisfies; and, in place of `items` when the graph would be over the project's cap of %d, `plan.split`: goal drafts `{\"slug\", \"title\", \"statement\", \"acceptance\", \"repo\"}`, each at most %d items and one repo.\n", cap, cap)
+	fmt.Fprintf(b, "\n`plan.items` is the graph: each item `{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"acceptance_checks\": [{\"kind\": \"test\", \"check\": \"go test ./internal/<pkg>/\", \"expected\": \"passes\"}], \"depends_on\": [{\"seq\": 1, \"because\": \"uses the … item 1 adds\"}], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\", \"files\": [\"…\"]}`, with `writes_shared_docs: true` on the one item that writes the shared documents, `atomic: \"<reason>\"` on an item that cannot be halved, and `precondition: \"<clause>\"` on one that waits on a person or production. Beside it: `plan.questions`, one `{\"clause\", \"question\"}` per clause no pull request can satisfy (empty otherwise); `plan.checkpoints`, `[\"pr\"]` when the goal itself waits on a person to approve each pull request; `plan.already_done`, one `{\"clause\", \"evidence\"}` per acceptance clause main already satisfies; and, in place of `items` when the graph would be over the project's cap of %d, `plan.split`: goal drafts `{\"slug\", \"title\", \"statement\", \"acceptance\", \"repo\"}`, each at most %d items and one repo.\n", cap, cap)
 }
 
 // spent says whether an item of the plan before is one a re-plan may not
