@@ -1164,8 +1164,22 @@ func (t *buildTail) end(ctx context.Context) error {
 // validate is the repository's validation on the commit the item
 // finishes with (runsheet ADR 032), in the session's pod: a failing step
 // gets the builder one more turn, then fails the item naming it.
+//
+// First, what the session left uncommitted is committed
+// (commitLeftovers), so the validation, its attestation and the
+// changeset are of one commit and no builder's work is lost: a commit
+// that fails is logged and a note on the item, never its failure — the
+// finish then names what it leaves out.
 func (t *buildTail) validate(ctx context.Context) error {
 	r, b, item := t.r, t.b, t.b.item
+	if paths, err := commitLeftovers(ctx, b.dir, b.ident); err != nil {
+		msg := "leftover changes not committed: " + b.acct.RedactErr(err).Error()
+		r.logf("item %s: %s", b.label, msg)
+		b.report(ctx, msg)
+	} else if len(paths) > 0 {
+		head, _ := gitHead(ctx, b.dir)
+		r.logf("item %s: committed %d path(s) the build session left uncommitted as %s (%q): %s", b.label, len(paths), short(head), LeftoverCommitMessage, strings.Join(paths, ", "))
+	}
 	v, err := r.startValidation(ctx, b)
 	if err != nil {
 		b.report(ctx, "validation: "+err.Error())
@@ -1202,8 +1216,9 @@ func (t *buildTail) validate(ctx context.Context) error {
 }
 
 // finish hands the build in as sessionsteps.Finish does: from the node,
-// outside the job container, the workspace's tree recorded as a
-// changeset and the item finished on it when the platform holds
+// outside the job container, the tree of the commit the builder made and
+// the node validated (never the working directory, which holds the
+// validation's outputs) recorded as a changeset and the item finished on it when the platform holds
 // changesets — the attestation of the commit validated uploaded first —
 // else the node's own push on the item's token (pushBuild) and the
 // finish on the head it pushed, attested after the push.

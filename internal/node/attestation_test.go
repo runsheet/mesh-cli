@@ -2,7 +2,9 @@ package node
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -168,5 +170,192 @@ func TestChangesetAttestationOfAnotherTreeIsNotSent(t *testing.T) {
 	}
 	if f.Item(item1)["status"] == "failed" {
 		t.Fatal("an attestation not sent must not fail the item")
+	}
+}
+
+// A build whose validation writes untracked output into the checkout —
+// runsheet's scan suite writes scan-out/ and scan-report.json at the
+// root, a declared report — finishes with a changeset whose tree is the
+// validated commit's and carries no report, and the attestation of that
+// commit is taken by a platform that refuses a wrong tree (dl360,
+// 2026-10-24/25: the finish swept the outputs in, so the changeset's tree
+// was not the one validated). The declared report is still read into the
+// attestation, just never committed.
+func TestChangesetOfAValidationThatWroteAReportIsTheValidatedCommit(t *testing.T) {
+	f := seed(t)
+	f.Changesets = true
+	r, b, logs := uploadRunner(t, f, &ValidationNotices{}, item1)
+
+	dir := t.TempDir()
+	gitRun(t, dir, "init", "-q")
+	writeFiles(t, dir, map[string]string{
+		".runsheet/validate.yml": "suites:\n  - name: scan\n    kind: unit\n    command: \"mkdir -p scan-out && echo clean > scan-out/summary.txt && echo '{\\\"findings\\\":[]}' > scan-report.json\"\n    reports: [scan-report.json]\n",
+		"api/api.go":             "package api\n",
+	})
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-qm", "main")
+	gitRun(t, dir, "tag", "base")
+	writeFiles(t, dir, map[string]string{"api/steps.go": "package api\n\nconst Steps = 7\n"})
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-qm", "api: steps")
+	head := gitRun(t, dir, "rev-parse", "HEAD")
+
+	// the node's validation on the builder's commit, in the checkout
+	cfg, err := validate.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := validate.Run(context.Background(), cfg.Steps, validate.HostRunner{Dir: dir}, validate.Options{Dir: dir})
+	if err != nil || len(results) != 1 || results[0].ExitCode != 0 {
+		t.Fatalf("validation: %+v %v", results, err)
+	}
+	att, err := validate.Build(dir, head, results, validate.Meta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(att.Steps[0].Report, "findings") {
+		t.Fatalf("the declared report was not read: %+v", att.Steps[0])
+	}
+	if st := gitRun(t, dir, "status", "--porcelain"); !strings.Contains(st, "?? scan-report.json") || !strings.Contains(st, "?? scan-out/") {
+		t.Fatalf("the validation left %q, want its untracked outputs", st)
+	}
+
+	cg, ok := r.GW.(changesetGateway)
+	if !ok || !cg.TakesChangesets(context.Background()) {
+		t.Fatal("the fake takes no changesets")
+	}
+	fin := &sessionsteps.Finish{ItemID: item1, Branch: "mesh/ship-it-1", Gateway: cg,
+		Logf:     func(format string, args ...any) { r.logf("item %s: %s", b.label, fmt.Sprintf(format, args...)) },
+		Recorded: func(ctx context.Context, res *sessionsteps.FinishResult) { r.attestChangeset(ctx, b, att, res) }}
+	state := &sessionsteps.State{WorkspaceDir: dir, BaseRef: "base"}
+	ctx := gateway.WithNodeID(context.Background(), "22222222-2222-4222-8222-222222222222")
+	if recs := sessionsteps.Run(ctx, sessionsteps.Job{Steps: []sessionsteps.Step{fin.Step()}}, state); recs[0].Outcome != sessionsteps.Succeeded {
+		t.Fatalf("finish: %s: %v\n%s", recs[0].Outcome, recs[0].Err, logs.String())
+	}
+
+	css := f.ChangesetsOf(item1)
+	if len(css) != 1 {
+		t.Fatalf("changesets = %+v, want one", css)
+	}
+	cs := css[0]
+	if cs.Tree != att.Tree || cs.Tree != gitRun(t, dir, "rev-parse", "HEAD^{tree}") {
+		t.Fatalf("changeset tree %s, validated tree %s", cs.Tree, att.Tree)
+	}
+	if strings.Join(cs.PathsChanged, ",") != "api/steps.go" {
+		t.Fatalf("paths changed = %v, want api/steps.go alone", cs.PathsChanged)
+	}
+	if out := logs.String(); strings.Contains(out, "attestation refused") || !strings.Contains(out, "attestation recorded "+short(head)) {
+		t.Fatalf("the attestation was not taken:\n%s", out)
+	}
+	if !strings.Contains(logs.String(), "left uncommitted are not in the changeset") {
+		t.Fatalf("log lacks the left-out paths:\n%s", logs.String())
+	}
+}
+
+// A build session that finished without committing all of its work — an
+// uncommitted edit to a tracked source file and an untracked new file,
+// as 9 of 146 dl360 checkouts held on 2026-10-25 — has it committed by
+// the node before the validation (commitLeftovers), so the validation
+// runs on, the attestation names and the changeset carries that commit;
+// a report the validation writes afterwards is in none of them, and the
+// gateway fake (which refuses a wrong tree) takes the attestation.
+func TestChangesetCarriesTheSessionsLeftoversButNotTheValidationsReport(t *testing.T) {
+	f := seed(t)
+	f.Changesets = true
+	r, b, logs := uploadRunner(t, f, &ValidationNotices{}, item1)
+
+	dir := t.TempDir()
+	gitRun(t, dir, "init", "-q")
+	writeFiles(t, dir, map[string]string{
+		".runsheet/validate.yml": "suites:\n  - name: scan\n    kind: unit\n    command: \"echo '{}' > scan-report.json\"\n    reports: [scan-report.json]\n",
+		"api/api.go":             "package api\n",
+	})
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-qm", "main")
+	gitRun(t, dir, "tag", "base")
+	ident := Identity{Name: "Mesh builder (dl360)", Email: "mesh-builder+dl360@runsheet.dev", Pairers: []Pairer{{Name: "Chris", Email: "chris@example.com"}}}
+	if err := (&Git{}).Identify(context.Background(), dir, ident); err != nil {
+		t.Fatal(err)
+	}
+	// the session's commit, then what it left: an edit and a new file
+	writeFiles(t, dir, map[string]string{"api/steps.go": "package api\n\nconst Steps = 7\n"})
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-qm", "api: steps")
+	writeFiles(t, dir, map[string]string{"api/api.go": "package api\n\nconst API = 1\n", "api/new.go": "package api\n\nconst New = 2\n"})
+
+	paths, err := commitLeftovers(context.Background(), dir, ident)
+	if err != nil || strings.Join(paths, ",") != "api/api.go,api/new.go" {
+		t.Fatalf("leftovers committed %v, %v", paths, err)
+	}
+	head := gitRun(t, dir, "rev-parse", "HEAD")
+	if msg := gitRun(t, dir, "log", "-1", "--format=%an <%ae>%n%B"); !strings.Contains(msg, "Mesh builder (dl360) <mesh-builder+dl360@runsheet.dev>") ||
+		!strings.Contains(msg, LeftoverCommitMessage) || !strings.Contains(msg, "Co-Authored-By: Chris <chris@example.com>") || strings.Contains(strings.ToLower(msg), "anthropic") {
+		t.Fatalf("leftover commit:\n%s", msg)
+	}
+
+	cfg, err := validate.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := validate.Run(context.Background(), cfg.Steps, validate.HostRunner{Dir: dir}, validate.Options{Dir: dir})
+	if err != nil || len(results) != 1 || results[0].ExitCode != 0 {
+		t.Fatalf("validation: %+v %v", results, err)
+	}
+	att, err := validate.Build(dir, head, results, validate.Meta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cg := r.GW.(changesetGateway)
+	fin := &sessionsteps.Finish{ItemID: item1, Branch: "mesh/ship-it-1", Gateway: cg,
+		Logf:     func(format string, args ...any) { r.logf("item %s: %s", b.label, fmt.Sprintf(format, args...)) },
+		Recorded: func(ctx context.Context, res *sessionsteps.FinishResult) { r.attestChangeset(ctx, b, att, res) }}
+	ctx := gateway.WithNodeID(context.Background(), "22222222-2222-4222-8222-222222222222")
+	if recs := sessionsteps.Run(ctx, sessionsteps.Job{Steps: []sessionsteps.Step{fin.Step()}}, &sessionsteps.State{WorkspaceDir: dir, BaseRef: "base"}); recs[0].Outcome != sessionsteps.Succeeded {
+		t.Fatalf("finish: %s: %v\n%s", recs[0].Outcome, recs[0].Err, logs.String())
+	}
+	cs := f.ChangesetsOf(item1)[0]
+	if cs.Tree != att.Tree {
+		t.Fatalf("changeset tree %s, validated tree %s", cs.Tree, att.Tree)
+	}
+	if got := strings.Join(cs.PathsChanged, ","); got != "api/api.go,api/new.go,api/steps.go" {
+		t.Fatalf("paths changed = %s, want the session's edit, its new file and its commit, and no report", got)
+	}
+	if out := logs.String(); !strings.Contains(out, "attestation recorded "+short(head)) || !strings.Contains(out, "1 path(s) left uncommitted are not in the changeset") {
+		t.Fatalf("log:\n%s", out)
+	}
+}
+
+// commitLeftovers makes no commit of a clean checkout, never stages the
+// node's own context (ContextDir), and leaves a checkout the
+// session left mid-merge as it is.
+func TestCommitLeftoversCleanExcludedAndMidMerge(t *testing.T) {
+	dir := t.TempDir()
+	gitRun(t, dir, "init", "-q")
+	writeFiles(t, dir, map[string]string{"a.txt": "a\n"})
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-qm", "base")
+	ident := Identity{Name: "Mesh builder (t)", Email: "mesh-builder+t@runsheet.dev"}
+	if err := (&Git{}).Identify(context.Background(), dir, ident); err != nil {
+		t.Fatal(err)
+	}
+	head := gitRun(t, dir, "rev-parse", "HEAD")
+	writeFiles(t, dir, map[string]string{filepath.Join(ContextDir, "x.md"): "context\n"})
+	if paths, err := commitLeftovers(context.Background(), dir, ident); err != nil || len(paths) != 0 || gitRun(t, dir, "rev-parse", "HEAD") != head {
+		t.Fatalf("clean checkout: committed %v, %v", paths, err)
+	}
+
+	gitRun(t, dir, "checkout", "-qb", "other")
+	writeFiles(t, dir, map[string]string{"a.txt": "other\n"})
+	gitRun(t, dir, "commit", "-qam", "other")
+	gitRun(t, dir, "checkout", "-q", "-")
+	writeFiles(t, dir, map[string]string{"a.txt": "mine\n"})
+	gitRun(t, dir, "commit", "-qam", "mine")
+	cmd := exec.Command("git", "-c", "user.name=t", "-c", "user.email=t@t", "merge", "other")
+	cmd.Dir = dir
+	_ = cmd.Run() // conflicts
+	mine := gitRun(t, dir, "rev-parse", "HEAD")
+	if paths, err := commitLeftovers(context.Background(), dir, ident); err == nil || !strings.Contains(err.Error(), "MERGE_HEAD") || len(paths) != 0 || gitRun(t, dir, "rev-parse", "HEAD") != mine {
+		t.Fatalf("mid-merge: committed %v, %v", paths, err)
 	}
 }

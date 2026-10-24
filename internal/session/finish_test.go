@@ -94,9 +94,10 @@ func write(t *testing.T, dir, path, body string) {
 	}
 }
 
-// builtWorkspace is a checkout on base with the builder's change: a.txt
-// changed and dir/c.txt added in a commit, keep.txt removed and
-// other/d.txt added uncommitted.
+// builtWorkspace is a checkout on base with the builder's commit — a.txt
+// changed, dir/c.txt and other/d.txt added, keep.txt removed — and what
+// a validation leaves behind in it: untracked scan-report.json and
+// scan-out/, and a tracked file it rewrote.
 func builtWorkspace(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -110,12 +111,15 @@ func builtWorkspace(t *testing.T) string {
 	git(t, dir, "tag", "base")
 	write(t, dir, "a.txt", "two\n")
 	write(t, dir, "dir/c.txt", "sea\n")
-	git(t, dir, "add", "-A")
-	git(t, dir, "commit", "-qm", "build")
 	if err := os.Remove(filepath.Join(dir, "keep.txt")); err != nil {
 		t.Fatal(err)
 	}
 	write(t, dir, "other/d.txt", "dee\n")
+	git(t, dir, "add", "-A")
+	git(t, dir, "commit", "-qm", "build")
+	write(t, dir, "scan-report.json", `{"findings":[]}`+"\n")
+	write(t, dir, "scan-out/summary.txt", "clean\n")
+	write(t, dir, "dir/b.txt", "rewritten by a suite\n")
 	return dir
 }
 
@@ -134,8 +138,7 @@ func TestFinishRecordsAChangeset(t *testing.T) {
 		t.Fatalf("finish: %s: %v", records[0].Outcome, records[0].Err)
 	}
 
-	// the tree recorded is the workspace's, uncommitted changes included
-	git(t, dir, "commit", "-qam", "rest")
+	// the tree recorded is the builder's commit's
 	tree := git(t, dir, "rev-parse", "HEAD^{tree}")
 
 	if len(gw.asked) != 1 {
@@ -217,6 +220,52 @@ func TestFinishRecordsAChangeset(t *testing.T) {
 	res := state.Results[FinishStepName].(*FinishResult)
 	if res.ChangesetID != "cs-6" || res.Pushed || res.BaseSHA != baseSHA {
 		t.Fatalf("result %+v", res)
+	}
+}
+
+// The changeset is the commit the builder made and the node validated:
+// what the validation wrote into the checkout afterwards — an untracked
+// report and its directory, a tracked file a suite rewrote — is not
+// staged, not offered, not in the tree and not among the paths changed,
+// and the finish names what it left out. The checkout's index is not
+// touched, so the declared report is still there to be read.
+func TestFinishCarriesOnlyTheCommitValidated(t *testing.T) {
+	dir := builtWorkspace(t)
+	validated := git(t, dir, "rev-parse", "HEAD^{tree}")
+	gw := &fakeChangesets{held: map[gateway.ChangesetObject][]byte{}}
+	var logged []string
+	f := &Finish{ItemID: "item-6", Branch: "mesh/g-6", Gateway: gw, NewID: func() string { return "cs-6" },
+		Logf: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }}
+	state := &State{WorkspaceDir: dir, BaseRef: "base"}
+	if records := Run(context.Background(), Job{Steps: []Step{f.Step()}}, state); records[0].Outcome != Succeeded {
+		t.Fatalf("finish: %s: %v", records[0].Outcome, records[0].Err)
+	}
+	cs := gw.recorded[0]
+	if cs.Tree != validated {
+		t.Fatalf("changeset tree %s, want the validated commit's %s", cs.Tree, validated)
+	}
+	for _, p := range cs.PathsChanged {
+		if strings.HasPrefix(p, "scan-") || p == "dir/b.txt" {
+			t.Fatalf("paths changed %v carry the validation's output %s", cs.PathsChanged, p)
+		}
+	}
+	report := gateway.ChangesetObject{Type: gateway.ObjectBlob, SHA: git(t, dir, "hash-object", "scan-report.json")}
+	rewritten := gateway.ChangesetObject{Type: gateway.ObjectBlob, SHA: git(t, dir, "hash-object", "dir/b.txt")}
+	for _, o := range gw.asked[0] {
+		if o == report || o == rewritten {
+			t.Fatalf("offered %+v, the validation's output", o)
+		}
+	}
+	if out, err := exec.Command("git", "-C", dir, "ls-tree", "-r", "--name-only", cs.Tree).Output(); err != nil || strings.Contains(string(out), "scan-") {
+		t.Fatalf("changeset tree holds %q (%v)", out, err)
+	}
+	// nothing staged: the report is still an untracked file in place
+	if st := git(t, dir, "status", "--porcelain", "--", "scan-report.json"); st != "?? scan-report.json" {
+		t.Fatalf("scan-report.json status %q, want untracked", st)
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], "3 path(s) left uncommitted") ||
+		!strings.Contains(logged[0], "scan-report.json") || !strings.Contains(logged[0], "scan-out/") || !strings.Contains(logged[0], "dir/b.txt") {
+		t.Fatalf("logged %q", logged)
 	}
 }
 

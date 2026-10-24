@@ -966,9 +966,9 @@ func (r *Runner) uploadAttestation(ctx context.Context, b *buildRun, att validat
 // build validated, uploaded once res — the changeset the finish recorded
 // — is the item's latest and before the item is finished on it. The
 // platform takes it only when att's tree is res's, so a validated tree
-// that is not the one recorded (the workspace held changes the commit
-// did not) is not sent: it is logged and a note on the item naming both
-// trees, never the item's failure.
+// that is not the one recorded (HEAD moved past the commit validated) is
+// not sent: it is logged and a note on the item naming both trees, never
+// the item's failure.
 func (r *Runner) attestChangeset(ctx context.Context, b *buildRun, att validate.Attestation, res *sessionsteps.FinishResult) {
 	if res != nil && att.Tree != "" && !strings.EqualFold(att.Tree, res.Tree) {
 		msg := fmt.Sprintf("validation: validated tree %s (%s) is not the tree %s of changeset %s; no attestation", short(att.Tree), short(att.Commit), short(res.Tree), res.ChangesetID)
