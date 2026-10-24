@@ -16,7 +16,9 @@ import (
 // mainvalidation_loop.go puts a merge batch candidate's validation
 // (validateCandidate, runsheet ADR 048 decision 3) on the loop: on the
 // evaluation cadence the node reads mainValidations, claims each batch
-// of an org it serves while it has a free slot, runs the candidate's
+// of an org it serves while it has a free slot — or its validation lane
+// (capacity.reserve, ADR 069 decision 2b) when builds fill the rest —
+// runs the candidate's
 // suites in its own goroutine — counted as a running session against
 // the capacity, as a build is — and ends the claim: the attestation is
 // the verdict (ADR 054's amendment 2026-10-13), so green and red alike

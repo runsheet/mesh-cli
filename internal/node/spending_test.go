@@ -80,7 +80,8 @@ func (n *accountsNode) accountOf(id string) string {
 // at its cap — stops no running session, and a key at its cap takes
 // nothing more, not even urgent work.
 func TestAccountsNodeGrowsToTheSumAndSpendsInOrder(t *testing.T) {
-	n := newAccountsNode(t, Capacity{Min: 1, Max: 8})
+	// no lanes: every slot here is the accounts' (lane_test.go)
+	n := newAccountsNode(t, Capacity{Min: 1, Max: 8, Reserve: ReserveOf(0, 0)})
 	n.subscriptions(oneSlot, 0)
 	stepsOf(t, n.capacityEvery(0, 25*time.Minute), func(d time.Duration) int {
 		return min(1+int(d/(5*time.Minute)), 5)

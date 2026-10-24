@@ -143,7 +143,7 @@ func sharesFake(t *testing.T, bReady bool) *priorityFake {
 // returned buffer.
 func (p *priorityFake) sharesLoop(capacity int) (*Loop, *strings.Builder) {
 	var logs strings.Builder
-	return &Loop{GW: gateway.New(p.URL(), "rs_test"), Cfg: &Config{Slug: "box", Capacity: Fixed(capacity)}, Scopes: p.scopes,
+	return &Loop{GW: gateway.New(p.URL(), "rs_test"), Cfg: &Config{Slug: "box", Capacity: unlaned(capacity)}, Scopes: p.scopes,
 		Interval: time.Hour, Harness: "claude-code", Log: log.New(&logs, "", 0),
 		Dispatch: func(context.Context, gateway.WorkItem) {}}, &logs
 }
@@ -239,7 +239,7 @@ func TestClaimReadySharesWeightsFromNodeYAML(t *testing.T) {
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	writeNodeYAML(t, "slug: box\nname: Box\ncapacity: 4\nshares: {acme: 3, globex: 1}\n")
+	writeNodeYAML(t, "slug: box\nname: Box\ncapacity: {min: 4, max: 4, reserve: {validate: 0, evaluate: 0}}\nshares: {acme: 3, globex: 1}\n")
 	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatal(err)

@@ -245,7 +245,7 @@ func TestClaimReadyPlatformShares(t *testing.T) {
 		},
 	}
 	var logs strings.Builder
-	loop := &Loop{GW: gateway.New(p.URL(), "rs_test"), Cfg: &Config{Slug: "box", Capacity: Fixed(4)},
+	loop := &Loop{GW: gateway.New(p.URL(), "rs_test"), Cfg: &Config{Slug: "box", Capacity: unlaned(4)},
 		Scopes: p.scopes, Owned: &Owned{NodeID: nodeID, Owner: Owner{Kind: "person", ID: "44444444-4444-4444-8444-444444444444", Name: "Chris"}},
 		Interval: time.Hour, Harness: "claude-code", Log: log.New(&logs, "", 0),
 		Dispatch: func(context.Context, gateway.WorkItem) {}}
