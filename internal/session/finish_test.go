@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +25,7 @@ type fakeChangesets struct {
 	put         []gateway.ChangesetObject
 	recorded    []gateway.Changeset
 	finished    []string // changeset ids
+	bases       []string // the base commit each finish named, "" for none
 }
 
 func (g *fakeChangesets) gone() error {
@@ -61,10 +63,11 @@ func (g *fakeChangesets) RecordChangeset(_ context.Context, _ string, cs gateway
 	return nil
 }
 
-func (g *fakeChangesets) FinishWorkItemChangeset(_ context.Context, _, _, id string, _ int, _ *gateway.UsageReport, _ ...string) error {
+func (g *fakeChangesets) FinishWorkItemChangeset(_ context.Context, _, _, id, baseSHA string, _ int, _ *gateway.UsageReport, _ ...string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.finished = append(g.finished, id)
+	g.bases = append(g.bases, baseSHA)
 	return nil
 }
 
@@ -205,9 +208,146 @@ func TestFinishRecordsAChangeset(t *testing.T) {
 	if !reflect.DeepEqual(gw.finished, []string{"cs-6"}) {
 		t.Fatalf("finished on %v, want [cs-6]", gw.finished)
 	}
+	// the finish names the base commit the platform writes the branch
+	// on: base's commit, whose tree is the changeset's base_tree
+	baseSHA := git(t, dir, "rev-parse", "base^{commit}")
+	if !reflect.DeepEqual(gw.bases, []string{baseSHA}) {
+		t.Fatalf("finished naming base %v, want [%s]", gw.bases, baseSHA)
+	}
 	res := state.Results[FinishStepName].(*FinishResult)
-	if res.ChangesetID != "cs-6" || res.Pushed {
+	if res.ChangesetID != "cs-6" || res.Pushed || res.BaseSHA != baseSHA {
 		t.Fatalf("result %+v", res)
+	}
+}
+
+// The base commit the finish names is the one the change was built on,
+// and the changeset's base_tree is that commit's tree — even when the
+// base ref moved on since the checkout (another item's fetch of the
+// shared clone), which is logged, not followed; a rework continued from
+// an earlier attempt's branch, forked off an older base, names the fork
+// point; and with no checkout-time sha on the state the merge-base is
+// read back.
+func TestFinishNamesTheBaseTheChangeWasBuiltOn(t *testing.T) {
+	// upstream at U1; the branch forks there and commits B1; upstream
+	// then moves on to U2
+	dir := t.TempDir()
+	git(t, dir, "init", "-q", "-b", "upstream")
+	write(t, dir, "a.txt", "one\n")
+	write(t, dir, "shared.txt", "shared\n")
+	git(t, dir, "add", "-A")
+	git(t, dir, "commit", "-qm", "U1")
+	u1 := git(t, dir, "rev-parse", "HEAD")
+	git(t, dir, "checkout", "-qb", "mesh/g-7")
+	write(t, dir, "a.txt", "two\n")
+	git(t, dir, "add", "-A")
+	git(t, dir, "commit", "-qm", "B1")
+	git(t, dir, "checkout", "-q", "upstream")
+	write(t, dir, "shared.txt", "moved on\n")
+	git(t, dir, "add", "-A")
+	git(t, dir, "commit", "-qm", "U2")
+	u2 := git(t, dir, "rev-parse", "HEAD")
+	git(t, dir, "checkout", "-q", "mesh/g-7")
+	u1Tree := git(t, dir, "rev-parse", u1+"^{tree}")
+
+	cases := []struct {
+		name     string
+		checkout string // State.BaseSHA
+		wantBase string
+		wantLog  bool
+	}{
+		{"checkout sha, base moved on", u1, u1, true},
+		{"no checkout sha: the merge-base", "", u1, true},
+		// a rework's checkout fetched upstream at U2, which the branch
+		// does not descend from: the fork point, not U2
+		{"checkout sha not an ancestor: the merge-base", u2, u1, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var logged []string
+			gw := &fakeChangesets{held: map[gateway.ChangesetObject][]byte{}}
+			f := &Finish{ItemID: "item-7", Branch: "mesh/g-7", Gateway: gw, NewID: func() string { return "cs-7" },
+				Logf: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }}
+			state := &State{WorkspaceDir: dir, BaseRef: "upstream", BaseSHA: tc.checkout}
+			records := Run(context.Background(), Job{Steps: []Step{f.Step()}}, state)
+			if records[0].Outcome != Succeeded {
+				t.Fatalf("finish: %s: %v", records[0].Outcome, records[0].Err)
+			}
+			if !reflect.DeepEqual(gw.bases, []string{tc.wantBase}) {
+				t.Fatalf("finish named base %v, want [%s]", gw.bases, tc.wantBase)
+			}
+			cs := gw.recorded[0]
+			// the base_tree is the named commit's own, and the paths are
+			// the builder's alone: upstream's later change is not among
+			// them as a revert
+			if cs.BaseTree != u1Tree || !reflect.DeepEqual(cs.PathsChanged, []string{"a.txt"}) {
+				t.Fatalf("recorded %+v, want base tree %s and a.txt alone", cs, u1Tree)
+			}
+			if tc.wantLog != (len(logged) == 1) || (tc.wantLog && !strings.Contains(logged[0], "upstream is at "+u2)) {
+				t.Fatalf("logged %q", logged)
+			}
+		})
+	}
+
+	// the base still where the checkout left it: named, nothing logged
+	t.Run("base unmoved", func(t *testing.T) {
+		git(t, dir, "branch", "-f", "upstream", u1)
+		var logged []string
+		gw := &fakeChangesets{held: map[gateway.ChangesetObject][]byte{}}
+		f := &Finish{ItemID: "item-7", Branch: "mesh/g-7", Gateway: gw, NewID: func() string { return "cs-7" },
+			Logf: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }}
+		state := &State{WorkspaceDir: dir, BaseRef: "upstream", BaseSHA: u1}
+		if records := Run(context.Background(), Job{Steps: []Step{f.Step()}}, state); records[0].Outcome != Succeeded {
+			t.Fatalf("finish: %s: %v", records[0].Outcome, records[0].Err)
+		}
+		if !reflect.DeepEqual(gw.bases, []string{u1}) || gw.recorded[0].BaseTree != u1Tree || len(logged) != 0 {
+			t.Fatalf("bases %v, base tree %s, logged %q", gw.bases, gw.recorded[0].BaseTree, logged)
+		}
+	})
+}
+
+// baseCommit's tree is always the commit's it names: the base ref's
+// own commit and tree when nothing moved; the checkout-time commit's
+// when the ref moved past it; the merge-base's for a branch that does
+// not descend from the checkout-time commit; a ref with no commit is
+// the step's error.
+func TestBaseCommitTreeIsTheCommitsOwn(t *testing.T) {
+	dir := builtWorkspace(t)
+	ctx := context.Background()
+	base := git(t, dir, "rev-parse", "base^{commit}")
+	baseTree := git(t, dir, "rev-parse", "base^{tree}")
+	head := git(t, dir, "rev-parse", "HEAD")
+	headTree := git(t, dir, "rev-parse", "HEAD^{tree}")
+
+	var logged int
+	logf := func(string, ...any) { logged++ }
+	sha, tree, err := baseCommit(ctx, RunGit, dir, "base", "", logf)
+	if err != nil || sha != base || tree != baseTree || logged != 0 {
+		t.Fatalf("no checkout sha: %s %s %v, logged %d", sha, tree, err, logged)
+	}
+	sha, tree, err = baseCommit(ctx, RunGit, dir, "base", base, logf)
+	if err != nil || sha != base || tree != baseTree || logged != 0 {
+		t.Fatalf("checkout sha = base: %s %s %v, logged %d", sha, tree, err, logged)
+	}
+	// the ref moved to HEAD itself (as a fetch would move origin/main
+	// past the fork point): the checkout-time commit holds, its tree
+	// with it, and the move is logged once
+	git(t, dir, "tag", "-f", "base", head)
+	sha, tree, err = baseCommit(ctx, RunGit, dir, "base", base, logf)
+	if err != nil || sha != base || tree != baseTree || logged != 1 {
+		t.Fatalf("ref moved: %s %s %v, logged %d", sha, tree, err, logged)
+	}
+	// a checkout-time commit HEAD does not descend from: the merge-base
+	// of HEAD and the ref — here HEAD itself
+	git(t, dir, "checkout", "-q", "--orphan", "elsewhere")
+	git(t, dir, "commit", "-qm", "unrelated", "--allow-empty")
+	stray := git(t, dir, "rev-parse", "HEAD")
+	git(t, dir, "checkout", "-q", "main")
+	sha, tree, err = baseCommit(ctx, RunGit, dir, "base", stray, logf)
+	if err != nil || sha != head || tree != headTree || logged != 1 {
+		t.Fatalf("checkout sha not an ancestor: %s %s %v, logged %d", sha, tree, err, logged)
+	}
+	if _, _, err := baseCommit(ctx, RunGit, dir, "no-such-ref", "", logf); err == nil || !strings.Contains(err.Error(), "base commit of no-such-ref") {
+		t.Fatalf("missing ref: %v", err)
 	}
 }
 

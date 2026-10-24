@@ -417,6 +417,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 
 	var (
 		dir        string
+		baseSHA    string
 		ident      Identity
 		files      []string
 		written    ContextWritten
@@ -464,6 +465,10 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		if err != nil {
 			return end(r.releaseWorkspace(ctx, item.ID, label, nodeID(), err))
 		}
+		// the base the change is built on, as the checkout's fetch left
+		// it: the finish names it as the changeset's base commit
+		baseSHA = r.checkoutBaseSHA(ctx, dir, spec.BaseRef, defaultBranchOf(res), label)
+		state.BaseSHA = baseSHA
 		// the session commits as its agent with the pairers' trailers, never
 		// as the node's owner (ADR-024)
 		ident = identityFor(r.Cfg, tools.RoleFor(string(harness.KindBuild)), item, res.Goal)
@@ -703,7 +708,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 
 		// the session outlives this process: a restart adopts it (ADR 009)
 		job.Outlive = true
-		b := &buildRun{r: r, item: item, res: res, label: label, spec: spec, dir: dir, cred: cred, acct: acct, runtimes: runtimes, ident: ident, model: model, lastText: "session started", job: &job, pod: pod, started: time.Now(), nodeID: sc.NodeID}
+		b := &buildRun{r: r, item: item, res: res, label: label, spec: spec, dir: dir, baseSHA: baseSHA, cred: cred, acct: acct, runtimes: runtimes, ident: ident, model: model, lastText: "session started", job: &job, pod: pod, started: time.Now(), nodeID: sc.NodeID}
 		b.rec = b.newRecorder()
 		b.report(ctx, "session started: "+spec.Branch+" on "+modelName(model))
 		if retrying {
@@ -804,12 +809,15 @@ func StepLine(n int, rec sessionsteps.Record) string {
 // buildRun is one build session as its tail needs it, whether this
 // process started the session (RunItem) or adopted it (AdoptItem).
 type buildRun struct {
-	r        *Runner
-	item     gateway.WorkItem
-	res      *Resolved
-	label    string
-	spec     WorkspaceSpec
-	dir      string
+	r     *Runner
+	item  gateway.WorkItem
+	res   *Resolved
+	label string
+	spec  WorkspaceSpec
+	dir   string
+	// baseSHA is the commit origin/<base> was at when the checkout was
+	// made (checkoutBaseSHA), "" when unknown — an adopted session
+	baseSHA  string
 	cred     *ItemCred
 	acct     *SessionAccount // nil for an adopted session
 	runtimes []string
@@ -979,7 +987,7 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 		{Name: sessionsteps.ValidateStepName, Run: func(ctx context.Context, _ *sessionsteps.State) error { return t.validate(ctx) }},
 		{Name: sessionsteps.FinishStepName, Run: t.finish},
 		{Name: StepRelease, Always: true, Run: func(context.Context, *sessionsteps.State) error { t.release(); return nil }},
-	}}, &sessionsteps.State{WorkspaceDir: b.dir, BaseRef: b.spec.BaseRef})
+	}}, &sessionsteps.State{WorkspaceDir: b.dir, BaseRef: b.spec.BaseRef, BaseSHA: b.baseSHA})
 	r.logSteps(b.label, recs)
 	return t.ret
 }
@@ -1208,7 +1216,9 @@ func (t *buildTail) finish(ctx context.Context, state *sessionsteps.State) error
 		ItemID:      item.ID,
 		Branch:      b.spec.Branch,
 		BaseRef:     t.changesetBase(ctx),
+		BaseSHA:     b.baseSHA,
 		Description: b.description(ctx),
+		Logf:        func(format string, args ...any) { r.logf("item %s: %s", label, fmt.Sprintf(format, args...)) },
 		Push: func(ctx context.Context, _, _ string) (string, error) {
 			// the push is part of the build: no finish is sent until it has
 			// returned the head it pushed, and a refused push is the
@@ -1258,7 +1268,7 @@ func (t *buildTail) finish(ctx context.Context, state *sessionsteps.State) error
 	case fr != nil && fr.Pushed:
 		r.logf("item %s: pushed %s; finished %s ($%.2f)", label, short(fr.HeadSHA), b.spec.Branch, result.CostUSD)
 	case fr != nil:
-		r.logf("item %s: changeset %s recorded (%d path(s), %d object(s) uploaded); finished %s ($%.2f)", label, fr.ChangesetID, len(fr.PathsChanged), len(fr.Uploaded), b.spec.Branch, result.CostUSD)
+		r.logf("item %s: changeset %s recorded (%d path(s), %d object(s) uploaded) on %s; finished %s ($%.2f)", label, fr.ChangesetID, len(fr.PathsChanged), len(fr.Uploaded), short(fr.BaseSHA), b.spec.Branch, result.CostUSD)
 	}
 	return nil
 }
@@ -1274,6 +1284,25 @@ func (t *buildTail) changesetBase(ctx context.Context) string {
 	return "origin/" + defaultBranchOf(t.b.res)
 }
 
+// checkoutBaseSHA is the commit the item's base is at in the checkout
+// dir just made — origin/<baseRef>, else (no base ref) origin/<def> —
+// the base the builder's change is built on, which the finish names as
+// the changeset's base commit (sessionsteps.Finish.BaseSHA). "" when the
+// checkout has no such ref, logged: the finish then reads the base
+// back as the merge-base of HEAD and the base.
+func (r *Runner) checkoutBaseSHA(ctx context.Context, dir, baseRef, def, label string) string {
+	base := strings.TrimPrefix(baseRef, "origin/")
+	if base == "" {
+		base = def
+	}
+	out, err := sessionsteps.RunGit(ctx, dir, "rev-parse", "--verify", "--quiet", "origin/"+base+"^{commit}")
+	if err != nil {
+		r.logf("item %s: base origin/%s has no commit in the checkout: %v", label, base, err)
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // carriedChangesets is a ChangesetGateway whose changeset finish carries
 // the session's usage report as FinishWorkItem's does (SessionAccount.Carried).
 type carriedChangesets struct {
@@ -1281,8 +1310,8 @@ type carriedChangesets struct {
 	carried func(error) error
 }
 
-func (c *carriedChangesets) FinishWorkItemChangeset(ctx context.Context, itemID, branch, changesetID string, costCents int, usage *gateway.UsageReport, description ...string) error {
-	return c.carried(c.ChangesetGateway.FinishWorkItemChangeset(ctx, itemID, branch, changesetID, costCents, usage, description...))
+func (c *carriedChangesets) FinishWorkItemChangeset(ctx context.Context, itemID, branch, changesetID, baseSHA string, costCents int, usage *gateway.UsageReport, description ...string) error {
+	return c.carried(c.ChangesetGateway.FinishWorkItemChangeset(ctx, itemID, branch, changesetID, baseSHA, costCents, usage, description...))
 }
 
 // changesetGateway is a platform client that can say whether it holds
