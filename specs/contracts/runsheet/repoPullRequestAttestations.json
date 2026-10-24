@@ -1,0 +1,83 @@
+{
+  "args": {
+    "repoId": "57db958b-a01e-547c-b70c-75eac6066fd1"
+  },
+  "field": "repoPullRequestAttestations",
+  "kind": "query",
+  "list": false,
+  "note": "Per open pull request of the repository's work items (evaluating or in review, pull request not closed, in prNumber order), which attestations the merge policy requires of its head and which are present and missing (ADR 063). requiredKinds is each {kind, because} — because default, policy or risk_class:<name> — in kind order; presentKinds are the kinds present and green for exactly headSha; missingKinds the required kinds not present, sorted. read is whether the integrator has recorded the status for this head: false until it has, or when the recorded status is of an older head, and then requiredKinds is the repository's base set (repoMergePolicy's requiredKinds), presentKinds empty and every kind missing. A new push clears presentKinds.",
+  "sample": {
+    "pullRequests": [
+      {
+        "goalId": "50ae4d74-672e-5e13-b8f3-c7273f9b6e50",
+        "headSha": "71a0c0ffee5eed1e55c0de0ddba11ad0be000071",
+        "missingKinds": [
+          "human_review",
+          "review"
+        ],
+        "prNumber": 71,
+        "prUrl": "https://github.com/contractpolicy/service/pull/71",
+        "presentKinds": [
+          "evaluator",
+          "node_validation"
+        ],
+        "read": true,
+        "requiredKinds": [
+          {
+            "because": "default",
+            "kind": "evaluator"
+          },
+          {
+            "because": "risk_class:migrations",
+            "kind": "human_review"
+          },
+          {
+            "because": "policy",
+            "kind": "node_validation"
+          },
+          {
+            "because": "policy",
+            "kind": "review"
+          }
+        ],
+        "seq": 1,
+        "status": "review",
+        "title": "Add the audit table",
+        "workItemId": "0e0de840-50c7-5b0e-81f5-291f41236d3f"
+      },
+      {
+        "goalId": "50ae4d74-672e-5e13-b8f3-c7273f9b6e50",
+        "headSha": "72a0c0ffee5eed1e55c0de0ddba11ad0be000072",
+        "missingKinds": [
+          "evaluator",
+          "node_validation",
+          "review"
+        ],
+        "prNumber": 72,
+        "prUrl": "https://github.com/contractpolicy/service/pull/72",
+        "presentKinds": [],
+        "read": false,
+        "requiredKinds": [
+          {
+            "because": "default",
+            "kind": "evaluator"
+          },
+          {
+            "because": "policy",
+            "kind": "node_validation"
+          },
+          {
+            "because": "policy",
+            "kind": "review"
+          }
+        ],
+        "seq": 2,
+        "status": "review",
+        "title": "Write to the audit table",
+        "workItemId": "7c8b23de-d6e2-55ee-ab13-4758a96a0c53"
+      }
+    ],
+    "repo": "service",
+    "repoId": "57db958b-a01e-547c-b70c-75eac6066fd1"
+  }
+}

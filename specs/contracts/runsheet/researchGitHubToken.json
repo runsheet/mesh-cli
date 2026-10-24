@@ -1,0 +1,16 @@
+{
+  "args": {
+    "directionId": "ef42e7d8-6c1d-5e10-8606-1ec010c906f7"
+  },
+  "field": "researchGitHubToken",
+  "kind": "query",
+  "list": true,
+  "sample": [
+    {
+      "access": "read",
+      "expiresAt": "2026-01-01T00:00:00Z",
+      "repository": "contractco/api",
+      "token": "REDACTED"
+    }
+  ]
+}

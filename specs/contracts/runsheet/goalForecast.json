@@ -1,0 +1,230 @@
+{
+  "args": {
+    "goalId": "ed1f0701-e3c7-5ffb-a3a0-5b7d32243bdf"
+  },
+  "field": "goalForecast",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "answer": null,
+    "card": {
+      "contested": false,
+      "cost_band": "m",
+      "cost_class": null,
+      "evidence": [
+        {
+          "kind": "metric",
+          "level": "data",
+          "note": null,
+          "ref": "scorecard:firstPass"
+        }
+      ],
+      "evidence_level": "data",
+      "learning_value": "low",
+      "mission_fit": "core",
+      "non_goal": null,
+      "p_max": 0.65,
+      "p_min": 0.55,
+      "p_moves": 0.6,
+      "premortem": {
+        "elephant": null,
+        "tigers": [
+          "the page is slow"
+        ]
+      },
+      "reasons": "Support staff hunt five dashboards a ticket. One page cuts that. Similar goals moved first pass.",
+      "reversibility": "easy",
+      "suggestion": "",
+      "target": {
+        "check_by": "2026-01-01T00:00:00Z",
+        "direction": "up",
+        "signal_id": "sig_first_pass",
+        "threshold": 0.1
+      },
+      "task_shaped": false,
+      "task_shaped_reason": "",
+      "verdict": "do"
+    },
+    "check_by": "2026-01-01T00:00:00Z",
+    "contested": false,
+    "deadline_at": "2026-01-01T00:00:00Z",
+    "forecast_cap_cents": 150,
+    "forecast_id": "2c8294c5-d72b-525c-9dc0-3d358a85cb75",
+    "forecast_spent_cents": 9,
+    "goal_id": "ed1f0701-e3c7-5ffb-a3a0-5b7d32243bdf",
+    "mission_version": 0,
+    "moment": "goal_set",
+    "open_round": false,
+    "org_id": "6b7e2cf7-f63a-5924-9349-84ac89d9986f",
+    "over_cap": false,
+    "p_panel": 0.6,
+    "p_person": null,
+    "panel_size": 3,
+    "pitch_id": null,
+    "project_id": "abc7a680-399d-540a-a5aa-109af5895a5f",
+    "round": 1,
+    "rounds": [
+      {
+        "cap_cents": 150,
+        "card": {
+          "contested": false,
+          "cost_band": "m",
+          "cost_class": null,
+          "evidence": [
+            {
+              "kind": "metric",
+              "level": "data",
+              "note": null,
+              "ref": "scorecard:firstPass"
+            }
+          ],
+          "evidence_level": "data",
+          "learning_value": "low",
+          "mission_fit": "core",
+          "non_goal": null,
+          "p_max": 0.65,
+          "p_min": 0.55,
+          "p_moves": 0.6,
+          "premortem": {
+            "elephant": null,
+            "tigers": [
+              "the page is slow"
+            ]
+          },
+          "reasons": "Support staff hunt five dashboards a ticket. One page cuts that. Similar goals moved first pass.",
+          "reversibility": "easy",
+          "suggestion": "",
+          "target": {
+            "check_by": "2026-01-01T00:00:00Z",
+            "direction": "up",
+            "signal_id": "sig_first_pass",
+            "threshold": 0.1
+          },
+          "task_shaped": false,
+          "task_shaped_reason": "",
+          "verdict": "do"
+        },
+        "check_by": "2026-01-01T00:00:00Z",
+        "contested": false,
+        "mission_version": 0,
+        "moment": "goal_set",
+        "over_cap": false,
+        "p_panel": 0.6,
+        "previous_verdict": null,
+        "round": 1,
+        "samples": [
+          {
+            "at": "2026-01-01T00:00:00Z",
+            "card": {
+              "contested": false,
+              "cost_band": "m",
+              "cost_class": null,
+              "evidence": [
+                {
+                  "kind": "metric",
+                  "level": "data",
+                  "note": null,
+                  "ref": "scorecard:firstPass"
+                }
+              ],
+              "evidence_level": "data",
+              "learning_value": "low",
+              "mission_fit": "core",
+              "non_goal": null,
+              "p_max": 0.55,
+              "p_min": 0.55,
+              "p_moves": 0.55,
+              "premortem": {
+                "elephant": null,
+                "tigers": [
+                  "the page is slow"
+                ]
+              },
+              "reasons": "Support staff hunt five dashboards a ticket. One page cuts that. Similar goals moved first pass.",
+              "reversibility": "easy",
+              "suggestion": "",
+              "target": {
+                "check_by": "2026-01-01T00:00:00Z",
+                "direction": "up",
+                "signal_id": "sig_first_pass",
+                "threshold": 0.1
+              },
+              "task_shaped": false,
+              "task_shaped_reason": "",
+              "verdict": "do"
+            },
+            "cost_cents": 3,
+            "model": "model-0",
+            "prompt_hash": "scorer-1",
+            "session_id": "7dac01d0-fe1c-53f3-9143-384055b7a9fc"
+          }
+        ],
+        "scored_at": "2026-01-01T00:00:00Z",
+        "scored_samples": 3,
+        "scorer_version": "75c926a60a5fd80e",
+        "spent_cents": 9,
+        "verdict": "do"
+      }
+    ],
+    "samples": [
+      {
+        "at": "2026-01-01T00:00:00Z",
+        "card": {
+          "contested": false,
+          "cost_band": "m",
+          "cost_class": null,
+          "evidence": [
+            {
+              "kind": "metric",
+              "level": "data",
+              "note": null,
+              "ref": "scorecard:firstPass"
+            }
+          ],
+          "evidence_level": "data",
+          "learning_value": "low",
+          "mission_fit": "core",
+          "non_goal": null,
+          "p_max": 0.55,
+          "p_min": 0.55,
+          "p_moves": 0.55,
+          "premortem": {
+            "elephant": null,
+            "tigers": [
+              "the page is slow"
+            ]
+          },
+          "reasons": "Support staff hunt five dashboards a ticket. One page cuts that. Similar goals moved first pass.",
+          "reversibility": "easy",
+          "suggestion": "",
+          "target": {
+            "check_by": "2026-01-01T00:00:00Z",
+            "direction": "up",
+            "signal_id": "sig_first_pass",
+            "threshold": 0.1
+          },
+          "task_shaped": false,
+          "task_shaped_reason": "",
+          "verdict": "do"
+        },
+        "cost_cents": 3,
+        "model": "model-0",
+        "prompt_hash": "scorer-1",
+        "session_id": "7dac01d0-fe1c-53f3-9143-384055b7a9fc"
+      }
+    ],
+    "scored_samples": 3,
+    "scorer": {
+      "author_model": null,
+      "author_prompt_hash": null,
+      "panel": [
+        "claude-haiku-4-5"
+      ],
+      "rules_version": 1,
+      "scorer_version": "75c926a60a5fd80e"
+    },
+    "scorer_version": "75c926a60a5fd80e",
+    "shed": [],
+    "verdict": "do"
+  }
+}

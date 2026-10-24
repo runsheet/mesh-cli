@@ -1,0 +1,16 @@
+{
+  "args": {
+    "projectId": "a00ee511-6be8-5bef-bf59-4055ee443812"
+  },
+  "field": "projectReleaseNotes",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "homeRepoId": null,
+    "projectId": "a00ee511-6be8-5bef-bf59-4055ee443812",
+    "releaseNotes": {
+      "home": null,
+      "reason": "no home repo — release entries are not written"
+    }
+  }
+}

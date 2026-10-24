@@ -1,0 +1,15 @@
+{
+  "field": "finishWorkItem",
+  "input": {
+    "aggregateId": "00000000-0000-4000-8000-0000000c0009",
+    "costCents": 30,
+    "evidence": "merged in #1",
+    "namespace": "runsheet",
+    "outcome": "already_done"
+  },
+  "inputType": "FinishWorkItemInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

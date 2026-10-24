@@ -1,0 +1,423 @@
+{
+  "args": {
+    "method": "tools/list",
+    "path": "/mcp",
+    "server": "mesh"
+  },
+  "field": "mcp-tools-mesh",
+  "kind": "mcp-tools",
+  "list": true,
+  "sample": [
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "goal": {
+            "description": "the goal's slug (see mesh_goals); with project and seq, or give item_id alone",
+            "type": "string"
+          },
+          "item_id": {
+            "description": "the item's id, instead of project, goal and seq",
+            "type": "string"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects); with goal and seq, or give item_id alone",
+            "type": "string"
+          },
+          "question": {
+            "description": "the question for a person: recorded on the item as the progress note 'asks: <question>'",
+            "type": "string"
+          },
+          "role": {
+            "description": "for a machine's bearer, the role its agent plays — agent:<role>@<node slug> (default builder); a person's bearer is always user:<id>",
+            "type": "string"
+          },
+          "seq": {
+            "description": "the item's seq (see mesh_items); with project and goal, or give item_id alone",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_ask"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "goal": {
+            "description": "the goal's slug (see mesh_goals); with project and seq, or give item_id alone",
+            "type": "string"
+          },
+          "harness": {
+            "description": "what is doing the work (default claude-code)",
+            "type": "string"
+          },
+          "item_id": {
+            "description": "the item's id, instead of project, goal and seq",
+            "type": "string"
+          },
+          "pair": {
+            "description": "whoever else is at work alongside you, each user:<id> or agent:<role>@<slug>; kept on the item as paired, in this order",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects); with goal and seq, or give item_id alone",
+            "type": "string"
+          },
+          "role": {
+            "description": "for a machine's bearer, the role its agent plays — agent:<role>@<node slug> (default builder); a person's bearer is always user:<id>",
+            "type": "string"
+          },
+          "seq": {
+            "description": "the item's seq (see mesh_items); with project and goal, or give item_id alone",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "mesh_claim"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "project": {
+            "description": "the project as org/slug (see mesh_projects) whose open forecast rounds to claim a sample of",
+            "type": "string"
+          },
+          "role": {
+            "description": "for a machine's bearer, the role its agent plays — agent:<role>@<node slug> (default builder)",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "the score session's id, a uuid; a new one when unset. The same session again answers its claim",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_claim_score"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cause": {
+            "description": "validation (a failed check: the item goes back to ready and spends one of its retries), environment (parked held infrastructure, no attempt or retry spent) or other (the default: the classifier reads the error, and the work's failure fails the item); or the class itself (ADR 069 2b): work, or product, platform or infrastructure — a failure not the work's, which sends the item back to ready with nothing spent, the fourth held for a person",
+            "type": "string"
+          },
+          "detail": {
+            "description": "the readable failure: the failing command, the tests, an excerpt of the output; a validation cause without one is other",
+            "type": "string"
+          },
+          "error": {
+            "description": "what failed: the step and what it printed, go test's --- FAIL lines and package verdicts included",
+            "type": "string"
+          },
+          "exit_code": {
+            "description": "the failing step's exit code",
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "failure_kind": {
+            "description": "code or environment; empty is the platform's call",
+            "type": "string"
+          },
+          "goal": {
+            "description": "the goal's slug (see mesh_goals); with project and seq, or give item_id alone",
+            "type": "string"
+          },
+          "item_id": {
+            "description": "the item's id, instead of project, goal and seq",
+            "type": "string"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects); with goal and seq, or give item_id alone",
+            "type": "string"
+          },
+          "role": {
+            "description": "for a machine's bearer, the role its agent plays — agent:<role>@<node slug> (default builder); a person's bearer is always user:<id>",
+            "type": "string"
+          },
+          "seq": {
+            "description": "the item's seq (see mesh_items); with project and goal, or give item_id alone",
+            "type": "integer"
+          },
+          "step": {
+            "description": "the step that failed: validate: check, workspace, push, …",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_fail"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "org": {
+            "description": "only this org's projects, by its login",
+            "type": "string"
+          },
+          "project": {
+            "description": "only this project, as org/slug (see mesh_projects)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "mesh_health_nodes"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "name": "mesh_health_service"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "org": {
+            "description": "only this org's projects, by its login",
+            "type": "string"
+          },
+          "project": {
+            "description": "only this project, as org/slug (see mesh_projects)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "mesh_health_stalls"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "the previous answer's next, to read the page after it; omitted, the first page. A cursor belongs to the arguments that gave it",
+            "type": "string"
+          },
+          "detail": {
+            "description": "concise (the default): each row's identifying fields alone; full: every field",
+            "type": "string"
+          },
+          "fields": {
+            "description": "only these top-level fields of each row, e.g. [\"slug\",\"title\"]; overrides detail",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "idle_seconds": {
+            "description": "estate only: name database sessions idle in a transaction longer than this many seconds (default 60)",
+            "type": "integer"
+          },
+          "limit": {
+            "description": "at most this many rows on the page (default 50, at most 200)",
+            "type": "integer"
+          },
+          "org": {
+            "description": "only this org's projects, by its login",
+            "type": "string"
+          },
+          "project": {
+            "description": "only this project, as org/slug (see mesh_projects)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "mesh_health_stuck"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "days": {
+            "description": "the window, in days back from now: default 30, at most 90",
+            "type": "integer"
+          },
+          "goal": {
+            "description": "a goal's id, or its slug with project: the answer's goal then gives each of its items' context tokens and the totals per item and per merged item",
+            "type": "string"
+          },
+          "org": {
+            "description": "only the calls naming this org's projects, by its login",
+            "type": "string"
+          },
+          "project": {
+            "description": "only the calls naming this project, as org/slug (see mesh_projects)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "mesh_health_usage"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "description": "the kind of job: build, evaluate, rebase, plan, research or validate",
+            "type": "string"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects): the project itself, its org, or with repo one of its repositories; not needed for the estate",
+            "type": "string"
+          },
+          "reason": {
+            "description": "why the kind stops: what every claim of it there is refused with, as paused: <reason>",
+            "type": "string"
+          },
+          "repo": {
+            "description": "for scope repo: one of the project's repositories, as owner/name or name",
+            "type": "string"
+          },
+          "scope": {
+            "description": "where: repo, project, org or estate",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "scope",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_pause_kind"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cost_cents": {
+            "description": "what the session has cost so far, in cents",
+            "type": "integer"
+          },
+          "goal": {
+            "description": "the goal's slug (see mesh_goals); with project and seq, or give item_id alone",
+            "type": "string"
+          },
+          "item_id": {
+            "description": "the item's id, instead of project, goal and seq",
+            "type": "string"
+          },
+          "note": {
+            "description": "what has happened since the last note: one line",
+            "type": "string"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects); with goal and seq, or give item_id alone",
+            "type": "string"
+          },
+          "role": {
+            "description": "for a machine's bearer, the role its agent plays — agent:<role>@<node slug> (default builder); a person's bearer is always user:<id>",
+            "type": "string"
+          },
+          "seq": {
+            "description": "the item's seq (see mesh_items); with project and goal, or give item_id alone",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "note"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_progress"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "goal": {
+            "description": "the goal's slug (see mesh_goals); with project and seq, or give item_id alone",
+            "type": "string"
+          },
+          "item_id": {
+            "description": "the item's id, instead of project, goal and seq",
+            "type": "string"
+          },
+          "note": {
+            "description": "why the claim is given back",
+            "type": "string"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects); with goal and seq, or give item_id alone",
+            "type": "string"
+          },
+          "role": {
+            "description": "for a machine's bearer, the role its agent plays — agent:<role>@<node slug> (default builder); a person's bearer is always user:<id>",
+            "type": "string"
+          },
+          "seq": {
+            "description": "the item's seq (see mesh_items); with project and goal, or give item_id alone",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "mesh_release"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "description": "the kind of job: build, evaluate, rebase, plan, research or validate",
+            "type": "string"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects): the project itself, its org, or with repo one of its repositories; not needed for the estate",
+            "type": "string"
+          },
+          "reason": {
+            "description": "why it may run again",
+            "type": "string"
+          },
+          "repo": {
+            "description": "for scope repo: one of the project's repositories, as owner/name or name",
+            "type": "string"
+          },
+          "scope": {
+            "description": "where: repo, project, org or estate",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "scope"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_resume_kind"
+    }
+  ]
+}

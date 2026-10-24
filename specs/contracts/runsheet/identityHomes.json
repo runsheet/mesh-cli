@@ -1,0 +1,84 @@
+{
+  "args": {},
+  "field": "identityHomes",
+  "kind": "query",
+  "list": true,
+  "sample": [
+    {
+      "clients": [
+        {
+          "audience": "latchkey",
+          "displayName": "Service",
+          "id": "contract-service",
+          "kind": "confidential",
+          "redirectUris": [],
+          "scope": {
+            "rolePrefix": "contract:",
+            "tenants": [
+              "contractco"
+            ]
+          }
+        }
+      ],
+      "commitSha": "1d0000000000000000000000000000000000c0de",
+      "declaredAt": "2026-01-01T00:00:00Z",
+      "displayName": "runsheet",
+      "drift": [
+        {
+          "detail": "in Latchkey, not in the file",
+          "kind": "tenant_undeclared",
+          "target": "tenant:oldco"
+        }
+      ],
+      "effects": [
+        {
+          "kind": "client_created",
+          "outcome": "applied",
+          "target": "client:contract-service"
+        }
+      ],
+      "id": "c1cc9566-3e00-5ac4-bcec-5cd3722785d6",
+      "lastReconcile": {
+        "at": "2026-01-01T00:00:00Z",
+        "commitSha": "1d0000000000000000000000000000000000c0de",
+        "reason": "",
+        "status": "applied"
+      },
+      "latchkeyOrg": "runsheet",
+      "machines": [
+        {
+          "access": "rw",
+          "client": "",
+          "displayName": "Billing",
+          "id": "contract-billing",
+          "operator": "ops@contractco.test",
+          "scope": {
+            "rolePrefix": "",
+            "tenants": []
+          },
+          "ttl": 900
+        }
+      ],
+      "name": "contractco",
+      "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94",
+      "path": ".runsheet/identity/contractco.yaml",
+      "retirementRequestedAt": null,
+      "roles": [
+        {
+          "displayName": "Agent",
+          "name": "contract:agent"
+        }
+      ],
+      "sourceRepoId": "7dacfd73-80d2-5f33-94d6-54f222403404",
+      "status": "declared",
+      "tenants": [
+        {
+          "displayName": "Contract Co",
+          "parent": "contractent",
+          "retire": "",
+          "slug": "contractco"
+        }
+      ]
+    }
+  ]
+}

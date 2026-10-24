@@ -1,0 +1,39 @@
+{
+  "args": {
+    "headers": {
+      "X-Runsheet-Delivery": "<the attempt's id>",
+      "X-Runsheet-Event": "thread_reply",
+      "X-Runsheet-Signature": "sha256=<hex HMAC-SHA256 of the body with the product's hook secret>",
+      "X-Runsheet-Timestamp": "<unix seconds>"
+    },
+    "method": "POST",
+    "path": "<the manifest's reply hook, or the one under it the open named>"
+  },
+  "field": "mesh-thread-reply",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "as": "assistant",
+    "body": "I would pause it.",
+    "kind": "proposal",
+    "proposal": {
+      "action": "pauseGoal",
+      "args": {
+        "aggregateId": "a1b2",
+        "reason": "one pull request is red"
+      },
+      "summary": "Pause the release goal until the fix lands"
+    },
+    "proposal_id": "3",
+    "replied_at": "2026-01-01T00:00:00Z",
+    "seq": 3,
+    "session": "00000000-0000-4000-8000-0000000fffff",
+    "thread": {
+      "answers_to": 2,
+      "product": "wardroom",
+      "role": "assistant",
+      "thread_key": "general:contract"
+    },
+    "turn": "00000000-0000-4000-8000-0000000fffff"
+  }
+}

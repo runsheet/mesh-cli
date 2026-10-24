@@ -1,0 +1,57 @@
+{
+  "args": {
+    "nodeId": "d1f6c904-510f-5905-a598-8ea0b41f837a"
+  },
+  "field": "mainValidations",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "at": "2026-01-01T00:00:00Z",
+    "batches": [
+      {
+        "attempt": 2,
+        "budgetSeconds": 3600,
+        "candidateBranch": "mesh/batch/contractco/console/3",
+        "defaultBranch": "main",
+        "mergeBatchId": "00000000-0000-4000-8000-0000000fffff",
+        "number": 3,
+        "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94",
+        "repoFullName": "contractco/console",
+        "repoId": "1e170b56-9f4e-56a0-9159-ce04e94eb3d8",
+        "requestedAt": "2026-01-01T00:00:00Z",
+        "sha": "5042c54b2aac545f6d4f9d5a3d72678b18aa5858"
+      }
+    ],
+    "nodeId": "d1f6c904-510f-5905-a598-8ea0b41f837a",
+    "pullRequests": [],
+    "requests": [
+      {
+        "attempt": 2,
+        "budgetSeconds": 3600,
+        "defaultBranch": "main",
+        "goalId": "a9fdff89-0ddb-5cfb-9a47-7bebdcceec06",
+        "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94",
+        "repoFullName": "contractco/console",
+        "repoId": "1e170b56-9f4e-56a0-9159-ce04e94eb3d8",
+        "requestedAt": "2026-01-01T00:00:00Z",
+        "seq": 2,
+        "sha": "alpha-2-merged",
+        "title": "Item 2",
+        "workItemId": "00000000-0000-4000-8000-0000000c0002"
+      }
+    ],
+    "revalidations": [
+      {
+        "defaultBranch": "main",
+        "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94",
+        "reason": "share",
+        "repoFullName": "contractco/console",
+        "repoId": "1e170b56-9f4e-56a0-9159-ce04e94eb3d8",
+        "requestedAt": "2026-01-01T00:00:00Z",
+        "revalidationId": "00000000-0000-4000-8000-0000000fffff",
+        "sha": "0000000000000000000000000000000000007003",
+        "workItemId": "00000000-0000-4000-8000-0000000c0002"
+      }
+    ]
+  }
+}

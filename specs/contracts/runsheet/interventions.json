@@ -1,0 +1,23 @@
+{
+  "args": {
+    "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94",
+    "projectId": "a00ee511-6be8-5bef-bf59-4055ee443812"
+  },
+  "field": "interventions",
+  "kind": "query",
+  "list": true,
+  "sample": [
+    {
+      "after": "0",
+      "at": "2026-01-01T00:00:00Z",
+      "before": "3",
+      "by": "e96b1f77-6ed9-53ce-8ef4-0861304b4a23",
+      "byProcess": "",
+      "id": "00000000-0000-4000-8000-0000000fffff",
+      "projectId": "a00ee511-6be8-5bef-bf59-4055ee443812",
+      "subject": "project.replanCap",
+      "targetId": "a00ee511-6be8-5bef-bf59-4055ee443812",
+      "why": ""
+    }
+  ]
+}

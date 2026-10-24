@@ -1,0 +1,39 @@
+{
+  "field": "setGoal",
+  "input": {
+    "acceptance": "go test ./... passes. A person who calls it is answered.",
+    "aggregateId": "9d31d5af-965a-558e-9f91-82a9fad3d2d9",
+    "appetite": "$40, at most four items.",
+    "beneficiary": "The support team.",
+    "budgetCents": 100000,
+    "by": "e96b1f77-6ed9-53ce-8ef4-0861304b4a23",
+    "change": "They answer a customer from one place.",
+    "checkpoints": [
+      "pr"
+    ],
+    "doneWhen": "A person calls it and sees an answer.",
+    "namespace": "runsheet",
+    "noInitiative": true,
+    "noInitiativeReason": "the support desk's own goal, under no initiative",
+    "notDoing": "A new UI.",
+    "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94",
+    "outcome": "The Delta service answers.",
+    "projectId": "a00ee511-6be8-5bef-bf59-4055ee443812",
+    "repoId": "7dacfd73-80d2-5f33-94d6-54f222403404",
+    "signal": {
+      "signalId": "sig_support_answers"
+    },
+    "slug": "delta",
+    "statement": "Make it.",
+    "title": "Delta",
+    "unproven": true,
+    "unprovenReason": "the support team calls it before the goal is done",
+    "whoFor": "The support team.",
+    "why": "Customers wait on it."
+  },
+  "inputType": "SetGoalInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

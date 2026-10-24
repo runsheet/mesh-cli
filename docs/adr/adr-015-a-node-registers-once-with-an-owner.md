@@ -721,8 +721,10 @@ pushed finish and an already-done one carry the same text.
 Tests: `internal/node/finishdesc_test.go` (`FinishDescription`'s exact
 lines, with pairers and with none; a `Runner` test against
 `gatewaytest.Fake` asserting the recorded `finishWorkItem` input's
-`description` names the builder's actor and a pairer, that
-`Fake.NoDescription` omits the key while the finish still succeeds, and
+`description` names the builder's actor and a pairer on a fake with
+`Fake.TakesDescription`, that the fake's default — runsheet's
+FinishWorkItemInput, which has no `description` — gets no key while the
+finish still succeeds, and
 that an already-done finish carries the same description).
 
 ## ScopeAnswer carries `shares` (2026-10-03)

@@ -1,0 +1,18 @@
+{
+  "args": {
+    "method": "PUT",
+    "path": "/mesh/v1/products/acme/catalogue"
+  },
+  "field": "mesh-catalogue-refused",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "message": "the catalogue is refused",
+    "refusals": [
+      {
+        "field": "kinds[review]",
+        "reason": "job kind acme/review: harness \"bash\" is not one Mesh runs: claude-code, codex or none"
+      }
+    ]
+  }
+}

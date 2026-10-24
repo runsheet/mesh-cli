@@ -1,0 +1,341 @@
+{
+  "args": {
+    "method": "GET",
+    "path": "/mesh/v1/health/pipeline?org=contractpipe"
+  },
+  "field": "health-pipeline",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "blocked": {
+      "kind": "accounts_paced",
+      "sentence": "both accounts paced until 17:11Z",
+      "since": "2026-01-01T00:00:00Z",
+      "until": "2026-01-01T00:00:00Z"
+    },
+    "generated_at": "2026-01-01T00:00:00Z",
+    "org": "contractpipe",
+    "project": "",
+    "rows": [
+      {
+        "detail": {
+          "behind_pr": 0,
+          "checkpoint": "",
+          "deploy": null,
+          "held_reason": "",
+          "hold_kind": "",
+          "log_url": "",
+          "next_look_at": null,
+          "queue_position": 0
+        },
+        "entered_at": "2026-01-01T00:00:00Z",
+        "goal_slug": "flow",
+        "item_seq": 6,
+        "item_title": "Wait on CI",
+        "minutes_in_stage": 0,
+        "model": "sonnet",
+        "pr_number": 904,
+        "pr_url": "https://github.com/contractpipe/flow/pull/904",
+        "reason": "no job on this head has reported yet",
+        "repo": "contractpipe/flow",
+        "stage": "ci_queued"
+      },
+      {
+        "detail": {
+          "behind_pr": 0,
+          "checkpoint": "",
+          "deploy": null,
+          "held_reason": "",
+          "hold_kind": "",
+          "log_url": "",
+          "next_look_at": null,
+          "queue_position": 0
+        },
+        "entered_at": "2026-01-01T00:00:00Z",
+        "goal_slug": "flow",
+        "item_seq": 1,
+        "item_title": "Build me",
+        "minutes_in_stage": 0,
+        "model": "sonnet",
+        "pr_number": 0,
+        "pr_url": "",
+        "reason": "",
+        "repo": "contractpipe/flow",
+        "stage": "building"
+      },
+      {
+        "detail": {
+          "behind_pr": 0,
+          "checkpoint": "",
+          "deploy": null,
+          "held_reason": "",
+          "hold_kind": "",
+          "log_url": "",
+          "next_look_at": null,
+          "queue_position": 0
+        },
+        "entered_at": "2026-01-01T00:00:00Z",
+        "goal_slug": "flow",
+        "item_seq": 2,
+        "item_title": "Evaluate me",
+        "minutes_in_stage": 0,
+        "model": "sonnet",
+        "pr_number": 0,
+        "pr_url": "",
+        "reason": "waiting for the evaluation's verdict",
+        "repo": "contractpipe/flow",
+        "stage": "evaluating"
+      },
+      {
+        "detail": {
+          "behind_pr": 0,
+          "checkpoint": "",
+          "deploy": null,
+          "held_reason": "the item failed; its pull request is still open",
+          "hold_kind": "",
+          "log_url": "",
+          "next_look_at": null,
+          "queue_position": 0
+        },
+        "entered_at": "2026-01-01T00:00:00Z",
+        "goal_slug": "flow",
+        "item_seq": 3,
+        "item_title": "Fail me",
+        "minutes_in_stage": 0,
+        "model": "sonnet",
+        "pr_number": 901,
+        "pr_url": "https://github.com/contractpipe/flow/pull/901",
+        "reason": "the item failed; its pull request is still open",
+        "repo": "contractpipe/flow",
+        "stage": "held"
+      },
+      {
+        "detail": {
+          "behind_pr": 0,
+          "checkpoint": "",
+          "deploy": null,
+          "held_reason": "",
+          "hold_kind": "",
+          "log_url": "",
+          "next_look_at": null,
+          "queue_position": 1
+        },
+        "entered_at": "2026-01-01T00:00:00Z",
+        "goal_slug": "flow",
+        "item_seq": 4,
+        "item_title": "Queue me",
+        "minutes_in_stage": 0,
+        "model": "sonnet",
+        "pr_number": 902,
+        "pr_url": "https://github.com/contractpipe/flow/pull/902",
+        "reason": "position 1",
+        "repo": "contractpipe/flow",
+        "stage": "merge_queue"
+      },
+      {
+        "detail": {
+          "behind_pr": 0,
+          "checkpoint": "",
+          "deploy": null,
+          "held_reason": "the session went quiet",
+          "hold_kind": "stalled",
+          "log_url": "",
+          "next_look_at": null,
+          "queue_position": 0
+        },
+        "entered_at": "2026-01-01T00:00:00Z",
+        "goal_slug": "flow",
+        "item_seq": 9,
+        "item_title": "Stall me",
+        "minutes_in_stage": 0,
+        "model": "sonnet",
+        "pr_number": 0,
+        "pr_url": "",
+        "reason": "the session went quiet; the platform releases the claim at the deadline (30 minutes after the stall) and counts it as an attempt; a heartbeat before then cancels it",
+        "repo": "contractpipe/flow",
+        "stage": "stalled"
+      },
+      {
+        "detail": {
+          "behind_pr": 902,
+          "checkpoint": "",
+          "deploy": null,
+          "held_reason": "",
+          "hold_kind": "",
+          "log_url": "",
+          "next_look_at": "2026-01-01T00:00:00Z",
+          "queue_position": 2
+        },
+        "entered_at": null,
+        "goal_slug": "flow",
+        "item_seq": 5,
+        "item_title": "Defer me",
+        "minutes_in_stage": null,
+        "model": "sonnet",
+        "pr_number": 903,
+        "pr_url": "https://github.com/contractpipe/flow/pull/903",
+        "reason": "rate limit, next look at 2026-01-01T00:00:00Z",
+        "repo": "contractpipe/flow",
+        "stage": "integrator_waiting"
+      },
+      {
+        "detail": {
+          "behind_pr": 0,
+          "checkpoint": "",
+          "deploy": null,
+          "held_reason": "",
+          "hold_kind": "",
+          "log_url": "",
+          "next_look_at": null,
+          "queue_position": 0
+        },
+        "entered_at": null,
+        "goal_slug": "flow",
+        "item_seq": 7,
+        "item_title": "Red me",
+        "minutes_in_stage": null,
+        "model": "sonnet",
+        "pr_number": 905,
+        "pr_url": "https://github.com/contractpipe/flow/pull/905",
+        "reason": "go test ./... failed",
+        "repo": "contractpipe/flow",
+        "stage": "checks_failed"
+      },
+      {
+        "detail": {
+          "behind_pr": 0,
+          "checkpoint": "",
+          "deploy": null,
+          "held_reason": "",
+          "hold_kind": "",
+          "log_url": "",
+          "next_look_at": null,
+          "queue_position": 0
+        },
+        "entered_at": null,
+        "goal_slug": "flow",
+        "item_seq": 8,
+        "item_title": "Rebase me",
+        "minutes_in_stage": null,
+        "model": "sonnet",
+        "pr_number": 906,
+        "pr_url": "https://github.com/contractpipe/flow/pull/906",
+        "reason": "both sides changed main.go",
+        "repo": "contractpipe/flow",
+        "stage": "rebasing"
+      }
+    ],
+    "strip": {
+      "dead_letters_parked": 0,
+      "github": [
+        {
+          "account": "contractpipe",
+          "installation_id": 98740,
+          "limit": 0,
+          "remaining": 0,
+          "reset_at": null,
+          "under_floor": false
+        }
+      ],
+      "merge_queue": [
+        {
+          "depth": 2,
+          "repo": "contractpipe/flow"
+        }
+      ],
+      "runners": {
+        "busy": 3,
+        "hosts": 1,
+        "queued": 7,
+        "stale_hosts": 0,
+        "total": 4
+      },
+      "stages": [
+        {
+          "count": 1,
+          "median_minutes": 0,
+          "over_target": false,
+          "stage": "building",
+          "target_minutes": null
+        },
+        {
+          "count": 1,
+          "median_minutes": 0,
+          "over_target": false,
+          "stage": "evaluating",
+          "target_minutes": null
+        },
+        {
+          "count": 1,
+          "median_minutes": 0,
+          "over_target": true,
+          "stage": "ci_queued",
+          "target_minutes": 5
+        },
+        {
+          "count": 0,
+          "median_minutes": null,
+          "over_target": false,
+          "stage": "ci_running",
+          "target_minutes": null
+        },
+        {
+          "count": 1,
+          "median_minutes": null,
+          "over_target": false,
+          "stage": "checks_failed",
+          "target_minutes": null
+        },
+        {
+          "count": 1,
+          "median_minutes": null,
+          "over_target": false,
+          "stage": "rebasing",
+          "target_minutes": null
+        },
+        {
+          "count": 1,
+          "median_minutes": 0,
+          "over_target": false,
+          "stage": "merge_queue",
+          "target_minutes": 15
+        },
+        {
+          "count": 1,
+          "median_minutes": null,
+          "over_target": false,
+          "stage": "integrator_waiting",
+          "target_minutes": 10
+        },
+        {
+          "count": 1,
+          "median_minutes": 0,
+          "over_target": false,
+          "stage": "stalled",
+          "target_minutes": null
+        },
+        {
+          "count": 1,
+          "median_minutes": 0,
+          "over_target": false,
+          "stage": "held",
+          "target_minutes": null
+        },
+        {
+          "count": 0,
+          "median_minutes": null,
+          "over_target": false,
+          "stage": "waiting_on_person",
+          "target_minutes": 240
+        },
+        {
+          "count": 0,
+          "median_minutes": null,
+          "over_target": false,
+          "stage": "deploying",
+          "target_minutes": null
+        }
+      ]
+    }
+  }
+}

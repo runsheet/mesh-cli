@@ -1,0 +1,13 @@
+{
+  "field": "failWorkItemMainValidation",
+  "input": {
+    "aggregateId": "00000000-0000-4000-8000-0000000c0002",
+    "namespace": "runsheet",
+    "reason": "the sandbox could not check out alpha-2-merged"
+  },
+  "inputType": "FailWorkItemMainValidationInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

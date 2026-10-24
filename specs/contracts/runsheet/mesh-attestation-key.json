@@ -1,0 +1,15 @@
+{
+  "args": {
+    "method": "GET",
+    "path": "/mesh/v1/attestations/key"
+  },
+  "field": "mesh-attestation-key",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "algorithm": "ed25519",
+    "canonical": "the signature, standard base64, covers attest.Canonical: the attestation body's JSON, fields in their declared order, times UTC to the microsecond, checks and reruns left out when there are none",
+    "keyId": "ed25519:<the key's id>",
+    "publicKey": "<the ed25519 public key, PKIX PEM>"
+  }
+}

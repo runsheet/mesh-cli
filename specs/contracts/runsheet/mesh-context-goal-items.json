@@ -1,0 +1,164 @@
+{
+  "args": {
+    "method": "GET",
+    "path": "/mesh/v1/projects/contractco/mesh/goals/alpha/items"
+  },
+  "field": "mesh-context-goal-items",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "goal": {
+      "beneficiary": "The support team.",
+      "budget_cents": 100000,
+      "change": "They answer a customer from one place.",
+      "checkpoints": [
+        "pr"
+      ],
+      "created_at": "2026-01-01T00:00:00Z",
+      "daily_budget_cents": 0,
+      "forecast": {
+        "contested": false,
+        "forecast_cap_cents": 0,
+        "forecast_spent_cents": 0,
+        "mission_version": 0,
+        "open_round": true,
+        "p_max": 0,
+        "p_min": 0,
+        "p_moves": 0,
+        "round": 1,
+        "task_shaped": false
+      },
+      "lineage_cap": 3,
+      "narrow_replans": 0,
+      "org": "contractco",
+      "plan_refusals": 0,
+      "planner_defect_clauses": [
+        {
+          "clause": "the goal document records this item as merged",
+          "item_id": "00000000-0000-4000-8000-0000000c0001",
+          "reason": "the item can record its own merge only after it merges",
+          "seq": 1
+        }
+      ],
+      "planner_defects": 1,
+      "project": "contractco/mesh",
+      "replan_cap": 3,
+      "replans": 0,
+      "retries": 1,
+      "retry_cap": 3,
+      "signal": {
+        "signal_id": "sig_support_answers"
+      },
+      "slug": "alpha",
+      "spent_cents": 1050,
+      "status": "done",
+      "title": "Alpha",
+      "waiting_on": "none"
+    },
+    "items": [
+      {
+        "acceptance_checks": [
+          {
+            "check": "go test ./...",
+            "expected": "passes",
+            "index": 1,
+            "kind": "test"
+          }
+        ],
+        "acceptance_results": [
+          {
+            "head_sha": "alpha-1-attested",
+            "index": 1,
+            "output": "",
+            "verdict": "not_run"
+          }
+        ],
+        "attempts": 1,
+        "branch": "mesh/alpha-1",
+        "build_context_bytes": 0,
+        "build_context_files": 0,
+        "cost_cents": 500,
+        "deploy_state": "passed",
+        "empty_ok": false,
+        "eval_context_bytes": 0,
+        "eval_context_files": 0,
+        "evaluation_passed": true,
+        "evaluation_passed_at": "2026-01-01T00:00:00Z",
+        "evaluations": [
+          {
+            "advice": [],
+            "at": "2026-01-01T00:00:00Z",
+            "attempt": 1,
+            "failed_clauses": [
+              {
+                "clause": "go test ./... passes",
+                "satisfy": "TestA passes"
+              }
+            ],
+            "files": [
+              "a_test.go"
+            ],
+            "findings": [
+              {
+                "clause": "go test ./... passes",
+                "satisfy": "TestA passes",
+                "status": "new"
+              }
+            ],
+            "notes": "TestA fails"
+          }
+        ],
+        "failure_cause": "infrastructure",
+        "heartbeat_at": "2026-01-01T00:00:00Z",
+        "last_verdict": {
+          "at": "2026-01-01T00:00:00Z",
+          "head_sha": "mesh/alpha-1-rebased",
+          "notes": "TestA fixed; old.go logs unstructured",
+          "passed": true
+        },
+        "lineage": {
+          "attempts": 1,
+          "cost_cents": 500,
+          "root_seq": 1,
+          "seqs": [
+            1
+          ]
+        },
+        "lineage_attempt": 1,
+        "lineage_root_seq": 1,
+        "model": "opus",
+        "no_change_count": 0,
+        "paired": [],
+        "planned_model": "opus",
+        "planner_defects": [
+          {
+            "clause": "the goal document records this item as merged",
+            "reason": "the item can record its own merge only after it merges"
+          }
+        ],
+        "pr_number": 101,
+        "pr_url": "https://github.com/contractco/api/pull/101",
+        "retries": 1,
+        "retry_cap": 3,
+        "seq": 1,
+        "sharpened": false,
+        "spec_change": {
+          "contract_paths": [],
+          "coverage": "covered: no public contract changed",
+          "coverage_ok": true,
+          "evaluator_input": "Validation on mesh/alpha-1-rebased: no validation yet — no attestation of this head exists\nSpec coverage of pull request #101\nuncovered=false\ncontract paths changed: none\nindexed docs amended: none\nRule: a change to a public contract (a *.loom schema, the gateway, /mesh/v1 or /mcp) that amends no indexed doc is a failing criterion, unless the pull request touches a doc.\ncoverage: PASS — covered: no public contract changed\nPrevious evaluations\nAttempt 1\nnotes: TestA fails\n- new: go test ./... passes — TestA passes\nfiles: a_test.go\nAttempt 1\nnotes: TestA fixed; old.go logs unstructured\n- resolved: go test ./... passes — TestA passes\n- follow_up: logs are structured — old.go logs through slog\nfiles: none\nRule: A retry passes when every named finding above is resolved and nothing regressed in the files the retry changed.\nRule: A new finding on lines the retry did not change goes in follow_ups, not failed_clauses.\nRule: A new finding on lines the retry changed is a failed clause.\n",
+          "head_sha": "mesh/alpha-1-rebased",
+          "number": 101,
+          "paths": [],
+          "state": "merged",
+          "uncovered": false
+        },
+        "stalled": false,
+        "status": "merged",
+        "title": "Item 1",
+        "writes_shared_docs": false
+      }
+    ],
+    "project": "contractco/mesh"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "field": "recordHostStats",
+  "input": {
+    "aggregateId": "e053fbbf-6ed4-5687-93d9-8ee40d4f85e3",
+    "at": "2026-01-01T00:00:00Z",
+    "cores": 18,
+    "diskFreeGb": 412,
+    "diskUsedPct": 55,
+    "host": "mini",
+    "load1": 21.5,
+    "load15": 17,
+    "load5": 19.25,
+    "namespace": "runsheet",
+    "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94",
+    "runnersBusy": 3,
+    "runnersTotal": 9
+  },
+  "inputType": "RecordHostStatsInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

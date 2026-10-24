@@ -1,0 +1,47 @@
+{
+  "args": {
+    "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94"
+  },
+  "field": "nodes",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "nodes": [
+      {
+        "busy": 4,
+        "claimsRefused": 0,
+        "claimsRefusedEndedAt": "2026-01-01T00:00:00Z",
+        "desiredVersion": null,
+        "desiredVersionAuto": false,
+        "desiredVersionDowngrade": false,
+        "desiredVersionLiftedAt": null,
+        "desiredVersionLiftedBy": null,
+        "desiredVersionSetAt": null,
+        "desiredVersionSetBy": null,
+        "inFlight": {
+          "building": 1,
+          "evaluating": 0,
+          "planning": 2,
+          "rebasing": 1,
+          "researching": 0
+        },
+        "lastClaimAt": "2026-01-01T00:00:00Z",
+        "lastRefusalReason": "claimWorkItem: an agent actor needs a machine credential: run mesh node login: not yours",
+        "lastRefusedAt": "2026-01-01T00:00:00Z",
+        "lastSeenAt": "2026-01-01T00:00:00Z",
+        "name": "Box",
+        "nodeId": "d1f6c904-510f-5905-a598-8ea0b41f837a",
+        "ownerId": "e96b1f77-6ed9-53ce-8ef4-0861304b4a23",
+        "ownerKind": "person",
+        "ownerName": "alice",
+        "running": 1,
+        "sharedTo": 0,
+        "slug": "box",
+        "status": "online",
+        "version": "0.3.0",
+        "via": "registration"
+      }
+    ],
+    "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94"
+  }
+}

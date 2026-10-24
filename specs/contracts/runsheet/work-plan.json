@@ -1,0 +1,75 @@
+{
+  "args": {
+    "arguments": {
+      "goal": "work",
+      "items": [
+        {
+          "acceptance": [
+            {
+              "check": "go test ./... passes",
+              "expected": "passes",
+              "kind": "test"
+            }
+          ],
+          "agent_slug": "",
+          "atomic": true,
+          "base_ref": "main",
+          "brief": "Build it.",
+          "depends_on": [],
+          "depends_on_items": [],
+          "files": [
+            "main.go"
+          ],
+          "model": "sonnet",
+          "model_reason": "a mechanical change",
+          "precondition": "",
+          "repo": "contractwork/work",
+          "seq": 1,
+          "title": "Build me",
+          "writes_shared_docs": false
+        }
+      ],
+      "project": "contractwork/work"
+    },
+    "tool": "mesh_plan"
+  },
+  "field": "work-plan",
+  "kind": "mcp",
+  "list": false,
+  "sample": {
+    "actor": "user:00000000-0000-4000-8000-0000000fffff",
+    "goal": {
+      "budget_cents": 50000,
+      "checkpoints": [],
+      "created_at": "2026-01-01T00:00:00Z",
+      "daily_budget_cents": 0,
+      "forecast": {
+        "contested": false,
+        "forecast_cap_cents": 0,
+        "forecast_spent_cents": 0,
+        "mission_version": 0,
+        "open_round": true,
+        "p_max": 0,
+        "p_min": 0,
+        "p_moves": 0,
+        "round": 1,
+        "task_shaped": false
+      },
+      "lineage_cap": 3,
+      "narrow_replans": 0,
+      "org": "contractwork",
+      "plan_refusals": 0,
+      "planner_defects": 0,
+      "project": "contractwork/work",
+      "replan_cap": 3,
+      "replans": 0,
+      "retries": 0,
+      "retry_cap": 3,
+      "slug": "work",
+      "spent_cents": 0,
+      "status": "running",
+      "title": "Work"
+    },
+    "project": "contractwork/work"
+  }
+}

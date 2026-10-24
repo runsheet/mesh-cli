@@ -1,0 +1,52 @@
+{
+  "args": {
+    "arguments": {
+      "project": "contractci/backend"
+    },
+    "tool": "mesh_goals"
+  },
+  "field": "goals-waiting-ci",
+  "kind": "mcp",
+  "list": false,
+  "sample": {
+    "goals": [
+      {
+        "budget_cents": 50000,
+        "checkpoints": [],
+        "created_at": "2026-01-01T00:00:00Z",
+        "daily_budget_cents": 0,
+        "forecast": {
+          "contested": false,
+          "forecast_cap_cents": 0,
+          "forecast_spent_cents": 0,
+          "mission_version": 0,
+          "open_round": true,
+          "p_max": 0,
+          "p_min": 0,
+          "p_moves": 0,
+          "round": 1,
+          "task_shaped": false
+        },
+        "lineage_cap": 3,
+        "narrow_replans": 0,
+        "org": "contractci",
+        "plan_refusals": 0,
+        "planner_defects": 0,
+        "project": "contractci/backend",
+        "replan_cap": 3,
+        "replans": 0,
+        "retries": 0,
+        "retry_cap": 3,
+        "slug": "photo",
+        "spent_cents": 220,
+        "status": "running",
+        "title": "The backend stores a profile photo",
+        "waiting_on": "ci",
+        "waiting_reason": "checks not yet run on 2 pull requests: backend#145 (head 647e4d4, GitHub last read 2026-10-03T09:14:02Z), #146 (head 9b8c072, not read since the head landed)"
+      }
+    ],
+    "next": "",
+    "project": "contractci/backend",
+    "truncated": false
+  }
+}

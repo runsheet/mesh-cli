@@ -1,0 +1,14 @@
+{
+  "field": "setGoalInitiative",
+  "input": {
+    "aggregateId": "a9fdff89-0ddb-5cfb-9a47-7bebdcceec06",
+    "by": "e96b1f77-6ed9-53ce-8ef4-0861304b4a23",
+    "initiativeId": "777a10da-3463-5dd5-85c1-d6f40c2e077b",
+    "namespace": "runsheet"
+  },
+  "inputType": "SetGoalInitiativeInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

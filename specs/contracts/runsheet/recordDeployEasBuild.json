@@ -1,0 +1,25 @@
+{
+  "field": "recordDeployEasBuild",
+  "input": {
+    "deployId": "00000000-0000-4000-8000-0000000fffff",
+    "input": {
+      "buildId": "00000000-0000-4000-8000-0000000fffff",
+      "platform": "ios",
+      "profile": "production"
+    }
+  },
+  "inputType": "(deployId: UUID!, input: Map!)",
+  "kind": "mutation",
+  "result": {
+    "commit": "e38a8f31705f168da9168a48e939399af1d914d5",
+    "deployId": "00000000-0000-4000-8000-0000000fffff",
+    "easBuilds": [
+      {
+        "buildId": "00000000-0000-4000-8000-0000000fffff",
+        "platform": "ios",
+        "profile": "production"
+      }
+    ],
+    "status": "claimed"
+  }
+}

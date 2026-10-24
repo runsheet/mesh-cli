@@ -1,0 +1,18 @@
+{
+  "args": {
+    "body": {
+      "item_id": "00000000-0000-4000-8000-0000000c0003"
+    },
+    "method": "POST",
+    "path": "/mesh/v1/sessions"
+  },
+  "field": "mesh-v1-sessions-open",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "expires_at": "2026-01-01T00:00:00Z",
+    "request_token": "REDACTED",
+    "request_url": "https://auth.runsheet.dev/oauth/session-token/request?session=00000000-0000-4000-8000-0000000fffff&v=1",
+    "session_id": "00000000-0000-4000-8000-0000000fffff"
+  }
+}

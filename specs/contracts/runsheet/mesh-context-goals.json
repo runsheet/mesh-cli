@@ -1,0 +1,62 @@
+{
+  "args": {
+    "method": "GET",
+    "path": "/mesh/v1/projects/contractco/mesh/goals"
+  },
+  "field": "mesh-context-goals",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "goals": [
+      {
+        "beneficiary": "The support team.",
+        "budget_cents": 100000,
+        "change": "They answer a customer from one place.",
+        "checkpoints": [
+          "pr"
+        ],
+        "created_at": "2026-01-01T00:00:00Z",
+        "daily_budget_cents": 0,
+        "forecast": {
+          "contested": false,
+          "forecast_cap_cents": 0,
+          "forecast_spent_cents": 0,
+          "mission_version": 0,
+          "open_round": true,
+          "p_max": 0,
+          "p_min": 0,
+          "p_moves": 0,
+          "round": 1,
+          "task_shaped": false
+        },
+        "lineage_cap": 3,
+        "narrow_replans": 0,
+        "org": "contractco",
+        "plan_refusals": 0,
+        "planner_defect_clauses": [
+          {
+            "clause": "the goal document records this item as merged",
+            "item_id": "00000000-0000-4000-8000-0000000c0001",
+            "reason": "the item can record its own merge only after it merges",
+            "seq": 1
+          }
+        ],
+        "planner_defects": 1,
+        "project": "contractco/mesh",
+        "replan_cap": 3,
+        "replans": 0,
+        "retries": 1,
+        "retry_cap": 3,
+        "signal": {
+          "signal_id": "sig_support_answers"
+        },
+        "slug": "alpha",
+        "spent_cents": 1050,
+        "status": "done",
+        "title": "Alpha",
+        "waiting_on": "none"
+      }
+    ],
+    "project": "contractco/mesh"
+  }
+}

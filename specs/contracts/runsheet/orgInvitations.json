@@ -1,0 +1,20 @@
+{
+  "args": {
+    "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94"
+  },
+  "field": "orgInvitations",
+  "kind": "query",
+  "list": true,
+  "sample": [
+    {
+      "destination": "https://console.test/orgs/contractco",
+      "email": "bob@contractco.test",
+      "expiresAt": "2026-01-01T00:00:00Z",
+      "generation": 1,
+      "id": "00000000-0000-4000-8000-0000000fffff",
+      "invitedBy": "runsheet-platform",
+      "level": "member",
+      "status": "pending"
+    }
+  ]
+}

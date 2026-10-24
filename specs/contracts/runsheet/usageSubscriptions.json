@@ -1,0 +1,53 @@
+{
+  "args": {
+    "by": "day",
+    "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94"
+  },
+  "field": "usageSubscriptions",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "by": "day",
+    "since": "2026-01-01T00:00:00Z",
+    "subscriptions": [
+      {
+        "buckets": [
+          {
+            "fiveHour": {
+              "last": null,
+              "peak": null,
+              "resets": []
+            },
+            "items": 2,
+            "listCostCents": 1050,
+            "sessions": 5,
+            "sevenDay": {
+              "last": 0.4,
+              "peak": 0.4,
+              "resets": []
+            },
+            "start": "2026-01-01T00:00:00Z",
+            "tokens": 20000,
+            "toolCalls": 0
+          }
+        ],
+        "capUnit": "dollars",
+        "dailyCap": 0,
+        "daySpentCents": 1050,
+        "id": "9615aef4-2553-53a0-96fa-55a1bd9d0410",
+        "kind": "subscription",
+        "label": "Max 20x",
+        "monthSpentCents": 1050,
+        "monthlyCap": 0,
+        "plan": "max_20x",
+        "slug": "max-20x",
+        "spendDay": "2026-01-01",
+        "spendMonth": "2026-01",
+        "status": "active",
+        "userId": null,
+        "vendor": "anthropic",
+        "windowTargets": []
+      }
+    ]
+  }
+}

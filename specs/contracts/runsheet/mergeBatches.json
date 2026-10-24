@@ -1,0 +1,41 @@
+{
+  "args": {
+    "repoId": "7dacfd73-80d2-5f33-94d6-54f222403404"
+  },
+  "field": "mergeBatches",
+  "kind": "query",
+  "list": true,
+  "sample": [
+    {
+      "baseSha": "ba5e000000000000000000000000000000000001",
+      "candidateBranch": "mesh/batch/contractco/api/1",
+      "candidateSha": "ca0d000000000000000000000000000000000001",
+      "completedAt": "2026-01-01T00:00:00Z",
+      "dropped": [
+        {
+          "detail": "CONFLICT (content): Merge conflict in go.mod",
+          "prNumber": 42,
+          "reason": "conflict",
+          "workItemId": "00000000-0000-4000-8000-0000000fffff"
+        }
+      ],
+      "failingWorkItemId": null,
+      "formedAt": "2026-01-01T00:00:00Z",
+      "id": "f34b6417-539b-5bf0-b75c-bbe344d4a2d8",
+      "members": [],
+      "mergedWorkItemIds": [],
+      "number": 1,
+      "outcome": "abandoned",
+      "parentNumber": 0,
+      "repo": "contractco/api",
+      "repoId": "7dacfd73-80d2-5f33-94d6-54f222403404",
+      "runId": 4100001,
+      "runUrl": "https://github.com/contractco/api/actions/runs/4100001",
+      "runsSaved": 0,
+      "size": 0,
+      "status": "completed",
+      "validationBudgetSeconds": 3600,
+      "verdict": "green"
+    }
+  ]
+}

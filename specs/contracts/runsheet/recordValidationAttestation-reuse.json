@@ -1,0 +1,24 @@
+{
+  "field": "recordValidationAttestation",
+  "input": {
+    "input": {
+      "commit": "f865c9442f88371363b8c8daac6ea0f6cfbe9b11",
+      "reuse": true,
+      "treeHash": "tree-38dc1c892fe1a2581ba77fed6ec2d2a29ee3d33f"
+    },
+    "workItemId": "00000000-0000-4000-8000-0000000c0007"
+  },
+  "inputType": "(workItemId: UUID, input: Map!)",
+  "kind": "mutation",
+  "result": {
+    "branch": "mesh/zeta-1",
+    "commit": "f865c9442f88371363b8c8daac6ea0f6cfbe9b11",
+    "green": true,
+    "keyId": "ed25519:KEYID",
+    "reusedFrom": "6fea9e4254fc80130d82c3777b35607d344d412a",
+    "signature": "SIGNATURE",
+    "status": "reused",
+    "testEvidenceId": "00000000-0000-4000-8000-0000000fffff",
+    "treeHash": "tree-38dc1c892fe1a2581ba77fed6ec2d2a29ee3d33f"
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "args": {
+    "projectId": "668e459e-71ab-5708-aef4-5dae8c57dd13"
+  },
+  "field": "projectReleaseState",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "declared": true,
+    "error": "",
+    "projectId": "668e459e-71ab-5708-aef4-5dae8c57dd13",
+    "repos": [
+      {
+        "environments": [
+          {
+            "conclusion": "success",
+            "deployedAt": "2026-01-01T00:00:00Z",
+            "name": "demo",
+            "runUrl": "https://github.com/contractco/deploy/actions/runs/7700002",
+            "sha": "c07445aa8a0e9e8d16c5650f99f18704db98c2a4",
+            "status": "completed",
+            "workflow": "deploy-demo.yml"
+          }
+        ],
+        "mainSha": "c07445aa8a0e9e8d16c5650f99f18704db98c2a4",
+        "repo": "contractco/deploy",
+        "unreleased": [
+          {
+            "prNumber": 7,
+            "sha": "c07445aa8a0e9e8d16c5650f99f18704db98c2a4",
+            "title": "The service starts"
+          }
+        ]
+      }
+    ]
+  }
+}

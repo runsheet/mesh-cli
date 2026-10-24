@@ -1,0 +1,25 @@
+{
+  "args": {
+    "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94"
+  },
+  "field": "usageModels",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "models": [
+      {
+        "actualCostCents": 205,
+        "adapter": "claude-code",
+        "evaluated": 2,
+        "firstPass": 1,
+        "firstPassRate": 0.5,
+        "items": 2,
+        "listCostCents": 1255,
+        "model": "opus",
+        "sessions": 7,
+        "tokens": 32000
+      }
+    ],
+    "since": "2026-01-01T00:00:00Z"
+  }
+}

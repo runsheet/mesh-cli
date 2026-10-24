@@ -1,0 +1,24 @@
+{
+  "args": {
+    "projectId": "a00ee511-6be8-5bef-bf59-4055ee443812",
+    "q": "rollback"
+  },
+  "field": "searchDocuments",
+  "kind": "query",
+  "list": true,
+  "sample": [
+    {
+      "excerpt": "# Releasing\n\nThe pipeline deploys on every push to main; a rollback is one revert away.",
+      "id": "00000000-0000-4000-8000-0000000fffff",
+      "kind": "trd",
+      "layout": "spec-dir",
+      "parentSlug": "ops",
+      "path": "specs/ops/10-releasing.md",
+      "project": "contractco/mesh",
+      "slug": "ops-10-releasing",
+      "status": "draft",
+      "summary": "How a release goes out.",
+      "title": "Releasing"
+    }
+  ]
+}

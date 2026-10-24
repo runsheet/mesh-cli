@@ -1,0 +1,29 @@
+{
+  "args": {
+    "method": "GET",
+    "path": "/mesh/v1/products/contractproduct"
+  },
+  "field": "mesh-products",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "display_name": "Contract Product",
+    "hooks": {
+      "confirm_callback": true,
+      "reply": "https://contractproduct.test/hooks/general"
+    },
+    "latchkey_client": "contract-metering",
+    "mcp": {
+      "audience": "contractproduct",
+      "url": "https://api.contractproduct.test/mcp"
+    },
+    "playbooks": "",
+    "roles": "",
+    "slug": "contractproduct",
+    "source_commit": "manifest001",
+    "triggers": [
+      "thread",
+      "request"
+    ]
+  }
+}

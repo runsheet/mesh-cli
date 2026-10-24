@@ -67,6 +67,11 @@ func (f *Fake) mcp(w http.ResponseWriter, r *http.Request) {
 		if f.HostedWorkTools {
 			names = append(names, hostedWorkTools...)
 		}
+		if err := publishedTools(names); err != nil {
+			f.violate(err.Error())
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		tools := []map[string]any{}
 		for _, n := range names {
 			tools = append(tools, map[string]any{"name": n, "inputSchema": map[string]any{"type": "object"}})

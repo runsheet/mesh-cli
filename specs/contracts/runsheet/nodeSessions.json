@@ -1,0 +1,49 @@
+{
+  "args": {
+    "nodeId": "d1f6c904-510f-5905-a598-8ea0b41f837a"
+  },
+  "field": "nodeSessions",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "at": "2026-01-01T00:00:00Z",
+    "busy": 4,
+    "idleSince": null,
+    "inFlight": {
+      "building": 1,
+      "evaluating": 0,
+      "planning": 2,
+      "rebasing": 1,
+      "researching": 0
+    },
+    "nodeId": "d1f6c904-510f-5905-a598-8ea0b41f837a",
+    "sessions": [
+      {
+        "account": "Brave",
+        "costCents": 0,
+        "harness": "claude-code",
+        "kind": "build",
+        "model": "opus",
+        "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94",
+        "projectId": "a00ee511-6be8-5bef-bf59-4055ee443812",
+        "projectSlug": "mesh",
+        "sessionId": "",
+        "startedAt": "2026-01-01T00:00:00Z",
+        "subject": {
+          "goalId": "f7207998-f4b2-5af5-9bf1-07ed6c09a156",
+          "goalSlug": "beta",
+          "goalTitle": "Beta",
+          "itemId": "00000000-0000-4000-8000-0000000c0003",
+          "seq": 1,
+          "title": "Item 1"
+        },
+        "tools": [
+          {
+            "name": "Brave Search",
+            "slug": "brave"
+          }
+        ]
+      }
+    ]
+  }
+}

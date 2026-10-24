@@ -1,0 +1,12 @@
+{
+  "field": "mintInstallState",
+  "input": {},
+  "inputType": "(orgId: UUID, githubId: Int)",
+  "kind": "mutation",
+  "result": {
+    "expiresAt": "2026-01-01T00:00:00Z",
+    "githubId": 0,
+    "orgId": null,
+    "state": "STATE"
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "args": {
+    "method": "GET",
+    "path": "/mesh/v1/jobs/kinds"
+  },
+  "field": "jobKinds",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "kinds": [
+      {
+        "access": [
+          "repo",
+          "runsheet",
+          "model"
+        ],
+        "finish": "changeset",
+        "finishSchema": "",
+        "guidance": "You are a Mesh node session working on one item of a goal.\n\n1. Read the project's context first: the instructions and the ADRs are binding, the PRD and TRD are the design. Fetch anything else the project's index names rather than guessing what it says, and read the repository's own AGENTS.md, CLAUDE.md and README.\n2. Before you finish, run the item's acceptance check and make it pass; if it cannot, say exactly why in your final message.\n3. Design keeps pace with code: if your change alters an aggregate, a policy, a process, or a public contract (a gateway field, an API, a console route), amend the ADR or TRD section that describes it on this branch; a decision no ADR covers gets a new ADR at the next free number in this repo. A new document carries frontmatter with a one-line summary.\n4. On a retry the branch carries the last attempt's commits and an evaluator's reasons for rejecting them: fix what it found before anything else.\n5. When you hit a trap — you lose real time or real money to something the repository's own documentation did not already warn you about — propose the warning in this same pull request: one line for the repo's AGENTS.md, or a new or edited skill, that would have saved the next session the same cost. Write it as a rule any future session would read and use — no item id, no goal slug, no value only your item needed.",
+        "harness": [
+          "claude-code",
+          "codex"
+        ],
+        "kind": "build",
+        "needs": "from-repo",
+        "pods": "one",
+        "product": "runsheet",
+        "slug": "runsheet/build"
+      }
+    ]
+  }
+}

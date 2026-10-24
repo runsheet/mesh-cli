@@ -1,0 +1,29 @@
+{
+  "after": {
+    "attempts": 0,
+    "finishRefusalKind": "conflict",
+    "finishRefusals": 2,
+    "heldReason": "the conflict is not resolved: Pull request #104 conflicts with main, and a rebase session could not resolve it: main.go\n\nRebase the branch onto origin/main, resolve the conflicts keeping both sides' intent, make the acceptance check pass again, and push with --force-with-lease; the pull request updates itself.",
+    "holdDeadline": "2026-01-01T00:00:00Z",
+    "holdHolder": "the integrator's rebase of pull request #104 onto its base",
+    "holdKind": "finish_refused",
+    "holdRecovery": "refused twice on the same head: the builder cannot resolve a conflict it is told to leave to a rebase, so a rebase session is requested; a new head on the branch or a moved base releases it, and a person is named if the rebase fails or at hold_deadline",
+    "holdSince": "2026-01-01T00:00:00Z",
+    "lastRefusedHeadSha": "eta-1-head",
+    "status": "pending"
+  },
+  "field": "finishWorkItem",
+  "input": {
+    "aggregateId": "00000000-0000-4000-8000-0000000c0008",
+    "baseShaAtFinish": "main-head",
+    "branch": "mesh/eta-1",
+    "costCents": 30,
+    "headSha": "eta-1-head",
+    "namespace": "runsheet"
+  },
+  "inputType": "FinishWorkItemInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

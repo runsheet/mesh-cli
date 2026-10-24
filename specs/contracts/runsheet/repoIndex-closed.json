@@ -1,0 +1,27 @@
+{
+  "args": {
+    "id": "08e64906-764c-5cd3-933c-f1fd8fba2bbd",
+    "namespace": "runsheet"
+  },
+  "field": "repoIndex",
+  "kind": "query",
+  "list": false,
+  "note": "A closed tree (ADR 057): RepoIndex's closed, closed_head_sha, closed_check_name, closed_finding, closed_run_url, closed_at and closed_failing_tests (each {package, name}), which the gateway answers as closed, closedHeadSha, closedCheckName, closedFinding, closedRunUrl, closedAt and closedFailingTests. The first red holds, except closedFailingTests: a later red on the closed tree naming a new test adds it, keeping closedHeadSha and closedAt. All are blank (closed false, closedAt null, closedFailingTests empty) once a green main reopens the tree.",
+  "sample": {
+    "closed": true,
+    "closedAt": "2026-01-01T00:00:00Z",
+    "closedCheckName": "test",
+    "closedFailingTests": [
+      {
+        "name": "TestServiceStarts",
+        "package": "github.com/contracttree/service"
+      }
+    ],
+    "closedFinding": "job test: TestServiceStarts failed",
+    "closedHeadSha": "c105ed7ee0ffee5eed1e55c0de0ddba11ad0be07",
+    "closedRunUrl": "https://github.com/contracttree/service/actions/runs/38672128435",
+    "id": "08e64906-764c-5cd3-933c-f1fd8fba2bbd",
+    "name": "service"
+  },
+  "selection": "id name closed closedHeadSha closedCheckName closedFinding closedRunUrl closedAt closedFailingTests { package name }"
+}

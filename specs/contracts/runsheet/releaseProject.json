@@ -1,0 +1,12 @@
+{
+  "errors": [
+    "releaseProject: the project has no home repo, so no .runsheet/release.yml to read the release from"
+  ],
+  "field": "releaseProject",
+  "input": {
+    "projectId": "a00ee511-6be8-5bef-bf59-4055ee443812"
+  },
+  "inputType": "(projectId: UUID!, repoIds: Map)",
+  "kind": "mutation",
+  "result": null
+}

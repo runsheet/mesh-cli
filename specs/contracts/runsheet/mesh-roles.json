@@ -1,0 +1,21 @@
+{
+  "args": {
+    "method": "GET",
+    "path": "/mesh/v1/roles"
+  },
+  "field": "mesh-roles",
+  "kind": "http",
+  "list": true,
+  "sample": [
+    {
+      "identity": "member",
+      "powers": [
+        "reply"
+      ],
+      "product": "contractproduct",
+      "slug": "contractproduct/assistant",
+      "source_commit": "manifest001",
+      "trigger": "thread"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "field": "claimWorkItem",
+  "input": {
+    "actor": "user:e96b1f77-6ed9-53ce-8ef4-0861304b4a23",
+    "aggregateId": "00000000-0000-4000-8000-0000000c0004",
+    "harness": "claude-code",
+    "namespace": "runsheet"
+  },
+  "inputType": "ClaimWorkItemInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "args": {
+    "goalId": "c906baab-9d69-58f7-ae55-5a89d3f0eb72"
+  },
+  "field": "planGitHubToken",
+  "kind": "query",
+  "list": true,
+  "sample": [
+    {
+      "access": "read",
+      "expiresAt": "2026-01-01T00:00:00Z",
+      "repository": "contractco/api",
+      "token": "REDACTED"
+    }
+  ]
+}

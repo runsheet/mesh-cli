@@ -1,0 +1,19 @@
+{
+  "field": "setGoalSummary",
+  "input": {
+    "aggregateId": "9d31d5af-965a-558e-9f91-82a9fad3d2d9",
+    "appetite": "$40, at most four items.",
+    "by": "e96b1f77-6ed9-53ce-8ef4-0861304b4a23",
+    "doneWhen": "A person uses the feature.",
+    "namespace": "runsheet",
+    "notDoing": "A migration.",
+    "outcome": "Delta's feature is live.",
+    "whoFor": "The api team.",
+    "why": "The next goal builds on it."
+  },
+  "inputType": "SetGoalSummaryInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

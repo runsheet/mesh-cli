@@ -1,0 +1,50 @@
+{
+  "args": {
+    "projectId": "a00ee511-6be8-5bef-bf59-4055ee443812",
+    "repoId": "1e170b56-9f4e-56a0-9159-ce04e94eb3d8"
+  },
+  "field": "moveDocumentsOffer",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "filter": "[{\"kinds\":[\"adr\"]},{\"pathPrefix\":\"specs/goal-\"},{\"pathPrefix\":\"releases/\"}]",
+    "homeRepo": {
+      "defaultBranch": "main",
+      "fullName": "contractco/api",
+      "id": "7dacfd73-80d2-5f33-94d6-54f222403404"
+    },
+    "plan": {
+      "from": {
+        "defaultBranch": "main",
+        "fullName": "contractco/console",
+        "id": "1e170b56-9f4e-56a0-9159-ce04e94eb3d8"
+      },
+      "indexRows": [],
+      "moves": [
+        {
+          "fromId": "00000000-0000-4000-8000-0000000fffff",
+          "fromPath": "docs/adr/0001-keep-the-console-thin.md",
+          "kind": "adr",
+          "slug": "0001-keep-the-console-thin",
+          "title": "Keep the console thin",
+          "toId": "00000000-0000-4000-8000-0000000fffff",
+          "toPath": "docs/adr/0001-keep-the-console-thin.md"
+        }
+      ],
+      "order": [
+        "target",
+        "source"
+      ],
+      "orderReason": "The target pull request lands first and the source's removal second, so a reader finds the document in one repo or the other at every step — a brief duplicate, never an absence.",
+      "parentEdges": [],
+      "references": [],
+      "refusals": [],
+      "shadows": [],
+      "to": {
+        "defaultBranch": "main",
+        "fullName": "contractco/api",
+        "id": "7dacfd73-80d2-5f33-94d6-54f222403404"
+      }
+    }
+  }
+}

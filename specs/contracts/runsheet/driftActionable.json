@@ -1,0 +1,14 @@
+{
+  "args": {
+    "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94"
+  },
+  "field": "driftActionable",
+  "kind": "query",
+  "list": true,
+  "sample": [
+    {
+      "driftActionable": 0,
+      "projectId": "668e459e-71ab-5708-aef4-5dae8c57dd13"
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "args": {
+    "body": {
+      "confirmer": "00000000-0000-4000-8000-0000000fffff"
+    },
+    "method": "POST",
+    "path": "/mesh/v1/thread-sessions/00000000-0000-4000-8000-0000000fffff/proposals/3/confirm"
+  },
+  "field": "mesh-proposal-confirm",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "by": "00000000-0000-4000-8000-0000000fffff",
+    "proposal": {
+      "action": "setGoal",
+      "args": {
+        "acceptance": "go test ./... passes",
+        "aggregateId": "00000000-0000-4000-8000-0000000fffff",
+        "appetite": "$200",
+        "budgetCents": 20000,
+        "checkpoints": [
+          "pr"
+        ],
+        "doneWhen": "The release is live.",
+        "noInitiative": true,
+        "noInitiativeReason": "a one-off release",
+        "orgId": "00000000-0000-4000-8000-0000000fffff",
+        "outcome": "Friday's release ships.",
+        "projectId": "00000000-0000-4000-8000-0000000fffff",
+        "slug": "friday-release",
+        "statement": "Ship Friday's release.",
+        "title": "Friday release",
+        "why": "Customers wait on it."
+      },
+      "id": "3",
+      "seq": 3,
+      "summary": "A goal for the Friday release"
+    },
+    "result": "setGoal performed as the person",
+    "session": "00000000-0000-4000-8000-0000000fffff",
+    "status": "confirmed"
+  }
+}

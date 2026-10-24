@@ -1,0 +1,35 @@
+{
+  "args": {
+    "githubId": 9871,
+    "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94"
+  },
+  "field": "linkOrgGithubAccountPlan",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "accountId": "27fa0177-19eb-51b0-ab0e-b3530fa0741c",
+    "accountType": "organization",
+    "githubId": 9871,
+    "login": "contractco",
+    "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94",
+    "refused": "you are not an admin of contractco on GitHub",
+    "steps": {
+      "admin": {
+        "ok": false,
+        "refused": "you are not an admin of contractco on GitHub",
+        "waived": false
+      },
+      "connected": {
+        "login": "alice",
+        "ok": true,
+        "refused": null,
+        "waived": false
+      },
+      "installed": {
+        "ok": true,
+        "refused": null,
+        "waived": false
+      }
+    }
+  }
+}

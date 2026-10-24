@@ -1,0 +1,14 @@
+{
+  "field": "requestPlan",
+  "input": {
+    "actor": "user:e96b1f77-6ed9-53ce-8ef4-0861304b4a23",
+    "aggregateId": "c906baab-9d69-58f7-ae55-5a89d3f0eb72",
+    "by": "e96b1f77-6ed9-53ce-8ef4-0861304b4a23",
+    "namespace": "runsheet"
+  },
+  "inputType": "RequestPlanInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}
