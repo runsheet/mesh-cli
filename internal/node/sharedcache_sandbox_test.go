@@ -91,6 +91,11 @@ func TestSharedCacheSandboxMountsTheScratchAndTheCache(t *testing.T) {
 		if !slices.Equal(env["GOTMPDIR"], []string{tmp}) || !slices.Equal(env["GOCACHE"], []string{goCache}) {
 			t.Fatalf("GOTMPDIR = %v, GOCACHE = %v; want [%s], [%s]", env["GOTMPDIR"], env["GOCACHE"], tmp, goCache)
 		}
+		// the served commit and its first parent, past the allow-list
+		parent := gitRun(t, s.seedDir, "rev-parse", s.batch.SHA+"^1")
+		if !slices.Equal(env["HEAD_SHA"], []string{s.batch.SHA}) || !slices.Equal(env["BASE_SHA"], []string{parent}) {
+			t.Fatalf("HEAD_SHA = %v, BASE_SHA = %v; want [%s], [%s]", env["HEAD_SHA"], env["BASE_SHA"], s.batch.SHA, parent)
+		}
 		want := map[string]bool{ws: false, tmp: false, goCache: false, blobs: true}
 		for _, m := range spec.Mounts {
 			if ro, ok := want[m.Source]; ok {

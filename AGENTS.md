@@ -1874,17 +1874,39 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `GitDataSource`; `Runner.ServedDiff`, `NewServedDiffCache`) into
   `MakeScratch(ScratchRoot(WorkRoot), "served", <subject>)`, the diff
   applied through the cache (`ApplyDiff`), then made a git repository
-  whose detached HEAD is one commit of exactly the commit's tree
+  whose detached HEAD is the served commit itself
   (`commitServed`: `git init --template=`, `add --all --force` once
   with hooks off and `.git/info/attributes` unsetting text/eol/filter
   while it hashes, submodules as gitlinks, `write-tree` compared with
   the commit's tree — another is a tree mismatch, `checkMaterialized`
-  naming the first path that differs — `commit-tree` unsigned by the
-  fixed identity `mesh node <node@projectmesh.io>`), so a suite that
+  naming the first path that differs), so a suite that
   finds the repo root through git (runsheet's loomgen, red on dl360
-  2026-10-25 without one) finds the scratch; that commit's sha is the
-  node's, not the served one, which the attestation keeps naming with
-  its tree; a sandboxed pod mounts the scratch, `.git` inside it, alone;
+  2026-10-25 without one) finds the scratch, and HEAD^ is its real first
+  parent with its real tree, so one that reads `git rev-parse HEAD`,
+  `HEAD^` and HEAD^..HEAD (runsheet's scan.sh and gitleaks, exit 128 on
+  every served validation 2026-10-25 while HEAD was parentless) reads the
+  attested commit (`realHead`, `internal/node/servedhistory.go`): both
+  commit objects rebuilt byte for byte from `gitdata.Commit` — a signed
+  one from GitHub's `verification.payload` with `verification.signature`
+  put back as git's gpgsig header (`withSignature`), an unsigned one from
+  its fields, the zones GitHub does not serve found by hashing
+  (`commitFromFields`) — each written only when it hashes to the real
+  sha; the parent read once (`Commit`, its tree from the shared cache on
+  `withCommitTree`, so a miss is one tree read) and its tree written in
+  an index of its own from cached blobs (`writeServedTree`,
+  `SharedCache.WithBlobs`); `.git/shallow` names the parent; a merge is
+  grafted onto its first parent (`git replace --graft`). What cannot be
+  rebuilt — a root commit, an odd signature or header, an unreadable
+  parent — is `syntheticHead`: `commit-tree` unsigned by the fixed
+  identity `mesh node <node@projectmesh.io>`, its parent a synthetic
+  commit of the merge base's tree. Each validation logs `<prefix>:
+  scratch HEAD is <sha7> itself, HEAD^ its first parent <p7> (shallow)`
+  or `... a synthetic commit of <sha7>'s tree, HEAD^ one of the merge
+  base <b7>'s: <why>`; either way the suites get `HEAD_SHA` and
+  `BASE_SHA`, the real commit and its first parent (`servedTree.env`;
+  in a pod `sandbox.RunSpec.Vars`, set past the allow-list by
+  `sandbox.SetEnv`), and the attestation names the served commit's sha
+  and tree; a sandboxed pod mounts the scratch, `.git` inside it, alone;
   `.git` is never in a tree check or an artifact digest — logged `<prefix>: materialised
   <sha7> from <base7> and <n> changed file(s) of the served diff` — no
   clone, no fetch, no repo lock; the suites chosen by the compare's

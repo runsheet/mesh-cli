@@ -13,12 +13,17 @@ package node
 // is on disk is checked against the commit's tree before anything runs.
 // validate.yml runs there, its suites selected by the compare's paths,
 // and the attestation names the commit's sha and tree. Before the suites
-// run the scratch is made a git repository (commitServed): one commit,
-// detached at HEAD, whose tree is the commit's — a suite that finds the
-// repo root through git (`git rev-parse --show-toplevel`, loom's
-// generate --check) finds the scratch, not its cwd. That commit's sha is
-// not the commit's: it is the node's, made with a fixed identity, while
-// the attestation keeps naming the commit's sha and tree. The scratch goes
+// run the scratch is made a git repository (commitServed) whose detached
+// HEAD is the served commit itself, rebuilt byte for byte, and HEAD^ its
+// real first parent with its real tree, shallow there (servedhistory.go)
+// — a suite that finds the repo root through git (`git rev-parse
+// --show-toplevel`, loom's generate --check) finds the scratch, and one
+// that reads HEAD^..HEAD (runsheet's scan.sh, gitleaks) reads the
+// commit's change; HEAD_SHA and BASE_SHA name both to the suites. What
+// cannot be rebuilt to the real sha is a synthetic commit of the tree
+// whose parent is one of the merge base's tree, said once per
+// validation; the attestation names the commit's sha and tree either
+// way. The scratch goes
 // on every path. A diff GitHub caps (gitdata.DiffTooLargeError), a tree
 // it truncates (gitdata.TruncatedError), no cache, no minted token or a
 // materialised tree that does not match falls back to the worktree,
@@ -47,18 +52,37 @@ type GitDataSource struct {
 	Client *gitdata.Client
 }
 
+// knownTreeKey carries on a ctx a commit whose tree sha was read
+// already (withCommitTree).
+type knownTreeKey struct{}
+
+type knownTree struct{ commit, tree string }
+
+// withCommitTree is ctx saying commit's tree is tree, so a cache miss on
+// commit reads the tree alone and not the commit again.
+func withCommitTree(ctx context.Context, commit, tree string) context.Context {
+	return context.WithValue(ctx, knownTreeKey{}, knownTree{commit: commit, tree: tree})
+}
+
 // Tree reads commit's tree recursively: its files and its submodules
-// (mode 160000), never its directories.
+// (mode 160000), never its directories. A commit whose tree ctx names
+// (withCommitTree) is not read again.
 func (s GitDataSource) Tree(ctx context.Context, repo, commit string) (CacheTree, error) {
-	c, err := s.Client.Commit(ctx, repo, commit)
+	treeSHA := ""
+	if k, ok := ctx.Value(knownTreeKey{}).(knownTree); ok && k.commit == commit && objectID(k.tree) {
+		treeSHA = k.tree
+	} else {
+		c, err := s.Client.Commit(ctx, repo, commit)
+		if err != nil {
+			return CacheTree{}, err
+		}
+		treeSHA = c.TreeSHA
+	}
+	entries, err := s.Client.Tree(ctx, repo, treeSHA)
 	if err != nil {
 		return CacheTree{}, err
 	}
-	entries, err := s.Client.Tree(ctx, repo, c.TreeSHA)
-	if err != nil {
-		return CacheTree{}, err
-	}
-	t := CacheTree{SHA: c.TreeSHA}
+	t := CacheTree{SHA: treeSHA}
 	for _, e := range entries {
 		switch e.Type {
 		case "blob":
@@ -80,7 +104,23 @@ func (s GitDataSource) Blob(ctx context.Context, repo, sha string) ([]byte, erro
 // beside its new.
 type servedTree struct {
 	head, tree string
-	changed    []string
+	// parent is head's first parent, "" for a root commit.
+	parent  string
+	changed []string
+}
+
+// env is what a suite run on the served checkout is told of it beside
+// git: HEAD_SHA the commit's sha and BASE_SHA its first parent's, the
+// real ones whichever commit the scratch's HEAD is (commitServed).
+func (s *servedTree) env() []string {
+	if s == nil {
+		return nil
+	}
+	out := []string{"HEAD_SHA=" + s.head}
+	if s.parent != "" {
+		out = append(out, "BASE_SHA="+s.parent)
+	}
+	return out
 }
 
 // servedFallback is why a main validation takes the worktree path: the
@@ -270,11 +310,31 @@ func (r *Runner) materializeServed(ctx, gctx context.Context, t validationTarget
 	if want.SHA != commit.TreeSHA {
 		return fail(&servedFallback{reason: "tree mismatch", err: fmt.Errorf("cached tree %s, commit's %s", short(want.SHA), short(commit.TreeSHA))})
 	}
-	// the scratch is made a git repository whose HEAD's tree is the
-	// commit's, so a suite that finds its root through git finds it; git
-	// hashing what is on disk is the tree check, checkMaterialized only
-	// naming the first difference when it is not the commit's
-	if err := commitServed(ctx, dir, want); err != nil {
+	// the scratch is made a git repository whose HEAD is the commit and
+	// HEAD^ its first parent, so a suite that finds its root through git
+	// finds it and one that reads HEAD^..HEAD reads the commit's change;
+	// git hashing what is on disk is the tree check, checkMaterialized
+	// only naming the first difference when it is not the commit's
+	hist := &servedHistory{
+		head: commit,
+		parent: func(ctx context.Context, sha string) (gitdata.Commit, CacheTree, error) {
+			p, err := gd.Commit(ctx, c.repo, sha)
+			if err != nil {
+				return gitdata.Commit{}, CacheTree{}, err
+			}
+			t, err := r.Cache.Tree(withCommitTree(ctx, p.SHA, p.TreeSHA), c.repo, p.SHA)
+			return p, t, err
+		},
+		base: func(ctx context.Context) (string, CacheTree, error) {
+			t, err := r.Cache.Tree(ctx, c.repo, cmp.MergeBaseSHA)
+			return cmp.MergeBaseSHA, t, err
+		},
+		blobs: func(ctx context.Context, shas []string, fn func([]string) error) error {
+			return r.Cache.WithBlobs(ctx, c.repo, shas, fn)
+		},
+	}
+	head, err := commitServed(gctx, dir, want, hist)
+	if err != nil {
 		var mm *servedTreeMismatch
 		if errors.As(err, &mm) {
 			if why := checkMaterialized(dir, want); why != nil {
@@ -292,7 +352,12 @@ func (r *Runner) materializeServed(ctx, gctx context.Context, t validationTarget
 		}
 	}
 	r.logf("%s: materialised %s from %s and %d changed file(s) of the served diff", t.prefix, short(c.sha), short(cmp.MergeBaseSHA), len(cmp.Files))
-	return dir, &servedTree{head: c.sha, tree: commit.TreeSHA, changed: changed}, nil
+	r.logf("%s: %s", t.prefix, head.line(c.sha))
+	var parent string
+	if len(commit.Parents) > 0 {
+		parent = commit.Parents[0]
+	}
+	return dir, &servedTree{head: c.sha, parent: parent, tree: commit.TreeSHA, changed: changed}, nil
 }
 
 // Tree is commit's flattened tree, from the cache or filled.
@@ -527,22 +592,24 @@ func servedGitEnv() []string {
 }
 
 // commitServed makes dir, a commit materialised from the served diff, a
-// git repository whose HEAD is one commit of exactly want's tree: `git
-// init`, every file added once (`add -A --force`, so a tracked file a
-// .gitignore names is added too; .git/info/attributes unsetting text,
-// eol, filter and ident while it runs, so what is hashed is the bytes on
-// disk, as the blob shas name them), each submodule its gitlink, the
-// tree written and compared with want.SHA — another is a
-// *servedTreeMismatch — then committed with the node's fixed identity,
-// unsigned, and HEAD detached at it. The commit's sha is the node's, not
-// the served commit's (that commit's author, message and signature are
-// not served); the attestation names the served one. Everything git
+// git repository whose HEAD's tree is exactly want's: `git init`, every
+// file added once (`add -A --force`, so a tracked file a .gitignore
+// names is added too; .git/info/attributes unsetting text, eol, filter
+// and ident while it runs, so what is hashed is the bytes on disk, as
+// the blob shas name them), each submodule its gitlink, the tree written
+// and compared with want.SHA — another is a *servedTreeMismatch. Then,
+// with h, HEAD is the served commit itself and HEAD^ its first parent,
+// the repository shallow there (realHead, servedhistory.go); what cannot
+// be rebuilt to the real sha is a synthetic commit of the tree under the
+// node's fixed identity, unsigned, its parent one of the merge base's
+// tree (syntheticHead), why said in the answer. Without h the synthetic
+// commit has no parent. HEAD is detached either way. Everything git
 // writes is under dir/.git, which nothing hashed or attested reads.
-func commitServed(ctx context.Context, dir string, want CacheTree) error {
+func commitServed(ctx context.Context, dir string, want CacheTree, h *servedHistory) (servedHead, error) {
 	env := servedGitEnv()
-	git := func(stdin string, args ...string) (string, error) {
+	git := func(stdin string, extra []string, args ...string) (string, error) {
 		cmd := exec.CommandContext(ctx, "git", append(append([]string{}, servedGitArgs...), args...)...)
-		cmd.Dir, cmd.Env = dir, env
+		cmd.Dir, cmd.Env = dir, append(append([]string{}, env...), extra...)
 		if stdin != "" {
 			cmd.Stdin = strings.NewReader(stdin)
 		}
@@ -558,19 +625,19 @@ func commitServed(ctx context.Context, dir string, want CacheTree) error {
 	if len(want.SHA) == 64 {
 		initArgs = append(initArgs, "--object-format=sha256")
 	}
-	if _, err := git("", append(initArgs, ".")...); err != nil {
-		return err
+	if _, err := git("", nil, append(initArgs, ".")...); err != nil {
+		return servedHead{}, err
 	}
 	info := filepath.Join(dir, ".git", "info")
 	if err := os.MkdirAll(info, 0o755); err != nil {
-		return err
+		return servedHead{}, err
 	}
 	attrs := filepath.Join(info, "attributes")
 	if err := os.WriteFile(attrs, []byte("* -text -eol -filter -ident -working-tree-encoding\n"), 0o644); err != nil {
-		return err
+		return servedHead{}, err
 	}
-	if _, err := git("", "add", "--all", "--force", "--", "."); err != nil {
-		return err
+	if _, err := git("", nil, "add", "--all", "--force", "--", "."); err != nil {
+		return servedHead{}, err
 	}
 	var links strings.Builder
 	for _, e := range want.Entries {
@@ -579,27 +646,31 @@ func commitServed(ctx context.Context, dir string, want CacheTree) error {
 		}
 	}
 	if links.Len() > 0 {
-		if _, err := git(links.String(), "update-index", "--add", "--index-info"); err != nil {
-			return err
+		if _, err := git(links.String(), nil, "update-index", "--add", "--index-info"); err != nil {
+			return servedHead{}, err
 		}
 	}
 	// the repository's own attributes from here on, as a checkout's
 	if err := os.Remove(attrs); err != nil {
-		return err
+		return servedHead{}, err
 	}
-	tree, err := git("", "write-tree")
+	tree, err := git("", nil, "write-tree")
 	if err != nil {
-		return err
+		return servedHead{}, err
 	}
 	if tree != want.SHA {
-		return &servedTreeMismatch{got: tree, want: want.SHA}
+		return servedHead{}, &servedTreeMismatch{got: tree, want: want.SHA}
 	}
-	head, err := git("", "commit-tree", "--no-gpg-sign", "-m", "mesh: served diff of tree "+want.SHA, tree)
-	if err != nil {
-		return err
+	why := "no history served"
+	if h != nil {
+		head, err := realHead(ctx, git, dir, want, h)
+		if err == nil {
+			return head, nil
+		}
+		if ctx.Err() != nil {
+			return servedHead{}, ctx.Err()
+		}
+		why = err.Error()
 	}
-	if _, err := git("", "update-ref", "--no-deref", "-m", "mesh: served diff", "HEAD", head); err != nil {
-		return err
-	}
-	return nil
+	return syntheticHead(ctx, git, dir, want, h, why)
 }
