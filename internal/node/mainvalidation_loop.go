@@ -61,6 +61,15 @@ type mainValidationGateway interface {
 	FinishValidationJob(ctx context.Context, subject, id, nodeID string, att gateway.ValidationAttestation) (map[string]any, error)
 }
 
+// validationHarness is the harness a main validation's claim names:
+// none. A validation runs the repository's suites, no agent, and
+// runsheet's validate kind lists harness none (.mesh/jobs/validate.yml);
+// claimJob refuses a claim naming the node's agent adapter ("a
+// runsheet/validate job runs with none, not claude-code"), which left
+// every candidate unclaimed (dl360, batches 85–88, 2026-10-24). Naming
+// none takes the kind's own.
+const validationHarness = ""
+
 // errBatchClaimLost and errBatchOverrun are why a running batch
 // validation was stopped.
 var (
@@ -97,7 +106,7 @@ func batchJob(l *Loop, gw mainValidationGateway, b gateway.MainValidationBatch, 
 		claimed: fmt.Sprintf("claimed candidate %s@%s", b.CandidateBranch, short(b.SHA)),
 		run:     func(ctx context.Context) (validate.Attestation, error) { return l.ValidateBatch(ctx, b) },
 		claim: func(ctx context.Context) error {
-			return gw.ClaimMergeBatchValidation(ctx, b.MergeBatchID, nodeID, l.adapter())
+			return gw.ClaimMergeBatchValidation(ctx, b.MergeBatchID, nodeID, validationHarness)
 		},
 		finish: func(ctx context.Context, att validate.Attestation) error {
 			_, err := gw.FinishValidationJob(ctx, "candidate", b.MergeBatchID, nodeID, gatewayAttestation(att))
@@ -114,7 +123,7 @@ func requestJob(l *Loop, gw mainValidationGateway, r gateway.MainValidationReque
 		id: r.WorkItemID, label: mainRequestLabel(r), claimed: "claimed",
 		run: func(ctx context.Context) (validate.Attestation, error) { return l.ValidateMain(ctx, r) },
 		claim: func(ctx context.Context) error {
-			return gw.ClaimWorkItemMainValidation(ctx, r.WorkItemID, nodeID, l.adapter())
+			return gw.ClaimWorkItemMainValidation(ctx, r.WorkItemID, nodeID, validationHarness)
 		},
 		finish: func(ctx context.Context, att validate.Attestation) error {
 			_, err := gw.FinishValidationJob(ctx, "main", r.WorkItemID, nodeID, gatewayAttestation(att))
@@ -135,40 +144,93 @@ func (l *Loop) Validating() int {
 }
 
 // mainValidation is the gateway's main-validation half when the loop can
-// validate batches and the platform serves them; a platform without the
-// fields is said once per run.
+// validate batches and the platform serves them; each reason it cannot
+// is said once (skipValidation).
 func (l *Loop) mainValidation(ctx context.Context) (mainValidationGateway, bool) {
-	if (l.ValidateBatch == nil && l.ValidateMain == nil) || !l.takesKind(harness.KindEvaluate) {
+	if l.ValidateBatch == nil && l.ValidateMain == nil {
+		l.skipValidation("no validator", "main validation: this node has no validator; validating no merge batch")
+		return nil, false
+	}
+	if !l.takesKind(harness.KindEvaluate) {
+		l.skipValidation("takes", "main validation: node.yaml's takes: has no evaluate; validating no merge batch")
 		return nil, false
 	}
 	gw, ok := l.GW.(mainValidationGateway)
-	if !ok || !gw.TakesMainValidation(ctx) {
-		l.mu.Lock()
-		said := l.noMainValidationSaid
-		l.noMainValidationSaid = true
-		l.mu.Unlock()
-		if !said {
-			l.logf("the platform serves no main validation; validating no merge batch")
-		}
+	if !ok {
+		l.skipValidation("gateway", "main validation: the gateway client (%T) has no main validation; validating no merge batch", l.GW)
+		return nil, false
+	}
+	if !gw.TakesMainValidation(ctx) {
+		l.skipValidation("platform", "the platform serves no main validation; validating no merge batch")
 		return nil, false
 	}
 	return gw, true
 }
 
+// skipValidation says why the validation path was skipped this tick,
+// once per cause: said again only after the path ran or another cause
+// was said (a silent skip cost dl360 four batches, 2026-10-24). The
+// cause "" marks the path run and says nothing.
+func (l *Loop) skipValidation(cause, format string, args ...any) {
+	l.mu.Lock()
+	said := l.validationSkip == cause
+	l.validationSkip = cause
+	l.mu.Unlock()
+	if !said && cause != "" {
+		l.logf(format, args...)
+	}
+}
+
+// sayValidationOnce logs a note about one job — keyed by why and the
+// job's id — the first time it holds; past maxValidationNotes the notes
+// kept start over.
+func (l *Loop) sayValidationOnce(key, format string, args ...any) {
+	l.mu.Lock()
+	if l.validationSaid == nil || len(l.validationSaid) >= maxValidationNotes {
+		l.validationSaid = map[string]bool{}
+	}
+	said := l.validationSaid[key]
+	l.validationSaid[key] = true
+	l.mu.Unlock()
+	if !said {
+		l.logf(format, args...)
+	}
+}
+
+// maxValidationNotes bounds sayValidationOnce's memory: a node meets a
+// few batches an hour, never hundreds.
+const maxValidationNotes = 512
+
 // validateBatches claims and starts a main validation for each served
 // batch candidate, then for each served merged item's request, while
 // free slots remain, the host is not hot and node.yaml's evaluate cap
 // has room, and answers how many it started. Every batch is offered
-// before any request. A claim refused — another node holds it, or it
-// waits on none — is the ordinary answer and is not logged as an error.
+// before any request. A skip says its cause once (skipValidation); a
+// job of an org the node does not serve, and a claim refused — another
+// node holds it, or it waits on none — each say so once per job.
 func (l *Loop) validateBatches(ctx context.Context, free int) int {
 	gw, ok := l.mainValidation(ctx)
-	if !ok || free <= 0 || l.hostHot() {
+	switch {
+	case !ok:
+		return 0
+	case l.diskLow() || l.memLow():
+		l.skipValidation("low", "main validation: disk or memory under its floor; validating no merge batch")
+		return 0
+	case l.hostHot():
+		l.skipValidation("hot", "main validation: host hot; validating no merge batch")
+		return 0
+	case free <= 0:
+		l.skipValidation("full", "main validation: no free slot and the validation lane is taken (capacity %d, %d validating); validating no merge batch", l.Capacity(), l.Validating())
 		return 0
 	}
+	l.skipValidation("", "")
+	scopes := l.CurrentScopes()
 	served := map[string]bool{}
-	for _, sc := range l.CurrentScopes() {
+	for _, sc := range scopes {
 		served[sc.ID] = true
+	}
+	unserved := func(label, id, org string) {
+		l.sayValidationOnce("unserved "+id, "%s: org %s is not one this node serves (%s); left for another node", label, orNone(org), orgsOrNone(scopes))
 	}
 	// every node id's queue read first, so a batch any of them is served
 	// comes before every request
@@ -183,7 +245,11 @@ func (l *Loop) validateBatches(ctx context.Context, free int) int {
 		if l.ValidateBatch != nil {
 			for _, b := range queue.Batches {
 				// a batch of an org this node does not serve is not its repo's
-				if seen[b.MergeBatchID] || !served[b.OrgID] {
+				if seen[b.MergeBatchID] {
+					continue
+				}
+				if !served[b.OrgID] {
+					unserved(batchLabel(b), b.MergeBatchID, b.OrgID)
 					continue
 				}
 				seen[b.MergeBatchID] = true
@@ -192,7 +258,11 @@ func (l *Loop) validateBatches(ctx context.Context, free int) int {
 		}
 		if l.ValidateMain != nil {
 			for _, r := range queue.Requests {
-				if seen[r.WorkItemID] || !served[r.OrgID] {
+				if seen[r.WorkItemID] {
+					continue
+				}
+				if !served[r.OrgID] {
+					unserved(mainRequestLabel(r), r.WorkItemID, r.OrgID)
 					continue
 				}
 				seen[r.WorkItemID] = true
@@ -233,6 +303,10 @@ func (l *Loop) startMainJob(ctx context.Context, j mainJob) bool {
 		l.mu.Unlock()
 		if !gateway.IsRefusal(err) {
 			l.logf("%s: claim: %v", j.label, err)
+		} else {
+			// a refusal is the ordinary answer when another node holds
+			// it, and rare otherwise: said once per job and reason
+			l.sayValidationOnce("refused "+j.id+" "+err.Error(), "%s: claim refused: %v", j.label, err)
 		}
 		return false
 	}

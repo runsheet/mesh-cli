@@ -354,6 +354,30 @@ func seededBatch() gateway.MainValidationBatch {
 	}
 }
 
+// A validation runs no agent: claimJob refuses a validate claim naming
+// an agent harness, as the platform does (runsheet claimjob.go
+// jobHarness, the validate kind's harness none) — the refusal dl360's
+// node swallowed for every candidate on 2026-10-24 — and takes one
+// naming none.
+func TestFakeValidateClaimNamingAnAgentHarnessIsRefused(t *testing.T) {
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	b := seededBatch()
+	f.SeedMergeBatch(b)
+	gw := gateway.New(f.URL(), "rs_test")
+	ctx := context.Background()
+	err := gw.ClaimMergeBatchValidation(ctx, b.MergeBatchID, nodeID, "claude-code")
+	if !gateway.IsRefusal(err) || !strings.Contains(err.Error(), "a runsheet/validate job runs with none, not claude-code") {
+		t.Fatalf("claim naming claude-code = %v, want the harness refusal", err)
+	}
+	if row := f.MergeBatch(b.MergeBatchID); row["validationState"] != "requested" {
+		t.Fatalf("batch after the refusal = %+v", row)
+	}
+	if err := gw.ClaimMergeBatchValidation(ctx, b.MergeBatchID, nodeID, ""); err != nil {
+		t.Fatalf("claim naming none: %v", err)
+	}
+}
+
 // The fake serves a seeded batch, takes its claim once — the same node
 // again converges, another node is refused — and finishes it on its
 // sha, after which it is served no more.
@@ -372,10 +396,10 @@ func TestFakeMergeBatchClaimConvergesAndFinishes(t *testing.T) {
 	if len(queue.Batches) != 1 || !reflect.DeepEqual(queue.Batches[0], b) || len(queue.Requests) != 0 {
 		t.Fatalf("queue = %+v", queue)
 	}
-	if err := gw.ClaimMergeBatchValidation(ctx, b.MergeBatchID, nodeID, "claude-code"); err != nil {
+	if err := gw.ClaimMergeBatchValidation(ctx, b.MergeBatchID, nodeID, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := gw.ClaimMergeBatchValidation(ctx, b.MergeBatchID, nodeID, "claude-code"); err != nil {
+	if err := gw.ClaimMergeBatchValidation(ctx, b.MergeBatchID, nodeID, ""); err != nil {
 		t.Fatalf("the holder's second claim: %v", err)
 	}
 	err = gw.ClaimMergeBatchValidation(ctx, b.MergeBatchID, otherNode, "")

@@ -158,7 +158,9 @@ func (c *Client) MainValidations(ctx context.Context, nodeID string) (MainValida
 // ClaimMergeBatchValidation takes a batch candidate's validation: the
 // same node again converges, another node holding it, or a batch not
 // waiting on a node, is refused with a gateway.Error (IsRefusal).
-// harness names the adapter the node runs it on, "" for none.
+// harness is the job's harness, "" for the kind's own: runsheet's
+// validate kind runs none, and claimJob refuses a claim naming an agent
+// adapter such as claude-code.
 func (c *Client) ClaimMergeBatchValidation(ctx context.Context, batchID, nodeID, harness string) error {
 	return c.mainValidationCommand(ctx, "claimMergeBatchValidation", batchID, withHarness(map[string]any{"nodeId": nodeID}, harness))
 }

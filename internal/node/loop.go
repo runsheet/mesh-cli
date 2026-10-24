@@ -393,9 +393,14 @@ type Loop struct {
 	// evaluationElsewhereSaid are the items this node built whose
 	// evaluation another node claimed, each said once (evaluateHeld).
 	evaluationElsewhereSaid map[string]bool
-	// noMainValidationSaid is set once the run has said the platform
-	// serves no main validation (validateBatches).
-	noMainValidationSaid bool
+	// validationSkip is the cause the validation path last said it was
+	// skipped for, "" once it reads the queue again (validateBatches):
+	// each skip is said once per cause, never once per tick.
+	validationSkip string
+	// validationSaid are the per-job notes said once: a batch or request
+	// of an org the node does not serve, and a claim refused, each by
+	// the job's id (validateBatches, startMainJob).
+	validationSaid map[string]bool
 	// noCredentialReadSaid is set once the run has said the platform
 	// does not serve credentialIndexs (reconcileCredentials).
 	noCredentialReadSaid bool
@@ -1290,9 +1295,8 @@ func (l *Loop) Tick(ctx context.Context) {
 			// are asked for first, every tick, before any new build or
 			// plan: they land work already built and attested. They take
 			// any free slot and, when builds fill the rest, their lane.
-			if !low {
-				inUse += l.validateBatches(ctx, max(l.Capacity()-inUse, lanes.Validate-l.Validating()))
-			}
+			// it says why when it skips (low disk or memory among them)
+			inUse += l.validateBatches(ctx, max(l.Capacity()-inUse, lanes.Validate-l.Validating()))
 			if !low {
 				l.evaluateHeld(ctx)
 				l.rebaseRequested(ctx)

@@ -62,7 +62,7 @@ func TestBatchClaimedValidatedAndFinishedGreen(t *testing.T) {
 		t.Fatalf("claims = %d, want 1\n%s", n, logs.String())
 	}
 	c := f.CallsNamed("claimMergeBatchValidation")[0]
-	if c.Input["aggregateId"] != batchID || c.Input["nodeId"] != batchNode || c.Input["harness"] != "claude-code" {
+	if c.Input["aggregateId"] != batchID || c.Input["nodeId"] != batchNode || c.Input["harness"] != nil {
 		t.Errorf("claim input = %v", c.Input)
 	}
 	if n := len(batchAttestations(f)); n != 1 {

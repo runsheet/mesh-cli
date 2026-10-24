@@ -84,7 +84,7 @@ func TestIssueMergeBatchRepoToken(t *testing.T) {
 	if _, err := gw.IssueMergeBatchRepoToken(ctx, b, nodeID); !gateway.IsRefusal(err) || gateway.IsUnsupported(err) {
 		t.Fatalf("unclaimed: err = %v, want a refusal", err)
 	}
-	if err := gw.ClaimMergeBatchValidation(ctx, b.MergeBatchID, nodeID, "claude-code"); err != nil {
+	if err := gw.ClaimMergeBatchValidation(ctx, b.MergeBatchID, nodeID, ""); err != nil {
 		t.Fatal(err)
 	}
 	tok, err := gw.IssueMergeBatchRepoToken(ctx, b, nodeID)
