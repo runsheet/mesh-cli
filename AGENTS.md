@@ -644,10 +644,16 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `git add --all`, `write-tree`, the objects differing from
   `origin/<base>` (else `origin/<default>`) offered to
   `ChangesetMissing`, the missing `PutChangesetObject`ed,
-  `RecordChangeset`, `FinishWorkItemChangeset` naming `changesetId`,
-  the validated commit's attestation uploaded first, logged `item
-  <label>: changeset <id> recorded (<n> path(s), <m> object(s)
-  uploaded); finished <branch> ($x)` — only when
+  `RecordChangeset`, `FinishWorkItemChangeset` naming `changesetId`
+  and `baseShaAtFinish` — the commit the platform writes the branch on,
+  whose tree is the changeset's `base_tree`: the commit `origin/<base>`
+  was at when the checkout was made (`checkoutBaseSHA`, kept on
+  `State.BaseSHA`) while HEAD descends from it, else the merge-base of
+  HEAD and the base (`session.baseCommit`; a base that moved on since
+  the checkout is logged, not followed) — the validated commit's
+  attestation uploaded first, logged `item <label>: changeset <id>
+  recorded (<n> path(s), <m> object(s) uploaded) on <base>; finished
+  <branch> ($x)` — only when
   `gateway.Client.TakesChangesets` (FinishWorkItemInput has
   `changesetId`, kept `ScalingProbeEvery`), else `Finish.Push` is
   `pushBuild` and `FinishPushed` attests and `FinishWorkItem`s as

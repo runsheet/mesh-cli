@@ -2185,6 +2185,12 @@ func (f *Fake) apply(name string, in map[string]any) error {
 				return fmt.Errorf("no changeset %v recorded for the item", in[gateway.ChangesetIDField])
 			}
 			item["branch"], item["outcome"], item["latestChangesetId"], item["tree"] = in["branch"], "built", cs.ChangesetID, cs.Tree
+			// the base commit the platform writes the branch on; a
+			// finish naming none leaves the item on its recorded base
+			// head, which a fresh item has not
+			if base, _ := in[gateway.BaseShaAtFinishField].(string); base != "" {
+				item[gateway.BaseShaAtFinishField] = base
+			}
 		case outcome == "" || outcome == "built":
 			if in["branch"] == nil || in["branch"] == "" {
 				return fmt.Errorf("a built finish needs a branch")
@@ -2859,7 +2865,7 @@ func (f *Fake) answeredTransiently(w http.ResponseWriter, r *http.Request, field
 var actorInputFields = map[string][]string{
 	"ClaimWorkItemInput":          {"aggregateId", "namespace", "nodeId", "harness"},
 	"ReportWorkItemProgressInput": {"aggregateId", "namespace", "note", "costCents", "sessionId", "usage"},
-	"FinishWorkItemInput":         {"aggregateId", "namespace", "branch", "headSha", "outcome", "evidence", "description", "costCents", "usage"},
+	"FinishWorkItemInput":         {"aggregateId", "namespace", "branch", "headSha", gateway.BaseShaAtFinishField, "outcome", "evidence", "description", "costCents", "usage"},
 }
 
 // actorMutations are the five commands that carry the actor, and the

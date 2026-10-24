@@ -160,7 +160,16 @@ func TestBuildRunsAsSessionStepsE2E(t *testing.T) {
 	if len(finish) != 1 || finish[0].Input[gateway.ChangesetIDField] != cs.ChangesetID || finish[0].Input["headSha"] != nil {
 		t.Fatalf("finishes = %+v, want one naming changeset %s and no head\n%s", finish, cs.ChangesetID, out)
 	}
-	if got := f.Item(item1); got["latestChangesetId"] != cs.ChangesetID || got["status"] != "evaluating" {
+	// and the base commit the platform writes the branch on: origin/main
+	// as the checkout fetched it, whose tree is the changeset's base_tree
+	baseSHA := gitRun(t, dir, "rev-parse", "origin/main^{commit}")
+	if finish[0].Input[gateway.BaseShaAtFinishField] != baseSHA {
+		t.Fatalf("finish named base %v, want origin/main %s\n%s", finish[0].Input[gateway.BaseShaAtFinishField], baseSHA, out)
+	}
+	if tree := gitRun(t, dir, "rev-parse", baseSHA+"^{tree}"); cs.BaseTree != tree {
+		t.Errorf("changeset base tree %s, the base commit's %s", cs.BaseTree, tree)
+	}
+	if got := f.Item(item1); got["latestChangesetId"] != cs.ChangesetID || got["status"] != "evaluating" || got[gateway.BaseShaAtFinishField] != baseSHA {
 		t.Fatalf("item after the finish = %v", got)
 	}
 	// nothing pushed: the platform makes the branch from the changeset

@@ -19,11 +19,15 @@ import (
 // workspace's tree is written from its index once the builder's changes
 // are staged, the objects that differ from the base tree are offered to
 // the platform, only those it lacks are uploaded, the changeset is
-// recorded and the item finished naming it. The platform makes the
-// branch from the changeset. Nothing here runs in the job container, and
-// the changeset path runs no git push at all; a platform without the
-// changeset routes gets the node's own push instead, from the node
-// process on a per-command token (Push), never by exec in the pod.
+// recorded and the item finished naming it and the base commit — the
+// commit whose tree is the changeset's base_tree (baseCommit), which the
+// platform writes the branch's commit on (FinishWorkItemInput's
+// baseShaAtFinish; a fresh item has no other base commit on record). The
+// platform makes the branch from the changeset. Nothing here runs in the
+// job container, and the changeset path runs no git push at all; a
+// platform without the changeset routes gets the node's own push
+// instead, from the node process on a per-command token (Push), never by
+// exec in the pod.
 
 // ChangesetGateway is the platform's half the finish step speaks to;
 // *gateway.Client is one.
@@ -31,7 +35,9 @@ type ChangesetGateway interface {
 	ChangesetMissing(ctx context.Context, itemID string, objects []gateway.ChangesetObject) ([]gateway.ChangesetObject, error)
 	PutChangesetObject(ctx context.Context, itemID string, obj gateway.ChangesetObject, content []byte) error
 	RecordChangeset(ctx context.Context, itemID string, cs gateway.Changeset) error
-	FinishWorkItemChangeset(ctx context.Context, itemID, branch, changesetID string, costCents int, usage *gateway.UsageReport, description ...string) error
+	// FinishWorkItemChangeset finishes the item on the changeset, naming
+	// the base commit it is against when baseSHA is not "".
+	FinishWorkItemChangeset(ctx context.Context, itemID, branch, changesetID, baseSHA string, costCents int, usage *gateway.UsageReport, description ...string) error
 }
 
 // GitFunc runs one git command in dir on the node and answers its
@@ -45,6 +51,10 @@ type Finish struct {
 	// BaseRef is the ref the item's change is against (origin/main, a
 	// dependency's branch); State.BaseRef when empty.
 	BaseRef string
+	// BaseSHA is the commit BaseRef was at when the checkout was made;
+	// State.BaseSHA when empty. The changeset's base commit is it while
+	// HEAD still descends from it (baseCommit).
+	BaseSHA string
 	// ParentChangesetID is the item's previous changeset on a rework, ""
 	// on its first.
 	ParentChangesetID string
@@ -56,6 +66,9 @@ type Finish struct {
 	Gateway ChangesetGateway
 	// Git runs git on the node; nil is the git binary in the workspace.
 	Git GitFunc
+	// Logf is where the step notes a base ref that moved on since the
+	// checkout; nil logs nothing.
+	Logf func(format string, args ...any)
 	// NewID mints the changeset's id; nil is a random uuid.
 	NewID func() string
 	// Push is the fallback for a platform without changesets: the node's
@@ -69,7 +82,10 @@ type Finish struct {
 
 // FinishResult is what the finish step leaves in State.Results["finish"].
 type FinishResult struct {
-	ChangesetID  string
+	ChangesetID string
+	// BaseSHA is the commit the changeset is against, whose tree is
+	// BaseTree; the finish named it.
+	BaseSHA      string
 	BaseTree     string
 	Tree         string
 	PathsChanged []string
@@ -113,7 +129,11 @@ func (f *Finish) Run(ctx context.Context, state *State) error {
 	if base == "" {
 		return errors.New("finish: no base ref")
 	}
-	res, err := f.changeset(ctx, state.WorkspaceDir, base)
+	baseSHA := f.BaseSHA
+	if baseSHA == "" {
+		baseSHA = state.BaseSHA
+	}
+	res, err := f.changeset(ctx, state.WorkspaceDir, base, baseSHA)
 	if gateway.IsUnsupported(err) {
 		res, err = f.push(ctx, state.WorkspaceDir, err)
 	}
@@ -126,7 +146,7 @@ func (f *Finish) Run(ctx context.Context, state *State) error {
 	return err
 }
 
-func (f *Finish) changeset(ctx context.Context, dir, base string) (*FinishResult, error) {
+func (f *Finish) changeset(ctx context.Context, dir, base, checkoutSHA string) (*FinishResult, error) {
 	git := f.git()
 	// the builder's changes, committed or not, are staged in the
 	// worktree's own index and its tree written from it
@@ -137,15 +157,15 @@ func (f *Finish) changeset(ctx context.Context, dir, base string) (*FinishResult
 	if err != nil {
 		return nil, fmt.Errorf("finish: write-tree: %w", err)
 	}
-	baseTree, err := gitLine(ctx, git, dir, "rev-parse", base+"^{tree}")
+	baseSHA, baseTree, err := baseCommit(ctx, git, dir, base, checkoutSHA, f.Logf)
 	if err != nil {
-		return nil, fmt.Errorf("finish: base tree of %s: %w", base, err)
+		return nil, err
 	}
 	paths, objects, err := changedObjects(ctx, git, dir, baseTree, tree)
 	if err != nil {
 		return nil, err
 	}
-	res := &FinishResult{BaseTree: baseTree, Tree: tree, PathsChanged: paths}
+	res := &FinishResult{BaseSHA: baseSHA, BaseTree: baseTree, Tree: tree, PathsChanged: paths}
 
 	missing, err := f.Gateway.ChangesetMissing(ctx, f.ItemID, objects)
 	if err != nil {
@@ -175,10 +195,59 @@ func (f *Finish) changeset(ctx context.Context, dir, base string) (*FinishResult
 		return nil, fmt.Errorf("finish: record changeset: %w", err)
 	}
 	res.ChangesetID = id
-	if err := f.Gateway.FinishWorkItemChangeset(ctx, f.ItemID, f.Branch, id, f.CostCents, f.Usage, f.Description); err != nil {
+	if err := f.Gateway.FinishWorkItemChangeset(ctx, f.ItemID, f.Branch, id, baseSHA, f.CostCents, f.Usage, f.Description); err != nil {
 		return res, fmt.Errorf("finish: finish on changeset %s: %w", id, err)
 	}
 	return res, nil
+}
+
+// baseCommit is the commit the changeset is against and its tree, which
+// is the changeset's base_tree: checkoutSHA — the commit base was at
+// when the checkout was made — while HEAD still descends from it; else
+// the merge-base of HEAD and base (a rework continued from an earlier
+// attempt's branch, forked off an older base; a builder that rebased);
+// else base itself. The base tree is read from that commit, so the
+// finish never names a commit whose tree is not the base_tree the
+// changeset's paths are diffed from. base having moved on since the
+// checkout — another item's fetch of the shared clone, the base merged
+// and deleted — is noted on logf and not followed: the change was built
+// on the commit the checkout was made from, and the branch is written on
+// it.
+func baseCommit(ctx context.Context, git GitFunc, dir, base, checkoutSHA string, logf func(string, ...any)) (sha, tree string, err error) {
+	refSHA, err := gitLine(ctx, git, dir, "rev-parse", "--verify", base+"^{commit}")
+	if err != nil {
+		return "", "", fmt.Errorf("finish: base commit of %s: %w", base, err)
+	}
+	refTree, err := gitLine(ctx, git, dir, "rev-parse", refSHA+"^{tree}")
+	if err != nil {
+		return "", "", fmt.Errorf("finish: base tree of %s: %w", base, err)
+	}
+	sha = refSHA
+	switch {
+	case checkoutSHA != "" && isAncestor(ctx, git, dir, checkoutSHA):
+		sha = checkoutSHA
+	default:
+		if mb, err := gitLine(ctx, git, dir, "merge-base", "HEAD", refSHA); err == nil {
+			sha = mb
+		}
+	}
+	tree = refTree
+	if sha != refSHA {
+		tree, err = gitLine(ctx, git, dir, "rev-parse", sha+"^{tree}")
+		if err != nil {
+			return "", "", fmt.Errorf("finish: tree of base commit %s: %w", sha, err)
+		}
+	}
+	if tree != refTree && logf != nil {
+		logf("finish: %s is at %s (tree %s), not the changeset's base %s (tree %s): the base moved on since the checkout; the branch is written on the commit the change was built from", base, refSHA, refTree, sha, tree)
+	}
+	return sha, tree, nil
+}
+
+// isAncestor says HEAD descends from sha (a commit is its own ancestor).
+func isAncestor(ctx context.Context, git GitFunc, dir, sha string) bool {
+	_, err := git(ctx, dir, "merge-base", "--is-ancestor", sha, "HEAD")
+	return err == nil
 }
 
 // push is the fallback: the node's own push from the node process, then

@@ -14,7 +14,12 @@ type State struct {
 	WorkspaceDir string
 	Pod          any
 	BaseRef      string
-	Results      map[string]any
+	// BaseSHA is the commit BaseRef was at when the checkout was made —
+	// the base the builder's change was built on — "" when the checkout
+	// did not record it (an adopted session); the finish step then reads
+	// it back as the merge-base of HEAD and BaseRef.
+	BaseSHA string
+	Results map[string]any
 }
 
 // Outcome is a step's result, as the node logs it.

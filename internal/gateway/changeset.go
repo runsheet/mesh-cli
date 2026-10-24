@@ -44,6 +44,15 @@ type Changeset struct {
 // changeset the platform makes the branch from.
 const ChangesetIDField = "changesetId"
 
+// BaseShaAtFinishField is FinishWorkItemInput's key naming the commit
+// the changeset is against — the one whose tree is its base_tree — which
+// the platform writes the branch's commit on (runsheet
+// branchFromChangeset: FinishWorkItem.BaseShaAtFinish, else the item's
+// recorded base head, else the item fails with "the finish names no
+// base commit to write it on"). A fresh item has no recorded base head,
+// so the node names it.
+const BaseShaAtFinishField = "baseShaAtFinish"
+
 func itemPath(itemID, rest string) string {
 	return "/mesh/v1/items/" + url.PathEscape(itemID) + rest
 }
@@ -161,11 +170,13 @@ func (c *Client) RecordChangeset(ctx context.Context, itemID string, cs Changese
 
 // FinishWorkItemChangeset finishes the item on a recorded changeset: the
 // platform makes the branch from it, so the input names branch and
-// changesetId and no head sha. A FinishWorkItemInput without
-// `changesetId` (introspected, kept ScalingProbeEvery) answers
-// IsUnsupported and nothing is sent. usage and description are as
-// FinishWorkItem's.
-func (c *Client) FinishWorkItemChangeset(ctx context.Context, itemID, branch, changesetID string, costCents int, usage *UsageReport, description ...string) error {
+// changesetId and no head sha, and baseShaAtFinish — the commit whose
+// tree is the changeset's base_tree, which the platform writes the
+// branch's commit on — when the node knows it ("" sends none). A
+// FinishWorkItemInput without `changesetId` (introspected, kept
+// ScalingProbeEvery) answers IsUnsupported and nothing is sent. usage
+// and description are as FinishWorkItem's.
+func (c *Client) FinishWorkItemChangeset(ctx context.Context, itemID, branch, changesetID, baseSHA string, costCents int, usage *UsageReport, description ...string) error {
 	if changesetID == "" {
 		return errors.New("gateway: a changeset finish needs a changeset id")
 	}
@@ -173,6 +184,9 @@ func (c *Client) FinishWorkItemChangeset(ctx context.Context, itemID, branch, ch
 		return &Error{Message: "the platform's FinishWorkItemInput takes no " + ChangesetIDField, Unsupported: true}
 	}
 	in := map[string]any{"branch": branch, ChangesetIDField: changesetID, "costCents": costCents}
+	if baseSHA != "" {
+		in[BaseShaAtFinishField] = baseSHA
+	}
 	c.withDescription(ctx, in, description)
 	return c.mutateWithUsage(ctx, "finishWorkItem", itemID, in, usage)
 }

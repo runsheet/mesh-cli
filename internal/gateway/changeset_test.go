@@ -160,20 +160,30 @@ func TestChangesetRoutes(t *testing.T) {
 		t.Fatalf("record with a missing tree: %v", err)
 	}
 
-	if err := gw.FinishWorkItemChangeset(ctx, "item-1", "mesh/g-1", "cs-1", 12, nil); err != nil {
+	if err := gw.FinishWorkItemChangeset(ctx, "item-1", "mesh/g-1", "cs-1", "base-sha", 12, nil); err != nil {
 		t.Fatal(err)
 	}
 	// the finish is the build job's (finishJob, runsheet ADR 061): the
-	// older finishWorkItem's input as its changeset
+	// older finishWorkItem's input as its changeset, naming the base
+	// commit the platform writes the branch on beside the changeset
 	in := p.finishes[0]
 	subject, _ := in["subject"].(map[string]any)
 	finish, _ := in["finish"].(map[string]any)
 	fin, _ := finish["changeset"].(map[string]any)
-	if in["kind"] != "runsheet/build" || subject["id"] != "item-1" || fin["changesetId"] != "cs-1" || fin["branch"] != "mesh/g-1" {
+	if in["kind"] != "runsheet/build" || subject["id"] != "item-1" || fin["changesetId"] != "cs-1" || fin["branch"] != "mesh/g-1" || fin[gateway.BaseShaAtFinishField] != "base-sha" {
 		t.Fatalf("finish %+v", in)
 	}
 	if _, sent := fin["headSha"]; sent {
 		t.Fatalf("changeset finish sent a head sha: %+v", fin)
+	}
+	// a base the node does not know is not sent as ""
+	if err := gw.FinishWorkItemChangeset(ctx, "item-1", "mesh/g-1", "cs-1", "", 12, nil); err != nil {
+		t.Fatal(err)
+	}
+	finish, _ = p.finishes[1]["finish"].(map[string]any)
+	fin, _ = finish["changeset"].(map[string]any)
+	if _, sent := fin[gateway.BaseShaAtFinishField]; sent {
+		t.Fatalf("changeset finish with no base sent one: %+v", fin)
 	}
 	for _, a := range p.auth {
 		if a != "Bearer rs_test" {
@@ -203,7 +213,7 @@ func TestChangesetUnsupported(t *testing.T) {
 	}
 
 	gw = gateway.New(srv.URL, "rs_test")
-	if err := gw.FinishWorkItemChangeset(ctx, "item-1", "b", "cs-1", 0, nil); !gateway.IsUnsupported(err) {
+	if err := gw.FinishWorkItemChangeset(ctx, "item-1", "b", "cs-1", "", 0, nil); !gateway.IsUnsupported(err) {
 		t.Fatalf("finish without changesetId: %v", err)
 	}
 }
