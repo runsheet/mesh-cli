@@ -252,6 +252,15 @@ type Fake struct {
 	// commands to serve a schema without it.
 	MergeBatches           map[string]map[string]any
 	MainValidationRequests map[string]map[string]any
+	// PullRequestValidations are hand-opened pull requests' validations,
+	// by pullRequestValidationId (SeedPullRequestValidation), served as
+	// mainValidations' pullRequests[] and moved by
+	// claimPullRequestValidation, failPullRequestValidation and the
+	// finishPullRequestValidation finishJob sends after the attestation.
+	// Their read token is GitHubTokens[pullRequestValidationId].
+	// Unsupported["claimPullRequestValidation"] (or the fail) serves a
+	// platform before pull request validation.
+	PullRequestValidations map[string]map[string]any
 	// BatchGitHubTokens maps a mergeBatchId to the answer of
 	// issueItemRepoToken's batch form, issueItemRepoToken(mergeBatchId:)
 	// (runsheet ADR 009's amendment 2026-10-14): given only to the node
@@ -635,7 +644,7 @@ func New(token string) *Fake {
 		Agents: map[string]map[string]any{}, UnknownFields: map[string]bool{},
 		SessionCredentials: map[string][]map[string]any{}, SessionTools: map[string][]map[string]any{},
 		Scorecard: map[string]map[string]any{}, Enterprises: map[string]Enterprise{},
-		MergeBatches: map[string]map[string]any{}, MainValidationRequests: map[string]map[string]any{}, BatchGitHubTokens: map[string]map[string]any{},
+		MergeBatches: map[string]map[string]any{}, MainValidationRequests: map[string]map[string]any{}, PullRequestValidations: map[string]map[string]any{}, BatchGitHubTokens: map[string]map[string]any{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/graphql", f.graphql)
@@ -1171,7 +1180,7 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request, q string, vars map[
 			writeErrors(w, 200, `Cannot query field "nodeId" on type "CommandResult".`)
 			return
 		}
-		if m[2] == "claimWorkItem" || m[2] == "claimWorkItemEvaluation" || m[2] == "claimMergeBatchValidation" || m[2] == "claimWorkItemMainValidation" {
+		if m[2] == "claimWorkItem" || m[2] == "claimWorkItemEvaluation" || m[2] == "claimMergeBatchValidation" || m[2] == "claimWorkItemMainValidation" || m[2] == "claimPullRequestValidation" {
 			f.Claims = append(f.Claims, Call{Name: m[2], Input: in, At: time.Now(), Bearer: bearer})
 		}
 		if msg := f.Refuse[m[2]]; msg != "" {
@@ -2087,7 +2096,7 @@ func (f *Fake) mutationPayload(name, q string, in map[string]any) map[string]any
 func (f *Fake) apply(name string, in map[string]any) error {
 	id, _ := in["aggregateId"].(string)
 	item := f.WorkItems[id]
-	if mainValidationCommands[name] {
+	if mainValidationCommands[name] || pullRequestValidationCommands[name] {
 		return f.applyMainValidation(name, in)
 	}
 	switch name {
@@ -2752,7 +2761,7 @@ func (f *Fake) mutationType() map[string]any {
 			"args": []any{map[string]any{"name": "in"}},
 		})
 	}
-	for _, name := range mainValidationMutations {
+	for _, name := range append(append([]string{}, mainValidationMutations...), pullRequestValidationMutations...) {
 		if !f.Unsupported[name] {
 			fields = append(fields, map[string]any{"name": name, "args": []any{map[string]any{"name": "input"}}})
 		}
@@ -2790,6 +2799,10 @@ func (f *Fake) recordValidationAttestation(w http.ResponseWriter, r *http.Reques
 	}
 	if strings.Contains(q, "recordValidationAttestation(mergeBatchId: $id, input: $in)") {
 		f.recordBatchCandidateAttestation(w, vars, bearer)
+		return
+	}
+	if strings.Contains(q, "recordValidationAttestation(pullRequestValidationId: $id, input: $in)") {
+		f.recordPullRequestAttestation(w, vars, bearer)
 		return
 	}
 	if !strings.Contains(q, "recordValidationAttestation(workItemId: $id, input: $in)") || strings.Contains(q, "RecordValidationAttestationInput") {

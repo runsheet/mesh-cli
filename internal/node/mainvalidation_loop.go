@@ -70,6 +70,15 @@ type mainValidationGateway interface {
 // none takes the kind's own.
 const validationHarness = ""
 
+// pullRequestValidationGateway is the platform's half of a hand-opened
+// pull request's validation, beside mainValidationGateway: a platform
+// before it has no claim or fail, and a test's double may not either.
+type pullRequestValidationGateway interface {
+	TakesPullRequestValidation(ctx context.Context) bool
+	ClaimPullRequestValidation(ctx context.Context, validationID, nodeID, harness string) error
+	FailPullRequestValidation(ctx context.Context, validationID, nodeID, reason string) error
+}
+
 // errBatchClaimLost and errBatchOverrun are why a running batch
 // validation was stopped.
 var (
@@ -86,6 +95,12 @@ func batchLabel(b gateway.MainValidationBatch) string {
 // `main <repo>@<sha short> item <seq>`.
 func mainRequestLabel(r gateway.MainValidationRequest) string {
 	return fmt.Sprintf("main %s@%s item %d", r.RepoFullName, short(r.SHA), r.Seq)
+}
+
+// pullRequestLabel is a hand-opened pull request's validation's log
+// prefix: `pr <repo>#<number>@<sha short>`.
+func pullRequestLabel(p gateway.MainValidationPullRequest) string {
+	return fmt.Sprintf("pr %s#%d@%s", p.RepoFullName, p.Number, short(p.SHA))
 }
 
 // mainJob is one main validation as the loop runs it, a batch
@@ -135,6 +150,48 @@ func requestJob(l *Loop, gw mainValidationGateway, r gateway.MainValidationReque
 	}
 }
 
+// pullRequestJob is a hand-opened pull request's validation as the loop
+// runs it: claimed and failed by its own commands, finished through
+// finishJob on subject pull_request, whose platform half records the
+// attestation and finishes the validation itself.
+func pullRequestJob(l *Loop, gw mainValidationGateway, pgw pullRequestValidationGateway, p gateway.MainValidationPullRequest, nodeID string) mainJob {
+	id := p.PullRequestValidationID
+	claimed := "claimed"
+	if p.HeadBranch != "" {
+		claimed = fmt.Sprintf("claimed head %s (%s)", p.HeadBranch, p.Ref)
+	}
+	return mainJob{
+		id: id, label: pullRequestLabel(p), claimed: claimed,
+		run: func(ctx context.Context) (validate.Attestation, error) { return l.ValidatePullRequest(ctx, p) },
+		claim: func(ctx context.Context) error {
+			return pgw.ClaimPullRequestValidation(ctx, id, nodeID, validationHarness)
+		},
+		finish: func(ctx context.Context, att validate.Attestation) error {
+			_, err := gw.FinishValidationJob(ctx, "pull_request", id, nodeID, gatewayAttestation(att))
+			return err
+		},
+		fail: func(ctx context.Context, reason string) error {
+			return pgw.FailPullRequestValidation(ctx, id, nodeID, reason)
+		},
+	}
+}
+
+// pullRequestValidation is the gateway's pull request half when the loop
+// validates pull requests and the platform serves their claim and fail;
+// a platform without them is said once per run, and its pullRequests are
+// left alone while batches and requests go on.
+func (l *Loop) pullRequestValidation(ctx context.Context, gw mainValidationGateway) (pullRequestValidationGateway, bool) {
+	if l.ValidatePullRequest == nil {
+		return nil, false
+	}
+	pgw, ok := gw.(pullRequestValidationGateway)
+	if !ok || !pgw.TakesPullRequestValidation(ctx) {
+		l.sayValidationOnce("no pull request validation", "main validation: the platform validates no pull request on a node; validating no hand-opened pull request")
+		return nil, false
+	}
+	return pgw, true
+}
+
 // Validating is the main validations — batch candidates and merged
 // items — running now.
 func (l *Loop) Validating() int {
@@ -147,7 +204,7 @@ func (l *Loop) Validating() int {
 // validate batches and the platform serves them; each reason it cannot
 // is said once (skipValidation).
 func (l *Loop) mainValidation(ctx context.Context) (mainValidationGateway, bool) {
-	if l.ValidateBatch == nil && l.ValidateMain == nil {
+	if l.ValidateBatch == nil && l.ValidateMain == nil && l.ValidatePullRequest == nil {
 		l.skipValidation("no validator", "main validation: this node has no validator; validating no merge batch")
 		return nil, false
 	}
@@ -202,12 +259,14 @@ func (l *Loop) sayValidationOnce(key, format string, args ...any) {
 const maxValidationNotes = 512
 
 // validateBatches claims and starts a main validation for each served
-// batch candidate, then for each served merged item's request, while
-// free slots remain, the host is not hot and node.yaml's evaluate cap
-// has room, and answers how many it started. Every batch is offered
-// before any request. A skip says its cause once (skipValidation); a
-// job of an org the node does not serve, and a claim refused — another
-// node holds it, or it waits on none — each say so once per job.
+// batch candidate, then for each served merged item's request, then for
+// each served hand-opened pull request, while free slots remain, the
+// host is not hot and node.yaml's evaluate cap has room, and answers how
+// many it started. Every batch is offered before any request, and every
+// request before any pull request: a pull request lands nothing. A skip
+// says its cause once (skipValidation); a job of an org the node does
+// not serve, and a claim refused — another node holds it, or it waits
+// on none — each say so once per job.
 func (l *Loop) validateBatches(ctx context.Context, free int) int {
 	gw, ok := l.mainValidation(ctx)
 	switch {
@@ -234,7 +293,8 @@ func (l *Loop) validateBatches(ctx context.Context, free int) int {
 	}
 	// every node id's queue read first, so a batch any of them is served
 	// comes before every request
-	var batches, requests []mainJob
+	pgw, takesPRs := l.pullRequestValidation(ctx, gw)
+	var batches, requests, pulls []mainJob
 	seen := map[string]bool{}
 	for _, nodeID := range l.nodeIDs() {
 		queue, err := gw.MainValidations(ctx, nodeID)
@@ -269,10 +329,23 @@ func (l *Loop) validateBatches(ctx context.Context, free int) int {
 				requests = append(requests, requestJob(l, gw, r, nodeID))
 			}
 		}
+		if takesPRs {
+			for _, p := range queue.PullRequests {
+				if seen[p.PullRequestValidationID] {
+					continue
+				}
+				if !served[p.OrgID] {
+					unserved(pullRequestLabel(p), p.PullRequestValidationID, p.OrgID)
+					continue
+				}
+				seen[p.PullRequestValidationID] = true
+				pulls = append(pulls, pullRequestJob(l, gw, pgw, p, nodeID))
+			}
+		}
 	}
 	capped := l.takesCap(harness.KindEvaluate)
 	started := 0
-	for _, j := range append(batches, requests...) {
+	for _, j := range append(append(batches, requests...), pulls...) {
 		if started >= free || (capped.capped && capped.room <= 0) {
 			break
 		}
@@ -506,4 +579,30 @@ func (r *Runner) ValidateMainRequest(ctx context.Context, req gateway.MainValida
 		return validate.Attestation{}, err
 	}
 	return r.validateMainRequest(ctx, req, tok)
+}
+
+// pullRequestTokenMinter is the gateway's pull request validation token,
+// from the exchange (*gateway.Client).
+type pullRequestTokenMinter interface {
+	PullRequestValidationToken(ctx context.Context, validationID, nodeID string) (*gateway.GitHubToken, error)
+}
+
+// ValidatePullRequest is validatePullRequest on the pull request
+// validation's read token from the exchange (jobAccess, subject
+// pull_request), what the loop's ValidatePullRequest runs: a mint
+// refused or failing is the validation's error, never the operator's
+// login instead. A gateway that mints none runs on the operator's login.
+func (r *Runner) ValidatePullRequest(ctx context.Context, pr gateway.MainValidationPullRequest) (validate.Attestation, error) {
+	m, ok := r.GW.(pullRequestTokenMinter)
+	if !ok {
+		return r.validatePullRequest(ctx, pr, nil)
+	}
+	sc, _ := r.Scopes.ByOrg(pr.OrgID)
+	tok, err := m.PullRequestValidationToken(ctx, pr.PullRequestValidationID, sc.NodeID)
+	if err != nil {
+		err = fmt.Errorf("github token for %s: %w", pullRequestLabel(pr), err)
+		r.logf("%v; not fetched", err)
+		return validate.Attestation{}, err
+	}
+	return r.validatePullRequest(ctx, pr, tok)
 }

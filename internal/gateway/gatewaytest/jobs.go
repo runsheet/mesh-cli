@@ -269,6 +269,11 @@ func jobClaimAlias(in map[string]any) (string, map[string]any, error) {
 		if h, _ := in["harness"].(string); h != "" {
 			args["harness"] = h
 		}
+	case "runsheet/validate pull_request":
+		field = "claimPullRequestValidation"
+		if h, _ := in["harness"].(string); h != "" {
+			args["harness"] = h
+		}
 	default:
 		return "", nil, fmt.Errorf("claimJob: Mesh has no claim for a %s job on a %s", kind, typ)
 	}
@@ -345,16 +350,21 @@ func (f *Fake) finishJobAliases(r *http.Request, in map[string]any, bearer strin
 		if v, err = part("rebasedHead"); err == nil {
 			err = send("finishWorkItemRebase", v)
 		}
-	case "runsheet/validate candidate", "runsheet/validate main":
+	case "runsheet/validate candidate", "runsheet/validate main", "runsheet/validate pull_request":
 		var att map[string]any
 		if att, err = part("attestation"); err != nil {
 			return nil, err
 		}
 		arg, finish := "mergeBatchId", "finishMergeBatchValidation"
 		value := map[string]any{"nodeId": in["nodeId"], "sha": att["commit"]}
-		if typ == "main" {
+		switch typ {
+		case "main":
 			arg, finish = "workItemId", "finishWorkItemMainValidation"
 			value = map[string]any{"sha": att["commit"]}
+		case "pull_request":
+			// the platform records the attestation and sends the finish
+			// itself (runsheet: Validate hand-opened pull requests on a node)
+			arg, finish = "pullRequestValidationId", "finishPullRequestValidation"
 		}
 		if err = attest(arg, att); err == nil {
 			err = send(finish, value)
@@ -410,7 +420,7 @@ func (f *Fake) jobAccessAliases(r *http.Request, in map[string]any, bearer strin
 		}
 	case "runsheet/validate candidate":
 		token("mutation($id: UUID!) { issueItemRepoToken(mergeBatchId: $id) }", "issueItemRepoToken")
-	case "runsheet/validate main":
+	case "runsheet/validate main", "runsheet/validate pull_request":
 		// a read token of the merged item's repo, whatever the item's
 		// status: the validation holds the claim, not the item
 		if tok := f.GitHubTokens[id]; tok != nil {

@@ -1327,6 +1327,9 @@ func runNode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gate
 	// and attestation upload (ADR 048, ADR 054 decision 3)
 	loop.ValidateBatch = runner.ValidateCandidate
 	loop.ValidateMain = runner.ValidateMainRequest
+	// and a pull request a person opened by hand on an enrolled repo, its
+	// head attested on the same runner, lowest in the queue
+	loop.ValidatePullRequest = runner.ValidatePullRequest
 	// a pushed commit is validated from GitHub's served diff through the
 	// node's shared cache, else from a worktree of the shared clone; the
 	// same cache, Go build cache included, measured and trimmed under its
