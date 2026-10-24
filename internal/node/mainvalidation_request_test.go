@@ -85,7 +85,7 @@ func TestMainRequestClaimedAttestedAndFinished(t *testing.T) {
 	if len(claims) != 1 {
 		t.Fatalf("claims = %d, want 1\n%s", len(claims), logs.String())
 	}
-	if c := claims[0].Input; c["aggregateId"] != item1 || c["nodeId"] != batchNode || c["harness"] != "claude-code" {
+	if c := claims[0].Input; c["aggregateId"] != item1 || c["nodeId"] != batchNode || c["harness"] != nil {
 		t.Errorf("claim input = %v", c)
 	}
 	atts := itemAttestations(f)

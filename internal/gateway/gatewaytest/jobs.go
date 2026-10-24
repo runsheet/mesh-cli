@@ -115,6 +115,10 @@ func (f *Fake) jobAPI(w http.ResponseWriter, r *http.Request, q string, vars map
 		f.finishThreadJob(w, in)
 	case strings.Contains(q, "claimJob(input"):
 		f.Calls = append(f.Calls, Call{Name: "claimJob", Input: in, At: time.Now(), Bearer: bearer})
+		if err := jobHarness(in); err != nil {
+			writeErrors(w, 200, err.Error())
+			return true
+		}
 		field, args, err := jobClaimAlias(in)
 		if err != nil {
 			writeErrors(w, 200, err.Error())
@@ -207,6 +211,26 @@ func (f *Fake) SetKindGuidance(kind, guidance, finishSchema string) {
 		f.KindFinishSchema = map[string]string{}
 	}
 	f.KindGuidance[kind], f.KindFinishSchema[kind] = guidance, finishSchema
+}
+
+// kindHarnesses are the harnesses a runsheet kind's catalogue row lists
+// where the fake checks them (runsheet .mesh/jobs/*.yml): validate runs
+// no agent, so its harness is none.
+var kindHarnesses = map[string][]string{
+	"runsheet/validate": {"none"},
+}
+
+// jobHarness is the platform's harness check on a claimJob (runsheet
+// claimjob.go jobHarness): a claim naming a harness its kind does not
+// list is refused; one naming none takes the kind's first.
+func jobHarness(in map[string]any) error {
+	kind, _ := in["kind"].(string)
+	asked, _ := in["harness"].(string)
+	listed, ok := kindHarnesses[kind]
+	if !ok || asked == "" || slices.Contains(listed, asked) {
+		return nil
+	}
+	return fmt.Errorf("claimJob: a %s job runs with %s, not %s", kind, strings.Join(listed, " or "), asked)
 }
 
 // jobClaimAlias is the older claim a claimJob routes to, and its input.
