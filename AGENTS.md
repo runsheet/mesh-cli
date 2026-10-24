@@ -1873,8 +1873,19 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `jobCheckoutOf`; never another job's) else the `BlobSource`,
   `GitDataSource`; `Runner.ServedDiff`, `NewServedDiffCache`) into
   `MakeScratch(ScratchRoot(WorkRoot), "served", <subject>)`, the diff
-  applied through the cache (`ApplyDiff`) and checked against the
-  commit's tree (`checkMaterialized`) — logged `<prefix>: materialised
+  applied through the cache (`ApplyDiff`), then made a git repository
+  whose detached HEAD is one commit of exactly the commit's tree
+  (`commitServed`: `git init --template=`, `add --all --force` once
+  with hooks off and `.git/info/attributes` unsetting text/eol/filter
+  while it hashes, submodules as gitlinks, `write-tree` compared with
+  the commit's tree — another is a tree mismatch, `checkMaterialized`
+  naming the first path that differs — `commit-tree` unsigned by the
+  fixed identity `mesh node <node@projectmesh.io>`), so a suite that
+  finds the repo root through git (runsheet's loomgen, red on dl360
+  2026-10-25 without one) finds the scratch; that commit's sha is the
+  node's, not the served one, which the attestation keeps naming with
+  its tree; a sandboxed pod mounts the scratch, `.git` inside it, alone;
+  `.git` is never in a tree check or an artifact digest — logged `<prefix>: materialised
   <sha7> from <base7> and <n> changed file(s) of the served diff` — no
   clone, no fetch, no repo lock; the suites chosen by the compare's
   paths, the scratch removed on every path (`validator.removeScratch`,
@@ -1888,8 +1899,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (<size>) to hold the cap of <cap>; <size> now`, then `go clean
   -cache`, still over the finding `cache over cap: <size> of <cap>`,
   once until back under. A diff past the cap, a truncated tree, no
-  minted token (a request today), no cache, no parent or a tree
-  mismatch takes the clone above, `<prefix>: served diff: <reason>;
+  minted token (a request today), no cache, no parent, a tree
+  mismatch or a scratch repository git could not make takes the clone above, `<prefix>: served diff: <reason>;
   validating from a worktree (said once per run)` (`servedFallback`,
   `noteServedFallback`). A sandboxed validation's pod mounts
   `sandbox.ValidationCache` (`RunSpec.Cache`): its scratch rw (TMPDIR,
