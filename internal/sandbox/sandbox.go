@@ -571,6 +571,39 @@ func (s *Session) Env(jobEnv []string) []string {
 	return out
 }
 
+// SetEnv is env with each of vars (KEY=VALUE) set: a variable env has
+// already is replaced where it stands, the rest appended in order.
+func SetEnv(env, vars []string) []string {
+	if len(vars) == 0 {
+		return env
+	}
+	set := make(map[string]string, len(vars))
+	for _, kv := range vars {
+		name, _, _ := strings.Cut(kv, "=")
+		set[name] = kv
+	}
+	out := make([]string, 0, len(env)+len(vars))
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		if v, ok := set[name]; ok {
+			if v != "" {
+				out = append(out, v)
+				set[name] = ""
+			}
+			continue
+		}
+		out = append(out, kv)
+	}
+	for _, kv := range vars {
+		name, _, _ := strings.Cut(kv, "=")
+		if v := set[name]; v != "" {
+			out = append(out, v)
+			set[name] = ""
+		}
+	}
+	return out
+}
+
 // Allowed says whether a job's variable may reach its pod.
 func Allowed(name string) bool {
 	for _, h := range HeldOutEnv {
@@ -675,6 +708,10 @@ type RunSpec struct {
 	Workspace string
 	// Env is the job's environment; Env filters it (Session.Env).
 	Env []string
+	// Vars are the node's own variables for this run — never the job's,
+	// never a secret: a served validation's HEAD_SHA and BASE_SHA — set
+	// past the allow-list, last, each replacing any of its name (SetEnv).
+	Vars []string
 	// Cache, set, is a validation's scratch and shared cache, mounted
 	// beside the session's own and named in its env (ValidationCache).
 	Cache   *ValidationCache
@@ -722,6 +759,7 @@ func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 		}
 		mounts, env = append(mounts, c.Mounts()...), c.Env(env)
 	}
+	env = SetEnv(env, spec.Vars)
 	timeout := runtimeTimeout(spec.Timeout)
 	tail := &tailBuffer{max: 8 << 10}
 	stderr := io.Writer(tail)

@@ -260,7 +260,7 @@ func (vr validator) start(ctx context.Context, t validationTarget) (*buildValida
 	if vr.Sandbox == nil {
 		v.close = removeScratch
 		host, _ := os.Hostname()
-		v.runner = validate.HostRunner{Dir: t.dir, Env: hostValidationEnv(t.job, scratch, cache)}
+		v.runner = validate.HostRunner{Dir: t.dir, Env: sandbox.SetEnv(hostValidationEnv(t.job, scratch, cache), t.served.env())}
 		v.meta.RunnerImage, v.meta.Sandboxed = "host:"+host, false
 		return v, nil
 	}
@@ -290,7 +290,7 @@ func (vr validator) start(ctx context.Context, t validationTarget) (*buildValida
 	if t.job != nil {
 		env = t.job.Env
 	}
-	v.runner = sandboxRunner{sess: sess, dir: t.dir, env: env, cache: &sandbox.ValidationCache{Scratch: scratch, GoCache: cache, Blobs: blobs}}
+	v.runner = sandboxRunner{sess: sess, dir: t.dir, env: env, vars: t.served.env(), cache: &sandbox.ValidationCache{Scratch: scratch, GoCache: cache, Blobs: blobs}}
 	image := vr.Sandbox.Config.Image
 	run := vr.Inspect
 	if run == nil {
@@ -1253,10 +1253,13 @@ type sandboxRunner struct {
 	// cache is the run's scratch and the node's shared cache, mounted in
 	// every step's pod and named as its TMPDIR, GOTMPDIR and GOCACHE.
 	cache *sandbox.ValidationCache
+	// vars are the node's own facts of the run (a served checkout's
+	// HEAD_SHA and BASE_SHA), set in the pod past the allow-list.
+	vars []string
 }
 
 func (s sandboxRunner) Run(ctx context.Context, cmd string, timeout time.Duration, stdout, stderr io.Writer) (int, error) {
-	err := s.sess.Run(ctx, sandbox.RunSpec{Workspace: s.dir, Env: s.env, Cache: s.cache, Command: []string{"sh", "-c", cmd}, Timeout: timeout, Stdout: stdout, Stderr: stderr})
+	err := s.sess.Run(ctx, sandbox.RunSpec{Workspace: s.dir, Env: s.env, Vars: s.vars, Cache: s.cache, Command: []string{"sh", "-c", cmd}, Timeout: timeout, Stdout: stdout, Stderr: stderr})
 	var ee *sandbox.ExitError
 	var le *sandbox.LimitError
 	switch {

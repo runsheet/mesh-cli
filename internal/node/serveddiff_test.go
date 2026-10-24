@@ -40,7 +40,8 @@ import (
 const servedYML = "suites:\n" +
 	"  - name: api\n    kind: unit\n    command: tmp=$(mktemp) && rm \"$tmp\" && test -x bin/tool.sh && test -f api/new.go && test ! -e gone.txt && test -f moved/name.go && test ! -e old/name.go" +
 	" && cd api && top=$(git rev-parse --show-toplevel) && test -f \"$top/.runsheet/validate.yml\" && tree=$(git rev-parse HEAD^{tree})" +
-	" && if test -n \"$SERVED_GIT_OUT\"; then printf '%s\\n%s\\n' \"$top\" \"$tree\" > \"$SERVED_GIT_OUT\"; fi\n    paths: [\"api/**\"]\n" +
+	" && if test -n \"$SERVED_GIT_OUT\"; then printf '%s\\n%s\\n' \"$top\" \"$tree\" > \"$SERVED_GIT_OUT\"; fi" +
+	" && if test -n \"$SERVED_HISTORY_OUT\"; then git log -p -U0 HEAD^..HEAD > /dev/null && { git rev-parse HEAD HEAD^ HEAD^^{tree}; echo \"env $HEAD_SHA $BASE_SHA\"; echo \"log $(git log --oneline HEAD^..HEAD | wc -l)\"; git diff --name-only HEAD^ HEAD; } > \"$SERVED_HISTORY_OUT\"; fi\n    paths: [\"api/**\"]\n" +
 	"  - name: web\n    kind: unit\n    command: \"true\"\n    paths: [\"web/**\"]\n"
 
 // servedGitHub serves GitHub's commit, compare, tree and blob reads of
@@ -52,6 +53,9 @@ type servedGitHub struct {
 	token  string
 	// tooLarge answers every compare with DiffCapFiles files.
 	tooLarge bool
+	// noHistory serves a commit's tree and parents alone: no author,
+	// committer, message or verification to rebuild it from.
+	noHistory bool
 
 	mu   sync.Mutex
 	reqs []string
@@ -130,7 +134,68 @@ func (g *servedGitHub) commit(ref string) (any, error) {
 	for _, p := range strings.Fields(out)[1:] {
 		parents = append(parents, map[string]string{"sha": p})
 	}
-	return map[string]any{"sha": sha, "commit": map[string]any{"tree": map[string]string{"sha": tree}}, "parents": parents}, nil
+	body := map[string]any{"tree": map[string]string{"sha": tree}}
+	if !g.noHistory {
+		raw, err := g.git("cat-file", "commit", sha)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range commitFields(g.t, raw) {
+			body[k] = v
+		}
+	}
+	return map[string]any{"sha": sha, "commit": body, "parents": parents}, nil
+}
+
+// commitFields is a raw commit object's author, committer, message and
+// verification as GitHub's "Get a commit" serves them: the dates in UTC,
+// the zone dropped; the message with its closing newline trimmed; a
+// signed commit's payload (the object without its gpgsig header) and
+// signature, an unsigned one's both null.
+func commitFields(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	header, msg, _ := strings.Cut(raw, "\n\n")
+	person := func(line string) map[string]string {
+		// Name <email> 1700000000 +1100
+		name, rest, _ := strings.Cut(line, " <")
+		email, rest, _ := strings.Cut(rest, "> ")
+		f := strings.Fields(rest)
+		var unix int64
+		fmt.Sscan(f[0], &unix)
+		return map[string]string{"name": name, "email": email, "date": time.Unix(unix, 0).UTC().Format(time.RFC3339)}
+	}
+	out := map[string]any{"message": strings.TrimRight(msg, "\n")}
+	var payload strings.Builder
+	var sig strings.Builder
+	inSig := false
+	for _, line := range strings.SplitAfter(header+"\n", "\n") {
+		if line == "" {
+			continue
+		}
+		switch {
+		case inSig && strings.HasPrefix(line, " "):
+			sig.WriteString(line[1:])
+			continue
+		case strings.HasPrefix(line, "gpgsig "):
+			inSig = true
+			sig.WriteString(strings.TrimPrefix(line, "gpgsig "))
+			continue
+		}
+		inSig = false
+		payload.WriteString(line)
+		if a, ok := strings.CutPrefix(line, "author "); ok {
+			out["author"] = person(strings.TrimSuffix(a, "\n"))
+		}
+		if c, ok := strings.CutPrefix(line, "committer "); ok {
+			out["committer"] = person(strings.TrimSuffix(c, "\n"))
+		}
+	}
+	verification := map[string]any{"verified": false, "reason": "unsigned", "signature": nil, "payload": nil}
+	if sig.Len() > 0 {
+		verification = map[string]any{"verified": true, "reason": "valid", "signature": sig.String(), "payload": payload.String() + "\n" + msg}
+	}
+	out["verification"] = verification
+	return out
 }
 
 func (g *servedGitHub) compare(base, head string) (any, error) {
@@ -667,7 +732,7 @@ func TestCommitServedMakesTheScratchARepositoryOfExactlyTheTree(t *testing.T) {
 	}
 
 	dir := materialise()
-	if err := commitServed(context.Background(), dir, want); err != nil {
+	if _, err := commitServed(context.Background(), dir, want, nil); err != nil {
 		t.Fatalf("commitServed: %v", err)
 	}
 	sub := filepath.Join(dir, "platform")
@@ -707,7 +772,7 @@ func TestCommitServedMakesTheScratchARepositoryOfExactlyTheTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	var mm *servedTreeMismatch
-	if err := commitServed(context.Background(), tampered, want); !errors.As(err, &mm) {
+	if _, err := commitServed(context.Background(), tampered, want, nil); !errors.As(err, &mm) {
 		t.Fatalf("tampered commitServed = %v, want a tree mismatch", err)
 	}
 }
