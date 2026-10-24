@@ -99,7 +99,15 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `{plan: {items, …}}` — `items` and, beside them, `"questions": [{"clause", "question"}]`
   for a clause no PR can satisfy (`DecodePlanQuestions`; sent with
   `planGoal` only when its input has `questions`, `TakesPlanQuestions`,
-  else each logged `plan <goal>: question for the person: …`), its rule
+  else each logged `plan <goal>: question for the person: …`); each
+  item also carries `acceptance_checks`, at least one `{kind, check,
+  expected}` with kind command, test or observable (runsheet ADR 056:
+  the platform refuses an item with none — every plan of 2026-10-24 was,
+  until the node sent them; `planChecksRule`, `missingAcceptanceChecks`
+  flags one on the first answer where the platform takes
+  `acceptanceChecks` (`TakesAcceptanceChecks`), the final answer's
+  itemless check is one observable of its prose, `observableOfProse`,
+  and `PlanGoal` sends `acceptanceChecks` only where taken), its rule
   3 and re-ask saying an item's acceptance names only what a PR can
   change and a host reading is a `Measure: …` item (`planHostRule`;
   the node's `hostReadingAcceptance` flags a threshold on a reading in

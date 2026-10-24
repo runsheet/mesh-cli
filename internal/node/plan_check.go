@@ -874,3 +874,62 @@ func sharedDocsSiblings(specs []harness.PlannedSpec, writer int) []gateway.Share
 	sort.Slice(siblings, func(i, j int) bool { return siblings[i].Seq < siblings[j].Seq })
 	return siblings
 }
+
+// missingAcceptanceChecks flags each item with no `acceptance_checks`,
+// or one whose kind the platform does not know or that has no check or
+// expected (runsheet ADR 056): the platform refuses such a plan, so the
+// planner is asked again with the item named before anything is handed
+// in. An item whose every check is well-formed is clean.
+func missingAcceptanceChecks(specs []harness.PlannedSpec) []string {
+	var flags []string
+	for _, sp := range specs {
+		title := strings.TrimSpace(sp.Title)
+		if len(sp.AcceptanceChecks) == 0 {
+			flags = append(flags, fmt.Sprintf("item %d (%s): no acceptance_checks: each item carries at least one {kind, check, expected}, kind command, test or observable", sp.Seq, title))
+			continue
+		}
+		for i, c := range sp.AcceptanceChecks {
+			switch {
+			case !harness.KnownAcceptanceKind(c.Kind):
+				flags = append(flags, fmt.Sprintf("item %d (%s): acceptance_checks[%d]: kind %q is not one of command, test, observable", sp.Seq, title, i, c.Kind))
+			case strings.TrimSpace(c.Check) == "":
+				flags = append(flags, fmt.Sprintf("item %d (%s): acceptance_checks[%d] (%s) has no check", sp.Seq, title, i, c.Kind))
+			case strings.TrimSpace(c.Expected) == "":
+				flags = append(flags, fmt.Sprintf("item %d (%s): acceptance_checks[%d] (%s) has no expected result", sp.Seq, title, i, c.Kind))
+			}
+		}
+	}
+	return flags
+}
+
+// acceptanceChecksOf is sp's well-formed checks as PlanGoal sends them:
+// kinds lower-cased, check and expected trimmed; a check the platform
+// would refuse (unknown kind, no check, no expected) is dropped — the
+// first answer was flagged for it, and the final answer falls back to
+// observableOfProse when none is left.
+func acceptanceChecksOf(sp harness.PlannedSpec) []gateway.AcceptanceCheck {
+	var out []gateway.AcceptanceCheck
+	for _, c := range sp.AcceptanceChecks {
+		kind := strings.ToLower(strings.TrimSpace(c.Kind))
+		check, expected := strings.TrimSpace(c.Check), strings.TrimSpace(c.Expected)
+		if !harness.KnownAcceptanceKind(kind) || check == "" || expected == "" {
+			continue
+		}
+		out = append(out, gateway.AcceptanceCheck{Kind: kind, Check: check, Expected: expected})
+	}
+	return out
+}
+
+// observableOfProse is the one check an item with no acceptance_checks
+// gets on the final answer: an observable whose check is the prose
+// acceptance (or the title's stand-in when there is none) and whose
+// expected is that it holds. The evaluator judges observables, so the
+// item is judged on the words the planner wrote, as it was before ADR
+// 056.
+func observableOfProse(acceptance string) gateway.AcceptanceCheck {
+	acc := strings.Join(strings.Fields(acceptance), " ")
+	if acc == "" {
+		acc = "the item's brief is done"
+	}
+	return gateway.AcceptanceCheck{Kind: "observable", Check: acc, Expected: "holds on the item's branch, as the evaluator reads it"}
+}

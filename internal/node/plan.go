@@ -1048,6 +1048,9 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 	// brief alone.
 	sharedWriter := sharedDocsWriter(specs)
 	sharedSiblings := sharedDocsSiblings(specs, sharedWriter)
+	// runsheet ADR 056: a platform that takes acceptanceChecks refuses
+	// an item with none; one that does not is never asked for them
+	takesChecks := p.GW.TakesAcceptanceChecks(ctx)
 	for _, sp := range specs {
 		r, ok := projectRepo(repos, sp.Repo)
 		if !ok {
@@ -1075,9 +1078,22 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 				brief = gateway.BriefWithoutSharedDocs(brief, sharedWriter)
 			}
 		}
-		items = append(items, gateway.PlannedItem{Seq: sp.Seq, Title: strings.TrimSpace(sp.Title), Brief: brief, Acceptance: strings.TrimSpace(sp.Acceptance), DependsOn: deps, DependsBecause: because, RepoID: r.ID, BaseRef: base, Model: model, Precondition: strings.Join(strings.Fields(sp.Precondition), " ")})
+		// runsheet ADR 056: the item's checks as the planner listed them;
+		// on the final answer an item still without one gets one
+		// observable made of its prose, so the platform never refuses
+		// the plan for a missing list (missingAcceptanceChecks flagged it
+		// on the first)
+		checks := acceptanceChecksOf(sp)
+		if len(checks) == 0 && final && takesChecks {
+			checks = []gateway.AcceptanceCheck{observableOfProse(sp.Acceptance)}
+			p.logf("goal %s: item %d %q: no acceptance_checks on the final answer; one observable made of its prose", goal.Slug, sp.Seq, strings.TrimSpace(sp.Title))
+		}
+		items = append(items, gateway.PlannedItem{Seq: sp.Seq, Title: strings.TrimSpace(sp.Title), Brief: brief, Acceptance: strings.TrimSpace(sp.Acceptance), AcceptanceChecks: checks, DependsOn: deps, DependsBecause: because, RepoID: r.ID, BaseRef: base, Model: model, Precondition: strings.Join(strings.Fields(sp.Precondition), " ")})
 	}
 	flags := unverifiableAcceptance(specs, itemRepo, repos)
+	if !final && takesChecks {
+		flags = append(flags, missingAcceptanceChecks(specs)...)
+	}
 	flags = append(flags, hostReadingAcceptance(specs)...)
 	flags = append(flags, closeOutAcceptance(specs)...)
 	flags = append(flags, cutOverAcceptance(specs)...)

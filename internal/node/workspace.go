@@ -2109,6 +2109,10 @@ type Gateway interface {
 	// nothing sent; ADR-021's amendment 2026-10-02).
 	RequestPlanReplacing(ctx context.Context, goalID, by, itemID string) error
 	PlanGoal(ctx context.Context, goalID, by string, items []gateway.PlannedItem, costCents int, usage *gateway.UsageReport, questions ...gateway.PlanQuestion) error
+	// TakesAcceptanceChecks is whether the platform's PlannedItemInput
+	// takes `acceptanceChecks` (runsheet ADR 056): where it does, PlanGoal
+	// refuses an item with none, so the plan check asks for them.
+	TakesAcceptanceChecks(ctx context.Context) bool
 	// TakesPlanQuestions is whether PlanGoal can carry the planner's
 	// questions for the person (ADR-020).
 	TakesPlanQuestions(ctx context.Context) bool
