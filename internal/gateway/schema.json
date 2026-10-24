@@ -9,6 +9,15 @@
       ]
     },
     {
+      "name": "AcceptNodeConnectionInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "by", "type": "UUID!"},
+        {"name": "namespace", "type": "Namespace!"}
+      ]
+    },
+    {
       "name": "AcceptPlaybookUpdateInput",
       "kind": "INPUT_OBJECT",
       "fields": [
@@ -33,6 +42,16 @@
         {"name": "check", "type": "String!"},
         {"name": "expected", "type": "String!"},
         {"name": "kind", "type": "AcceptanceKind"}
+      ]
+    },
+    {
+      "name": "AcceptanceResult",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "headSha", "type": "String!"},
+        {"name": "index", "type": "Long!"},
+        {"name": "output", "type": "String!"},
+        {"name": "verdict", "type": "String!"}
       ]
     },
     {
@@ -441,6 +460,7 @@
         {"name": "aggregateId", "type": "UUID!"},
         {"name": "attestedAt", "type": "Time!"},
         {"name": "commit", "type": "String!"},
+        {"name": "envelope", "type": "String"},
         {"name": "environment", "type": "String!"},
         {"name": "keyId", "type": "String!"},
         {"name": "namespace", "type": "Namespace!"},
@@ -562,6 +582,16 @@
         {"name": "redirectUri", "type": "String"},
         {"name": "updatedAt", "type": "Time"},
         {"name": "userId", "type": "UUID"}
+      ]
+    },
+    {
+      "name": "BackfillWorkItemLinesInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "linesAdded", "type": "Long"},
+        {"name": "linesDeleted", "type": "Long"},
+        {"name": "namespace", "type": "Namespace!"}
       ]
     },
     {
@@ -1352,6 +1382,19 @@
       ]
     },
     {
+      "name": "ConfirmThreadProposalInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "by", "type": "UUID!"},
+        {"name": "confirmedAt", "type": "Time!"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "outcome", "type": "String!"},
+        {"name": "result", "type": "String"},
+        {"name": "seq", "type": "Long!"}
+      ]
+    },
+    {
       "name": "ConnectCloudAccountInput",
       "kind": "INPUT_OBJECT",
       "fields": [
@@ -1365,6 +1408,18 @@
         {"name": "provider", "type": "CloudProvider"},
         {"name": "serviceAccountEmail", "type": "String!"},
         {"name": "workloadIdentityProvider", "type": "String!"}
+      ]
+    },
+    {
+      "name": "ConnectServedOrgInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "accept", "type": "Boolean"},
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "nodeId", "type": "UUID!"},
+        {"name": "orgId", "type": "UUID!"},
+        {"name": "tenantSlug", "type": "String!"}
       ]
     },
     {
@@ -1436,6 +1491,19 @@
         {"name": "specLink", "type": "String"},
         {"name": "statement", "type": "String"},
         {"name": "title", "type": "String!"}
+      ]
+    },
+    {
+      "name": "CreateOrgFromTenantInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "createdBy", "type": "UUID"},
+        {"name": "displayName", "type": "String!"},
+        {"name": "latchkeyOrgRef", "type": "String!"},
+        {"name": "latchkeyTenantRef", "type": "String!"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "tenantSlug", "type": "String!"}
       ]
     },
     {
@@ -1619,6 +1687,7 @@
         {"name": "access", "type": "[String!]"},
         {"name": "aggregateId", "type": "UUID!"},
         {"name": "finish", "type": "String!"},
+        {"name": "finishSchema", "type": "String"},
         {"name": "guidance", "type": "String"},
         {"name": "harness", "type": "[String!]!"},
         {"name": "kind", "type": "String!"},
@@ -1808,6 +1877,7 @@
         {"name": "attestedAt", "type": "Time"},
         {"name": "claimedAt", "type": "Time"},
         {"name": "easBuilds", "type": "[DeployEasBuild!]"},
+        {"name": "envelope", "type": "String"},
         {"name": "environment", "type": "String"},
         {"name": "failedStep", "type": "String"},
         {"name": "goalId", "type": "UUID"},
@@ -2107,6 +2177,15 @@
         {"name": "aggregateId", "type": "UUID!"},
         {"name": "by", "type": "UUID"},
         {"name": "namespace", "type": "Namespace!"}
+      ]
+    },
+    {
+      "name": "DisconnectServedOrgInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "reason", "type": "String!"}
       ]
     },
     {
@@ -2510,6 +2589,7 @@
       "kind": "INPUT_OBJECT",
       "fields": [
         {"name": "actor", "type": "String"},
+        {"name": "advice", "type": "[FailedClauseInput!]"},
         {"name": "aggregateId", "type": "UUID!"},
         {"name": "cacheReadTokens", "type": "Long"},
         {"name": "cacheWriteTokens", "type": "Long"},
@@ -2542,6 +2622,7 @@
       "name": "EvaluationRecord",
       "kind": "OBJECT",
       "fields": [
+        {"name": "advice", "type": "[FailedClause!]!"},
         {"name": "at", "type": "Time"},
         {"name": "attempt", "type": "Long!"},
         {"name": "failedClauses", "type": "[FailedClause!]!"},
@@ -2924,6 +3005,8 @@
       "fields": [
         {"name": "actor", "type": "String"},
         {"name": "aggregateId", "type": "UUID!"},
+        {"name": "cause", "type": "FailureCause"},
+        {"name": "detail", "type": "String"},
         {"name": "error", "type": "String!"},
         {"name": "exitCode", "type": "Long"},
         {"name": "failureKind", "type": "String"},
@@ -3529,6 +3612,7 @@
         {"name": "budgetExtensions", "type": "Long"},
         {"name": "change", "type": "String"},
         {"name": "checkpoints", "type": "[String!]"},
+        {"name": "countedItemLines", "type": "[Long!]"},
         {"name": "createdAt", "type": "Time"},
         {"name": "createdBy", "type": "UUID"},
         {"name": "dailyBudgetCents", "type": "Long"},
@@ -3549,8 +3633,10 @@
         {"name": "id", "type": "UUID"},
         {"name": "initiativeId", "type": "UUID"},
         {"name": "itemIds", "type": "[UUID!]"},
+        {"name": "itemRetries", "type": "[ItemRetries!]"},
         {"name": "itemsMerged", "type": "Long"},
         {"name": "itemsPlanned", "type": "Long"},
+        {"name": "lastPlanRefusal", "type": "String"},
         {"name": "lineageCap", "type": "Long"},
         {"name": "mergedItemIds", "type": "[UUID!]"},
         {"name": "namedRepoId", "type": "UUID"},
@@ -3575,6 +3661,7 @@
         {"name": "planParkedOnGoal", "type": "UUID"},
         {"name": "planParkedOnGoalSlug", "type": "String"},
         {"name": "planParkedReason", "type": "String"},
+        {"name": "planRefusals", "type": "Long"},
         {"name": "plannerDefectClauses", "type": "[PlannerDefect!]"},
         {"name": "plannerDefects", "type": "Long"},
         {"name": "plannerNodeId", "type": "UUID"},
@@ -3585,6 +3672,7 @@
         {"name": "replacingItemId", "type": "UUID"},
         {"name": "replanCap", "type": "Long"},
         {"name": "replans", "type": "Long"},
+        {"name": "retries", "type": "Long"},
         {"name": "retryCap", "type": "Long"},
         {"name": "signal", "type": "GoalSignal"},
         {"name": "slug", "type": "String"},
@@ -3678,9 +3766,12 @@
         {"name": "initiativeId", "type": "UUID"},
         {"name": "itemIds", "type": "[UUID!]"},
         {"name": "items", "type": "[WorkItemIndex!]"},
+        {"name": "itemsCounted", "type": "Long"},
         {"name": "itemsMerged", "type": "Long"},
         {"name": "itemsPlanned", "type": "Long"},
+        {"name": "lastPlanRefusal", "type": "String"},
         {"name": "lineageCap", "type": "Long"},
+        {"name": "medianLinesPerItem", "type": "Long"},
         {"name": "namespace", "type": "Namespace"},
         {"name": "narrowReplans", "type": "Long"},
         {"name": "noInitiativeReason", "type": "String"},
@@ -3698,6 +3789,7 @@
         {"name": "planParkedOnGoal", "type": "UUID"},
         {"name": "planParkedOnGoalSlug", "type": "String"},
         {"name": "planParkedReason", "type": "String"},
+        {"name": "planRefusals", "type": "Long"},
         {"name": "plannerDefectClauses", "type": "[PlannerDefect!]"},
         {"name": "plannerDefects", "type": "Long"},
         {"name": "plannerNodeId", "type": "UUID"},
@@ -3708,6 +3800,7 @@
         {"name": "replanCap", "type": "Long"},
         {"name": "replans", "type": "Long"},
         {"name": "repoId", "type": "UUID"},
+        {"name": "retries", "type": "Long"},
         {"name": "retryCap", "type": "Long"},
         {"name": "signal", "type": "GoalSignal"},
         {"name": "slug", "type": "String"},
@@ -3974,6 +4067,7 @@
       "name": "HumanReview",
       "kind": "OBJECT",
       "fields": [
+        {"name": "envelope", "type": "String!"},
         {"name": "note", "type": "String!"},
         {"name": "recordedAt", "type": "Time"},
         {"name": "userId", "type": "UUID!"},
@@ -4130,16 +4224,6 @@
         {"name": "parent", "type": "String!"},
         {"name": "retire", "type": "String!"},
         {"name": "slug", "type": "String!"}
-      ]
-    },
-    {
-      "name": "ImportProductManifestInput",
-      "kind": "INPUT_OBJECT",
-      "fields": [
-        {"name": "aggregateId", "type": "UUID!"},
-        {"name": "manifest", "type": "ProductManifestInput!"},
-        {"name": "namespace", "type": "Namespace!"},
-        {"name": "sourceCommit", "type": "String!"}
       ]
     },
     {
@@ -4428,11 +4512,20 @@
       ]
     },
     {
+      "name": "ItemRetries",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "itemId", "type": "UUID!"},
+        {"name": "retries", "type": "Long!"}
+      ]
+    },
+    {
       "name": "JobKind",
       "kind": "OBJECT",
       "fields": [
         {"name": "access", "type": "[String!]"},
         {"name": "finish", "type": "String"},
+        {"name": "finishSchema", "type": "String"},
         {"name": "guidance", "type": "String"},
         {"name": "harness", "type": "[String!]"},
         {"name": "id", "type": "UUID"},
@@ -4441,6 +4534,7 @@
         {"name": "needs", "type": "String"},
         {"name": "pods", "type": "String"},
         {"name": "product", "type": "String"},
+        {"name": "retired", "type": "Boolean"},
         {"name": "slug", "type": "String"},
         {"name": "updatedAt", "type": "Time"}
       ]
@@ -4451,6 +4545,7 @@
       "fields": [
         {"name": "access", "type": "[String!]"},
         {"name": "finish", "type": "String"},
+        {"name": "finishSchema", "type": "String"},
         {"name": "guidance", "type": "String"},
         {"name": "harness", "type": "[String!]"},
         {"name": "id", "type": "UUID"},
@@ -4459,6 +4554,7 @@
         {"name": "needs", "type": "String"},
         {"name": "pods", "type": "String"},
         {"name": "product", "type": "String"},
+        {"name": "retired", "type": "Boolean"},
         {"name": "slug", "type": "String"},
         {"name": "updatedAt", "type": "Time"}
       ]
@@ -4780,6 +4876,7 @@
         {"name": "status", "type": "MergeBatchStatus"},
         {"name": "updatedAt", "type": "Time"},
         {"name": "validationAttempt", "type": "Long"},
+        {"name": "validationBudgetSeconds", "type": "Long"},
         {"name": "validationClaimedAt", "type": "Time"},
         {"name": "validationEndedAt", "type": "Time"},
         {"name": "validationNodeId", "type": "UUID"},
@@ -4830,6 +4927,8 @@
         {"name": "status", "type": "MergeBatchStatus"},
         {"name": "updatedAt", "type": "Time"},
         {"name": "validationAttempt", "type": "Long"},
+        {"name": "validationBudgetSeconds", "type": "Long"},
+        {"name": "validationClaimedAt", "type": "Time"},
         {"name": "validationNodeId", "type": "UUID"},
         {"name": "validationRequestedAt", "type": "Time"},
         {"name": "validationSha", "type": "String"},
@@ -4902,6 +5001,8 @@
         {"name": "aggregateId", "type": "UUID!"},
         {"name": "baseSha", "type": "String"},
         {"name": "headSha", "type": "String"},
+        {"name": "linesAdded", "type": "Long"},
+        {"name": "linesDeleted", "type": "Long"},
         {"name": "mergeSha", "type": "String"},
         {"name": "mergedBy", "type": "String"},
         {"name": "namespace", "type": "Namespace!"},
@@ -5343,6 +5444,7 @@
       "kind": "OBJECT",
       "fields": [
         {"name": "abandonPlaybookSetup", "type": "DispatchResult!"},
+        {"name": "acceptNodeConnection", "type": "DispatchResult!"},
         {"name": "acceptPlaybookUpdate", "type": "DispatchResult!"},
         {"name": "activatePlaybookSetup", "type": "DispatchResult!"},
         {"name": "addCredential", "type": "Map"},
@@ -5368,6 +5470,7 @@
         {"name": "attachTool", "type": "DispatchResult!"},
         {"name": "attestDeploy", "type": "DispatchResult!"},
         {"name": "attestHumanReview", "type": "Map"},
+        {"name": "backfillWorkItemLines", "type": "DispatchResult!"},
         {"name": "backfillWorkItemPhases", "type": "DispatchResult!"},
         {"name": "beginDocumentsMove", "type": "DispatchResult!"},
         {"name": "beginProjectMerge", "type": "DispatchResult!"},
@@ -5412,8 +5515,10 @@
         {"name": "completeProjectRelease", "type": "DispatchResult!"},
         {"name": "completeUpdate", "type": "DispatchResult!"},
         {"name": "concludeRevalidation", "type": "DispatchResult!"},
+        {"name": "confirmThreadProposal", "type": "DispatchResult!"},
         {"name": "connectCloudAccount", "type": "DispatchResult!"},
         {"name": "connectGithub", "type": "UserIndex"},
+        {"name": "connectServedOrg", "type": "DispatchResult!"},
         {"name": "connectUserGithub", "type": "DispatchResult!"},
         {"name": "consumeAuthzCode", "type": "DispatchResult!"},
         {"name": "copyPlaybook", "type": "DispatchResult!"},
@@ -5421,6 +5526,7 @@
         {"name": "createEnterprise", "type": "DispatchResult!"},
         {"name": "createInitiative", "type": "DispatchResult!"},
         {"name": "createOrg", "type": "DispatchResult!"},
+        {"name": "createOrgFromTenant", "type": "DispatchResult!"},
         {"name": "createProject", "type": "DispatchResult!"},
         {"name": "createTrigger", "type": "DispatchResult!"},
         {"name": "declareApp", "type": "DispatchResult!"},
@@ -5442,6 +5548,7 @@
         {"name": "detectFleetStall", "type": "DispatchResult!"},
         {"name": "disableTrigger", "type": "DispatchResult!"},
         {"name": "disconnectCloudAccount", "type": "DispatchResult!"},
+        {"name": "disconnectServedOrg", "type": "DispatchResult!"},
         {"name": "disenrolProjectRepo", "type": "DispatchResult!"},
         {"name": "disenrolRepo", "type": "DispatchResult!"},
         {"name": "dismissNotification", "type": "DispatchResult!"},
@@ -5486,7 +5593,6 @@
         {"name": "holdReleaseDay", "type": "DispatchResult!"},
         {"name": "holdWorkItem", "type": "DispatchResult!"},
         {"name": "holdWorkItemMainRed", "type": "DispatchResult!"},
-        {"name": "importProductManifest", "type": "DispatchResult!"},
         {"name": "indexDocument", "type": "DispatchResult!"},
         {"name": "inviteOrgMember", "type": "DispatchResult!"},
         {"name": "issueAuthzCode", "type": "DispatchResult!"},
@@ -5549,6 +5655,7 @@
         {"name": "observeUser", "type": "DispatchResult!"},
         {"name": "observeUserGrants", "type": "DispatchResult!"},
         {"name": "observeUserInstallations", "type": "DispatchResult!"},
+        {"name": "offerNodeConnection", "type": "DispatchResult!"},
         {"name": "offerPlaybookUpdate", "type": "DispatchResult!"},
         {"name": "openEnvironment", "type": "DispatchResult!"},
         {"name": "openMeshSession", "type": "DispatchResult!"},
@@ -5562,6 +5669,7 @@
         {"name": "pollWorkItemMainGuard", "type": "DispatchResult!"},
         {"name": "proposeGoalSplit", "type": "DispatchResult!"},
         {"name": "publishPlaybook", "type": "DispatchResult!"},
+        {"name": "publishProductCatalogue", "type": "DispatchResult!"},
         {"name": "queueWorkItemMerge", "type": "DispatchResult!"},
         {"name": "raiseDeploy", "type": "DispatchResult!"},
         {"name": "raiseNotification", "type": "DispatchResult!"},
@@ -5598,6 +5706,8 @@
         {"name": "recordGithubProjectUnsynced", "type": "DispatchResult!"},
         {"name": "recordGoalHeal", "type": "DispatchResult!"},
         {"name": "recordGoalItemMerged", "type": "DispatchResult!"},
+        {"name": "recordGoalItemRetries", "type": "DispatchResult!"},
+        {"name": "recordGoalPlanRefused", "type": "DispatchResult!"},
         {"name": "recordGoalPlannerDefects", "type": "DispatchResult!"},
         {"name": "recordGoalRepoTokenIssued", "type": "DispatchResult!"},
         {"name": "recordGoalSpend", "type": "DispatchResult!"},
@@ -5621,6 +5731,8 @@
         {"name": "recordMeshCliRelease", "type": "DispatchResult!"},
         {"name": "recordMeshSessionRevoked", "type": "DispatchResult!"},
         {"name": "recordNodeClaimRefused", "type": "DispatchResult!"},
+        {"name": "recordNodeConnection", "type": "DispatchResult!"},
+        {"name": "recordNodeConnectionSetRetired", "type": "DispatchResult!"},
         {"name": "recordOutcomeSnapshot", "type": "DispatchResult!"},
         {"name": "recordPipelineBlock", "type": "DispatchResult!"},
         {"name": "recordPipelineStage", "type": "DispatchResult!"},
@@ -5628,6 +5740,7 @@
         {"name": "recordPitchOutcome", "type": "DispatchResult!"},
         {"name": "recordPlaybookSetupDirections", "type": "DispatchResult!"},
         {"name": "recordPlaybookSetupPR", "type": "DispatchResult!"},
+        {"name": "recordProjectItemMerged", "type": "DispatchResult!"},
         {"name": "recordProjectMergeStep", "type": "DispatchResult!"},
         {"name": "recordProjectReleasePublished", "type": "DispatchResult!"},
         {"name": "recordProjectReleaseRepo", "type": "DispatchResult!"},
@@ -5651,6 +5764,9 @@
         {"name": "recordTargetPullRequest", "type": "DispatchResult!"},
         {"name": "recordTestEvidence", "type": "DispatchResult!"},
         {"name": "recordTestQuarantineFlake", "type": "DispatchResult!"},
+        {"name": "recordThreadProposalAccepted", "type": "DispatchResult!"},
+        {"name": "recordThreadReply", "type": "DispatchResult!"},
+        {"name": "recordThreadReplyDelivery", "type": "DispatchResult!"},
         {"name": "recordToolUsage", "type": "DispatchResult!"},
         {"name": "recordTriggerActionResults", "type": "DispatchResult!"},
         {"name": "recordTriggerDelivery", "type": "DispatchResult!"},
@@ -5658,9 +5774,11 @@
         {"name": "recordUsageReport", "type": "DispatchResult!"},
         {"name": "recordValidationAttestation", "type": "Map"},
         {"name": "recordWebhookDelivery", "type": "DispatchResult!"},
+        {"name": "recordWorkItemAcceptanceResults", "type": "DispatchResult!"},
         {"name": "recordWorkItemAttestationReused", "type": "DispatchResult!"},
         {"name": "recordWorkItemAttestationStatus", "type": "DispatchResult!"},
         {"name": "recordWorkItemCIJob", "type": "DispatchResult!"},
+        {"name": "recordWorkItemChangesetBase", "type": "DispatchResult!"},
         {"name": "recordWorkItemChangesetCandidate", "type": "DispatchResult!"},
         {"name": "recordWorkItemCheck", "type": "DispatchResult!"},
         {"name": "recordWorkItemCheckRerun", "type": "DispatchResult!"},
@@ -5673,6 +5791,7 @@
         {"name": "recordWorkItemIssue", "type": "DispatchResult!"},
         {"name": "recordWorkItemKeptCurrent", "type": "DispatchResult!"},
         {"name": "recordWorkItemMainGuardRerun", "type": "DispatchResult!"},
+        {"name": "recordWorkItemMainValidationVerdict", "type": "DispatchResult!"},
         {"name": "recordWorkItemMergedOffDefaultBranch", "type": "DispatchResult!"},
         {"name": "recordWorkItemPR", "type": "DispatchResult!"},
         {"name": "recordWorkItemPRClose", "type": "DispatchResult!"},
@@ -5704,6 +5823,7 @@
         {"name": "rejectPitch", "type": "DispatchResult!"},
         {"name": "rejoinWorkItemQueue", "type": "DispatchResult!"},
         {"name": "relandWorkItem", "type": "DispatchResult!"},
+        {"name": "relayThreadMessage", "type": "DispatchResult!"},
         {"name": "releaseDeploy", "type": "DispatchResult!"},
         {"name": "releaseOrg", "type": "DispatchResult!"},
         {"name": "releaseProject", "type": "Map"},
@@ -5753,16 +5873,19 @@
         {"name": "retireAgent", "type": "DispatchResult!"},
         {"name": "retireApp", "type": "DispatchResult!"},
         {"name": "retireHome", "type": "DispatchResult!"},
+        {"name": "retireJobKind", "type": "DispatchResult!"},
         {"name": "retireNode", "type": "DispatchResult!"},
         {"name": "retireProduct", "type": "DispatchResult!"},
         {"name": "retireTool", "type": "DispatchResult!"},
         {"name": "retryDeploy", "type": "DispatchResult!"},
+        {"name": "retryThreadReplyDelivery", "type": "DispatchResult!"},
         {"name": "retryTriggerDelivery", "type": "DispatchResult!"},
         {"name": "retryWorkItem", "type": "DispatchResult!"},
         {"name": "retryWorkItemChecks", "type": "DispatchResult!"},
         {"name": "reuseWorkItemMainValidation", "type": "DispatchResult!"},
         {"name": "revertWorkItemMerge", "type": "DispatchResult!"},
         {"name": "revokeBinding", "type": "DispatchResult!"},
+        {"name": "revokeNodeConnection", "type": "DispatchResult!"},
         {"name": "revokeOrgInvitation", "type": "DispatchResult!"},
         {"name": "revokeUserToken", "type": "DispatchResult!"},
         {"name": "rewireWorkItemDependency", "type": "DispatchResult!"},
@@ -5772,6 +5895,7 @@
         {"name": "rotateCredential", "type": "Map"},
         {"name": "sampleRevalidation", "type": "DispatchResult!"},
         {"name": "saveCheckpoint", "type": "DispatchResult!"},
+        {"name": "sayInThread", "type": "DispatchResult!"},
         {"name": "scheduleDigest", "type": "DispatchResult!"},
         {"name": "seeUser", "type": "DispatchResult!"},
         {"name": "sendDigest", "type": "DispatchResult!"},
@@ -5788,11 +5912,13 @@
         {"name": "setGoalSummary", "type": "DispatchResult!"},
         {"name": "setInitiativeStatus", "type": "DispatchResult!"},
         {"name": "setMission", "type": "Map"},
+        {"name": "setNodeConnectionCap", "type": "DispatchResult!"},
         {"name": "setNodeDesiredVersion", "type": "DispatchResult!"},
         {"name": "setOrgAccountRef", "type": "DispatchResult!"},
         {"name": "setOrgMemberLevel", "type": "DispatchResult!"},
         {"name": "setOrgTenant", "type": "DispatchResult!"},
         {"name": "setOrgTenantReady", "type": "DispatchResult!"},
+        {"name": "setProductHookSecret", "type": "DispatchResult!"},
         {"name": "setProjectAutonomy", "type": "DispatchResult!"},
         {"name": "setProjectHomeRepo", "type": "DispatchResult!"},
         {"name": "setProjectPlannerModel", "type": "DispatchResult!"},
@@ -5952,6 +6078,77 @@
         {"name": "kind", "type": "String!"},
         {"name": "sessionId", "type": "String"},
         {"name": "since", "type": "Time!"}
+      ]
+    },
+    {
+      "name": "NodeConnection",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "acceptedAt", "type": "Time"},
+        {"name": "acceptedBy", "type": "UUID"},
+        {"name": "cap", "type": "Long"},
+        {"name": "id", "type": "UUID"},
+        {"name": "namespace", "type": "Namespace"},
+        {"name": "nodeId", "type": "UUID"},
+        {"name": "offeredAt", "type": "Time"},
+        {"name": "offeredBy", "type": "UUID"},
+        {"name": "orgId", "type": "UUID"},
+        {"name": "product", "type": "String"},
+        {"name": "revokeReason", "type": "String"},
+        {"name": "revokedAt", "type": "Time"},
+        {"name": "revokedBy", "type": "UUID"},
+        {"name": "standing", "type": "Boolean"},
+        {"name": "status", "type": "NodeConnectionStatus"},
+        {"name": "tenantSlug", "type": "String"},
+        {"name": "updatedAt", "type": "Time"},
+        {"name": "via", "type": "NodeConnectionVia"}
+      ]
+    },
+    {
+      "name": "NodeConnectionEntry",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "cap", "type": "Long!"},
+        {"name": "orgId", "type": "UUID!"},
+        {"name": "product", "type": "String!"}
+      ]
+    },
+    {
+      "name": "NodeConnectionIndex",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "acceptedAt", "type": "Time"},
+        {"name": "acceptedBy", "type": "UUID"},
+        {"name": "cap", "type": "Long"},
+        {"name": "id", "type": "UUID"},
+        {"name": "namespace", "type": "Namespace"},
+        {"name": "node", "type": "NodeIndex"},
+        {"name": "nodeId", "type": "UUID"},
+        {"name": "offeredAt", "type": "Time"},
+        {"name": "offeredBy", "type": "UUID"},
+        {"name": "org", "type": "OrgIndex"},
+        {"name": "orgId", "type": "UUID"},
+        {"name": "product", "type": "String"},
+        {"name": "revokeReason", "type": "String"},
+        {"name": "revokedAt", "type": "Time"},
+        {"name": "revokedBy", "type": "UUID"},
+        {"name": "standing", "type": "Boolean"},
+        {"name": "status", "type": "NodeConnectionStatus"},
+        {"name": "tenantSlug", "type": "String"},
+        {"name": "updatedAt", "type": "Time"},
+        {"name": "via", "type": "NodeConnectionVia"}
+      ]
+    },
+    {
+      "name": "NodeConnectionSet",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "connections", "type": "[NodeConnectionEntry!]"},
+        {"name": "id", "type": "UUID"},
+        {"name": "namespace", "type": "Namespace"},
+        {"name": "nodeId", "type": "UUID"},
+        {"name": "retired", "type": "Boolean"},
+        {"name": "updatedAt", "type": "Time"}
       ]
     },
     {
@@ -6579,6 +6776,20 @@
       ]
     },
     {
+      "name": "OfferNodeConnectionInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "accept", "type": "Boolean"},
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "by", "type": "UUID!"},
+        {"name": "cap", "type": "Long"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "nodeId", "type": "UUID!"},
+        {"name": "orgId", "type": "UUID!"},
+        {"name": "product", "type": "String!"}
+      ]
+    },
+    {
       "name": "OfferPlaybookUpdateInput",
       "kind": "INPUT_OBJECT",
       "fields": [
@@ -6647,6 +6858,7 @@
       "fields": [
         {"name": "accountId", "type": "UUID"},
         {"name": "accountRef", "type": "String"},
+        {"name": "adopted", "type": "Boolean"},
         {"name": "billingProfileId", "type": "UUID"},
         {"name": "claimedAt", "type": "Time"},
         {"name": "claimedBy", "type": "UUID"},
@@ -7216,6 +7428,7 @@
       "fields": [
         {"name": "acceptance", "type": "String"},
         {"name": "acceptanceChecks", "type": "[AcceptanceCheckInput!]"},
+        {"name": "acceptanceFrom", "type": "Long"},
         {"name": "agentSlug", "type": "String"},
         {"name": "atomic", "type": "String"},
         {"name": "baseRef", "type": "String"},
@@ -7505,11 +7718,14 @@
       "kind": "OBJECT",
       "fields": [
         {"name": "displayName", "type": "String"},
+        {"name": "hookSecret", "type": "String"},
         {"name": "id", "type": "UUID"},
         {"name": "latchkeyClientId", "type": "String"},
         {"name": "manifest", "type": "ProductManifest"},
         {"name": "namespace", "type": "Namespace"},
+        {"name": "revision", "type": "String"},
         {"name": "slug", "type": "String"},
+        {"name": "source", "type": "ProductSource"},
         {"name": "sourceCommit", "type": "String"},
         {"name": "status", "type": "ProductStatus"},
         {"name": "units", "type": "[ProductUnit!]"},
@@ -7541,7 +7757,9 @@
         {"name": "latchkeyClientId", "type": "String"},
         {"name": "manifest", "type": "ProductManifest"},
         {"name": "namespace", "type": "Namespace"},
+        {"name": "revision", "type": "String"},
         {"name": "slug", "type": "String"},
+        {"name": "source", "type": "ProductSource"},
         {"name": "sourceCommit", "type": "String"},
         {"name": "status", "type": "ProductStatus"},
         {"name": "units", "type": "[ProductUnit!]"},
@@ -7587,6 +7805,24 @@
       ]
     },
     {
+      "name": "ProductSource",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "commit", "type": "String!"},
+        {"name": "repo", "type": "String!"},
+        {"name": "version", "type": "String!"}
+      ]
+    },
+    {
+      "name": "ProductSourceInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "commit", "type": "String"},
+        {"name": "repo", "type": "String"},
+        {"name": "version", "type": "String"}
+      ]
+    },
+    {
       "name": "ProductTenant",
       "kind": "OBJECT",
       "fields": [
@@ -7623,6 +7859,8 @@
         {"name": "budgetExtensionPct", "type": "Long"},
         {"name": "budgetExtensions", "type": "Long"},
         {"name": "capacityIdleSince", "type": "Time"},
+        {"name": "countedItemIds", "type": "[UUID!]"},
+        {"name": "countedItemLines", "type": "[Long!]"},
         {"name": "createdAt", "type": "Time"},
         {"name": "createdBy", "type": "UUID"},
         {"name": "dailyBudgetCents", "type": "Long"},
@@ -7700,9 +7938,11 @@
         {"name": "id", "type": "UUID"},
         {"name": "idleStartMinutes", "type": "Long"},
         {"name": "idleStartMinutesSet", "type": "Boolean"},
+        {"name": "itemsCounted", "type": "Long"},
         {"name": "lineageCap", "type": "Long"},
         {"name": "maxItems", "type": "Long"},
         {"name": "maxLiveGoals", "type": "Long"},
+        {"name": "medianLinesPerItem", "type": "Long"},
         {"name": "mergedIntoProjectId", "type": "UUID"},
         {"name": "name", "type": "String"},
         {"name": "namespace", "type": "Namespace"},
@@ -7845,6 +8085,20 @@
       ]
     },
     {
+      "name": "PublishProductCatalogueInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "displayName", "type": "String!"},
+        {"name": "latchkeyClientId", "type": "String!"},
+        {"name": "manifest", "type": "ProductManifestInput!"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "revision", "type": "String!"},
+        {"name": "slug", "type": "String!"},
+        {"name": "source", "type": "ProductSourceInput"}
+      ]
+    },
+    {
       "name": "PullRequest",
       "kind": "OBJECT",
       "fields": [
@@ -7924,6 +8178,7 @@
         {"name": "artifact", "type": "Artifact"},
         {"name": "artifactIndex", "type": "ArtifactIndex"},
         {"name": "artifactIndexs", "type": "[ArtifactIndex!]!"},
+        {"name": "attestationEvidence", "type": "Map"},
         {"name": "attestationUpload", "type": "AttestationUpload"},
         {"name": "attestationUploadIndex", "type": "AttestationUploadIndex"},
         {"name": "attestationUploadIndexs", "type": "[AttestationUploadIndex!]!"},
@@ -8088,7 +8343,12 @@
         {"name": "myEnterprises", "type": "Map"},
         {"name": "myInstallations", "type": "Map"},
         {"name": "myOrgs", "type": "Map"},
+        {"name": "myTenants", "type": "[Map!]"},
         {"name": "node", "type": "Node"},
+        {"name": "nodeConnection", "type": "NodeConnection"},
+        {"name": "nodeConnectionIndex", "type": "NodeConnectionIndex"},
+        {"name": "nodeConnectionIndexs", "type": "[NodeConnectionIndex!]!"},
+        {"name": "nodeConnectionSet", "type": "NodeConnectionSet"},
         {"name": "nodeIdleIndex", "type": "NodeIdleIndex"},
         {"name": "nodeIdleIndexs", "type": "[NodeIdleIndex!]!"},
         {"name": "nodeIndex", "type": "NodeIndex"},
@@ -8146,6 +8406,7 @@
         {"name": "playbookSetup", "type": "PlaybookSetup"},
         {"name": "playbookSetupIndex", "type": "PlaybookSetupIndex"},
         {"name": "playbookSetupIndexs", "type": "[PlaybookSetupIndex!]!"},
+        {"name": "prAttestations", "type": "Map"},
         {"name": "pricingPlanIndex", "type": "PricingPlanIndex"},
         {"name": "pricingPlanIndexs", "type": "[PricingPlanIndex!]!"},
         {"name": "product", "type": "Product"},
@@ -8167,6 +8428,7 @@
         {"name": "pullRequest", "type": "PullRequest"},
         {"name": "pullRequestIndex", "type": "PullRequestIndex"},
         {"name": "pullRequestIndexs", "type": "[PullRequestIndex!]!"},
+        {"name": "recentAttestations", "type": "Map"},
         {"name": "releaseDay", "type": "ReleaseDay"},
         {"name": "releaseDayIndex", "type": "ReleaseDayIndex"},
         {"name": "releaseDayIndexs", "type": "[ReleaseDayIndex!]!"},
@@ -8215,6 +8477,13 @@
         {"name": "testQuarantine", "type": "TestQuarantine"},
         {"name": "testQuarantineIndex", "type": "TestQuarantineIndex"},
         {"name": "testQuarantineIndexs", "type": "[TestQuarantineIndex!]!"},
+        {"name": "thread", "type": "Thread"},
+        {"name": "threadIndex", "type": "ThreadIndex"},
+        {"name": "threadIndexs", "type": "[ThreadIndex!]!"},
+        {"name": "threadMessages", "type": "Map"},
+        {"name": "threadReplyDelivery", "type": "ThreadReplyDelivery"},
+        {"name": "threadReplyDeliveryIndex", "type": "ThreadReplyDeliveryIndex"},
+        {"name": "threadReplyDeliveryIndexs", "type": "[ThreadReplyDeliveryIndex!]!"},
         {"name": "threadSession", "type": "ThreadSession"},
         {"name": "threadSessionIndex", "type": "ThreadSessionIndex"},
         {"name": "threadSessionIndexs", "type": "[ThreadSessionIndex!]!"},
@@ -8334,6 +8603,7 @@
         {"name": "namespace", "type": "Namespace!"},
         {"name": "orgId", "type": "UUID!"},
         {"name": "product", "type": "String!"},
+        {"name": "projectId", "type": "UUID"},
         {"name": "raisedAt", "type": "Time!"},
         {"name": "role", "type": "String"},
         {"name": "threadKey", "type": "String!"}
@@ -8447,6 +8717,7 @@
       "fields": [
         {"name": "aggregateId", "type": "UUID!"},
         {"name": "commitSha", "type": "String!"},
+        {"name": "envelope", "type": "String"},
         {"name": "findings", "type": "[ValidationFindingInput!]"},
         {"name": "keyId", "type": "String!"},
         {"name": "namespace", "type": "Namespace!"},
@@ -8746,7 +9017,27 @@
       "fields": [
         {"name": "aggregateId", "type": "UUID!"},
         {"name": "itemId", "type": "UUID!"},
+        {"name": "linesChanged", "type": "Long"},
         {"name": "namespace", "type": "Namespace!"}
+      ]
+    },
+    {
+      "name": "RecordGoalItemRetriesInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "itemId", "type": "UUID!"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "retries", "type": "Long!"}
+      ]
+    },
+    {
+      "name": "RecordGoalPlanRefusedInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "reason", "type": "String!"}
       ]
     },
     {
@@ -8826,6 +9117,7 @@
       "fields": [
         {"name": "aggregateId", "type": "UUID!"},
         {"name": "commitSha", "type": "String!"},
+        {"name": "envelope", "type": "String"},
         {"name": "namespace", "type": "Namespace!"},
         {"name": "note", "type": "String"},
         {"name": "recordedAt", "type": "Time!"},
@@ -9045,6 +9337,29 @@
       ]
     },
     {
+      "name": "RecordNodeConnectionInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "accepted", "type": "Boolean!"},
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "cap", "type": "Long"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "nodeId", "type": "UUID!"},
+        {"name": "orgId", "type": "UUID!"},
+        {"name": "product", "type": "String!"}
+      ]
+    },
+    {
+      "name": "RecordNodeConnectionSetRetiredInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "nodeId", "type": "UUID!"},
+        {"name": "retired", "type": "Boolean!"}
+      ]
+    },
+    {
       "name": "RecordOutcomeSnapshotInput",
       "kind": "INPUT_OBJECT",
       "fields": [
@@ -9147,6 +9462,16 @@
         {"name": "namespace", "type": "Namespace!"},
         {"name": "prNumber", "type": "Long!"},
         {"name": "prUrl", "type": "String"}
+      ]
+    },
+    {
+      "name": "RecordProjectItemMergedInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "itemId", "type": "UUID!"},
+        {"name": "linesChanged", "type": "Long"},
+        {"name": "namespace", "type": "Namespace!"}
       ]
     },
     {
@@ -9460,6 +9785,50 @@
       ]
     },
     {
+      "name": "RecordThreadProposalAcceptedInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "acceptedAt", "type": "Time!"},
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "by", "type": "UUID!"},
+        {"name": "goalId", "type": "UUID!"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "seq", "type": "Long!"}
+      ]
+    },
+    {
+      "name": "RecordThreadReplyDeliveryInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "attempt", "type": "Long!"},
+        {"name": "error", "type": "String"},
+        {"name": "kind", "type": "String"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "ok", "type": "Boolean"},
+        {"name": "payload", "type": "String!"},
+        {"name": "product", "type": "String!"},
+        {"name": "sentAt", "type": "Time!"},
+        {"name": "seq", "type": "Long!"},
+        {"name": "statusCode", "type": "Long"},
+        {"name": "threadId", "type": "UUID!"},
+        {"name": "url", "type": "String!"}
+      ]
+    },
+    {
+      "name": "RecordThreadReplyInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "answer", "type": "String"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "nodeId", "type": "UUID"},
+        {"name": "proposal", "type": "String"},
+        {"name": "repliedAt", "type": "Time!"},
+        {"name": "seq", "type": "Long!"}
+      ]
+    },
+    {
       "name": "RecordToolUsageInput",
       "kind": "INPUT_OBJECT",
       "fields": [
@@ -9550,6 +9919,16 @@
       ]
     },
     {
+      "name": "RecordWorkItemAcceptanceResultsInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "checks", "type": "[ValidationCheckInput!]"},
+        {"name": "headSha", "type": "String!"},
+        {"name": "namespace", "type": "Namespace!"}
+      ]
+    },
+    {
       "name": "RecordWorkItemAttestationReusedInput",
       "kind": "INPUT_OBJECT",
       "fields": [
@@ -9583,6 +9962,16 @@
         {"name": "namespace", "type": "Namespace!"},
         {"name": "runAttempt", "type": "Long"},
         {"name": "status", "type": "String!"}
+      ]
+    },
+    {
+      "name": "RecordWorkItemChangesetBaseInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "baseSha", "type": "String!"},
+        {"name": "changesetId", "type": "UUID!"},
+        {"name": "namespace", "type": "Namespace!"}
       ]
     },
     {
@@ -9728,6 +10117,16 @@
         {"name": "namespace", "type": "Namespace!"},
         {"name": "runId", "type": "Long!"},
         {"name": "tests", "type": "[FailingTestInput!]"}
+      ]
+    },
+    {
+      "name": "RecordWorkItemMainValidationVerdictInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "sha", "type": "String!"},
+        {"name": "verdict", "type": "MainValidationVerdict"}
       ]
     },
     {
@@ -10064,6 +10463,26 @@
         {"name": "namespace", "type": "Namespace!"},
         {"name": "prNumber", "type": "Long!"},
         {"name": "prUrl", "type": "String!"}
+      ]
+    },
+    {
+      "name": "RelayThreadMessageInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "askId", "type": "String!"},
+        {"name": "asker", "type": "String!"},
+        {"name": "body", "type": "String!"},
+        {"name": "messageId", "type": "String"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "orgId", "type": "UUID!"},
+        {"name": "product", "type": "String!"},
+        {"name": "replyHookUrl", "type": "String"},
+        {"name": "role", "type": "String!"},
+        {"name": "saidAt", "type": "Time!"},
+        {"name": "threadKey", "type": "String!"},
+        {"name": "transcript", "type": "[ThreadRelayedTurnInput!]"},
+        {"name": "trigger", "type": "String!"}
       ]
     },
     {
@@ -10574,6 +10993,7 @@
       "fields": [
         {"name": "aggregateId", "type": "UUID!"},
         {"name": "attempt", "type": "Long!"},
+        {"name": "budgetSeconds", "type": "Long"},
         {"name": "namespace", "type": "Namespace!"},
         {"name": "sha", "type": "String"}
       ]
@@ -10587,6 +11007,7 @@
         {"name": "by", "type": "UUID"},
         {"name": "ignoreDependencies", "type": "Boolean"},
         {"name": "namespace", "type": "Namespace!"},
+        {"name": "reason", "type": "String"},
         {"name": "replaceItem", "type": "UUID"}
       ]
     },
@@ -10606,6 +11027,7 @@
       "fields": [
         {"name": "aggregateId", "type": "UUID!"},
         {"name": "attempt", "type": "Long!"},
+        {"name": "budgetSeconds", "type": "Long"},
         {"name": "namespace", "type": "Namespace!"},
         {"name": "sha", "type": "String!"}
       ]
@@ -10772,6 +11194,14 @@
       ]
     },
     {
+      "name": "RetireJobKindInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "namespace", "type": "Namespace!"}
+      ]
+    },
+    {
       "name": "RetireNodeInput",
       "kind": "INPUT_OBJECT",
       "fields": [
@@ -10802,6 +11232,22 @@
         {"name": "aggregateId", "type": "UUID!"},
         {"name": "namespace", "type": "Namespace!"},
         {"name": "retriedAt", "type": "Time!"}
+      ]
+    },
+    {
+      "name": "RetryThreadReplyDeliveryInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "attempt", "type": "Long!"},
+        {"name": "dueAt", "type": "Time!"},
+        {"name": "kind", "type": "String"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "payload", "type": "String!"},
+        {"name": "product", "type": "String!"},
+        {"name": "seq", "type": "Long!"},
+        {"name": "threadId", "type": "UUID!"},
+        {"name": "url", "type": "String!"}
       ]
     },
     {
@@ -10847,7 +11293,8 @@
         {"name": "namespace", "type": "Namespace!"},
         {"name": "sha", "type": "String!"},
         {"name": "sourceEvidenceId", "type": "UUID!"},
-        {"name": "sourceSha", "type": "String!"}
+        {"name": "sourceSha", "type": "String!"},
+        {"name": "verdict", "type": "MainValidationVerdict"}
       ]
     },
     {
@@ -10952,6 +11399,16 @@
       ]
     },
     {
+      "name": "RevokeNodeConnectionInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "by", "type": "UUID!"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "reason", "type": "String"}
+      ]
+    },
+    {
       "name": "RevokeOrgInvitationInput",
       "kind": "INPUT_OBJECT",
       "fields": [
@@ -11041,6 +11498,22 @@
         {"name": "namespace", "type": "Namespace!"},
         {"name": "seq", "type": "Long!"},
         {"name": "updateId", "type": "String!"}
+      ]
+    },
+    {
+      "name": "SayInThreadInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "body", "type": "String!"},
+        {"name": "by", "type": "UUID!"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "orgId", "type": "UUID!"},
+        {"name": "product", "type": "String!"},
+        {"name": "projectId", "type": "UUID"},
+        {"name": "role", "type": "String!"},
+        {"name": "saidAt", "type": "Time!"},
+        {"name": "threadKey", "type": "String!"}
       ]
     },
     {
@@ -11136,6 +11609,7 @@
       "name": "SecondValidation",
       "kind": "OBJECT",
       "fields": [
+        {"name": "envelope", "type": "String!"},
         {"name": "findings", "type": "[ValidationFinding!]!"},
         {"name": "keyId", "type": "String!"},
         {"name": "nodeId", "type": "UUID"},
@@ -11368,6 +11842,16 @@
       ]
     },
     {
+      "name": "SetNodeConnectionCapInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "by", "type": "UUID!"},
+        {"name": "cap", "type": "Long!"},
+        {"name": "namespace", "type": "Namespace!"}
+      ]
+    },
+    {
       "name": "SetNodeDesiredVersionInput",
       "kind": "INPUT_OBJECT",
       "fields": [
@@ -11417,6 +11901,15 @@
       "fields": [
         {"name": "aggregateId", "type": "UUID!"},
         {"name": "at", "type": "Time!"},
+        {"name": "namespace", "type": "Namespace!"}
+      ]
+    },
+    {
+      "name": "SetProductHookSecretInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "hookSecret", "type": "String!"},
         {"name": "namespace", "type": "Namespace!"}
       ]
     },
@@ -11910,6 +12403,10 @@
         {"name": "movedAliasChanged", "type": "MovedAlias!"},
         {"name": "movedAliassChanged", "type": "[MovedAlias!]!"},
         {"name": "nodeChanged", "type": "Node!"},
+        {"name": "nodeConnectionChanged", "type": "NodeConnection!"},
+        {"name": "nodeConnectionIndexChanged", "type": "NodeConnectionIndex!"},
+        {"name": "nodeConnectionIndexsChanged", "type": "[NodeConnectionIndex!]!"},
+        {"name": "nodeConnectionSetChanged", "type": "NodeConnectionSet!"},
         {"name": "nodeIdleIndexChanged", "type": "NodeIdleIndex!"},
         {"name": "nodeIdleIndexsChanged", "type": "[NodeIdleIndex!]!"},
         {"name": "nodeIndexChanged", "type": "NodeIndex!"},
@@ -12011,6 +12508,12 @@
         {"name": "testQuarantineChanged", "type": "TestQuarantine!"},
         {"name": "testQuarantineIndexChanged", "type": "TestQuarantineIndex!"},
         {"name": "testQuarantineIndexsChanged", "type": "[TestQuarantineIndex!]!"},
+        {"name": "threadChanged", "type": "Thread!"},
+        {"name": "threadIndexChanged", "type": "ThreadIndex!"},
+        {"name": "threadIndexsChanged", "type": "[ThreadIndex!]!"},
+        {"name": "threadReplyDeliveryChanged", "type": "ThreadReplyDelivery!"},
+        {"name": "threadReplyDeliveryIndexChanged", "type": "ThreadReplyDeliveryIndex!"},
+        {"name": "threadReplyDeliveryIndexsChanged", "type": "[ThreadReplyDeliveryIndex!]!"},
         {"name": "threadSessionChanged", "type": "ThreadSession!"},
         {"name": "threadSessionIndexChanged", "type": "ThreadSessionIndex!"},
         {"name": "threadSessionIndexsChanged", "type": "[ThreadSessionIndex!]!"},
@@ -12119,6 +12622,7 @@
         {"name": "commands", "type": "[ValidationCommand!]"},
         {"name": "commitSha", "type": "String"},
         {"name": "durationMs", "type": "Long"},
+        {"name": "envelope", "type": "String"},
         {"name": "failures", "type": "Long"},
         {"name": "flakyReruns", "type": "Long"},
         {"name": "format", "type": "TestReportFormat"},
@@ -12170,6 +12674,7 @@
         {"name": "checks", "type": "[ValidationCheck!]"},
         {"name": "commands", "type": "[ValidationCommand!]"},
         {"name": "commitSha", "type": "String"},
+        {"name": "envelope", "type": "String"},
         {"name": "goal", "type": "GoalIndex"},
         {"name": "goalId", "type": "UUID"},
         {"name": "humanReviews", "type": "[HumanReview!]"},
@@ -12281,6 +12786,119 @@
       ]
     },
     {
+      "name": "Thread",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "id", "type": "UUID"},
+        {"name": "lastAt", "type": "Time"},
+        {"name": "messages", "type": "[ThreadMessage!]"},
+        {"name": "namespace", "type": "Namespace"},
+        {"name": "orgId", "type": "UUID"},
+        {"name": "product", "type": "String"},
+        {"name": "projectId", "type": "UUID"},
+        {"name": "replyHookUrl", "type": "String"},
+        {"name": "role", "type": "String"},
+        {"name": "startedBy", "type": "UUID"},
+        {"name": "status", "type": "ThreadStatus"},
+        {"name": "threadKey", "type": "String"},
+        {"name": "trigger", "type": "String"},
+        {"name": "updatedAt", "type": "Time"}
+      ]
+    },
+    {
+      "name": "ThreadIndex",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "id", "type": "UUID"},
+        {"name": "lastAt", "type": "Time"},
+        {"name": "namespace", "type": "Namespace"},
+        {"name": "orgId", "type": "UUID"},
+        {"name": "product", "type": "String"},
+        {"name": "projectId", "type": "UUID"},
+        {"name": "role", "type": "String"},
+        {"name": "startedBy", "type": "UUID"},
+        {"name": "status", "type": "ThreadStatus"},
+        {"name": "threadKey", "type": "String"},
+        {"name": "trigger", "type": "String"},
+        {"name": "updatedAt", "type": "Time"}
+      ]
+    },
+    {
+      "name": "ThreadMessage",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "askId", "type": "String!"},
+        {"name": "asker", "type": "String!"},
+        {"name": "at", "type": "Time!"},
+        {"name": "body", "type": "String!"},
+        {"name": "by", "type": "UUID!"},
+        {"name": "confirmedAt", "type": "Time!"},
+        {"name": "confirmedBy", "type": "UUID!"},
+        {"name": "from", "type": "String!"},
+        {"name": "goalId", "type": "UUID!"},
+        {"name": "messageId", "type": "String!"},
+        {"name": "nodeId", "type": "UUID!"},
+        {"name": "outcome", "type": "String!"},
+        {"name": "proposal", "type": "String!"},
+        {"name": "result", "type": "String!"},
+        {"name": "seq", "type": "Long!"}
+      ]
+    },
+    {
+      "name": "ThreadRelayedTurnInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "askId", "type": "String"},
+        {"name": "asker", "type": "String!"},
+        {"name": "at", "type": "Time"},
+        {"name": "body", "type": "String!"},
+        {"name": "messageId", "type": "String"}
+      ]
+    },
+    {
+      "name": "ThreadReplyDelivery",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "attempt", "type": "Long"},
+        {"name": "dueAt", "type": "Time"},
+        {"name": "error", "type": "String"},
+        {"name": "id", "type": "UUID"},
+        {"name": "kind", "type": "String"},
+        {"name": "namespace", "type": "Namespace"},
+        {"name": "nextAttemptAt", "type": "Time"},
+        {"name": "ok", "type": "Boolean"},
+        {"name": "payload", "type": "String"},
+        {"name": "product", "type": "String"},
+        {"name": "sentAt", "type": "Time"},
+        {"name": "seq", "type": "Long"},
+        {"name": "statusCode", "type": "Long"},
+        {"name": "threadId", "type": "UUID"},
+        {"name": "updatedAt", "type": "Time"},
+        {"name": "url", "type": "String"}
+      ]
+    },
+    {
+      "name": "ThreadReplyDeliveryIndex",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "attempt", "type": "Long"},
+        {"name": "dueAt", "type": "Time"},
+        {"name": "error", "type": "String"},
+        {"name": "id", "type": "UUID"},
+        {"name": "kind", "type": "String"},
+        {"name": "namespace", "type": "Namespace"},
+        {"name": "nextAttemptAt", "type": "Time"},
+        {"name": "ok", "type": "Boolean"},
+        {"name": "product", "type": "String"},
+        {"name": "sentAt", "type": "Time"},
+        {"name": "seq", "type": "Long"},
+        {"name": "statusCode", "type": "Long"},
+        {"name": "threadId", "type": "UUID"},
+        {"name": "updatedAt", "type": "Time"},
+        {"name": "url", "type": "String"}
+      ]
+    },
+    {
       "name": "ThreadSession",
       "kind": "OBJECT",
       "fields": [
@@ -12294,6 +12912,7 @@
         {"name": "nodeId", "type": "UUID"},
         {"name": "orgId", "type": "UUID"},
         {"name": "product", "type": "String"},
+        {"name": "projectId", "type": "UUID"},
         {"name": "proposal", "type": "String"},
         {"name": "raisedAt", "type": "Time"},
         {"name": "role", "type": "String"},
@@ -12313,6 +12932,7 @@
         {"name": "nodeId", "type": "UUID"},
         {"name": "orgId", "type": "UUID"},
         {"name": "product", "type": "String"},
+        {"name": "projectId", "type": "UUID"},
         {"name": "raisedAt", "type": "Time"},
         {"name": "role", "type": "String"},
         {"name": "status", "type": "ThreadSessionStatus"},
@@ -13027,12 +13647,32 @@
       "name": "ValidationCheck",
       "kind": "OBJECT",
       "fields": [
+        {"name": "check", "type": "String!"},
+        {"name": "expected", "type": "String!"},
         {"name": "findings", "type": "[ValidationFinding!]!"},
         {"name": "focus", "type": "String!"},
+        {"name": "index", "type": "Long!"},
         {"name": "kind", "type": "String!"},
+        {"name": "output", "type": "String!"},
         {"name": "sessionId", "type": "String!"},
         {"name": "suites", "type": "[String!]!"},
         {"name": "verdict", "type": "String!"}
+      ]
+    },
+    {
+      "name": "ValidationCheckInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "check", "type": "String"},
+        {"name": "expected", "type": "String"},
+        {"name": "findings", "type": "[ValidationFindingInput!]"},
+        {"name": "focus", "type": "String"},
+        {"name": "index", "type": "Long"},
+        {"name": "kind", "type": "String"},
+        {"name": "output", "type": "String"},
+        {"name": "sessionId", "type": "String"},
+        {"name": "suites", "type": "[String!]"},
+        {"name": "verdict", "type": "String"}
       ]
     },
     {
@@ -13147,7 +13787,9 @@
       "fields": [
         {"name": "acceptance", "type": "String"},
         {"name": "acceptanceChecks", "type": "[AcceptanceCheck!]"},
+        {"name": "acceptanceResults", "type": "[AcceptanceResult!]"},
         {"name": "accountId", "type": "UUID"},
+        {"name": "advice", "type": "[FailedClause!]"},
         {"name": "agentSlug", "type": "String"},
         {"name": "atomic", "type": "String"},
         {"name": "attempts", "type": "Long"},
@@ -13180,6 +13822,7 @@
         {"name": "buildSteppedAsideAt", "type": "Time"},
         {"name": "buildSteppedAsideBy", "type": "String"},
         {"name": "buildTurns", "type": "Long"},
+        {"name": "changesetBaseChangesetId", "type": "UUID"},
         {"name": "changesetCandidateBaseSha", "type": "String"},
         {"name": "changesetCandidateChangesetId", "type": "UUID"},
         {"name": "changesetCandidateSha", "type": "String"},
@@ -13234,6 +13877,7 @@
         {"name": "deployLogUrl", "type": "String"},
         {"name": "deployMinutes", "type": "Long"},
         {"name": "deployPassedAt", "type": "Time"},
+        {"name": "deployPolledAt", "type": "Time"},
         {"name": "deployPolls", "type": "Long"},
         {"name": "deployRerunRunId", "type": "Long"},
         {"name": "deployReruns", "type": "Long"},
@@ -13322,6 +13966,9 @@
         {"name": "lineageAttempt", "type": "Long"},
         {"name": "lineageRootId", "type": "UUID"},
         {"name": "lineageRootSeq", "type": "Long"},
+        {"name": "linesAdded", "type": "Long"},
+        {"name": "linesChanged", "type": "Long"},
+        {"name": "linesDeleted", "type": "Long"},
         {"name": "mainGuardPolls", "type": "Long"},
         {"name": "mainGuardRerunCheck", "type": "String"},
         {"name": "mainGuardRerunJob", "type": "String"},
@@ -13329,6 +13976,7 @@
         {"name": "mainGuardRerunRunId", "type": "Long"},
         {"name": "mainGuardRerunTests", "type": "[FailingTest!]"},
         {"name": "mainValidationAttempt", "type": "Long"},
+        {"name": "mainValidationBudgetSeconds", "type": "Long"},
         {"name": "mainValidationClaimedAt", "type": "Time"},
         {"name": "mainValidationNodeId", "type": "UUID"},
         {"name": "mainValidationReason", "type": "String"},
@@ -13337,6 +13985,7 @@
         {"name": "mainValidationReusedFromSha", "type": "String"},
         {"name": "mainValidationSha", "type": "String"},
         {"name": "mainValidationState", "type": "MainValidationState"},
+        {"name": "mainValidationVerdict", "type": "MainValidationVerdict"},
         {"name": "mergeKeptReason", "type": "String"},
         {"name": "mergeQueuePosition", "type": "Long"},
         {"name": "mergeQueuedBehindPr", "type": "Long"},
@@ -13464,7 +14113,9 @@
       "fields": [
         {"name": "acceptance", "type": "String"},
         {"name": "acceptanceChecks", "type": "[AcceptanceCheck!]"},
+        {"name": "acceptanceResults", "type": "[AcceptanceResult!]"},
         {"name": "accountId", "type": "UUID"},
+        {"name": "advice", "type": "[FailedClause!]"},
         {"name": "agentSlug", "type": "String"},
         {"name": "atomic", "type": "String"},
         {"name": "attempts", "type": "Long"},
@@ -13523,6 +14174,7 @@
         {"name": "deployLogUrl", "type": "String"},
         {"name": "deployMinutes", "type": "Long"},
         {"name": "deployPassedAt", "type": "Time"},
+        {"name": "deployPolledAt", "type": "Time"},
         {"name": "deployState", "type": "DeployState"},
         {"name": "deployedAt", "type": "Time"},
         {"name": "deploymentId", "type": "Long"},
@@ -13599,13 +14251,18 @@
         {"name": "lineageAttempt", "type": "Long"},
         {"name": "lineageRootId", "type": "UUID"},
         {"name": "lineageRootSeq", "type": "Long"},
+        {"name": "linesAdded", "type": "Long"},
+        {"name": "linesChanged", "type": "Long"},
+        {"name": "linesDeleted", "type": "Long"},
         {"name": "mainValidationAttempt", "type": "Long"},
+        {"name": "mainValidationBudgetSeconds", "type": "Long"},
         {"name": "mainValidationNodeId", "type": "UUID"},
         {"name": "mainValidationReason", "type": "String"},
         {"name": "mainValidationRequestedAt", "type": "Time"},
         {"name": "mainValidationReusedFromSha", "type": "String"},
         {"name": "mainValidationSha", "type": "String"},
         {"name": "mainValidationState", "type": "MainValidationState"},
+        {"name": "mainValidationVerdict", "type": "MainValidationVerdict"},
         {"name": "mergeKeptReason", "type": "String"},
         {"name": "mergeQueuePosition", "type": "Long"},
         {"name": "mergeQueuedBehindPr", "type": "Long"},
