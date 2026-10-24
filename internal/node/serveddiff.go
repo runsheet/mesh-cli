@@ -12,20 +12,29 @@ package node
 // are cached too, removed files deleted, renamed ones moved — and what
 // is on disk is checked against the commit's tree before anything runs.
 // validate.yml runs there, its suites selected by the compare's paths,
-// and the attestation names the commit's sha and tree. The scratch goes
+// and the attestation names the commit's sha and tree. Before the suites
+// run the scratch is made a git repository (commitServed): one commit,
+// detached at HEAD, whose tree is the commit's — a suite that finds the
+// repo root through git (`git rev-parse --show-toplevel`, loom's
+// generate --check) finds the scratch, not its cwd. That commit's sha is
+// not the commit's: it is the node's, made with a fixed identity, while
+// the attestation keeps naming the commit's sha and tree. The scratch goes
 // on every path. A diff GitHub caps (gitdata.DiffTooLargeError), a tree
 // it truncates (gitdata.TruncatedError), no cache, no minted token or a
 // materialised tree that does not match falls back to the worktree,
 // said once per run for each reason.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"projectmesh.io/mesh-cli/internal/gitdata"
 	"projectmesh.io/mesh-cli/internal/validate"
@@ -261,8 +270,19 @@ func (r *Runner) materializeServed(ctx, gctx context.Context, t validationTarget
 	if want.SHA != commit.TreeSHA {
 		return fail(&servedFallback{reason: "tree mismatch", err: fmt.Errorf("cached tree %s, commit's %s", short(want.SHA), short(commit.TreeSHA))})
 	}
-	if err := checkMaterialized(dir, want); err != nil {
-		return fail(&servedFallback{reason: "tree mismatch", err: err})
+	// the scratch is made a git repository whose HEAD's tree is the
+	// commit's, so a suite that finds its root through git finds it; git
+	// hashing what is on disk is the tree check, checkMaterialized only
+	// naming the first difference when it is not the commit's
+	if err := commitServed(ctx, dir, want); err != nil {
+		var mm *servedTreeMismatch
+		if errors.As(err, &mm) {
+			if why := checkMaterialized(dir, want); why != nil {
+				err = fmt.Errorf("%v: %v", err, why)
+			}
+			return fail(&servedFallback{reason: "tree mismatch", err: err})
+		}
+		return fail(&servedFallback{reason: "scratch repository", err: err})
 	}
 	var changed []string
 	for _, f := range cmp.Files {
@@ -379,7 +399,8 @@ func pruneEmpty(root, dir string) {
 // checkMaterialized checks dir holds want's files and nothing else: each
 // path at its mode (a symlink 120000, an executable 100755, else 100644)
 // with the content its blob sha names, each submodule a directory.
-// Directories git does not track are ignored.
+// Directories git does not track are ignored, and so is dir's own .git,
+// the scratch's repository (commitServed).
 func checkMaterialized(dir string, want CacheTree) error {
 	expect := make(map[string]CacheTreeEntry, len(want.Entries))
 	for _, e := range want.Entries {
@@ -398,6 +419,13 @@ func checkMaterialized(dir string, want CacheTree) error {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
+		if rel == ".git" {
+			// the scratch's own repository (commitServed), never the tree's
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
 		e, ok := expect[rel]
 		if d.IsDir() {
 			if ok && e.Mode == "160000" {
@@ -457,6 +485,121 @@ func checkMaterialized(dir string, want CacheTree) error {
 	if len(missing) > 0 {
 		sort.Strings(missing)
 		return fmt.Errorf("%d path(s) of the commit's tree missing, first %s", len(missing), missing[0])
+	}
+	return nil
+}
+
+// servedTreeMismatch is a materialised scratch whose tree, as git hashes
+// it, is not the commit's.
+type servedTreeMismatch struct{ got, want string }
+
+func (e *servedTreeMismatch) Error() string {
+	return fmt.Sprintf("materialised tree %s, commit's %s", short(e.got), short(e.want))
+}
+
+// servedIdentity is who the scratch's commit is by: the node, at a fixed
+// time, so the same tree is the same commit on every node.
+var servedIdentity = []string{
+	"GIT_AUTHOR_NAME=mesh node", "GIT_AUTHOR_EMAIL=node@projectmesh.io", "GIT_AUTHOR_DATE=1700000000 +0000",
+	"GIT_COMMITTER_NAME=mesh node", "GIT_COMMITTER_EMAIL=node@projectmesh.io", "GIT_COMMITTER_DATE=1700000000 +0000",
+}
+
+// servedGitArgs keep the scratch's git from running anything or
+// rewriting anything: no hooks, no signing, no line-ending conversion,
+// no fsmonitor.
+var servedGitArgs = []string{
+	"-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "-c", "core.autocrlf=false",
+	"-c", "core.safecrlf=false", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false",
+}
+
+// servedGitEnv is the node's environment with every GIT_ variable that
+// could point git at another repository or config dropped, the prompt
+// off and the node's identity set.
+func servedGitEnv() []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "GIT_") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return append(append(env, "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1"), servedIdentity...)
+}
+
+// commitServed makes dir, a commit materialised from the served diff, a
+// git repository whose HEAD is one commit of exactly want's tree: `git
+// init`, every file added once (`add -A --force`, so a tracked file a
+// .gitignore names is added too; .git/info/attributes unsetting text,
+// eol, filter and ident while it runs, so what is hashed is the bytes on
+// disk, as the blob shas name them), each submodule its gitlink, the
+// tree written and compared with want.SHA — another is a
+// *servedTreeMismatch — then committed with the node's fixed identity,
+// unsigned, and HEAD detached at it. The commit's sha is the node's, not
+// the served commit's (that commit's author, message and signature are
+// not served); the attestation names the served one. Everything git
+// writes is under dir/.git, which nothing hashed or attested reads.
+func commitServed(ctx context.Context, dir string, want CacheTree) error {
+	env := servedGitEnv()
+	git := func(stdin string, args ...string) (string, error) {
+		cmd := exec.CommandContext(ctx, "git", append(append([]string{}, servedGitArgs...), args...)...)
+		cmd.Dir, cmd.Env = dir, env
+		if stdin != "" {
+			cmd.Stdin = strings.NewReader(stdin)
+		}
+		var out, stderr bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &out, &stderr
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		}
+		return strings.TrimSpace(out.String()), nil
+	}
+	// no template: no sample hooks, no info/exclude to read
+	initArgs := []string{"-c", "init.defaultBranch=main", "init", "--quiet", "--template="}
+	if len(want.SHA) == 64 {
+		initArgs = append(initArgs, "--object-format=sha256")
+	}
+	if _, err := git("", append(initArgs, ".")...); err != nil {
+		return err
+	}
+	info := filepath.Join(dir, ".git", "info")
+	if err := os.MkdirAll(info, 0o755); err != nil {
+		return err
+	}
+	attrs := filepath.Join(info, "attributes")
+	if err := os.WriteFile(attrs, []byte("* -text -eol -filter -ident -working-tree-encoding\n"), 0o644); err != nil {
+		return err
+	}
+	if _, err := git("", "add", "--all", "--force", "--", "."); err != nil {
+		return err
+	}
+	var links strings.Builder
+	for _, e := range want.Entries {
+		if e.Mode == "160000" {
+			fmt.Fprintf(&links, "160000 commit %s\t%s\n", e.SHA, e.Path)
+		}
+	}
+	if links.Len() > 0 {
+		if _, err := git(links.String(), "update-index", "--add", "--index-info"); err != nil {
+			return err
+		}
+	}
+	// the repository's own attributes from here on, as a checkout's
+	if err := os.Remove(attrs); err != nil {
+		return err
+	}
+	tree, err := git("", "write-tree")
+	if err != nil {
+		return err
+	}
+	if tree != want.SHA {
+		return &servedTreeMismatch{got: tree, want: want.SHA}
+	}
+	head, err := git("", "commit-tree", "--no-gpg-sign", "-m", "mesh: served diff of tree "+want.SHA, tree)
+	if err != nil {
+		return err
+	}
+	if _, err := git("", "update-ref", "--no-deref", "-m", "mesh: served diff", "HEAD", head); err != nil {
+		return err
 	}
 	return nil
 }
