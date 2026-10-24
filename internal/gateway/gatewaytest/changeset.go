@@ -41,20 +41,29 @@ func (f *Fake) changeset(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case len(parts) == 3 && parts[1] == "changeset" && parts[2] == "missing" && r.Method == http.MethodPost:
+		// the platform's shape (runsheet gateway/changeset_blobs.go):
+		// {"blobs":[sha...],"trees":[sha...]} asked, the same shape answered
+		// with the shas the store lacks
 		var in struct {
-			Objects []gateway.ChangesetObject `json:"objects"`
+			Blobs []string `json:"blobs"`
+			Trees []string `json:"trees"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-			http.Error(w, `{"error":"bad body"}`, http.StatusBadRequest)
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Blobs == nil || in.Trees == nil {
+			http.Error(w, `{"error":"the body is {\"blobs\":[sha...],\"trees\":[sha...]}"}`, http.StatusBadRequest)
 			return
 		}
-		missing := []gateway.ChangesetObject{}
-		for _, o := range in.Objects {
-			if _, ok := f.ChangesetObjects[o.Type+" "+o.SHA]; !ok {
-				missing = append(missing, o)
+		out := map[string][]string{"blobs": {}, "trees": {}}
+		for _, sha := range in.Blobs {
+			if _, ok := f.ChangesetObjects[gateway.ObjectBlob+" "+sha]; !ok {
+				out["blobs"] = append(out["blobs"], sha)
 			}
 		}
-		writeJSONBody(w, map[string]any{"missing": missing})
+		for _, sha := range in.Trees {
+			if _, ok := f.ChangesetObjects[gateway.ObjectTree+" "+sha]; !ok {
+				out["trees"] = append(out["trees"], sha)
+			}
+		}
+		writeJSONBody(w, out)
 	case len(parts) == 5 && parts[1] == "changeset" && parts[2] == "objects":
 		key := parts[3] + " " + parts[4]
 		switch r.Method {

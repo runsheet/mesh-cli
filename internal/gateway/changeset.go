@@ -50,23 +50,57 @@ func itemPath(itemID, rest string) string {
 
 // ChangesetMissing asks which of objects the platform does not hold yet
 // for itemID: POST /mesh/v1/items/{id}/changeset/missing with
-// `{"objects": [...]}`, answered `{"missing": [...]}`. A platform without
-// the route answers IsUnsupported.
+// `{"blobs": [sha...], "trees": [sha...]}`, answered in the same shape —
+// the shas of each kind the store lacks (runsheet
+// gateway/changeset_blobs.go; at most MaxMissingShas a call, so a larger
+// offer goes in batches). The answer is the objects not held, blobs then
+// trees, in the platform's order. A platform without the route answers
+// IsUnsupported.
 func (c *Client) ChangesetMissing(ctx context.Context, itemID string, objects []ChangesetObject) ([]ChangesetObject, error) {
-	if objects == nil {
-		objects = []ChangesetObject{}
+	missing := []ChangesetObject{}
+	for start := 0; start < len(objects) || (start == 0 && len(objects) == 0); start += MaxMissingShas {
+		end := min(start+MaxMissingShas, len(objects))
+		ask := missingShas{Blobs: []string{}, Trees: []string{}}
+		for _, o := range objects[start:end] {
+			switch o.Type {
+			case ObjectBlob:
+				ask.Blobs = append(ask.Blobs, o.SHA)
+			case ObjectTree:
+				ask.Trees = append(ask.Trees, o.SHA)
+			default:
+				return nil, fmt.Errorf("changeset object %s: kind %q is neither blob nor tree", o.SHA, o.Type)
+			}
+		}
+		raw, err := c.changesetJSON(ctx, http.MethodPost, itemPath(itemID, "/changeset/missing"), ask)
+		if err != nil {
+			return nil, err
+		}
+		var out missingShas
+		if err := json.Unmarshal(raw, &out); err != nil {
+			return nil, fmt.Errorf("changeset missing: decode: %w", err)
+		}
+		for _, sha := range out.Blobs {
+			missing = append(missing, ChangesetObject{Type: ObjectBlob, SHA: sha})
+		}
+		for _, sha := range out.Trees {
+			missing = append(missing, ChangesetObject{Type: ObjectTree, SHA: sha})
+		}
+		if len(objects) == 0 {
+			break
+		}
 	}
-	raw, err := c.changesetJSON(ctx, http.MethodPost, itemPath(itemID, "/changeset/missing"), map[string]any{"objects": objects})
-	if err != nil {
-		return nil, err
-	}
-	var out struct {
-		Missing []ChangesetObject `json:"missing"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("changeset missing: decode: %w", err)
-	}
-	return out.Missing, nil
+	return missing, nil
+}
+
+// MaxMissingShas is how many shas one changeset/missing call may ask
+// about: the platform's cap (runsheet gateway.MaxMissingShas).
+const MaxMissingShas = 10000
+
+// missingShas is changeset/missing's body both ways: the shas asked, and
+// the shas the store lacks.
+type missingShas struct {
+	Blobs []string `json:"blobs"`
+	Trees []string `json:"trees"`
 }
 
 // PutChangesetObject uploads one object's content — git's own bytes of

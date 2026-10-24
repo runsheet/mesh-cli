@@ -49,18 +49,33 @@ func (p *changesetPlatform) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.finishes = append(p.finishes, in)
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"finishWorkItem": map[string]any{"status": "ok"}}})
 	case r.URL.Path == prefix+"changeset/missing" && r.Method == http.MethodPost:
+		// the platform's shape (runsheet gateway/changeset_blobs.go):
+		// {"blobs":[sha...],"trees":[sha...]} both ways
 		var in struct {
-			Objects []gateway.ChangesetObject `json:"objects"`
+			Blobs []string `json:"blobs"`
+			Trees []string `json:"trees"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&in)
-		p.asked = append(p.asked, in.Objects)
-		missing := []gateway.ChangesetObject{}
-		for _, o := range in.Objects {
-			if _, ok := p.held[o.Type+"/"+o.SHA]; !ok {
-				missing = append(missing, o)
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Blobs == nil || in.Trees == nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": `the body is {"blobs":[sha...],"trees":[sha...]}`})
+			return
+		}
+		asked := []gateway.ChangesetObject{}
+		out := map[string][]string{"blobs": {}, "trees": {}}
+		for _, sha := range in.Blobs {
+			asked = append(asked, gateway.ChangesetObject{Type: gateway.ObjectBlob, SHA: sha})
+			if _, ok := p.held["blob/"+sha]; !ok {
+				out["blobs"] = append(out["blobs"], sha)
 			}
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"missing": missing})
+		for _, sha := range in.Trees {
+			asked = append(asked, gateway.ChangesetObject{Type: gateway.ObjectTree, SHA: sha})
+			if _, ok := p.held["tree/"+sha]; !ok {
+				out["trees"] = append(out["trees"], sha)
+			}
+		}
+		p.asked = append(p.asked, asked)
+		_ = json.NewEncoder(w).Encode(out)
 	case strings.HasPrefix(r.URL.Path, prefix+"changeset/objects/"):
 		key := strings.TrimPrefix(r.URL.Path, prefix+"changeset/objects/")
 		switch r.Method {
