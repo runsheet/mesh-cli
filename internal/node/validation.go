@@ -17,6 +17,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
+	sessionsteps "projectmesh.io/mesh-cli/internal/session"
 	"projectmesh.io/mesh-cli/internal/sessionunit"
 	"projectmesh.io/mesh-cli/internal/validate"
 )
@@ -948,6 +949,24 @@ type attestOutcome struct {
 // or `attestation refused <reason>`.
 func (r *Runner) uploadAttestation(ctx context.Context, b *buildRun, att validate.Attestation) attestOutcome {
 	return r.validator().upload(ctx, b.target(), att)
+}
+
+// attestChangeset is a changeset build's attestation (runsheet ADR 058,
+// gateway/attestation.go signChangeset): att, the run on the commit the
+// build validated, uploaded once res — the changeset the finish recorded
+// — is the item's latest and before the item is finished on it. The
+// platform takes it only when att's tree is res's, so a validated tree
+// that is not the one recorded (the workspace held changes the commit
+// did not) is not sent: it is logged and a note on the item naming both
+// trees, never the item's failure.
+func (r *Runner) attestChangeset(ctx context.Context, b *buildRun, att validate.Attestation, res *sessionsteps.FinishResult) {
+	if res != nil && att.Tree != "" && !strings.EqualFold(att.Tree, res.Tree) {
+		msg := fmt.Sprintf("validation: validated tree %s (%s) is not the tree %s of changeset %s; no attestation", short(att.Tree), short(att.Commit), short(res.Tree), res.ChangesetID)
+		r.logf("item %s: %s", b.label, msg)
+		b.report(ctx, msg)
+		return
+	}
+	r.uploadAttestation(ctx, b, att)
 }
 
 func (vr validator) upload(ctx context.Context, t validationTarget, att validate.Attestation) attestOutcome {

@@ -10,6 +10,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
+	sessionsteps "projectmesh.io/mesh-cli/internal/session"
 	"projectmesh.io/mesh-cli/internal/validate"
 )
 
@@ -118,5 +119,54 @@ func TestAttestationRetryGivesUpWithANote(t *testing.T) {
 	}
 	if st := f.Item(item1)["status"]; st == "failed" {
 		t.Fatalf("item status = %v after a spent retry, want not failed", st)
+	}
+}
+
+// A changeset build's attestation is held to the item's latest recorded
+// changeset's tree (runsheet gateway/attestation.go signChangeset): on a
+// rework, the run on the new commit sent while the previous attempt's
+// changeset is still the latest is refused wrong_tree — dl360,
+// 2026-10-24, one build in three — and the same run sent once the new
+// changeset is recorded is taken. attestChangeset is the latter.
+func TestChangesetAttestationFollowsItsChangeset(t *testing.T) {
+	f := seed(t)
+	f.Changesets = true
+	f.RecordedChangesets = map[string][]gateway.Changeset{item1: {{ChangesetID: "cs-1", Tree: "b03fe8a8"}}}
+	r, b, logs := uploadRunner(t, f, &ValidationNotices{}, item1)
+	att := validate.Attestation{Commit: "71fe054e", Tree: "3b2f9dd6", At: time.Now()}
+
+	// before the rework's changeset is recorded: the previous attempt's
+	// tree is the latest, and the platform refuses
+	if out := r.uploadAttestation(context.Background(), b, att); out.Refused == "" || !strings.Contains(out.Refused, "is not the tree b03fe8a8") {
+		t.Fatalf("attested before the record: %+v, want refused naming the previous tree", out)
+	}
+
+	// once it is, the same run is taken
+	f.RecordedChangesets[item1] = append(f.RecordedChangesets[item1], gateway.Changeset{ChangesetID: "cs-2", Tree: "3b2f9dd6"})
+	r.attestChangeset(context.Background(), b, att, &sessionsteps.FinishResult{ChangesetID: "cs-2", Tree: "3b2f9dd6"})
+	if !strings.Contains(logs.String(), "attestation recorded 71fe054e") {
+		t.Fatalf("log = %s, want the attestation recorded", logs.String())
+	}
+}
+
+// A validated tree that is not the tree the finish recorded (the
+// workspace held changes the validated commit did not) is not sent —
+// the platform would refuse it — but logged and a note naming both.
+func TestChangesetAttestationOfAnotherTreeIsNotSent(t *testing.T) {
+	f := seed(t)
+	f.Changesets = true
+	r, b, logs := uploadRunner(t, f, &ValidationNotices{}, item1)
+	att := validate.Attestation{Commit: "71fe054e", Tree: "3b2f9dd6", At: time.Now()}
+
+	r.attestChangeset(context.Background(), b, att, &sessionsteps.FinishResult{ChangesetID: "cs-2", Tree: "81ffaf8e"})
+	if n := len(f.CallsNamed("recordValidationAttestation")); n != 0 {
+		t.Fatalf("sent %d attestations, want none", n)
+	}
+	want := "validated tree 3b2f9dd6 (71fe054e) is not the tree 81ffaf8e of changeset cs-2; no attestation"
+	if !strings.Contains(logs.String(), want) || !containsNote(notesOf(f), want) {
+		t.Fatalf("log = %s notes = %v, want %q", logs.String(), notesOf(f), want)
+	}
+	if f.Item(item1)["status"] == "failed" {
+		t.Fatal("an attestation not sent must not fail the item")
 	}
 }

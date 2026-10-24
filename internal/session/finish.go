@@ -78,6 +78,14 @@ type Finish struct {
 	// changesets fails the step.
 	Push         func(ctx context.Context, dir, branch string) (string, error)
 	FinishPushed func(ctx context.Context, itemID, branch, headSHA string) error
+	// Recorded runs once the changeset is recorded and before the item
+	// is finished on it, with the result so far (its ChangesetID and
+	// Tree set): the node's attestation of the tree it validated goes
+	// here, because the platform holds an attestation to the item's
+	// latest recorded changeset's tree (runsheet gateway/attestation.go,
+	// signChangeset) — sent before the record it names the previous
+	// attempt's changeset, or none, and is refused. nil does nothing.
+	Recorded func(ctx context.Context, res *FinishResult)
 }
 
 // FinishResult is what the finish step leaves in State.Results["finish"].
@@ -195,6 +203,9 @@ func (f *Finish) changeset(ctx context.Context, dir, base, checkoutSHA string) (
 		return nil, fmt.Errorf("finish: record changeset: %w", err)
 	}
 	res.ChangesetID = id
+	if f.Recorded != nil {
+		f.Recorded(ctx, res)
+	}
 	if err := f.Gateway.FinishWorkItemChangeset(ctx, f.ItemID, f.Branch, id, baseSHA, f.CostCents, f.Usage, f.Description); err != nil {
 		return res, fmt.Errorf("finish: finish on changeset %s: %w", id, err)
 	}

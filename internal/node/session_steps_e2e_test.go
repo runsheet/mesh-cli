@@ -23,6 +23,14 @@ import (
 
 const stepsItemToken = "ghs_stepsE2EItemToken0123456789"
 
+// stepsE2EYML is the repository's validation: one suite on api/.
+const stepsE2EYML = `suites:
+  - name: api
+    kind: unit
+    command: "true"
+    paths: ["api/**"]
+`
+
 // A build runs as the session's ordered steps (ADR-038): against a
 // stand-in GitHub that answers only the item's ghs_ token and a fake
 // gateway that holds changesets, the node's own Git and the Claude Code
@@ -50,7 +58,7 @@ func TestBuildRunsAsSessionStepsE2E(t *testing.T) {
 	seedDir := filepath.Join(root, "seed")
 	gitRun(t, root, "init", "--quiet", "--bare", "-b", "main", origin)
 	gitRun(t, root, "init", "--quiet", "-b", "main", seedDir)
-	writeFiles(t, seedDir, map[string]string{"api/api.go": "package api\n"})
+	writeFiles(t, seedDir, map[string]string{".runsheet/validate.yml": stepsE2EYML, "api/api.go": "package api\n"})
 	gitRun(t, seedDir, "add", "-A")
 	gitRun(t, seedDir, "commit", "--quiet", "-m", "main")
 	gitRun(t, seedDir, "push", "--quiet", origin, "HEAD:main")
@@ -76,10 +84,17 @@ func TestBuildRunsAsSessionStepsE2E(t *testing.T) {
 	var env []string
 	files := map[string]string{}
 	var workspace string
+	built := false
 	fake.Agent = func(_ context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
 		if spec.Stdin != nil {
 			_, _ = io.Copy(io.Discard, spec.Stdin)
 		}
+		if built {
+			// a validation step in the pod after the build's turn: the
+			// suite's `true`
+			return sandbox.Exit{}, nil
+		}
+		built = true
 		env = spec.Env
 		for _, m := range spec.Mounts {
 			_ = filepath.WalkDir(m.Source, func(p string, d fs.DirEntry, err error) error {
@@ -178,6 +193,27 @@ func TestBuildRunsAsSessionStepsE2E(t *testing.T) {
 	}
 	if !strings.Contains(out, "changeset "+cs.ChangesetID+" recorded") {
 		t.Errorf("node.log lacks the changeset line:\n%s", out)
+	}
+
+	// the commit validated is attested once its changeset is recorded and
+	// before the finish: the platform holds a changeset item's
+	// attestation to its latest changeset's tree (runsheet
+	// gateway/attestation.go signChangeset), so one sent before the
+	// record names the previous attempt's changeset, or none, and is
+	// refused — as on dl360 2026-10-24, one build in three
+	atts := f.CallsNamed("recordValidationAttestation")
+	if len(atts) != 1 {
+		t.Fatalf("attestations = %+v, want one\n%s", atts, out)
+	}
+	in, _ := atts[0].Input["input"].(map[string]any)
+	if in["treeHash"] != cs.Tree {
+		t.Errorf("attested tree %v, the changeset's %s", in["treeHash"], cs.Tree)
+	}
+	if strings.Contains(out, "attestation refused") || !strings.Contains(out, "attestation recorded") {
+		t.Errorf("the attestation was not recorded:\n%s", out)
+	}
+	if atts[0].At.After(finish[0].At) {
+		t.Errorf("attested at %v, after the finish at %v", atts[0].At, finish[0].At)
 	}
 	t.Logf("node.log:\n%s", out)
 }
