@@ -1280,6 +1280,19 @@ func (l *Loop) Tick(ctx context.Context) {
 			// runs on, as in a drain — and says why on every ready goal
 			l.passOverRuntime(ctx, rt)
 		} else {
+			// the slots taken are the tracked builds or, when more run on
+			// the host, the live agent sessions, orphans included (LiveProbe)
+			inUse := l.inUse(ctx)
+			// the lanes (ADR 069 decision 2b): slots no build takes,
+			// kept for validations and evaluations
+			lanes := l.Lanes()
+			// a merge batch candidate's and a merged item's validation
+			// are asked for first, every tick, before any new build or
+			// plan: they land work already built and attested. They take
+			// any free slot and, when builds fill the rest, their lane.
+			if !low {
+				inUse += l.validateBatches(ctx, max(l.Capacity()-inUse, lanes.Validate-l.Validating()))
+			}
 			if !low {
 				l.evaluateHeld(ctx)
 				l.rebaseRequested(ctx)
@@ -1287,18 +1300,15 @@ func (l *Loop) Tick(ctx context.Context) {
 				l.researchDue(ctx)
 				l.threadsDue(ctx)
 			}
-			// the slots taken are the tracked builds or, when more run on
-			// the host, the live agent sessions, orphans included (LiveProbe)
-			inUse := l.inUse(ctx)
-			// a merge batch candidate's validation takes a slot first: it
-			// lands work already built and attested
-			if !low {
-				inUse += l.validateBatches(ctx, l.Capacity()-inUse)
-			}
+			// a build never takes a lane: the validation lane while no
+			// validation fills it, the evaluation lane always (an
+			// evaluation is not counted in inUse)
+			kept := max(lanes.Validate-l.Validating(), 0) + lanes.Evaluate
 			free := l.Capacity() - inUse
 			if p.mode == pacePaced {
 				free = pacedFree(free, l.Capacity(), inUse)
 			}
+			free = min(free, l.Capacity()-kept-inUse)
 			// a ranged node at its min builds only urgent and high goals
 			claimRank := gateway.PriorityRank("low")
 			if l.atMin() {
@@ -1306,7 +1316,7 @@ func (l *Loop) Tick(ctx context.Context) {
 			}
 			// the urgent-only slots (the reserve at the end of an api key's
 			// day) are not for normal and low work
-			normalFree := min(free, l.Capacity()-l.urgentOnly()-inUse)
+			normalFree := min(free, l.Capacity()-l.urgentOnly()-kept-inUse)
 			// node.yaml's takes: cap on build bounds the free slots inside
 			// the capacity; claimReady passes over what it holds back
 			if room, ok := l.kindRoom(harness.KindBuild); ok && room < free {
@@ -1323,6 +1333,7 @@ func (l *Loop) Tick(ctx context.Context) {
 		// one implicit account: normal, and unknown until a reading
 		accounts, readings := l.accounts()
 		h := HoldingReport(l.now(), accounts, readings, l.Thresholds(), l.Capacity(), p, l.unclaimed, l.shareRows(), l.Takes().Kinds())
+		h.Summary += laneSummary(l.Lanes())
 		if rt != nil {
 			h = runtimeHolding(h, rt)
 		}
@@ -1388,6 +1399,25 @@ func (l *Loop) Capacity() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.inForceLocked(l.planLocked())
+}
+
+// Lanes is the reserve in force (runsheet ADR 069 decision 2b): the
+// slots of the capacity in force no build takes, kept for validations
+// and evaluations — node.yaml's `capacity.reserve`, else Capacity.Lanes'
+// default.
+func (l *Loop) Lanes() Reserve {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.rangeLocked().Lanes(l.inForceLocked(l.planLocked()))
+}
+
+// laneSummary is the lanes as the holding summary closes on them:
+// "; lanes kept: 1 validation, 1 evaluation", empty with none.
+func laneSummary(r Reserve) string {
+	if r.Total() == 0 {
+		return ""
+	}
+	return fmt.Sprintf("; lanes kept: %d validation, %d evaluation", r.Validate, r.Evaluate)
 }
 
 // Thresholds are the limits thresholds in force, as last read.

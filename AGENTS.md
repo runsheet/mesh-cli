@@ -521,7 +521,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   terminal, unknown, or another node's while a state file of ours names
   it is stopped (`judgeItem`, `stopScope`, `FoundSession.Kill`), logged
   `capacity: orphan: stopped <unit> (…)`; a sibling node's scope on the
-  same host is neither counted nor stopped. node.yaml's `claim: {unmerged_per_repo: N}` (`ClaimConfig`,
+  same host is neither counted nor stopped. **Lanes** (runsheet ADR 069 decision 2b): node.yaml's `capacity: {min, max, reserve: {validate: N, evaluate: M}}` (`Capacity.Reserve`, `Capacity.Lanes`; left out, 1 and 1 at capacity ≥ 4, else 0; always leaving a build one slot) keeps slots no build takes — `Tick` asks `validateBatches` for batch and main validations first, with `max(free, lane − validating)`, and builds see `free − unused lanes` — and the holding summary closes `; lanes kept: N validation, M evaluation`. node.yaml's `claim: {unmerged_per_repo: N}` (`ClaimConfig`,
   re-read each tick, `Loop.UnmergedPerRepo`; absent or 0 is no limit
   and no read) holds fresh claims for a repo with N items in `review`,
   counted from the node's own listing, never `RepoIndex.reviewPile`;

@@ -772,10 +772,84 @@ func (t ToolResults) KB() int {
 
 // Capacity is node.yaml's `capacity`: a plain N is Min = Max = N, the
 // fixed capacity every node had before adr-004; `{min, max}` is a range
-// the node scales within by the headroom of its plan's windows.
+// the node scales within by the headroom of its plan's windows. The
+// mapping may also carry `reserve: {validate: N, evaluate: M}`, the
+// lanes (runsheet ADR 069 decision 2b): slots no build takes, kept for
+// merge batch and main validations and for evaluations. Left out, a
+// node of capacity 4 or more keeps one of each (DefaultReserve).
 type Capacity struct {
-	Min int `yaml:"min"`
-	Max int `yaml:"max"`
+	Min     int     `yaml:"min"`
+	Max     int     `yaml:"max"`
+	Reserve Reserve `yaml:"reserve,omitempty"`
+}
+
+// Reserve is node.yaml's `capacity.reserve`: the slots kept for
+// validations and for evaluations. set is whether node.yaml named it;
+// unset, DefaultReserve applies.
+type Reserve struct {
+	Validate int `yaml:"validate"`
+	Evaluate int `yaml:"evaluate"`
+	set      bool
+}
+
+// ReserveOf is a reserve as node.yaml names it.
+func ReserveOf(validate, evaluate int) Reserve {
+	return Reserve{Validate: validate, Evaluate: evaluate, set: true}
+}
+
+// IsSet is whether node.yaml named the reserve.
+func (r Reserve) IsSet() bool { return r.set }
+
+// ReserveFloor is the capacity from which a node keeps the default
+// lanes: one slot for validations and one for evaluations.
+const ReserveFloor = 4
+
+// Lanes is the reserve in force at capacity inForce: node.yaml's, else
+// one validation and one evaluation slot while the capacity in force
+// is ReserveFloor or more, else none (a ranged node scaled down to 2
+// keeps both its slots for builds). The lanes always leave a
+// build at least one slot: they shrink, the evaluation lane first, to
+// fit inForce − 1, so a hot host's or a scaler's smaller capacity is
+// never all lanes.
+func (c Capacity) Lanes(inForce int) Reserve {
+	r := c.Reserve
+	if !r.set {
+		r = Reserve{}
+		if inForce >= ReserveFloor {
+			r = Reserve{Validate: 1, Evaluate: 1}
+		}
+	}
+	room := max(inForce-1, 0)
+	r.Validate = min(max(r.Validate, 0), room)
+	r.Evaluate = min(max(r.Evaluate, 0), room-r.Validate)
+	r.set = true
+	return r
+}
+
+// Total is the slots the lanes keep.
+func (r Reserve) Total() int { return r.Validate + r.Evaluate }
+
+// UnmarshalYAML marks the reserve named and refuses a negative one.
+func (r *Reserve) UnmarshalYAML(n *yaml.Node) error {
+	var v struct {
+		Validate *int `yaml:"validate"`
+		Evaluate *int `yaml:"evaluate"`
+	}
+	if err := n.Decode(&v); err != nil {
+		return fmt.Errorf("capacity reserve: want {validate, evaluate}: %w", err)
+	}
+	out := Reserve{set: true}
+	if v.Validate != nil {
+		out.Validate = *v.Validate
+	}
+	if v.Evaluate != nil {
+		out.Evaluate = *v.Evaluate
+	}
+	if out.Validate < 0 || out.Evaluate < 0 {
+		return fmt.Errorf("capacity reserve %d validate, %d evaluate: must not be negative", out.Validate, out.Evaluate)
+	}
+	*r = out
+	return nil
 }
 
 // Fixed is a capacity that does not scale.
@@ -816,8 +890,9 @@ func (c *Capacity) UnmarshalYAML(n *yaml.Node) error {
 		return nil
 	}
 	var r struct {
-		Min *int `yaml:"min"`
-		Max *int `yaml:"max"`
+		Min     *int    `yaml:"min"`
+		Max     *int    `yaml:"max"`
+		Reserve Reserve `yaml:"reserve"`
 	}
 	if err := n.Decode(&r); err != nil {
 		return fmt.Errorf("capacity: want a number or {min, max}: %w", err)
@@ -825,9 +900,12 @@ func (c *Capacity) UnmarshalYAML(n *yaml.Node) error {
 	if r.Min == nil || r.Max == nil {
 		return errors.New("capacity: a range needs both min and max")
 	}
-	v := Capacity{Min: *r.Min, Max: *r.Max}
+	v := Capacity{Min: *r.Min, Max: *r.Max, Reserve: r.Reserve}
 	if err := v.Validate(); err != nil {
 		return err
+	}
+	if v.Reserve.Total() >= v.Max {
+		return fmt.Errorf("capacity reserve %d validate, %d evaluate: leaves no slot of %d for a build", v.Reserve.Validate, v.Reserve.Evaluate, v.Max)
 	}
 	*c = v
 	return nil
@@ -836,13 +914,22 @@ func (c *Capacity) UnmarshalYAML(n *yaml.Node) error {
 // MarshalYAML writes a fixed capacity as the plain number it was read
 // from, so a file that never used a range saves back unchanged.
 func (c Capacity) MarshalYAML() (any, error) {
-	if !c.IsRange() {
+	if !c.IsRange() && !c.Reserve.set {
 		return c.Max, nil
 	}
+	type reserve struct {
+		Validate int `yaml:"validate"`
+		Evaluate int `yaml:"evaluate"`
+	}
+	var r *reserve
+	if c.Reserve.set {
+		r = &reserve{c.Reserve.Validate, c.Reserve.Evaluate}
+	}
 	return struct {
-		Min int `yaml:"min"`
-		Max int `yaml:"max"`
-	}{c.Min, c.Max}, nil
+		Min     int      `yaml:"min"`
+		Max     int      `yaml:"max"`
+		Reserve *reserve `yaml:"reserve,omitempty"`
+	}{c.Min, c.Max, r}, nil
 }
 
 // Models names a model per kind of session: Default when a kind has

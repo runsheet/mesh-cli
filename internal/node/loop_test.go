@@ -668,7 +668,7 @@ func (p *priorityFake) addHeld(org, goal, title string, seq int) {
 // session starts, in the order they start.
 func (p *priorityFake) loop(capacity int) (*Loop, *strings.Builder) {
 	var logs strings.Builder
-	return &Loop{GW: gateway.New(p.URL(), "rs_test"), Cfg: &Config{Slug: "box", Capacity: Fixed(capacity)}, Scopes: p.scopes,
+	return &Loop{GW: gateway.New(p.URL(), "rs_test"), Cfg: &Config{Slug: "box", Capacity: unlaned(capacity)}, Scopes: p.scopes,
 		Interval: time.Hour, Harness: "claude-code", Log: log.New(&logs, "", 0),
 		Dispatch: func(context.Context, gateway.WorkItem) {},
 		Evaluate: func(context.Context, gateway.WorkItem) {},
@@ -696,7 +696,7 @@ func started(logs, prefix string) []string {
 // in the order they were claimed.
 func (p *priorityFake) tick(capacity int) []string {
 	p.t.Helper()
-	loop := &Loop{GW: gateway.New(p.URL(), "rs_test"), Cfg: &Config{Slug: "box", Capacity: Fixed(capacity)}, Scopes: p.scopes, Interval: time.Hour, Harness: "claude-code",
+	loop := &Loop{GW: gateway.New(p.URL(), "rs_test"), Cfg: &Config{Slug: "box", Capacity: unlaned(capacity)}, Scopes: p.scopes, Interval: time.Hour, Harness: "claude-code",
 		Dispatch: func(context.Context, gateway.WorkItem) {}}
 	before := len(p.CallsNamed("claimWorkItem"))
 	loop.Tick(context.Background())
