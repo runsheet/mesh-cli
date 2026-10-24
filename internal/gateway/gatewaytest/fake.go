@@ -2808,11 +2808,43 @@ func (f *Fake) recordValidationAttestation(w http.ResponseWriter, r *http.Reques
 		writeErrors(w, 200, msg)
 		return
 	}
+	if msg := f.wrongTree(id, in); msg != "" {
+		writeErrors(w, 200, msg)
+		return
+	}
 	receipt := f.AttestationReceipt
 	if receipt == nil {
 		receipt = map[string]any{"status": "ok", "commit": in["commit"]}
 	}
 	writeData(w, map[string]any{field: receipt})
+}
+
+// wrongTree is the platform's refusal of a changeset item's
+// attestation whose tree is not the item's latest recorded changeset's
+// (runsheet gateway/attestation.go signChangeset, refusal kind
+// wrong_tree), "" for one it takes: on a platform holding changesets
+// (Changesets) an item with a changeset recorded is held to its latest's
+// tree. An item with none recorded is held to its branch head as the
+// platform's signHead holds it, and the platform makes that branch from
+// a changeset, so there is none yet: refused naming no head.
+func (f *Fake) wrongTree(item string, in map[string]any) string {
+	if !f.Changesets {
+		return ""
+	}
+	css := f.RecordedChangesets[item]
+	if len(css) == 0 {
+		commit, _ := in["commit"].(string)
+		return fmt.Sprintf("recordValidationAttestation: %s is not the head of the item's branch (GitHub has none): not yours", commit)
+	}
+	latest := css[len(css)-1]
+	tree, _ := in["treeHash"].(string)
+	if strings.EqualFold(tree, latest.Tree) {
+		return ""
+	}
+	if tree == "" {
+		tree = "none"
+	}
+	return fmt.Sprintf("recordValidationAttestation: tree %s is not the tree %s of the item's changeset %s: not yours", tree, latest.Tree, latest.ChangesetID)
 }
 
 // answeredTransiently answers field's call transiently while fewer than

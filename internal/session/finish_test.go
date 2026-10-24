@@ -434,3 +434,33 @@ func TestFinishNeverPushesFromTheJobContainer(t *testing.T) {
 		})
 	}
 }
+
+// Recorded runs once the changeset is recorded and before the item is
+// finished on it, with the changeset's id and tree: the node attests
+// the tree it validated there, because the platform holds a changeset
+// item's attestation to its latest recorded changeset (runsheet
+// gateway/attestation.go signChangeset).
+func TestFinishCallsRecordedBetweenTheRecordAndTheFinish(t *testing.T) {
+	dir := builtWorkspace(t)
+	gw := &fakeChangesets{held: map[gateway.ChangesetObject][]byte{}}
+	var seen []string
+	var got FinishResult
+	f := &Finish{ItemID: "item-6", Branch: "mesh/g-6", Gateway: gw, NewID: func() string { return "cs-6" },
+		Recorded: func(_ context.Context, res *FinishResult) {
+			gw.mu.Lock()
+			defer gw.mu.Unlock()
+			seen = append(seen, fmt.Sprintf("recorded=%d finished=%d", len(gw.recorded), len(gw.finished)))
+			got = *res
+		}}
+	state := &State{WorkspaceDir: dir, BaseRef: "base"}
+	records := Run(context.Background(), Job{Steps: []Step{f.Step()}}, state)
+	if records[0].Outcome != Succeeded {
+		t.Fatalf("finish: %s: %v", records[0].Outcome, records[0].Err)
+	}
+	if !reflect.DeepEqual(seen, []string{"recorded=1 finished=0"}) {
+		t.Fatalf("Recorded saw %v, want once, after the record and before the finish", seen)
+	}
+	if got.ChangesetID != "cs-6" || got.Tree != gw.recorded[0].Tree || got.Tree == "" {
+		t.Fatalf("Recorded got %+v, want changeset cs-6 with the recorded tree %s", got, gw.recorded[0].Tree)
+	}
+}

@@ -1243,11 +1243,17 @@ func (t *buildTail) finish(ctx context.Context, state *sessionsteps.State) error
 	}
 	if cg, ok := r.GW.(changesetGateway); ok && cg.TakesChangesets(ctx) {
 		if t.v != nil && len(t.v.runs) > 0 {
-			// the commit validated, attested before the changeset that
-			// carries its tree
-			r.uploadAttestation(ctx, b, t.v.runs[len(t.v.runs)-1])
+			att := t.v.runs[len(t.v.runs)-1]
 			if rep := b.acct.Report(result); rep != nil {
 				rep.Validation = t.v.usage()
+			}
+			// the commit validated, attested once the changeset that
+			// carries its tree is recorded and before the finish: the
+			// platform holds the attestation to the item's latest
+			// changeset's tree, so one sent before the record names the
+			// previous attempt's changeset (or none) and is refused
+			f.Recorded = func(ctx context.Context, res *sessionsteps.FinishResult) {
+				r.attestChangeset(ctx, b, att, res)
 			}
 		}
 		f.Gateway = &carriedChangesets{ChangesetGateway: cg, carried: b.acct.Carried}
