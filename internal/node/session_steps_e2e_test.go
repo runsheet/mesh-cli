@@ -117,6 +117,9 @@ func TestBuildRunsAsSessionStepsE2E(t *testing.T) {
 		writeFiles(t, workspace, map[string]string{"api/steps.go": "package api\n\nconst Steps = 7\n"})
 		gitRun(t, workspace, "add", "api/steps.go")
 		gitRun(t, workspace, "commit", "--quiet", "-m", "api: steps")
+		// and work it left uncommitted: an edit and a new file, which the
+		// node commits before the validation
+		writeFiles(t, workspace, map[string]string{"api/api.go": "package api\n\nconst API = 1\n", "api/left.go": "package api\n"})
 		fmt.Fprintln(spec.Stdout, `{"type":"system","subtype":"init","session_id":"s-1"}`)
 		fmt.Fprintln(spec.Stdout, `{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"s-1","total_cost_usd":0.5}`)
 		return sandbox.Exit{}, nil
@@ -170,8 +173,13 @@ func TestBuildRunsAsSessionStepsE2E(t *testing.T) {
 	if tree := gitRun(t, dir, "rev-parse", "HEAD^{tree}"); cs.Tree != tree {
 		t.Errorf("changeset tree %s, the agent's commit's %s", cs.Tree, tree)
 	}
-	if strings.Join(cs.PathsChanged, ",") != "api/steps.go" {
+	// the agent's commit and the leftovers the node committed before the
+	// validation; never the validation's scan output
+	if strings.Join(cs.PathsChanged, ",") != "api/api.go,api/left.go,api/steps.go" {
 		t.Errorf("paths changed = %v", cs.PathsChanged)
+	}
+	if !strings.Contains(out, "committed 2 path(s) the build session left uncommitted") || gitRun(t, dir, "log", "-1", "--format=%s") != LeftoverCommitMessage {
+		t.Errorf("no leftover commit:\n%s", out)
 	}
 	finish := f.CallsNamed("finishWorkItem")
 	if len(finish) != 1 || finish[0].Input[gateway.ChangesetIDField] != cs.ChangesetID || finish[0].Input["headSha"] != nil {

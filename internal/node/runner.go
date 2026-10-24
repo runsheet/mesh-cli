@@ -1164,8 +1164,22 @@ func (t *buildTail) end(ctx context.Context) error {
 // validate is the repository's validation on the commit the item
 // finishes with (runsheet ADR 032), in the session's pod: a failing step
 // gets the builder one more turn, then fails the item naming it.
+//
+// First, what the session left uncommitted is committed
+// (commitLeftovers), so the validation, its attestation and the
+// changeset are of one commit and no builder's work is lost: a commit
+// that fails is logged and a note on the item, never its failure — the
+// finish then names what it leaves out.
 func (t *buildTail) validate(ctx context.Context) error {
 	r, b, item := t.r, t.b, t.b.item
+	if paths, err := commitLeftovers(ctx, b.dir, b.ident); err != nil {
+		msg := "leftover changes not committed: " + b.acct.RedactErr(err).Error()
+		r.logf("item %s: %s", b.label, msg)
+		b.report(ctx, msg)
+	} else if len(paths) > 0 {
+		head, _ := gitHead(ctx, b.dir)
+		r.logf("item %s: committed %d path(s) the build session left uncommitted as %s (%q): %s", b.label, len(paths), short(head), LeftoverCommitMessage, strings.Join(paths, ", "))
+	}
 	v, err := r.startValidation(ctx, b)
 	if err != nil {
 		b.report(ctx, "validation: "+err.Error())
