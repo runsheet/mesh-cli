@@ -91,7 +91,9 @@ func TestBuildRunsAsSessionStepsE2E(t *testing.T) {
 		}
 		if built {
 			// a validation step in the pod after the build's turn: the
-			// suite's `true`
+			// suite's `true`, leaving untracked output in the checkout as
+			// runsheet's scan suite does — never the changeset's
+			writeFiles(t, workspace, map[string]string{"scan-report.json": "{}\n", "scan-out/summary.txt": "clean\n"})
 			return sandbox.Exit{}, nil
 		}
 		built = true

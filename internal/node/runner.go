@@ -1202,8 +1202,9 @@ func (t *buildTail) validate(ctx context.Context) error {
 }
 
 // finish hands the build in as sessionsteps.Finish does: from the node,
-// outside the job container, the workspace's tree recorded as a
-// changeset and the item finished on it when the platform holds
+// outside the job container, the tree of the commit the builder made and
+// the node validated (never the working directory, which holds the
+// validation's outputs) recorded as a changeset and the item finished on it when the platform holds
 // changesets — the attestation of the commit validated uploaded first —
 // else the node's own push on the item's token (pushBuild) and the
 // finish on the head it pushed, attested after the push.

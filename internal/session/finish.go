@@ -16,8 +16,11 @@ import (
 
 // The finish step hands the item's change to the platform as a changeset
 // (runsheet ADR 058, step 4): on the node, outside the pod, the
-// workspace's tree is written from its index once the builder's changes
-// are staged, the objects that differ from the base tree are offered to
+// changeset's tree is the tree of HEAD — the commit the builder made and
+// the node validated — never the working directory's, so what the
+// validation wrote into the checkout (scan-out/, scan-report.json,
+// coverage files, caches) and anything else left uncommitted stays out
+// of it, as it stays out of the node's push; the objects that differ from the base tree are offered to
 // the platform, only those it lacks are uploaded, the changeset is
 // recorded and the item finished naming it and the base commit — the
 // commit whose tree is the changeset's base_tree (baseCommit), which the
@@ -67,7 +70,8 @@ type Finish struct {
 	// Git runs git on the node; nil is the git binary in the workspace.
 	Git GitFunc
 	// Logf is where the step notes a base ref that moved on since the
-	// checkout; nil logs nothing.
+	// checkout and the paths left uncommitted, which the changeset does
+	// not carry; nil logs nothing.
 	Logf func(format string, args ...any)
 	// NewID mints the changeset's id; nil is a random uuid.
 	NewID func() string
@@ -156,14 +160,20 @@ func (f *Finish) Run(ctx context.Context, state *State) error {
 
 func (f *Finish) changeset(ctx context.Context, dir, base, checkoutSHA string) (*FinishResult, error) {
 	git := f.git()
-	// the builder's changes, committed or not, are staged in the
-	// worktree's own index and its tree written from it
-	if _, err := git(ctx, dir, "add", "--all"); err != nil {
-		return nil, fmt.Errorf("finish: stage: %w", err)
-	}
-	tree, err := gitLine(ctx, git, dir, "write-tree")
+	// the builder's change is what it committed: HEAD's tree, the one the
+	// node validated and attests. Nothing is staged — a sweep of the
+	// working directory would carry the validation's outputs (runsheet's
+	// scan suite writes scan-out/ and scan-report.json at the root) into
+	// the changeset, a tree the attestation does not name and files the
+	// pull request should not hold
+	tree, err := gitLine(ctx, git, dir, "rev-parse", "HEAD^{tree}")
 	if err != nil {
-		return nil, fmt.Errorf("finish: write-tree: %w", err)
+		return nil, fmt.Errorf("finish: tree of HEAD: %w", err)
+	}
+	if f.Logf != nil {
+		if left := uncommitted(ctx, git, dir); len(left) > 0 {
+			f.Logf("finish: %d path(s) left uncommitted are not in the changeset, which is HEAD's tree %s: %s", len(left), tree, strings.Join(capPaths(left, 10), ", "))
+		}
 	}
 	baseSHA, baseTree, err := baseCommit(ctx, git, dir, base, checkoutSHA, f.Logf)
 	if err != nil {
@@ -210,6 +220,37 @@ func (f *Finish) changeset(ctx context.Context, dir, base, checkoutSHA string) (
 		return res, fmt.Errorf("finish: finish on changeset %s: %w", id, err)
 	}
 	return res, nil
+}
+
+// uncommitted lists the paths the working directory holds beyond HEAD —
+// tracked changes and untracked files git does not ignore — as `git
+// status --porcelain` names them; nil when git cannot say.
+func uncommitted(ctx context.Context, git GitFunc, dir string) []string {
+	out, err := git(ctx, dir, "status", "--porcelain", "-z", "--untracked-files=normal")
+	if err != nil {
+		return nil
+	}
+	var paths []string
+	entries := strings.Split(string(out), "\x00")
+	for i := 0; i < len(entries); i++ {
+		e := entries[i]
+		if len(e) < 4 {
+			continue
+		}
+		if e[0] == 'R' || e[0] == 'C' {
+			i++ // the rename's source follows
+		}
+		paths = append(paths, e[3:])
+	}
+	return paths
+}
+
+// capPaths is paths with at most n named and the rest counted.
+func capPaths(paths []string, n int) []string {
+	if len(paths) <= n {
+		return paths
+	}
+	return append(append([]string(nil), paths[:n]...), fmt.Sprintf("and %d more", len(paths)-n))
 }
 
 // baseCommit is the commit the changeset is against and its tree, which

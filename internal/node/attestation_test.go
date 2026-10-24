@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"path/filepath"
 	"strings"
@@ -168,5 +169,84 @@ func TestChangesetAttestationOfAnotherTreeIsNotSent(t *testing.T) {
 	}
 	if f.Item(item1)["status"] == "failed" {
 		t.Fatal("an attestation not sent must not fail the item")
+	}
+}
+
+// A build whose validation writes untracked output into the checkout —
+// runsheet's scan suite writes scan-out/ and scan-report.json at the
+// root, a declared report — finishes with a changeset whose tree is the
+// validated commit's and carries no report, and the attestation of that
+// commit is taken by a platform that refuses a wrong tree (dl360,
+// 2026-10-24/25: the finish swept the outputs in, so the changeset's tree
+// was not the one validated). The declared report is still read into the
+// attestation, just never committed.
+func TestChangesetOfAValidationThatWroteAReportIsTheValidatedCommit(t *testing.T) {
+	f := seed(t)
+	f.Changesets = true
+	r, b, logs := uploadRunner(t, f, &ValidationNotices{}, item1)
+
+	dir := t.TempDir()
+	gitRun(t, dir, "init", "-q")
+	writeFiles(t, dir, map[string]string{
+		".runsheet/validate.yml": "suites:\n  - name: scan\n    kind: unit\n    command: \"mkdir -p scan-out && echo clean > scan-out/summary.txt && echo '{\\\"findings\\\":[]}' > scan-report.json\"\n    reports: [scan-report.json]\n",
+		"api/api.go":             "package api\n",
+	})
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-qm", "main")
+	gitRun(t, dir, "tag", "base")
+	writeFiles(t, dir, map[string]string{"api/steps.go": "package api\n\nconst Steps = 7\n"})
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-qm", "api: steps")
+	head := gitRun(t, dir, "rev-parse", "HEAD")
+
+	// the node's validation on the builder's commit, in the checkout
+	cfg, err := validate.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := validate.Run(context.Background(), cfg.Steps, validate.HostRunner{Dir: dir}, validate.Options{Dir: dir})
+	if err != nil || len(results) != 1 || results[0].ExitCode != 0 {
+		t.Fatalf("validation: %+v %v", results, err)
+	}
+	att, err := validate.Build(dir, head, results, validate.Meta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(att.Steps[0].Report, "findings") {
+		t.Fatalf("the declared report was not read: %+v", att.Steps[0])
+	}
+	if st := gitRun(t, dir, "status", "--porcelain"); !strings.Contains(st, "?? scan-report.json") || !strings.Contains(st, "?? scan-out/") {
+		t.Fatalf("the validation left %q, want its untracked outputs", st)
+	}
+
+	cg, ok := r.GW.(changesetGateway)
+	if !ok || !cg.TakesChangesets(context.Background()) {
+		t.Fatal("the fake takes no changesets")
+	}
+	fin := &sessionsteps.Finish{ItemID: item1, Branch: "mesh/ship-it-1", Gateway: cg,
+		Logf:     func(format string, args ...any) { r.logf("item %s: %s", b.label, fmt.Sprintf(format, args...)) },
+		Recorded: func(ctx context.Context, res *sessionsteps.FinishResult) { r.attestChangeset(ctx, b, att, res) }}
+	state := &sessionsteps.State{WorkspaceDir: dir, BaseRef: "base"}
+	ctx := gateway.WithNodeID(context.Background(), "22222222-2222-4222-8222-222222222222")
+	if recs := sessionsteps.Run(ctx, sessionsteps.Job{Steps: []sessionsteps.Step{fin.Step()}}, state); recs[0].Outcome != sessionsteps.Succeeded {
+		t.Fatalf("finish: %s: %v\n%s", recs[0].Outcome, recs[0].Err, logs.String())
+	}
+
+	css := f.ChangesetsOf(item1)
+	if len(css) != 1 {
+		t.Fatalf("changesets = %+v, want one", css)
+	}
+	cs := css[0]
+	if cs.Tree != att.Tree || cs.Tree != gitRun(t, dir, "rev-parse", "HEAD^{tree}") {
+		t.Fatalf("changeset tree %s, validated tree %s", cs.Tree, att.Tree)
+	}
+	if strings.Join(cs.PathsChanged, ",") != "api/steps.go" {
+		t.Fatalf("paths changed = %v, want api/steps.go alone", cs.PathsChanged)
+	}
+	if out := logs.String(); strings.Contains(out, "attestation refused") || !strings.Contains(out, "attestation recorded "+short(head)) {
+		t.Fatalf("the attestation was not taken:\n%s", out)
+	}
+	if !strings.Contains(logs.String(), "left uncommitted are not in the changeset") {
+		t.Fatalf("log lacks the left-out paths:\n%s", logs.String())
 	}
 }
