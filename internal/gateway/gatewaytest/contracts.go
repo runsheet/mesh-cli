@@ -78,7 +78,9 @@ var FixtureGaps = map[string]Gaps{
 		"job.thread.trigger":   "runsheet gateway/claimjob.go: out[\"trigger\"], the thread's trigger",
 		"job.thread.replyHook": "runsheet gateway/claimjob.go: out[\"replyHook\"], the thread's reply hook",
 	}},
-	"recordValidationAttestation": {Ahead: map[string]string{
+	"recordValidationAttestation": {Request: map[string]string{
+		"input.changesetId": "runsheet gateway/attestation.go namedChangeset: m[\"changesetId\"], the changeset a changeset build recorded just before attesting (runsheet #5186; its fixture does not show it yet)",
+	}, Ahead: map[string]string{
 		"input.commands[].environmentKind": "mesh-cli ADR-030 (an environment failure names its kind); runsheet reads none yet, dropping the Map key",
 		"input.mergeBatchId":               "mesh-cli sends a batch candidate's mergeBatchId inside the input too (gateway/mainvalidation.go); runsheet reads only the argument (gateway/attestation.go)",
 	}},
@@ -118,7 +120,8 @@ func finishParts() map[string]any {
 		in, _ := x.request().(map[string]any)
 		attestation = joinShapes(attestation, in["input"])
 	}
-	attestation = withGaps(FixtureGaps["recordValidationAttestation"].Ahead, map[string]any{"input": attestation}).(map[string]any)["input"]
+	gaps := FixtureGaps["recordValidationAttestation"]
+	attestation = withGaps(gaps.Ahead, withGaps(gaps.Request, map[string]any{"input": attestation})).(map[string]any)["input"]
 	return map[string]any{
 		"answer":       "",
 		"proposal":     "",
