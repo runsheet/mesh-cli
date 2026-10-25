@@ -2,12 +2,12 @@ package sessionproxy
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -15,12 +15,74 @@ import (
 	"projectmesh.io/mesh-cli/internal/dpop/dpoptest"
 )
 
-// A 401 invalid_token from runsheet is forwarded again exactly once,
-// re-authorized with a fresh proof (runsheet ADR 064 §2): the retry's
-// answer reaches the client, and a second 401 is the answer, no third
-// request. A 401 refusing the proof itself (invalid_dpop_proof) is
-// never retried.
+// A DPoP Runsheet upstream signs each request with a fresh proof
+// (runsheet ADR 064 §2): a 401 invalid_token is forwarded again exactly
+// once, re-authorized with a fresh proof, and a 401 refusing the proof
+// itself (invalid_dpop_proof) is never retried.
 func TestRelaySignsEachRequest(t *testing.T) {
+	// With a Key the built-in goes as `Authorization: DPoP <token>` with a
+	// fresh proof of the request's method and URL and the token's hash by
+	// that key, every request — what runsheet's /mcp takes of a session
+	// token (runsheet ADR 064 §2) — each proof its own jti, and a DPoP the
+	// agent sends is never forwarded.
+	t.Run("fresh_proof_per_request", func(t *testing.T) {
+		key, err := dpop.NewKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var v dpoptest.Verifier
+		var s seen
+		var mu sync.Mutex
+		var verr []error
+		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			s.add(r)
+			tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "DPoP ")
+			if !ok {
+				http.Error(w, "DPoP scheme required", http.StatusUnauthorized)
+				return
+			}
+			if err := v.Verify(r.Header.Get("DPoP"), dpoptest.Request{Method: r.Method, URL: "http://" + r.Host + r.URL.RequestURI(), Token: tok, JKT: key.Thumbprint()}); err != nil {
+				mu.Lock()
+				verr = append(verr, err)
+				mu.Unlock()
+				http.Error(w, err.Error(), http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
+		}))
+		defer up.Close()
+
+		p := New(map[string]Upstream{"runsheet": Runsheet{URL: up.URL + "/mcp", Key: key,
+			Bearer: func(context.Context) (string, error) { return bearerNew, nil }}})
+		c, _ := listen(t, p)
+		for i := 0; i < 2; i++ {
+			resp, body := post(t, c, "runsheet", map[string]string{"DPoP": "agent-proof", "Authorization": "Bearer agent"}, initialize)
+			if resp.StatusCode != 200 {
+				mu.Lock()
+				t.Fatalf("request %d: status %d: %s (%v)", i, resp.StatusCode, body, verr)
+			}
+		}
+		reqs := s.all()
+		if len(reqs) != 2 {
+			t.Fatalf("upstream saw %d requests, want 2", len(reqs))
+		}
+		for i, r := range reqs {
+			if got := r.Header.Get("Authorization"); got != "DPoP "+bearerNew {
+				t.Fatalf("request %d: Authorization %q, want DPoP %s", i, got, bearerNew)
+			}
+			if r.Header.Get("DPoP") == "" || r.Header.Get("DPoP") == "agent-proof" {
+				t.Fatalf("request %d: DPoP %q, want the proxy's own proof", i, r.Header.Get("DPoP"))
+			}
+			if jkt, err := dpoptest.ProofJKT(r.Header.Get("DPoP")); err != nil || jkt != key.Thumbprint() {
+				t.Fatalf("request %d: proof jkt %q (%v), want %s", i, jkt, err, key.Thumbprint())
+			}
+		}
+		if a, b := proofJTI(t, reqs[0].Header.Get("DPoP")), proofJTI(t, reqs[1].Header.Get("DPoP")); a == b {
+			t.Fatalf("both requests carry jti %s", a)
+		}
+	})
+
 	t.Run("invalid_token_retries", func(t *testing.T) {
 		t.Run("once", func(t *testing.T) {
 			for _, tc := range []struct {
@@ -185,25 +247,12 @@ func TestRelaySignsEachRequest(t *testing.T) {
 	})
 }
 
-// proofJTI reads a DPoP proof's jti from its JWT payload.
+// proofJTI is a DPoP proof's jti (dpoptest.ProofJTI), failing t without one.
 func proofJTI(t *testing.T, proof string) string {
 	t.Helper()
-	parts := strings.Split(proof, ".")
-	if len(parts) != 3 {
-		t.Fatalf("proof %q is not a compact JWS", proof)
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	jti, err := dpoptest.ProofJTI(proof)
 	if err != nil {
-		t.Fatalf("proof payload: %v", err)
+		t.Fatal(err)
 	}
-	var claims struct {
-		JTI string `json:"jti"`
-	}
-	if err := json.Unmarshal(raw, &claims); err != nil {
-		t.Fatalf("proof payload: %v", err)
-	}
-	if claims.JTI == "" {
-		t.Fatal("proof carries no jti")
-	}
-	return claims.JTI
+	return jti
 }

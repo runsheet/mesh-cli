@@ -1,6 +1,6 @@
 ---
 title: "ADR-038: A session reaches every MCP server through one proxy"
-summary: Each build, evaluation, plan and research session reaches the built-in runsheet and every console tool through its own sessionproxy (internal/sessionproxy) — streamable HTTP at /mcp/<server> on a 0600 unix socket alone in a directory under the session's org MCP root, run by the node on the host and holding every credential (the session's runsheet bearer in memory, a remote tool's headers, a local tool's secret env in the child it runs) — so the agent's MCP config names only a secretless shim (a pod's node script, a host's `mesh mcp-relay --socket --server`), the pod mounts the socket's directory alone, and no runsheet.token, MESH_TOOL_* or secret value is in the agent's env, disk or config; a server's failure is named by the proxy's own error, state.json names the socket and server names so an adopting node restarts the proxy on the same path, and TestSessionProxySandboxedE2E proves it in a real pod. Amends ADR-029 and ADR-035; for a node's sessions it supersedes mesh-specs ADR 006 decision 2, secrets in env only.
+summary: Each build, evaluation, plan and research session reaches the built-in runsheet and every console tool through its own sessionproxy (internal/sessionproxy) — streamable HTTP at /mcp/<server> on a 0600 unix socket alone in a directory under the session's org MCP root, run by the node on the host and holding every credential (the session's runsheet bearer in memory, each runsheet request sent `Authorization: DPoP` with a fresh proof by the node's in-memory key and a proof refusal answered -32603, never retried, a remote tool's headers, a local tool's secret env in the child it runs) — so the agent's MCP config names only a secretless shim (a pod's node script, a host's `mesh mcp-relay --socket --server`), the pod mounts the socket's directory alone, and no runsheet.token, MESH_TOOL_* or secret value is in the agent's env, disk or config; a server's failure is named by the proxy's own error, state.json names the socket and server names so an adopting node restarts the proxy on the same path, and TestSessionProxySandboxedE2E proves it in a real pod. Amends ADR-029 and ADR-035; for a node's sessions it supersedes mesh-specs ADR 006 decision 2, secrets in env only.
 status: accepted
 ---
 
@@ -51,9 +51,21 @@ node could say nothing better because the failure was inside the pod.
    - `Remote{URL, Headers}` — a console tool's URL, its headers filled
      from what the proxy holds; a client's `Authorization`, and any
      header the upstream config names, is dropped, never forwarded;
-   - `Runsheet{URL, Bearer}` — the built-in, its bearer asked of
-     `Bearer` per request and held only in memory; a 401 asks again and
-     retries once;
+   - `Runsheet{URL, Bearer, Key}` — the built-in, its bearer asked of
+     `Bearer` per request and held only in memory. With `Key` (the
+     node's in-memory `dpop.Key` the session's mesh-session token was
+     minted bound to, `TokenFiles.KeyOf` → `SessionProxies.keyOf` →
+     `upstreamsOf`) every request goes as `Authorization: DPoP <token>`
+     with a fresh proof of its method and URL and the token's hash —
+     its own `jti`, never reused — and a `DPoP` header the agent sent
+     is dropped (runsheet ADR 064 §2, §5); without one, `Bearer`. A 401
+     `invalid_token` asks again and retries once, with a fresh proof; a
+     401 whose `WWW-Authenticate` is a DPoP challenge with
+     `error="invalid_dpop_proof"` (`dpopRefusal`) is the proof refused,
+     not a stale token: never retried, the agent answered JSON-RPC
+     -32603 `sessionproxy: <name>: upstream refused the DPoP proof:
+     <reason>`, masked (amended 2026-10-25, goal
+     `the-relay-signs-each-mcp-request-with-its-sessions-key`);
    - `Local{Command, Args, Env, Secrets}` — a local tool (`npx -y
      <package>`, `uvx`, `docker run -i`, as `internal/tools` renders the
      runtime's launch) started by the proxy on the host, lazily on the
@@ -152,3 +164,26 @@ node could say nothing better because the failure was inside the pod.
   MCP root until it sets `Roots`; channel-mode sessions, not in a pod,
   are not proxied; the mesh-specs amendment to ADR 006 decision 2 is
   owed by `runsheet/mesh-specs`.
+
+## Amendment 2026-10-25: the relay signs each request with its session's key
+
+Goal `the-relay-signs-each-mcp-request-with-its-sessions-key` (runsheet
+ADR 064, a mesh session token is DPoP-bound). `SessionBearers` mints a
+build's token for audience `mesh-session` (`MeshSessionAudience`) on a
+DPoP proof of the node's `dpop.Key`, held in memory for the process's
+life, and binds the key beside the bearer (`TokenFiles.Bind`,
+`KeyOf`); the session's proxy gets it as `Runsheet.Key`, so every /mcp
+request carries `Authorization: DPoP` and a fresh proof, and a proof
+refusal is -32603 naming its reason, not retried (Decision 1 above).
+The tests that pin it are `TestRelaySignsEachRequest`: in
+`internal/sessionproxy`, `fresh_proof_per_request` (each request a
+proof `dpoptest.Verifier` accepts, distinct `jti`s, the agent's DPoP
+dropped), `invalid_token_retries/once` (a 401 `invalid_token` is
+forwarded again exactly once — the retry's 200 reaches the client, two
+401s give two upstream requests and no third),
+`invalid_token_retries/fresh_proof` and `proof_refusal`; in
+`internal/node`, end to end — the mint through gatewaytest asks
+`mesh-session` with a proof bound to the node's key, `upstreamsOf`
+gives the runsheet upstream that key, two calls through the session's
+socket reach a verifying /mcp each with a fresh proof (ath of the
+minted token, jkt the key's thumbprint), and a refusal reads -32603.

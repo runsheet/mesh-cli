@@ -234,3 +234,17 @@ func proofParts(proof string) (head, claims map[string]any, err error) {
 	}
 	return h.JWK, claims, nil
 }
+
+// ProofJTI is the jti a proof's claims carry, read without checking the
+// proof: two proofs of one key are told apart by it.
+func ProofJTI(proof string) (string, error) {
+	_, claims, err := proofParts(proof)
+	if err != nil {
+		return "", err
+	}
+	jti, _ := claims["jti"].(string)
+	if jti == "" {
+		return "", errors.New("dpop: proof carries no jti")
+	}
+	return jti, nil
+}
