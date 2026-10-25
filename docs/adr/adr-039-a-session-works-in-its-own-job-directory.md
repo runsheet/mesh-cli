@@ -224,8 +224,13 @@ with a proof by that key (Latchkey binds it, `cnf.jkt`; a
 `use_dpop_nonce` answer is asked again once with its nonce), and the
 proxy sends every runsheet request as `Authorization: DPoP <token>` with
 a fresh proof of the request's method, URL and the token's hash
-(`sessionproxy.Runsheet.Key`). A DPoP header the agent sends is never
-forwarded. The key is in no file and no pod, so a token copied out of
+(`sessionproxy.Runsheet.Key`). A 401 `WWW-Authenticate: DPoP
+error="invalid_token"` from runsheet is forwarded again exactly once,
+re-authorized with a fresh proof — another DPoP header and jti, valid for
+the retried request's method, URL and token — and a second 401 is the
+client's answer, no third request
+(`TestRelaySignsEachRequest/invalid_token_retries`). A DPoP header the
+agent sends is never forwarded. The key is in no file and no pod, so a token copied out of
 the node is of no use; a node that restarts adopts its sessions by
 opening their mesh sessions again under its new key. The machine-bearer
 stopgap (`MachineUntilDPoP`) is gone.
