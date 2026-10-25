@@ -674,7 +674,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `State.BaseSHA`) while HEAD descends from it, else the merge-base of
   HEAD and the base (`session.baseCommit`; a base that moved on since
   the checkout is logged, not followed) — the validated commit's
-  attestation uploaded first, logged `item <label>: changeset <id>
+  attestation uploaded between the record and the finish
+  (`Finish.Recorded`, `attestChangeset`), naming the recorded changeset
+  as `changesetId` so the platform reads it from the aggregate rather
+  than its lagging index of the item's latest (runsheet amendment
+  2026-10-25; `gatewaytest.Fake.ChangesetIndexLags`), and a failed
+  build's run, which records no changeset, never sent — logged `item <label>: changeset <id>
   recorded (<n> path(s), <m> object(s) uploaded) on <base>; finished
   <branch> ($x)` — only when
   `gateway.Client.TakesChangesets` (FinishWorkItemInput has

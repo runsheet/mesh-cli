@@ -125,7 +125,10 @@ type validationTarget struct {
 	// finishJob, never by an upload. repoTok, set with no
 	// cred, is a token its fetches go out on as it is, never renewed.
 	batchID string
-	repoTok *gateway.GitHubToken
+	// changesetID is the changeset a changeset build's attestation is
+	// of (attestChangeset), sent as its changesetId; "" otherwise.
+	changesetID string
+	repoTok     *gateway.GitHubToken
 	// defaultBranch is the repo's default branch, the changed paths'
 	// base when base — a merged dependency's branch — is gone from
 	// origin; "" takes no fallback.
@@ -976,7 +979,16 @@ func (r *Runner) attestChangeset(ctx context.Context, b *buildRun, att validate.
 		b.report(ctx, msg)
 		return
 	}
-	r.uploadAttestation(ctx, b, att)
+	// named, so the platform reads the changeset from its aggregate: its
+	// index of the item's latest has not folded this record yet, and
+	// held to that alone the attestation was refused (GitHub has none
+	// for a first changeset, wrong_tree against the previous attempt's
+	// for a rework)
+	t := b.target()
+	if res != nil {
+		t.changesetID = res.ChangesetID
+	}
+	r.validator().upload(ctx, t, att)
 }
 
 func (vr validator) upload(ctx context.Context, t validationTarget, att validate.Attestation) attestOutcome {
@@ -1029,7 +1041,9 @@ func (vr validator) record(ctx context.Context, t validationTarget, att validate
 	if rec == nil {
 		return "", unsupported
 	}
-	receipt, err := rec.RecordValidationAttestation(ctx, t.item.ID, gatewayAttestation(att))
+	ga := gatewayAttestation(att)
+	ga.ChangesetID = t.changesetID
+	receipt, err := rec.RecordValidationAttestation(ctx, t.item.ID, ga)
 	status, _ := receipt["status"].(string)
 	return status, err
 }

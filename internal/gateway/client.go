@@ -4972,6 +4972,13 @@ type ValidationAttestation struct {
 	At              time.Time           `json:"at"`
 	Commands        []ValidationCommand `json:"commands"`
 	Reports         []ValidationReport  `json:"reports"`
+	// ChangesetID is the changeset a changeset build's attestation is of
+	// — the one its finish recorded just before (runsheet
+	// gateway/attestation.go itemChangeset, amended 2026-10-25): the
+	// platform reads it from the Changeset aggregate, so the projection
+	// of the item's latest not having folded it yet refuses nothing.
+	// Empty for every other attestation, and then left out.
+	ChangesetID string `json:"changesetId,omitempty"`
 }
 
 // ValidationCommand is one step of .runsheet/validate.yml as it ran:

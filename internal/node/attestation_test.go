@@ -359,3 +359,35 @@ func TestCommitLeftoversCleanExcludedAndMidMerge(t *testing.T) {
 		t.Fatalf("mid-merge: committed %v, %v", paths, err)
 	}
 }
+
+// The platform's index of an item's latest changeset has not folded the
+// record yet when the node attests right after it (dl360, 2026-10-25:
+// "GitHub has none" for a first changeset, wrong_tree against the
+// previous attempt's for a rework). attestChangeset names the changeset
+// it recorded (changesetId), which the platform reads from its aggregate;
+// an attestation naming none is refused for the lag, as before.
+func TestChangesetAttestationNamesItsChangeset(t *testing.T) {
+	f := seed(t)
+	f.Changesets, f.ChangesetIndexLags = true, true
+	f.RecordedChangesets = map[string][]gateway.Changeset{item1: {{ChangesetID: "cs-1", Tree: "b03fe8a8"}, {ChangesetID: "cs-2", Tree: "3b2f9dd6"}}}
+	r, b, logs := uploadRunner(t, f, &ValidationNotices{}, item1)
+	att := validate.Attestation{Commit: "71fe054e", Tree: "3b2f9dd6", At: time.Now()}
+
+	// the waste: named nothing, held to the index's latest, cs-1
+	if out := r.uploadAttestation(context.Background(), b, att); out.Refused == "" || !strings.Contains(out.Refused, "is not the tree b03fe8a8") {
+		t.Fatalf("named nothing while the index lags: %+v, want refused naming the previous tree", out)
+	}
+	r.attestChangeset(context.Background(), b, att, &sessionsteps.FinishResult{ChangesetID: "cs-2", Tree: "3b2f9dd6"})
+	atts := f.CallsNamed("recordValidationAttestation")
+	in, _ := atts[len(atts)-1].Input["input"].(map[string]any)
+	if in["changesetId"] != "cs-2" {
+		t.Fatalf("input = %v, want changesetId cs-2", in)
+	}
+	if !strings.Contains(logs.String(), "attestation recorded 71fe054e") {
+		t.Fatalf("log = %s, want the attestation recorded", logs.String())
+	}
+	// any other attestation names none
+	if first, _ := atts[0].Input["input"].(map[string]any); first["changesetId"] != nil {
+		t.Fatalf("a plain upload names no changeset: %v", first)
+	}
+}

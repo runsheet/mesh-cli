@@ -903,6 +903,30 @@ func TestFailingStepGivesOneRetryTurnThenFailsNamingTheStep(t *testing.T) {
 	}
 }
 
+// On a platform holding changesets a failed build records no changeset,
+// and the platform holds a changeset item's attestation to its recorded
+// changeset's tree: the failed run's upload was refused every time
+// (dl360, 2026-10-25: "GitHub has none", or wrong_tree against the
+// previous attempt's), so it is not sent — the item still fails naming
+// the step, and the log says why nothing was attested.
+func TestFailedChangesetBuildSendsNoAttestation(t *testing.T) {
+	r, _, _, f, item, logs := validatingRunner(t, withValidation(), map[string]string{"api/broken": "x"})
+	f.Changesets = true
+	err := r.RunItem(context.Background(), item)
+	if err == nil || !strings.HasPrefix(err.Error(), "validation failed: step api") {
+		t.Fatalf("err = %v", err)
+	}
+	if n := len(f.CallsNamed("failWorkItem")); n != 1 {
+		t.Fatalf("failWorkItem calls = %d", n)
+	}
+	if n := len(f.CallsNamed("recordValidationAttestation")); n != 0 {
+		t.Fatalf("attestations = %d, want none for a failed changeset build", n)
+	}
+	if !strings.Contains(logs.String(), "no changeset is recorded for it, so no attestation is sent") {
+		t.Fatalf("log = %s", logs.String())
+	}
+}
+
 // A retry turn that lands no new commit is the same failure.
 func TestRetryWithoutACommitFailsNamingTheStep(t *testing.T) {
 	r, _, h, f, item, _ := validatingRunner(t, withValidation(), map[string]string{"api/broken": "x"})
