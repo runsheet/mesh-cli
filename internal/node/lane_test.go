@@ -6,6 +6,9 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/validate"
 )
 
 // The lanes (runsheet ADR 069 decision 2b, goal
@@ -179,6 +182,151 @@ func TestLaneBuildsDoNotTakeTheReservedSlots(t *testing.T) {
 		got := len(f.CallsNamed("claimWorkItem")) > 0
 		if got != c.claims {
 			t.Errorf("%d build(s) running at capacity 4: claimed %v, want %v\n%s", c.running, got, c.claims, logs.String())
+		}
+	}
+}
+
+// The validation lane is a merge batch candidate's first (goal
+// merge-candidates-have-a-lane): a hand-opened pull request never
+// takes it, and a merged item's main validation takes it only while no
+// candidate waits. A free slot of the capacity is anyone's.
+
+// blockingPullRequest is a pull request validator that reports each
+// start and runs until released.
+func blockingPullRequest(started chan<- string, release <-chan struct{}) func(context.Context, gateway.MainValidationPullRequest) (validate.Attestation, error) {
+	return func(ctx context.Context, p gateway.MainValidationPullRequest) (validate.Attestation, error) {
+		started <- p.PullRequestValidationID
+		select {
+		case <-release:
+			return validate.Attestation{Commit: p.SHA, Steps: []validate.StepResult{{Name: "unit"}}}, nil
+		case <-ctx.Done():
+			return validate.Attestation{}, ctx.Err()
+		}
+	}
+}
+
+// At capacity with builds, the lane's one slot is left for a candidate:
+// a waiting hand-opened pull request is not claimed in it, with or
+// without a candidate beside it, and the candidate is.
+func TestLanePullRequestNeverTakesTheLane(t *testing.T) {
+	for _, withBatch := range []bool{false, true} {
+		loop, f, _, logs := pullRequestLoop(t, oneStepYML("true"), 4, withBatch)
+		fillBuilds(loop, 4)
+		tick(loop)
+		if n := len(f.CallsNamed("claimPullRequestValidation")); n != 0 {
+			t.Errorf("batch served %v: a pull request was claimed in the validation lane (%d claims)\n%s", withBatch, n, logs.String())
+		}
+		if got, want := len(f.CallsNamed("claimMergeBatchValidation")) > 0, withBatch; got != want {
+			t.Errorf("batch served %v: candidate claimed %v, want %v\n%s", withBatch, got, want, logs.String())
+		}
+	}
+}
+
+// A free slot is anyone's: with one slot free and the lane's beside it,
+// the candidate starts in its lane and the pull request in the free
+// slot.
+func TestLanePullRequestTakesAFreeSlot(t *testing.T) {
+	loop, f, _, logs := pullRequestLoop(t, oneStepYML("true"), 4, true)
+	fillBuilds(loop, 3)
+	tick(loop)
+	if len(f.CallsNamed("claimMergeBatchValidation")) != 1 || len(f.CallsNamed("claimPullRequestValidation")) != 1 {
+		t.Fatalf("one free slot and the lane: claims batch %d, pull request %d, want 1 and 1\n%s",
+			len(f.CallsNamed("claimMergeBatchValidation")), len(f.CallsNamed("claimPullRequestValidation")), logs.String())
+	}
+}
+
+// A pull request running in a free slot leaves the lane's slot empty:
+// a candidate served the tick after, with every slot of the capacity
+// then taken, is claimed in the lane. (Before, any validation running
+// counted against the lane, and the candidate waited for the pull
+// request to end.)
+func TestLaneIsNotHeldByAPullRequest(t *testing.T) {
+	loop, f, _, logs := pullRequestLoop(t, oneStepYML("true"), 4, true)
+	row := f.MergeBatches[batchID]
+	delete(f.MergeBatches, batchID)
+	fillBuilds(loop, 3)
+	started, release := make(chan string, 1), make(chan struct{})
+	loop.ValidatePullRequest = blockingPullRequest(started, release)
+	loop.Tick(context.Background())
+	<-started
+	if got := loop.ValidatingInLane(); got != 0 {
+		t.Fatalf("ValidatingInLane() = %d with only a pull request running, want 0", got)
+	}
+	f.MergeBatches[batchID] = row
+	loop.Tick(context.Background())
+	claimed := len(f.CallsNamed("claimMergeBatchValidation")) > 0
+	close(release)
+	loop.wg.Wait()
+	if !claimed {
+		t.Fatalf("a candidate waited behind a pull request's validation in a free slot\n%s", logs.String())
+	}
+}
+
+// A merged item's main validation takes the lane while no candidate
+// waits, and leaves it to a candidate that does.
+func TestLaneMainValidationOnlyWhenNoCandidateWaits(t *testing.T) {
+	for _, withBatch := range []bool{false, true} {
+		loop, f, _, logs := requestLoop(t, oneStepYML("true"), 4, withBatch)
+		fillBuilds(loop, 4)
+		tick(loop)
+		mains := len(f.CallsNamed("claimWorkItemMainValidation"))
+		batches := len(f.CallsNamed("claimMergeBatchValidation"))
+		if withBatch && (batches != 1 || mains != 0) {
+			t.Errorf("a candidate waiting: claims batch %d, main %d, want 1 and 0\n%s", batches, mains, logs.String())
+		}
+		if !withBatch && mains != 1 {
+			t.Errorf("no candidate waiting: main claims %d, want 1 in the lane\n%s", mains, logs.String())
+		}
+	}
+}
+
+// A main validation that started in a free slot holds no lane slot
+// either: the candidate served next, every slot then taken, is claimed
+// in the lane.
+func TestLaneIsNotHeldByAMainValidationInAFreeSlot(t *testing.T) {
+	loop, f, _, logs := requestLoop(t, oneStepYML("true"), 4, true)
+	row := f.MergeBatches[batchID]
+	delete(f.MergeBatches, batchID)
+	fillBuilds(loop, 3)
+	started, release := make(chan string, 1), make(chan struct{})
+	loop.ValidateMain = func(ctx context.Context, r gateway.MainValidationRequest) (validate.Attestation, error) {
+		started <- r.WorkItemID
+		select {
+		case <-release:
+			return validate.Attestation{Commit: r.SHA, Steps: []validate.StepResult{{Name: "unit"}}}, nil
+		case <-ctx.Done():
+			return validate.Attestation{}, ctx.Err()
+		}
+	}
+	loop.Tick(context.Background())
+	<-started
+	if got := loop.ValidatingInLane(); got != 0 {
+		t.Fatalf("ValidatingInLane() = %d with a main validation in a free slot, want 0", got)
+	}
+	f.MergeBatches[batchID] = row
+	loop.Tick(context.Background())
+	claimed := len(f.CallsNamed("claimMergeBatchValidation")) > 0
+	close(release)
+	loop.wg.Wait()
+	if !claimed {
+		t.Fatalf("a candidate waited behind a main validation in a free slot\n%s", logs.String())
+	}
+}
+
+// laneTakes: a candidate always, a main validation while no candidate
+// waits, a pull request never.
+func TestLaneTakes(t *testing.T) {
+	for _, c := range []struct {
+		kind  jobKind
+		waits bool
+		want  bool
+	}{
+		{jobCandidate, false, true}, {jobCandidate, true, true},
+		{jobMain, false, true}, {jobMain, true, false},
+		{jobPullRequest, false, false}, {jobPullRequest, true, false},
+	} {
+		if got := laneTakes(c.kind, c.waits); got != c.want {
+			t.Errorf("laneTakes(%d, candidate waits %v) = %v, want %v", c.kind, c.waits, got, c.want)
 		}
 	}
 }

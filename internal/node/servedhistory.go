@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"projectmesh.io/mesh-cli/internal/gitdata"
@@ -241,10 +242,9 @@ func commitText(c gitdata.Commit) (string, error) {
 	if c.Payload != "" {
 		cands := []string{c.Payload}
 		if c.Signature != "" {
-			sig := c.Signature
-			cands = []string{withSignature(c.Payload, sig)}
-			if !strings.HasSuffix(sig, "\n") {
-				cands = append(cands, withSignature(c.Payload, sig+"\n"))
+			cands = nil
+			for _, sig := range signatureForms(c.Signature) {
+				cands = append(cands, withSignature(c.Payload, sig))
 			}
 		}
 		for _, text := range cands {
@@ -258,6 +258,26 @@ func commitText(c gitdata.Commit) (string, error) {
 		return text, nil
 	}
 	return "", fmt.Errorf("its fields do not hash to its sha (an extra header, or a zone past the search)")
+}
+
+// signatureForms are the ways a served signature may sit in its commit
+// object: as served; with one more newline — GitHub's own signature on
+// a commit it makes (a squash merge on main, a merge batch candidate
+// the integrator writes through the API) is served ending in one
+// newline and sits in the object followed by a line of a lone space, so
+// none of them was ever rebuilt and every candidate and main
+// validation ran on a synthetic HEAD (dl360, 2026-10-24/25: 17 of 17
+// such runs red on runsheet's unit suite, 4 of 4 on the real commit
+// green); and with no trailing newline, then exactly one.
+func signatureForms(sig string) []string {
+	bare := strings.TrimRight(sig, "\n")
+	var out []string
+	for _, s := range []string{sig, sig + "\n", bare, bare + "\n"} {
+		if !slices.Contains(out, s) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // withSignature puts sig back into payload as git's
