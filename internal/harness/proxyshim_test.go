@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"projectmesh.io/mesh-cli/internal/sockettest"
 )
 
 // proxyShimGateway is a fake sessionproxy, served on a unix socket at
@@ -97,13 +99,9 @@ func startProxyShim(t *testing.T, socket, name string) *relayProc {
 func listenUnix(t *testing.T, gw http.Handler) string {
 	t.Helper()
 	// A short dir of its own, not t.TempDir(): nested under the test's
-	// own name, that can run past AF_UNIX's ~108-byte sun_path, as
-	// internal/sessionproxy's own proxy_test.go avoids the same way.
-	dir, err := os.MkdirTemp("", "sp")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	// own name, that can run past AF_UNIX's ~108-byte sun_path
+	// (sockettest.Dir).
+	dir := sockettest.Dir(t, "sp")
 	socket := filepath.Join(dir, "proxy.sock")
 	ln, err := net.Listen("unix", socket)
 	if err != nil {

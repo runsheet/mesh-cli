@@ -113,7 +113,8 @@ func TestServedDiffScratchHeadIsTheRealUnsignedCommit(t *testing.T) {
 	b := s.candidateOn(t, 11, "mesh/batch-11", s.batch.SHA, func(dir string) string {
 		writeFiles(t, dir, map[string]string{"api/zone.go": "package api\n\nconst Zone = 1\n", "api/api.go": "package api\n\nconst Changed = 2\n"})
 		gitRun(t, dir, "add", "-A")
-		cmd := exec.Command("git", "commit", "--quiet", "-m", "zones of their own\n\nwith a body")
+		// the identity gitRun's are made with: a sandbox's HOME names none
+		cmd := exec.Command("git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "zones of their own\n\nwith a body")
 		cmd.Dir = dir
 		cmd.Env = append(os.Environ(), "GIT_AUTHOR_DATE=1761400000 +1030", "GIT_COMMITTER_DATE=1761400100 -0700")
 		if out, err := cmd.CombinedOutput(); err != nil {
