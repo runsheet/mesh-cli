@@ -1,0 +1,12 @@
+{
+  "args": {
+    "body": "widgets, from a changeset\n",
+    "method": "PUT",
+    "path": "/mesh/v1/items/00000000-0000-4000-8000-0000000fffff/changeset/objects/blob/fb0c539b42b93912a693a61bdef5f51565c66d71"
+  },
+  "field": "mesh-changeset-object-put",
+  "kind": "http",
+  "list": false,
+  "sample": null,
+  "status": 201
+}

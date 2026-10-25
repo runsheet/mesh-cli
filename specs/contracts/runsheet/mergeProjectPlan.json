@@ -1,0 +1,64 @@
+{
+  "args": {
+    "sourceId": "a00ee511-6be8-5bef-bf59-4055ee443812",
+    "targetId": "dc655804-c5c4-5f97-922b-091827f90587"
+  },
+  "field": "mergeProjectPlan",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "blockers": [
+      {
+        "id": "00000000-0000-4000-8000-0000000c0003",
+        "kind": "claimed_item",
+        "reason": "item 1 of goal f7207998-f4b2-5af5-9bf1-07ed6c09a156 is claimed"
+      }
+    ],
+    "counts": {
+      "directions": 1,
+      "documents": 2,
+      "goals": 13,
+      "repos": 2,
+      "workItems": 10
+    },
+    "directions": [
+      "ef42e7d8-6c1d-5e10-8606-1ec010c906f7"
+    ],
+    "documents": [
+      {
+        "anchor": "",
+        "id": "00000000-0000-4000-8000-0000000fffff",
+        "newId": "00000000-0000-4000-8000-0000000fffff",
+        "path": "docs/adr/0001-keep-the-console-thin.md",
+        "repoId": "1e170b56-9f4e-56a0-9159-ce04e94eb3d8"
+      }
+    ],
+    "fingerprint": "FINGERPRINT",
+    "goals": [
+      "00000000-0000-4000-8000-0000000fffff"
+    ],
+    "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94",
+    "refusals": [],
+    "refused": "the project cannot merge: claimed_item 00000000-0000-4000-8000-0000000c0003: item 1 of goal f7207998-f4b2-5af5-9bf1-07ed6c09a156 is claimed; claimed_item 00000000-0000-4000-8000-0000000c0009: item 1 of goal f765d383-71d5-58ba-932f-e939ee628b21 is evaluating; direction ef42e7d8-6c1d-5e10-8606-1ec010c906f7: direction \"overnight\" is keyed by the source project: archive it first; live_session 00000000-0000-4000-8000-0000000c0003: node d1f6c904-510f-5905-a598-8ea0b41f837a holds a build session on item 1; live_session 00000000-0000-4000-8000-0000000c0009: node d1f6c904-510f-5905-a598-8ea0b41f837a holds a evaluate session on item 1; live_session c906baab-9d69-58f7-ae55-5a89d3f0eb72: node d1f6c904-510f-5905-a598-8ea0b41f837a is planning goal \"gamma\"; live_session ef42e7d8-6c1d-5e10-8606-1ec010c906f7: node d1f6c904-510f-5905-a598-8ea0b41f837a is researching direction \"overnight\"; running_goal 00000000-0000-4000-8000-0000000fffff: goal \"nightly-fix\" is planning: pause it or let it finish; running_goal 402a36e8-fbef-5dba-8ce8-d47242d904aa: goal \"epsilon\" is running: pause it or let it finish; running_goal 9d31d5af-965a-558e-9f91-82a9fad3d2d9: goal \"delta\" is running: pause it or let it finish; running_goal b2408080-8387-59c0-80c9-2f34ff510b4d: goal \"eta\" is running: pause it or let it finish; running_goal bf293a3c-0dc8-5aaa-b472-c25ff39dc42d: goal \"zeta\" is running: pause it or let it finish; running_goal c906baab-9d69-58f7-ae55-5a89d3f0eb72: goal \"gamma\" is planning: pause it or let it finish; running_goal f7207998-f4b2-5af5-9bf1-07ed6c09a156: goal \"beta\" is running: pause it or let it finish; running_goal f765d383-71d5-58ba-932f-e939ee628b21: goal \"iota\" is running: pause it or let it finish",
+    "repos": [
+      "1e170b56-9f4e-56a0-9159-ce04e94eb3d8"
+    ],
+    "settings": [
+      {
+        "conflicts": true,
+        "name": "autonomy_level",
+        "proposed": "supervised",
+        "source": "experimental",
+        "target": "supervised"
+      }
+    ],
+    "sourceId": "a00ee511-6be8-5bef-bf59-4055ee443812",
+    "sourceSlug": "mesh",
+    "sourceVersion": 18,
+    "targetId": "dc655804-c5c4-5f97-922b-091827f90587",
+    "targetSlug": "contractco",
+    "workItems": [
+      "00000000-0000-4000-8000-0000000c0001"
+    ]
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "args": {
+    "ref": "validation_log:00000000-0000-4000-8000-0000000fffff"
+  },
+  "field": "attestationEvidence",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "attested_at": "2026-01-01T00:00:00Z",
+    "commands": [
+      {
+        "command": "go test ./e2e/...",
+        "duration_ms": 61000,
+        "exit_code": 0,
+        "pod": "",
+        "suite": "integration"
+      }
+    ],
+    "commit_sha": "alpha-1-attested",
+    "kind": "validation_log",
+    "node_id": null,
+    "part": "",
+    "ref": "validation_log:00000000-0000-4000-8000-0000000fffff",
+    "repo_id": "7dacfd73-80d2-5f33-94d6-54f222403404",
+    "reports": [],
+    "reruns": [],
+    "runner_image": "ghcr.io/runsheet/mesh-node@sha256:0123",
+    "session_id": "build-1",
+    "suite_hash": "abababababababababababababababababababababababababababababababab",
+    "tests_failed": 0,
+    "tests_passed": 12,
+    "tests_run": 12
+  }
+}

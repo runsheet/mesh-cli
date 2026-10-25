@@ -41,9 +41,10 @@ func ReleaseOnWorkspace(ctx context.Context, gw Gateway, itemID, nodeID, label s
 	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 		return wrapped
 	}
-	logf("item %s: workspace failed and the release was refused (%v); failed instead: %s", label, err, oneLine(reason))
-	if err := gw.FailWorkItem(ctx, itemID, reason); err != nil && !errors.Is(err, context.Canceled) {
-		logf("item %s: fail: %v", label, err)
+	_ = handInRefused(logf, nil, label, "ReleaseWorkItem", err)
+	logf("item %s: workspace failed and the release was refused; failed instead: %s", label, oneLine(reason))
+	if err := gw.FailWorkItem(ctx, itemID, reason); !errors.Is(err, context.Canceled) {
+		_ = handInRefused(logf, nil, label, "FailWorkItem", err)
 	}
 	return wrapped
 }
@@ -96,14 +97,15 @@ func ReleaseOnInfrastructure(ctx context.Context, gw Gateway, itemID, nodeID, la
 	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 		return wrapped
 	}
+	_ = handInRefused(logf, nil, label, "ReleaseWorkItem", err)
 	if refused != nil {
-		logf("item %s: repo cache %s failed and the release was refused (%v): %s", label, we.Path, err, oneLine(reason))
+		logf("item %s: repo cache %s failed and the release was refused: %s", label, we.Path, oneLine(reason))
 		refused(reason)
 		return wrapped
 	}
-	logf("item %s: repo cache %s failed and the release was refused (%v); failed instead: %s", label, we.Path, err, oneLine(reason))
-	if err := gw.FailWorkItem(ctx, itemID, reason); err != nil && !errors.Is(err, context.Canceled) {
-		logf("item %s: fail: %v", label, err)
+	logf("item %s: repo cache %s failed and the release was refused; failed instead: %s", label, we.Path, oneLine(reason))
+	if err := gw.FailWorkItem(ctx, itemID, reason); !errors.Is(err, context.Canceled) {
+		_ = handInRefused(logf, nil, label, "FailWorkItem", err)
 	}
 	return wrapped
 }

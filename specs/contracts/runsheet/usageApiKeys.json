@@ -1,0 +1,60 @@
+{
+  "args": {
+    "by": "day",
+    "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94"
+  },
+  "field": "usageApiKeys",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "apiKeys": [
+      {
+        "buckets": [
+          {
+            "actualCostCents": 200,
+            "calls": 2,
+            "cap": {
+              "cap": 50,
+              "overCap": false,
+              "used": 0.04
+            },
+            "items": 2,
+            "listCostCents": 200,
+            "sessions": 2,
+            "start": "2026-01-01T00:00:00Z"
+          }
+        ],
+        "capUnit": "dollars",
+        "dailyCap": 50,
+        "daySpentCents": 200,
+        "forecast": {
+          "daysElapsed": 0,
+          "daysInMonth": 0,
+          "forecastCents": 0,
+          "forecastOverCap": false,
+          "month": "2026-01-01T00:00:00Z",
+          "monthlyCap": {
+            "cap": 1000,
+            "overCap": false,
+            "used": 0.002
+          },
+          "toDateCents": 200
+        },
+        "id": "37833791-097d-55fe-a7b4-32bbf4798ccd",
+        "kind": "api_key",
+        "label": "Anthropic API",
+        "monthSpentCents": 200,
+        "monthlyCap": 1000,
+        "plan": "",
+        "slug": "anthropic-api",
+        "spendDay": "2026-01-01",
+        "spendMonth": "2026-01",
+        "status": "active",
+        "vendor": "anthropic",
+        "windowTargets": []
+      }
+    ],
+    "by": "day",
+    "since": "2026-01-01T00:00:00Z"
+  }
+}

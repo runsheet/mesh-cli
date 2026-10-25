@@ -1,0 +1,39 @@
+{
+  "args": {
+    "method": "GET",
+    "path": "/mesh/v1/projects"
+  },
+  "field": "mesh-context-projects",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "projects": [
+      {
+        "autonomy": "experimental",
+        "directions": [
+          {
+            "direction": "Ship what the console needs.",
+            "enabled": true,
+            "hours": "all day UTC",
+            "name": "Features overnight",
+            "slug": "overnight"
+          }
+        ],
+        "home_repo": "contractco/api",
+        "id": "a00ee511-6be8-5bef-bf59-4055ee443812",
+        "name": "Mesh",
+        "org": "contractco",
+        "paused": false,
+        "repos": [
+          {
+            "id": "1e170b56-9f4e-56a0-9159-ce04e94eb3d8",
+            "name": "console",
+            "owner": "contractco"
+          }
+        ],
+        "slug": "mesh",
+        "status": "active"
+      }
+    ]
+  }
+}

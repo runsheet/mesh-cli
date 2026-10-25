@@ -1,0 +1,14 @@
+{
+  "args": {},
+  "field": "myInstallations",
+  "kind": "query",
+  "list": false,
+  "sample": [
+    {
+      "accountId": 9871,
+      "accountLogin": "contractco",
+      "accountType": "organization",
+      "installationId": 98710
+    }
+  ]
+}

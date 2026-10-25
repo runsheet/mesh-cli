@@ -1,0 +1,14 @@
+{
+  "field": "setOrgAccountRef",
+  "input": {
+    "accountRef": "acct_contract123",
+    "aggregateId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94",
+    "by": "e96b1f77-6ed9-53ce-8ef4-0861304b4a23",
+    "namespace": "runsheet"
+  },
+  "inputType": "SetOrgAccountRefInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

@@ -1,0 +1,103 @@
+{
+  "args": {
+    "method": "GET",
+    "path": "/mesh/v1/health/nodes?org=contractco"
+  },
+  "field": "health-nodes",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "at": "2026-01-01T00:00:00Z",
+    "latest_version": "v0.2.0",
+    "main_head": "b3d6de27c23231255d5c04365c1a6bc4e691159d",
+    "nodes": [
+      {
+        "behind": true,
+        "busy": 4,
+        "capacity": 1,
+        "claims_refused": 0,
+        "commits_behind_main": 2,
+        "credential_id": "00000000-0000-4000-8000-00000000c1d0",
+        "desired_version_auto": false,
+        "desired_version_downgrade": false,
+        "draining": false,
+        "heartbeat_age_seconds": 0,
+        "holding": {
+          "accounts": [
+            {
+              "account": "Max 20x",
+              "kind": "subscription",
+              "resets_at": "2026-01-01T00:00:00Z",
+              "status": "paced",
+              "takes": {
+                "max_items": 3,
+                "priorities": [
+                  "high"
+                ],
+                "research": false
+              }
+            }
+          ],
+          "mode": "paced",
+          "seen_at": "2026-01-01T00:00:00Z",
+          "summary": "no account has headroom for 1 plan(s); judged Max 20x, Anthropic API; left unclaimed until one has",
+          "unclaimed": [
+            {
+              "count": 1,
+              "goal_id": "00000000-0000-4000-8000-0000000000f1",
+              "kind": "plan",
+              "reason": "no account has headroom"
+            }
+          ],
+          "until": "2026-01-01T00:00:00Z"
+        },
+        "id": "d1f6c904-510f-5905-a598-8ea0b41f837a",
+        "in_flight": {
+          "building": 1,
+          "evaluating": 0,
+          "planning": 2,
+          "rebasing": 1,
+          "researching": 0
+        },
+        "last_refusal_reason": "claimWorkItem: an agent actor needs a machine credential: run mesh node login: not yours",
+        "last_refused_at": "2026-01-01T00:00:00Z",
+        "last_seen_at": "2026-01-01T00:00:00Z",
+        "name": "Box",
+        "oldest_unrun_merged_at": "2026-01-01T00:00:00Z",
+        "org": "contractco",
+        "owner_id": "e96b1f77-6ed9-53ce-8ef4-0861304b4a23",
+        "owner_kind": "person",
+        "plan_seen_at": "2026-01-01T00:00:00Z",
+        "plan_windows": [
+          {
+            "used_pct": 30,
+            "window": "seven_day"
+          }
+        ],
+        "running": 1,
+        "sessions": [
+          {
+            "account": "Brave",
+            "age_seconds": 0,
+            "cost_cents": 0,
+            "harness": "claude-code",
+            "kind": "build",
+            "model": "opus",
+            "project": "mesh",
+            "started_at": "2026-01-01T00:00:00Z",
+            "subject": "#1 Item 1 (beta)",
+            "tools": [
+              {
+                "name": "Brave Search",
+                "slug": "brave"
+              }
+            ]
+          }
+        ],
+        "slug": "box",
+        "status": "online",
+        "version": "0.3.0"
+      }
+    ]
+  }
+}

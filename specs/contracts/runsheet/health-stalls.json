@@ -1,0 +1,141 @@
+{
+  "args": {
+    "method": "GET",
+    "path": "/mesh/v1/health/stalls?org=contractco"
+  },
+  "field": "health-stalls",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "at": "2026-01-01T00:00:00Z",
+    "cleared_last_24h": [],
+    "count": 6,
+    "errors": [
+      "contractco: deadline exceeded after 300ms"
+    ],
+    "flags": {
+      "attestation_disagreed": 1,
+      "attestation_missing": 1,
+      "claims_failing_alike": 1,
+      "held_past_green": 1,
+      "idle_under_load": 1,
+      "no_progress": 1
+    },
+    "rows": [
+      {
+        "age_minutes": 0,
+        "cause": "3 items refused alike in 15 minutes: \"latchkey github proxy: forbidden: you are not a member of anythink\" (alpha#1, alpha#2, alpha#3)",
+        "id": "999551ac-61b5-591f-a149-d8890f677c01",
+        "item": {
+          "goal": "alpha",
+          "id": "00000000-0000-4000-8000-0000000c0001",
+          "seq": 1,
+          "title": "Item 1"
+        },
+        "kind": "claims_failing_alike",
+        "opened_at": "2026-01-01T00:00:00Z",
+        "org": "contractco",
+        "project": "contractco/mesh",
+        "runbook": "docs/platform-health.md#claims-failing-alike"
+      },
+      {
+        "age_minutes": 0,
+        "cause": "node box has run nothing for 25 minutes while alpha has items ready",
+        "id": "d051da07-dd88-529a-82f1-19f408b56149",
+        "kind": "idle_under_load",
+        "node": "box",
+        "opened_at": "2026-01-01T00:00:00Z",
+        "org": "contractco",
+        "runbook": "docs/platform-health.md#idle-under-load"
+      },
+      {
+        "age_minutes": 0,
+        "cause": "contractco/api held by alpha#1 for 45 minutes after main deployed green past its merge",
+        "goal": "alpha",
+        "id": "bdbf727e-15d0-5f66-87a4-4db31ebc1917",
+        "item": {
+          "goal": "alpha",
+          "id": "00000000-0000-4000-8000-0000000c0001",
+          "seq": 1,
+          "title": "Item 1"
+        },
+        "kind": "held_past_green",
+        "opened_at": "2026-01-01T00:00:00Z",
+        "org": "contractco",
+        "project": "contractco/mesh",
+        "repo": "contractco/api",
+        "runbook": "docs/platform-health.md#held-past-green"
+      },
+      {
+        "age_minutes": 0,
+        "cause": "1 item ready, the oldest alpha#1 since 90 minutes ago; no claim, finish, evaluation, merge or plan for 60 minutes",
+        "goal": "alpha",
+        "id": "773bedc1-fd52-5506-b749-f7f9dd6b815f",
+        "kind": "no_progress",
+        "no_progress": {
+          "goals": [
+            {
+              "reason": "",
+              "slug": "alpha",
+              "status": "running"
+            }
+          ],
+          "nodes": [
+            {
+              "last_seen_at": "2026-01-01T00:00:00Z",
+              "running": 0,
+              "slug": "box",
+              "version": "0.42.1"
+            }
+          ],
+          "ready": {
+            "count": 1,
+            "oldest": {
+              "goal": "alpha",
+              "seq": 1,
+              "since": "2026-01-01T00:00:00Z"
+            }
+          }
+        },
+        "opened_at": "2026-01-01T00:00:00Z",
+        "org": "contractco",
+        "project": "contractco/mesh",
+        "runbook": "docs/platform-health.md#no-progress"
+      },
+      {
+        "age_minutes": 0,
+        "cause": "contractco/console declares .runsheet/validate.yml and has had 4 Mesh merges since 2026-01-01 00:00 UTC (2 in the last 24 hours) with no signed attestation in 24 hours; the last arrived: never",
+        "id": "f37ad6f3-701a-5519-969e-0608fe4a6af8",
+        "kind": "attestation_missing",
+        "opened_at": "2026-01-01T00:00:00Z",
+        "org": "contractco",
+        "repo": "contractco/console",
+        "runbook": "docs/platform-health.md#attestation-missing"
+      },
+      {
+        "age_minutes": 0,
+        "cause": "contractco/api@c0ffee00c0ff (share sample): attestation 00000000-0000-4000-8000-0000000fffff by node d1f6c904-510f-5905-a598-8ea0b41f837a, its run session build-1, says green; the independent run 7100 https://github.com/contractco/api/actions/runs/7100 says red — a false green",
+        "disagreement": {
+          "attestation": {
+            "id": "00000000-0000-4000-8000-0000000fffff",
+            "node_id": "d1f6c904-510f-5905-a598-8ea0b41f837a",
+            "session_id": "build-1",
+            "verdict": "green"
+          },
+          "independent": {
+            "run_id": 7100,
+            "run_url": "https://github.com/contractco/api/actions/runs/7100",
+            "verdict": "red"
+          }
+        },
+        "id": "168d594c-5b38-59c7-b1c2-52623fbd71cf",
+        "kind": "attestation_disagreed",
+        "node": "box",
+        "opened_at": "2026-01-01T00:00:00Z",
+        "org": "contractco",
+        "repo": "contractco/api",
+        "runbook": "docs/platform-health.md#attestation-disagreed"
+      }
+    ]
+  }
+}

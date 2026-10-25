@@ -1,0 +1,36 @@
+{
+  "field": "evaluateWorkItem",
+  "input": {
+    "actor": "agent:evaluator@box",
+    "aggregateId": "00000000-0000-4000-8000-0000000c0002",
+    "changes": [
+      "Contact page: the message form is replaced by an Email us button"
+    ],
+    "costCents": 100,
+    "namespace": "runsheet",
+    "notes": "done",
+    "passed": true,
+    "usage": {
+      "actualCostCents": 100,
+      "adapter": "claude-code",
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "credentialId": "37833791-097d-55fe-a7b4-32bbf4798ccd",
+      "credentialKind": "api",
+      "inputTokens": 3000,
+      "listCostCents": 100,
+      "model": "opus",
+      "outputTokens": 1000,
+      "sessionId": "evaluate-2",
+      "sevenDayAfter": 0.4,
+      "sevenDayBefore": 0.3,
+      "toolCalls": 2,
+      "wallMs": 60000
+    }
+  },
+  "inputType": "EvaluateWorkItemInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

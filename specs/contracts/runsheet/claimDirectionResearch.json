@@ -1,0 +1,14 @@
+{
+  "field": "claimDirectionResearch",
+  "input": {
+    "aggregateId": "ef42e7d8-6c1d-5e10-8606-1ec010c906f7",
+    "at": "2026-01-01T00:00:00Z",
+    "namespace": "runsheet",
+    "nodeId": "d1f6c904-510f-5905-a598-8ea0b41f837a"
+  },
+  "inputType": "ClaimDirectionResearchInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "field": "issueItemRepoToken",
+  "input": {
+    "mergeBatchId": "00000000-0000-4000-8000-0000000fffff"
+  },
+  "inputType": "(workItemId: UUID, mergeBatchId: UUID)",
+  "kind": "mutation",
+  "result": {
+    "access": "read",
+    "expiresAt": "2026-01-01T00:00:00Z",
+    "mergeBatchId": "00000000-0000-4000-8000-0000000fffff",
+    "permissions": {
+      "actions": "read",
+      "contents": "read",
+      "issues": "read"
+    },
+    "repo": "contractco/console",
+    "token": "REDACTED"
+  }
+}

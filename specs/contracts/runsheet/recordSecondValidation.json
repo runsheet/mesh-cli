@@ -1,0 +1,30 @@
+{
+  "field": "recordSecondValidation",
+  "input": {
+    "input": {
+      "commit": "6fea9e4254fc80130d82c3777b35607d344d412a",
+      "findings": [
+        {
+          "path": "main.go",
+          "severity": "low",
+          "summary": "the build comment says what changed but not why"
+        }
+      ],
+      "nodeId": "d1f6c904-510f-5905-a598-8ea0b41f837a",
+      "sessionId": "zeta-evaluate",
+      "verdict": "pass"
+    },
+    "workItemId": "00000000-0000-4000-8000-0000000c0007"
+  },
+  "inputType": "(workItemId: UUID!, input: Map!)",
+  "kind": "mutation",
+  "result": {
+    "commit": "6fea9e4254fc80130d82c3777b35607d344d412a",
+    "keyId": "ed25519:KEYID",
+    "signature": "SECOND_SIGNATURE",
+    "status": "ok",
+    "suiteHash": "ff3098b20936d93f1f5fee43633b8e90c04ad98b71e22f15e839afa988200fa6",
+    "testEvidenceId": "00000000-0000-4000-8000-0000000fffff",
+    "verdict": "pass"
+  }
+}

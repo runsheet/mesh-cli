@@ -716,9 +716,10 @@ func ReleaseOnCredential(ctx context.Context, gw Gateway, itemID, nodeID string,
 	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 		return cause
 	}
-	logf("item %s: release refused (%v); failed instead: %s", itemID, err, reason)
-	if err := gw.FailWorkItem(ctx, itemID, reason); err != nil && !errors.Is(err, context.Canceled) {
-		logf("item %s: fail: %v", itemID, err)
+	_ = handInRefused(logf, nil, itemID, "ReleaseWorkItem", err)
+	logf("item %s: release refused; failed instead: %s", itemID, reason)
+	if err := gw.FailWorkItem(ctx, itemID, reason); !errors.Is(err, context.Canceled) {
+		_ = handInRefused(logf, nil, itemID, "FailWorkItem", err)
 	}
 	return cause
 }

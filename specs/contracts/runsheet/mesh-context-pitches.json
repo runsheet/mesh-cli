@@ -1,0 +1,25 @@
+{
+  "args": {
+    "method": "GET",
+    "path": "/mesh/v1/projects/contractco/mesh/pitches"
+  },
+  "field": "mesh-context-pitches",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "pitches": [
+      {
+        "bet": "one-place",
+        "direction": "overnight",
+        "evidence_count": 1,
+        "problem": "Every service has its own dashboard.",
+        "recorded_at": "2026-01-01T00:00:00Z",
+        "slug": "one-front-door",
+        "status": "open",
+        "thread": [],
+        "title": "One front door"
+      }
+    ],
+    "project": "contractco/mesh"
+  }
+}

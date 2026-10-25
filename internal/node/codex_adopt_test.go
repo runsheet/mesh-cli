@@ -29,7 +29,7 @@ const codexRefreshed = `{"OPENAI_API_KEY":null,"tokens":{"id_token":"idt-FIXTURE
 // codexPodAgent is a Codex evaluation's agent in the Fake's detached
 // container: it says its thread started, refreshes the login in its
 // CODEX_HOME, and waits for release (or its container's stop) before it
-// gives its verdict and completes the turn.
+// gives its verdict by mesh_result and completes the turn.
 func codexPodAgent(rt *sandbox.Fake) (started, release chan struct{}) {
 	started, release = make(chan struct{}), make(chan struct{})
 	rt.Agent = func(ctx context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
@@ -56,7 +56,11 @@ func codexPodAgent(rt *sandbox.Fake) (started, release chan struct{}) {
 		case <-ctx.Done():
 			return sandbox.Exit{Code: 143}, nil
 		}
-		fmt.Fprintln(spec.Stdout, `{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"It holds.\nVERDICT: PASS"}}`)
+		fmt.Fprintln(spec.Stdout, `{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"It holds."}}`)
+		// the verdict goes to the node's mesh_result (ADR-041), on the
+		// stream as the mcp_tool_call Codex records: the adopting node's
+		// holder is fresh, so it is recovered from the stream
+		fmt.Fprintln(spec.Stdout, `{"type":"item.completed","item":{"id":"i2","type":"mcp_tool_call","server":"mesh-node","tool":"mesh_result","status":"completed","arguments":{"verdict":{"passed":true,"notes":"It holds."}},"result":{"content":[{"type":"text","text":"recorded"}]}}}`)
 		fmt.Fprintln(spec.Stdout, `{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":0,"output_tokens":50}}`)
 		return sandbox.Exit{}, nil
 	}

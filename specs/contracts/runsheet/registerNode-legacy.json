@@ -1,0 +1,32 @@
+{
+  "field": "registerNode",
+  "input": {
+    "aggregateId": "d1f6c904-510f-5905-a598-8ea0b41f837a",
+    "credentialId": "00000000-0000-4000-8000-00000000c1d0",
+    "name": "Box",
+    "namespace": "runsheet",
+    "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94",
+    "ownerId": "e96b1f77-6ed9-53ce-8ef4-0861304b4a23",
+    "ownerKind": "person",
+    "slug": "box"
+  },
+  "inputType": "RegisterNodeInput",
+  "kind": "mutation",
+  "result": {
+    "nodeId": "d1f6c904-510f-5905-a598-8ea0b41f837a",
+    "owner": {
+      "id": "e96b1f77-6ed9-53ce-8ef4-0861304b4a23",
+      "kind": "person",
+      "name": "alice"
+    },
+    "scopes": [
+      {
+        "accountId": "27fa0177-19eb-51b0-ab0e-b3530fa0741c",
+        "login": "contractco",
+        "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94",
+        "slug": "contractco"
+      }
+    ],
+    "status": "ok"
+  }
+}

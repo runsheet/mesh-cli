@@ -1,0 +1,31 @@
+{
+  "args": {
+    "method": "GET",
+    "path": "/mesh/v1/projects/contractco/mesh/documents/ops-10-releasing"
+  },
+  "field": "mesh-context-document",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "body": "# Releasing\n\nThe pipeline deploys on every push to main; a rollback is one revert away.",
+    "changed_at": "2026-01-01T00:00:00Z",
+    "changed_sha": "touch-",
+    "commit": "main",
+    "home_repo": "contractco/api",
+    "indexed_at": "2026-01-01T00:00:00Z",
+    "kind": "trd",
+    "layout": "spec-dir",
+    "order": 10,
+    "parent": "ops",
+    "path": "specs/ops/10-releasing.md",
+    "project": "contractco/mesh",
+    "public": false,
+    "repo": "contractco/api",
+    "scope": "project",
+    "slug": "ops-10-releasing",
+    "status": "draft",
+    "summary": "How a release goes out.",
+    "title": "Releasing",
+    "url": "https://github.com/contractco/api/blob/main/specs/ops/10-releasing.md"
+  }
+}

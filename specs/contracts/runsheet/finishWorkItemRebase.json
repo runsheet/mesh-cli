@@ -1,0 +1,34 @@
+{
+  "field": "finishWorkItemRebase",
+  "input": {
+    "aggregateId": "00000000-0000-4000-8000-0000000c0001",
+    "files": [
+      "main.go"
+    ],
+    "headSha": "mesh/alpha-1-rebased",
+    "method": "session",
+    "namespace": "runsheet",
+    "usage": {
+      "actualCostCents": 0,
+      "adapter": "claude-code",
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "credentialId": "9615aef4-2553-53a0-96fa-55a1bd9d0410",
+      "credentialKind": "subscription",
+      "inputTokens": 3000,
+      "listCostCents": 150,
+      "model": "opus",
+      "outputTokens": 1000,
+      "sessionId": "rebase-1",
+      "sevenDayAfter": 0.4,
+      "sevenDayBefore": 0.3,
+      "toolCalls": 2,
+      "wallMs": 60000
+    }
+  },
+  "inputType": "FinishWorkItemRebaseInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

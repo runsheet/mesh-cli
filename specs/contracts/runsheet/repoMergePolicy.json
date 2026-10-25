@@ -1,0 +1,40 @@
+{
+  "args": {
+    "repoId": "57db958b-a01e-547c-b70c-75eac6066fd1"
+  },
+  "field": "repoMergePolicy",
+  "kind": "query",
+  "list": false,
+  "note": "A repository's merge policy as read at sha, the base whose .mesh/config.yml the integrator last read (ADR 063): source file when it names merge_policy, else default. requiredKinds is the base set every pull request carries, in kind order, each {kind, because} with because default (the platform's rule) or policy; evaluator is always there. riskClasses are merge_policy.risk_classes by class name, each {class, adds}: what a change hitting the class adds. faults are what of merge_policy was left out. A repository with no policy, or never read (sha blank), answers source default with requiredKinds [evaluator, node_validation] because default and no riskClasses or faults.",
+  "sample": {
+    "faults": [
+      "merge_policy.required: \"telepathy\" is not an attestation kind"
+    ],
+    "repo": "service",
+    "repoId": "57db958b-a01e-547c-b70c-75eac6066fd1",
+    "requiredKinds": [
+      {
+        "because": "default",
+        "kind": "evaluator"
+      },
+      {
+        "because": "policy",
+        "kind": "node_validation"
+      },
+      {
+        "because": "policy",
+        "kind": "review"
+      }
+    ],
+    "riskClasses": [
+      {
+        "adds": [
+          "human_review"
+        ],
+        "class": "migrations"
+      }
+    ],
+    "sha": "ba5e0000000000000000000000000000000c0de1",
+    "source": "file"
+  }
+}

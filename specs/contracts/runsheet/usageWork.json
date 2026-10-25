@@ -1,0 +1,113 @@
+{
+  "args": {
+    "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94"
+  },
+  "field": "usageWork",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "goals": [
+      {
+        "actualCostCents": 200,
+        "byKind": {
+          "build": {
+            "actualCostCents": 0,
+            "listCostCents": 800,
+            "tokens": 8000
+          },
+          "evaluate": {
+            "actualCostCents": 200,
+            "listCostCents": 200,
+            "tokens": 8000
+          },
+          "rebase": {
+            "actualCostCents": 0,
+            "listCostCents": 150,
+            "tokens": 4000
+          }
+        },
+        "id": "a9fdff89-0ddb-5cfb-9a47-7bebdcceec06",
+        "listCostCents": 1150,
+        "name": "Alpha",
+        "slug": "alpha",
+        "tokens": 20000,
+        "weeks": [
+          {
+            "byKind": {
+              "build": 0.16000000000000003,
+              "rebase": 0.08000000000000002
+            },
+            "credentialId": "9615aef4-2553-53a0-96fa-55a1bd9d0410",
+            "end": "2026-01-01T00:00:00Z",
+            "share": 0.24,
+            "start": "2026-01-01T00:00:00Z",
+            "tokens": 20000,
+            "windowUsed": 0.4,
+            "workTokens": 12000
+          }
+        ]
+      }
+    ],
+    "initiatives": [],
+    "projects": [
+      {
+        "actualCostCents": 205,
+        "byKind": {
+          "build": {
+            "actualCostCents": 0,
+            "listCostCents": 800,
+            "tokens": 8000
+          },
+          "evaluate": {
+            "actualCostCents": 200,
+            "listCostCents": 200,
+            "tokens": 8000
+          },
+          "plan": {
+            "actualCostCents": 0,
+            "listCostCents": 50,
+            "tokens": 4000
+          },
+          "rebase": {
+            "actualCostCents": 0,
+            "listCostCents": 150,
+            "tokens": 4000
+          },
+          "research": {
+            "actualCostCents": 0,
+            "listCostCents": 50,
+            "tokens": 4000
+          },
+          "tool": {
+            "actualCostCents": 5,
+            "listCostCents": 5,
+            "tokens": 4000
+          }
+        },
+        "id": "a00ee511-6be8-5bef-bf59-4055ee443812",
+        "listCostCents": 1255,
+        "name": "Mesh",
+        "slug": "mesh",
+        "tokens": 32000,
+        "weeks": [
+          {
+            "byKind": {
+              "build": 0.16000000000000003,
+              "plan": 0.08000000000000002,
+              "rebase": 0.08000000000000002,
+              "research": 0.08000000000000002
+            },
+            "credentialId": "9615aef4-2553-53a0-96fa-55a1bd9d0410",
+            "end": "2026-01-01T00:00:00Z",
+            "share": 0.4,
+            "start": "2026-01-01T00:00:00Z",
+            "tokens": 20000,
+            "windowUsed": 0.4,
+            "workTokens": 20000
+          }
+        ]
+      }
+    ],
+    "since": "2026-01-01T00:00:00Z"
+  }
+}

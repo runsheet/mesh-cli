@@ -1,0 +1,34 @@
+{
+  "args": {
+    "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94"
+  },
+  "field": "initiativeRollups",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "initiatives": [
+      {
+        "id": "777a10da-3463-5dd5-85c1-d6f40c2e077b",
+        "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94",
+        "priority": "high",
+        "rollup": {
+          "actualCostCents": null,
+          "goals": 1,
+          "goalsByStatus": {
+            "done": 1
+          },
+          "itemsMerged": 2,
+          "itemsMergedThisWeek": 2,
+          "itemsOpen": 0,
+          "listCostCents": 1050,
+          "planShare": null
+        },
+        "slug": "mesh-runs-anything",
+        "specLink": "",
+        "statement": "Several agents on several accounts.",
+        "status": "active",
+        "title": "Mesh runs anything"
+      }
+    ]
+  }
+}

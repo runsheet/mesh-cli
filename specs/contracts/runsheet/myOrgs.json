@@ -1,0 +1,39 @@
+{
+  "args": {},
+  "field": "myOrgs",
+  "kind": "query",
+  "list": false,
+  "sample": [
+    {
+      "accountId": "27fa0177-19eb-51b0-ab0e-b3530fa0741c",
+      "accountRef": "acct_contract123",
+      "billingProfileId": "00000000-0000-4000-8000-0000000000fe",
+      "claimedAt": "2026-01-01T00:00:00Z",
+      "claimedBy": "e96b1f77-6ed9-53ce-8ef4-0861304b4a23",
+      "createdBy": null,
+      "displayName": "contractco",
+      "enterprise": "contractent",
+      "enterpriseId": "2daa2ebe-ed9f-566b-914d-9c899a96eb95",
+      "githubAccounts": [
+        {
+          "accountId": "27fa0177-19eb-51b0-ab0e-b3530fa0741c",
+          "githubId": 9871,
+          "linkedAt": "2026-01-01T00:00:00Z",
+          "login": "contractco",
+          "type": "organization"
+        }
+      ],
+      "githubId": 9871,
+      "id": "e86a269f-78f4-5903-a7eb-f571f2b3ab94",
+      "latchkeyOrgRef": "",
+      "latchkeyTenantRef": "",
+      "level": "admin",
+      "login": "contractco",
+      "profileId": "00000000-0000-4000-8000-0000000000fe",
+      "role": "admin",
+      "status": "claimed",
+      "tenantReadyAt": "2026-01-01T00:00:00Z",
+      "tenantSlug": "contractco"
+    }
+  ]
+}

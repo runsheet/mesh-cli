@@ -376,7 +376,30 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   heartbeat and claim on both kinds (mesh-cli ADR-026).
   A change to a node mutation's rule regenerates node-mutations.json in runsheet (specs/contracts/, from gateway/scope_node.go, checked by TestContracts) and arrives here through the schema-refresh pull request;
   `genfields -refresh-rules` rewrites the copy — never hand-edit it
-  to make a test pass. The loop's
+  to make a test pass. The fakes also speak runsheet's published contracts
+  (runsheet ADR 026, ADR 069): `scripts/contracts-pull.sh [ref]` (main
+  by default; a branch, tag or commit otherwise) copies runsheet's
+  `specs/contracts/*.json` byte for byte into `specs/contracts/runsheet/`
+  with `PULLED` naming the ref and commit — committed, never
+  hand-edited; mesh-cli's own hand-kept copies in `specs/contracts/`
+  are untouched. `gatewaytest/contracts.go` checks every request and
+  answer on `ContractedFields` (claimJob, finishJob, jobAccess,
+  planGoal, claimPlan, recordValidationAttestation) and
+  `ContractedRoutes` (the changeset routes, matched by the http
+  fixtures' method and path) against the fixtures: a key the fixture
+  lacks (a typed argument's input type in schema.json joined in) or a
+  value of another JSON type is refused (a request) or replaced by a
+  500 (an answer), as is an http answer status the fixture does not
+  name, and the fake's `/mcp` `tools/list` may list only tools a
+  runsheet server lists (`mcp-tools-*.json`, ADR 069); and `Fake.Close` panics on any violation a test did
+  not `TakeContractViolations`. `PendingFixtures` names a contracted
+  route runsheet publishes no fixture for yet (served unchecked; none
+  today);
+  `FixtureGaps` names keys runsheet's code reads or writes that its one
+  example omits, with where, and keys the node sends ahead of runsheet
+  (`Ahead`: `environmentKind`, ADR-030, which runsheet does not read
+  yet) — both fail their tests once a pull makes
+  the entry stale. The loop's
   `evaluateHeld` makes it for every `evaluating` item before the
   evaluation starts — the builder claims its own item's evaluation too,
   the platform converging for the same node, so the claim is the one
@@ -2329,6 +2352,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
 - A change to what the node reports or claims changes the platform's
   contract too; land the platform side first (a process reacts only to
   events after its deploy).
+- The unit suite passes in the node's own validation sandbox, which
+  attests every mesh-cli PR: TMPDIR is the run's scratch deep in the
+  job dir, HOME a fresh one naming no git identity. A test binds a unix
+  socket under `sockettest.Dir` (never `t.TempDir()` or
+  `os.MkdirTemp("", …)`, which run past sun_path there), and a test
+  that commits names its own identity (`git -c user.name=… -c
+  user.email=…`, or the `GIT_AUTHOR_*`/`GIT_COMMITTER_*` variables).
 - Tests that render the context index or the prompts assert exact rows
   and lines; update them with the change, not around it.
 - A commit's only Co-Authored-By trailer is the paired person the node

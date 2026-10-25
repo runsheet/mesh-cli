@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/sockettest"
 )
 
 // unixClient is an HTTP client on the unix socket at sock.
@@ -37,11 +39,7 @@ func getOn(t *testing.T, sock, path string) (int, string) {
 // own session and never the admin endpoints or another session's; a
 // socket unlistened stops answering and is gone.
 func TestServerRoutesEachListenerToItsOwnHandler(t *testing.T) {
-	dir, err := os.MkdirTemp("", "srv") // short: a socket's path is bounded
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	dir := sockettest.Dir(t, "srv") // short: a socket's path is bounded
 	named := func(name string) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, name+" "+r.URL.Path) })
 	}
@@ -88,8 +86,7 @@ func TestAdminHandlerAnswersTheLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	loop := &Loop{Cfg: &Config{Name: "box", Slug: "box", NodeID: "node-a", Capacity: Fixed(3)}, Scopes: scopes, Version: "v1"}
-	dir, _ := os.MkdirTemp("", "adm")
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	dir := sockettest.Dir(t, "adm")
 	s := &Server{Admin: AdminHandler(loop, l, time.Now())}
 	defer s.Close()
 	sock := filepath.Join(dir, "node.sock")

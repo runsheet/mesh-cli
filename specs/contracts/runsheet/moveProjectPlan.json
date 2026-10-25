@@ -1,0 +1,40 @@
+{
+  "args": {
+    "orgId": "0d6f7612-0ac3-5375-824e-9de4ad487052",
+    "projectId": "a00ee511-6be8-5bef-bf59-4055ee443812"
+  },
+  "field": "moveProjectPlan",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "activityRows": 111,
+    "agents": [],
+    "collisions": [],
+    "counts": {
+      "activityRows": 111,
+      "agents": 0,
+      "directions": 1,
+      "goals": 13,
+      "notifications": 18,
+      "workItems": 10
+    },
+    "directions": [
+      "ef42e7d8-6c1d-5e10-8606-1ec010c906f7"
+    ],
+    "fromOrgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94",
+    "goals": [
+      "00000000-0000-4000-8000-0000000fffff"
+    ],
+    "notifications": [
+      "00000000-0000-4000-8000-0000000fffff"
+    ],
+    "projectId": "a00ee511-6be8-5bef-bf59-4055ee443812",
+    "refusals": [],
+    "refused": null,
+    "slug": "mesh",
+    "toOrgId": "0d6f7612-0ac3-5375-824e-9de4ad487052",
+    "workItems": [
+      "00000000-0000-4000-8000-0000000c0001"
+    ]
+  }
+}

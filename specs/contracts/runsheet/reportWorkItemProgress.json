@@ -1,0 +1,16 @@
+{
+  "field": "reportWorkItemProgress",
+  "input": {
+    "actor": "agent:builder@box",
+    "aggregateId": "00000000-0000-4000-8000-0000000c0002",
+    "costCents": 50,
+    "namespace": "runsheet",
+    "note": "Writing the change.",
+    "sessionId": "build-2"
+  },
+  "inputType": "ReportWorkItemProgressInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

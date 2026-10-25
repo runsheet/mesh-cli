@@ -2,6 +2,7 @@ package gatewaytest
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"slices"
@@ -70,7 +71,8 @@ func (f *Fake) changeset(w http.ResponseWriter, r *http.Request) {
 		case http.MethodPut:
 			b, _ := io.ReadAll(r.Body)
 			f.ChangesetObjects[key] = b
-			w.WriteHeader(http.StatusNoContent)
+			// the platform's 201 (runsheet specs/contracts/mesh-changeset-object-put.json)
+			w.WriteHeader(http.StatusCreated)
 		case http.MethodHead:
 			if _, ok := f.ChangesetObjects[key]; !ok {
 				w.WriteHeader(http.StatusNotFound)
@@ -94,7 +96,14 @@ func (f *Fake) changeset(w http.ResponseWriter, r *http.Request) {
 			f.RecordedChangesets = map[string][]gateway.Changeset{}
 		}
 		f.RecordedChangesets[item] = append(f.RecordedChangesets[item], cs)
-		writeJSONBody(w, map[string]any{"changesetId": cs.ChangesetID})
+		// the recorded row, as the platform answers it (runsheet
+		// specs/contracts/mesh-changeset-record.json)
+		row := map[string]any{"changeset_id": cs.ChangesetID, "item_id": item, "base_tree": cs.BaseTree, "tree": cs.Tree,
+			"paths_changed": cs.PathsChanged, "made_by": "node:" + fmt.Sprint(f.WorkItems[item]["nodeId"])}
+		if cs.ParentChangesetID != "" {
+			row["parent_changeset_id"] = cs.ParentChangesetID
+		}
+		writeJSONBody(w, row)
 	default:
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 	}

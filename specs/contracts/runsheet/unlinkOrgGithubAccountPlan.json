@@ -1,0 +1,26 @@
+{
+  "args": {
+    "githubId": 9871,
+    "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94"
+  },
+  "field": "unlinkOrgGithubAccountPlan",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "accountId": "27fa0177-19eb-51b0-ab0e-b3530fa0741c",
+    "blockers": [
+      {
+        "id": "085177d3-1248-574b-b3e4-aa979436a01a",
+        "kind": "enrolment",
+        "name": "rigger",
+        "repo": "contractco/www"
+      }
+    ],
+    "githubId": 9871,
+    "linkId": "ac13835c-d8bf-5caf-aa88-5a0b5b2b336b",
+    "linked": true,
+    "login": "contractco",
+    "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94",
+    "refused": "the org still uses GitHub account contractco: enrolment context (contractco/www), enrolment rigger (contractco/www), project contractco (contractco/www), project deploy (contractco/deploy), project mesh (contractco/api), project mesh (contractco/console)"
+  }
+}

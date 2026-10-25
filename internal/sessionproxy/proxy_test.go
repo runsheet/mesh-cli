@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/sockettest"
 )
 
 const (
@@ -45,11 +47,7 @@ func (s *seen) all() []*http.Request {
 // dials it.
 func listen(t *testing.T, p *Proxy) (*http.Client, string) {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "sp")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	dir := sockettest.Dir(t, "sp")
 	sock := filepath.Join(dir, "mcp.sock")
 	if err := p.Listen(sock); err != nil {
 		t.Fatal(err)

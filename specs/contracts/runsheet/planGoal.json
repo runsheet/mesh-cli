@@ -1,0 +1,83 @@
+{
+  "field": "planGoal",
+  "input": {
+    "actor": "agent:planner@box",
+    "aggregateId": "9d31d5af-965a-558e-9f91-82a9fad3d2d9",
+    "alreadyDone": [
+      {
+        "clause": "go vet ./... passes",
+        "evidence": "main at a44393486 already passes go vet ./..."
+      }
+    ],
+    "costCents": 50,
+    "items": [
+      {
+        "acceptance": "go build ./... passes",
+        "acceptanceChecks": [
+          {
+            "check": "go test ./...",
+            "expected": "passes",
+            "kind": "test"
+          }
+        ],
+        "atomic": "yes",
+        "baseRef": "main",
+        "brief": "Define the type the second item builds on.",
+        "dependsOn": [],
+        "emptyOk": false,
+        "files": [
+          "platform/schema/goal.loom"
+        ],
+        "model": "opus",
+        "modelReason": "the type is shared infrastructure, worth the stronger tier",
+        "precondition": "none: this item starts the plan",
+        "repoId": "7dacfd73-80d2-5f33-94d6-54f222403404",
+        "seq": 1,
+        "title": "Add the shared type",
+        "writesSharedDocs": true
+      },
+      {
+        "acceptance": "go test ./... passes",
+        "acceptanceChecks": [
+          {
+            "check": "go test ./...",
+            "expected": "passes",
+            "kind": "test"
+          }
+        ],
+        "baseRef": "main",
+        "brief": "Build the feature, because it needs the type item 1 defines.",
+        "dependsOn": [
+          1
+        ],
+        "model": "opus",
+        "repoId": "7dacfd73-80d2-5f33-94d6-54f222403404",
+        "seq": 2,
+        "title": "Use the shared type"
+      }
+    ],
+    "namespace": "runsheet",
+    "usage": {
+      "actualCostCents": 0,
+      "adapter": "claude-code",
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "credentialId": "9615aef4-2553-53a0-96fa-55a1bd9d0410",
+      "credentialKind": "subscription",
+      "inputTokens": 3000,
+      "listCostCents": 50,
+      "model": "opus",
+      "outputTokens": 1000,
+      "sessionId": "plan-delta",
+      "sevenDayAfter": 0.4,
+      "sevenDayBefore": 0.3,
+      "toolCalls": 2,
+      "wallMs": 60000
+    }
+  },
+  "inputType": "PlanGoalInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

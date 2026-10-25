@@ -1,0 +1,94 @@
+{
+  "args": {
+    "method": "GET",
+    "path": "/mesh/v1/projects/contractco/mesh/evidence/alpha-1-merged"
+  },
+  "field": "mesh-context-evidence-commit",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "approvals": [
+      {
+        "at": "2026-01-01T00:00:00Z",
+        "by": "alice",
+        "checkpoint": "pr"
+      }
+    ],
+    "areas": [],
+    "changes": [
+      "not described"
+    ],
+    "changes_source": "not_described",
+    "checks": [
+      {
+        "conclusion": "success",
+        "head_sha": "alpha-1-merged",
+        "name": "go test ./..."
+      }
+    ],
+    "completeness": "complete",
+    "deploy": {
+      "deploy_check_name": "deploy",
+      "deploy_state": "passed",
+      "deployed_at": "2026-01-01T00:00:00Z"
+    },
+    "evaluation": {
+      "cost_cents": 100,
+      "evaluated_at": "2026-01-01T00:00:00Z",
+      "evaluated_model": "opus",
+      "passed": true
+    },
+    "goal_id": "a9fdff89-0ddb-5cfb-9a47-7bebdcceec06",
+    "goal_slug": "alpha",
+    "item_seq": 1,
+    "item_title": "Item 1",
+    "merge": {
+      "merge_sha": "alpha-1-merged",
+      "merged_at": "2026-01-01T00:00:00Z",
+      "merged_by": "alice"
+    },
+    "merge_sha": "alpha-1-merged",
+    "missing": [],
+    "paths": [],
+    "paths_total": 0,
+    "project_id": "a00ee511-6be8-5bef-bf59-4055ee443812",
+    "recorded_at": "2026-01-01T00:00:00Z",
+    "repo_full_name": "contractco/api",
+    "repo_id": "7dacfd73-80d2-5f33-94d6-54f222403404",
+    "scan": {
+      "commit_sha": "alpha-1-merged",
+      "counts": {
+        "allowlisted": 0,
+        "dependencies": 1,
+        "expired": 0,
+        "failing": 0,
+        "secrets": 0
+      },
+      "scan_evidence_id": "00000000-0000-4000-8000-0000000fffff",
+      "tools": [
+        {
+          "name": "gitleaks",
+          "version": "8.21.2"
+        }
+      ],
+      "verdict": "pass"
+    },
+    "tests": [
+      {
+        "commit_sha": "alpha-1-merged",
+        "duration_ms": 9000,
+        "failures": 0,
+        "flaky_reruns": 0,
+        "format": "gotest",
+        "passes": 40,
+        "run_id": "1",
+        "skips": 0,
+        "suites": 3,
+        "test_evidence_id": "00000000-0000-4000-8000-0000000fffff",
+        "tests": 40,
+        "workflow": "ci"
+      }
+    ],
+    "work_item_id": "00000000-0000-4000-8000-0000000c0001"
+  }
+}

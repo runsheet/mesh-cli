@@ -1,0 +1,32 @@
+{
+  "args": {
+    "enterpriseId": "2daa2ebe-ed9f-566b-914d-9c899a96eb95"
+  },
+  "field": "usageOrgs",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "orgs": [
+      {
+        "actualCostCents": 205,
+        "byCredential": [
+          {
+            "actualCostCents": 200,
+            "credentialId": "37833791-097d-55fe-a7b4-32bbf4798ccd",
+            "label": "Anthropic API",
+            "listCostCents": 200,
+            "sessions": 2,
+            "tokens": 8000
+          }
+        ],
+        "displayName": "",
+        "listCostCents": 1255,
+        "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94",
+        "sessions": 7,
+        "slug": "contractco",
+        "tokens": 32000
+      }
+    ],
+    "since": "2026-01-01T00:00:00Z"
+  }
+}

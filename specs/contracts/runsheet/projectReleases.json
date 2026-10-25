@@ -1,0 +1,29 @@
+{
+  "args": {
+    "projectId": "668e459e-71ab-5708-aef4-5dae8c57dd13"
+  },
+  "field": "projectReleases",
+  "kind": "query",
+  "list": true,
+  "sample": [
+    {
+      "by": "e96b1f77-6ed9-53ce-8ef4-0861304b4a23",
+      "failedRunUrl": "",
+      "failureReason": "contractco/deploy: the release recorded no main head or production workflow for it; release the project again",
+      "finishedAt": "2026-01-01T00:00:00Z",
+      "id": "fa7f052f-e73a-51e2-92e1-81d5b18a1c3e",
+      "projectId": "668e459e-71ab-5708-aef4-5dae8c57dd13",
+      "repoIds": [
+        "9bb916f3-cfb0-53d9-8d5f-3625ec0b2dcd"
+      ],
+      "repos": [
+        "contractco/deploy"
+      ],
+      "startedAt": "2026-01-01T00:00:00Z",
+      "status": "failed",
+      "tags": [
+        "v2026.10.01"
+      ]
+    }
+  ]
+}

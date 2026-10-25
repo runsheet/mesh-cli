@@ -1,0 +1,24 @@
+{
+  "args": {},
+  "field": "meshCliReleases",
+  "kind": "query",
+  "list": true,
+  "sample": [
+    {
+      "assets": [
+        {
+          "name": "SHA256SUMS",
+          "sha256": "5f1c5b8e0a4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0918273645abcd",
+          "size": 96,
+          "url": "https://api.runsheet.dev/releases/mesh/v0.2.0/SHA256SUMS"
+        }
+      ],
+      "latest": true,
+      "name": "v0.2.0",
+      "prerelease": false,
+      "publishedAt": "2026-01-01T00:00:00Z",
+      "tag": "v0.2.0",
+      "url": "https://api.runsheet.dev/releases/mesh/v0.2.0/SHA256SUMS"
+    }
+  ]
+}

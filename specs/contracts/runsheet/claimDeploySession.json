@@ -1,0 +1,58 @@
+{
+  "field": "claimDeploySession",
+  "input": {
+    "deployId": "00000000-0000-4000-8000-0000000fffff",
+    "nodeId": "d1f6c904-510f-5905-a598-8ea0b41f837a",
+    "sessionId": "deploy-1",
+    "sessionKind": "deploy"
+  },
+  "inputType": "(deployId: UUID!, nodeId: UUID!, sessionKind: String!, sessionId: String)",
+  "kind": "mutation",
+  "result": {
+    "commit": "0688ce05b8682fc9f629d16499098fc90cad0764",
+    "credential": {
+      "enterpriseId": null,
+      "env": "FLY_API_TOKEN",
+      "environment": "production",
+      "id": "00000000-0000-4000-8000-0000000fffff",
+      "kind": "fly_token",
+      "label": "contract-prod-deployer",
+      "secret": "REDACTED",
+      "secretVersion": 1,
+      "status": "served",
+      "vendor": "fly"
+    },
+    "deployId": "00000000-0000-4000-8000-0000000fffff",
+    "environment": {
+      "credential": "contract-prod-deployer",
+      "name": "production",
+      "platform": "fake"
+    },
+    "policy": {
+      "onFailure": "hold",
+      "retries": 0
+    },
+    "probe": {
+      "body": "",
+      "command": "",
+      "intervalSeconds": 0,
+      "retries": 3,
+      "status": 204,
+      "url": "https://api.contractco.test/-/health"
+    },
+    "repo": "contractco/api",
+    "sandbox": {
+      "hostAccess": false,
+      "sandboxed": true
+    },
+    "specHash": "f3f521b627fd2e66596f29e001042ba25c4768a38e6980cfb6e2fdff1accf2f1",
+    "status": "claimed",
+    "steps": [
+      {
+        "command": "./deploy.sh \"$IMAGE\"",
+        "name": "deploy",
+        "timeoutSeconds": 0
+      }
+    ]
+  }
+}

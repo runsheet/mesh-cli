@@ -1,0 +1,22 @@
+{
+  "field": "evaluateWorkItem",
+  "input": {
+    "aggregateId": "00000000-0000-4000-8000-0000000c0002",
+    "costCents": 0,
+    "namespace": "runsheet",
+    "notYet": true,
+    "notYetClause": "docs/HANDOFF.md has a new dated entry naming the goal as closed",
+    "notYetItem": {
+      "goalSlug": "alpha",
+      "seq": 1
+    },
+    "notYetWaitsKind": "item",
+    "notYetWaitsOn": "item 1 of the goal merging, which writes the entry",
+    "passed": false
+  },
+  "inputType": "EvaluateWorkItemInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

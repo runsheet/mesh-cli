@@ -1,0 +1,14 @@
+{
+  "field": "claimPlan",
+  "input": {
+    "actor": "agent:planner@box",
+    "aggregateId": "c906baab-9d69-58f7-ae55-5a89d3f0eb72",
+    "namespace": "runsheet",
+    "nodeId": "d1f6c904-510f-5905-a598-8ea0b41f837a"
+  },
+  "inputType": "ClaimPlanInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

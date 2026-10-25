@@ -1,0 +1,42 @@
+{
+  "field": "finishWorkItem",
+  "input": {
+    "actor": "agent:builder@box",
+    "aggregateId": "00000000-0000-4000-8000-0000000c0002",
+    "baseShaAtFinish": "main-head",
+    "branch": "mesh/alpha-2",
+    "costCents": 400,
+    "headSha": "mesh/alpha-2-head",
+    "namespace": "runsheet",
+    "rebaseNeeded": false,
+    "uncommittedFiles": 0,
+    "usage": {
+      "actualCostCents": 0,
+      "adapter": "claude-code",
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "contextBytes": 48213,
+      "contextFiles": 7,
+      "credentialId": "9615aef4-2553-53a0-96fa-55a1bd9d0410",
+      "credentialKind": "subscription",
+      "inputTokens": 3000,
+      "listCostCents": 400,
+      "model": "opus",
+      "outputTokens": 1000,
+      "sessionId": "build-2",
+      "sevenDayAfter": 0.4,
+      "sevenDayBefore": 0.3,
+      "toolCalls": 2,
+      "wallMs": 60000
+    },
+    "waitsOn": {
+      "goalSlug": "beta",
+      "seq": 1
+    }
+  },
+  "inputType": "FinishWorkItemInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

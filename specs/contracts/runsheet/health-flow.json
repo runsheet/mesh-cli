@@ -1,0 +1,60 @@
+{
+  "args": {
+    "method": "GET",
+    "path": "/mesh/v1/health/flow?project=contractco/mesh"
+  },
+  "field": "health-flow",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "at": "2026-01-01T00:00:00Z",
+    "projects": [
+      {
+        "held": 1,
+        "merged_last_hour": 2,
+        "merged_settled": 0,
+        "merged_without_rebase": 0,
+        "oldest_runnable": {
+          "goal": "epsilon",
+          "minutes_waiting": 0,
+          "ready_at": "2026-01-01T00:00:00Z",
+          "seq": 1,
+          "title": "Item 1"
+        },
+        "paused": false,
+        "pending": 1,
+        "project": "contractco/mesh",
+        "queue_heads": [
+          {
+            "head": {
+              "evaluation_passed_at": "2026-01-01T00:00:00Z",
+              "goal": "zeta",
+              "minutes_waiting": 0,
+              "pr_number": 103,
+              "seq": 1,
+              "title": "Item 1"
+            },
+            "head_age_p90_minutes": 0,
+            "merged_last_24h": 1,
+            "merged_settled_last_24h": 0,
+            "merged_without_rebase_last_24h": 0,
+            "repo": "contractco/api"
+          }
+        ],
+        "queue_heads_unnamed": 0,
+        "ready": 2,
+        "running": 2,
+        "sessions": [
+          {
+            "goal": "beta",
+            "heartbeat_at": "2026-01-01T00:00:00Z",
+            "node_id": "d1f6c904-510f-5905-a598-8ea0b41f837a",
+            "seq": 1,
+            "status": "claimed",
+            "title": "Item 1"
+          }
+        ]
+      }
+    ]
+  }
+}

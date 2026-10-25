@@ -1,0 +1,112 @@
+{
+  "description": "heartbeatNode: every heartbeat carries the platform's answer to who owns the node and which orgs it now serves too, not only at registration — an enterprise's node picks up an org attached later with no restart. The runsheet goal a-node-has-an-owner serves this same shape at /contracts/heartbeatNode.json — the platform side of the contract. sessions are the node's live sessions, each its item, kind, harness session and since; the answer's stop names those whose item already merged, was cancelled or was superseded, which the node stops (goal a-session-stops-when-its-item-finishes-elsewhere).",
+  "input": {
+    "aggregateId": "b99be3f5-2f54-54a7-9af5-49d9bfc96744",
+    "namespace": "runsheet",
+    "version": "v0.2.200",
+    "running": 3,
+    "adopted": [
+      {
+        "itemId": "goal-1",
+        "goalId": "goal-1",
+        "kind": "plan",
+        "since": "2026-10-03T03:30:35Z",
+        "sessionId": "session-1",
+        "alive": true
+      },
+      {
+        "itemId": "direction-1",
+        "directionId": "direction-1",
+        "kind": "research",
+        "since": "2026-10-03T03:30:35Z",
+        "sessionId": "session-2",
+        "alive": false
+      }
+    ],
+    "sessions": [
+      {
+        "itemId": "item-1",
+        "kind": "rebase",
+        "sessionId": "session-3",
+        "since": "2026-10-03T03:30:35Z"
+      }
+    ],
+    "holding": {
+      "mode": "paced",
+      "summary": "paced: urgent and high only, 3 item(s), no research; 1 item(s) and 0 plan(s) left unclaimed",
+      "until": "2026-10-03T03:00:00Z",
+      "accounts": [
+        {
+          "account": "max20",
+          "kind": "subscription",
+          "status": "paced",
+          "resetsAt": "2026-10-03T03:00:00Z",
+          "takes": { "priorities": ["urgent", "high"], "maxItems": 3, "research": false }
+        }
+      ],
+      "unclaimed": [
+        {
+          "goalId": "goal-1",
+          "kind": "item",
+          "count": 1,
+          "reason": "no issued credential has headroom for build on org runsheet's project mesh (max20 exhausted until 2026-10-03T03:00:00Z)",
+          "until": "2026-10-03T03:00:00Z"
+        }
+      ]
+    }
+  },
+  "answer": {
+    "nodeId": "b99be3f5-2f54-54a7-9af5-49d9bfc96744",
+    "owner": {
+      "kind": "enterprise",
+      "id": "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb",
+      "name": "anythink"
+    },
+    "scopes": [
+      {
+        "orgId": "33333333-3333-4333-8333-333333333333",
+        "login": "runsheet",
+        "slug": "runsheet",
+        "accountId": "66666666-6666-4666-8666-666666666666",
+        "cap": 0,
+        "connectionId": "eeeeeeee-0001-4eee-8eee-eeeeeeeeeeee",
+        "product": "runsheet"
+      },
+      {
+        "orgId": "77777777-7777-4777-8777-777777777777",
+        "login": "wardroomid",
+        "slug": "wardroomid",
+        "accountId": "88888888-8888-4888-8888-888888888888",
+        "cap": 0,
+        "connectionId": "eeeeeeee-0002-4eee-8eee-eeeeeeeeeeee",
+        "product": "runsheet"
+      },
+      {
+        "orgId": "99999999-9999-4999-8999-999999999999",
+        "login": "",
+        "slug": "grapevine",
+        "accountId": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa",
+        "cap": 0,
+        "connectionId": "eeeeeeee-0003-4eee-8eee-eeeeeeeeeeee",
+        "product": "runsheet"
+      },
+      {
+        "orgId": "cccccccc-3333-4333-8333-cccccccccccc",
+        "login": "foghornid",
+        "slug": "foghornid",
+        "accountId": "dddddddd-4444-4444-8444-dddddddddddd",
+        "cap": 0,
+        "connectionId": "eeeeeeee-0004-4eee-8eee-eeeeeeeeeeee",
+        "product": "runsheet"
+      }
+    ],
+    "stop": [
+      {
+        "itemId": "item-1",
+        "kind": "rebase",
+        "sessionId": "session-3",
+        "reason": "item merged"
+      }
+    ]
+  }
+}

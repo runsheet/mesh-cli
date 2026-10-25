@@ -1,0 +1,28 @@
+{
+  "field": "proposeGoalSplit",
+  "input": {
+    "actor": "agent:planner@box",
+    "aggregateId": "03aae60a-39a2-5fea-923b-50e73e97922a",
+    "drafts": [
+      {
+        "acceptance": "go test ./api passes",
+        "repoId": "7dacfd73-80d2-5f33-94d6-54f222403404",
+        "slug": "theta-api",
+        "statement": "The endpoint alone.",
+        "title": "Theta's API"
+      },
+      {
+        "acceptance": "go test ./docs passes",
+        "slug": "theta-docs",
+        "statement": "The page that explains it.",
+        "title": "Theta's docs"
+      }
+    ],
+    "namespace": "runsheet"
+  },
+  "inputType": "ProposeGoalSplitInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}
