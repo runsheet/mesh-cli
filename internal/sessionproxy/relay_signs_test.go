@@ -18,7 +18,8 @@ import (
 // A 401 invalid_token from runsheet is forwarded again exactly once,
 // re-authorized with a fresh proof (runsheet ADR 064 §2): the retry's
 // answer reaches the client, and a second 401 is the answer, no third
-// request.
+// request. A 401 refusing the proof itself (invalid_dpop_proof) is
+// never retried.
 func TestRelaySignsEachRequest(t *testing.T) {
 	t.Run("invalid_token_retries", func(t *testing.T) {
 		t.Run("once", func(t *testing.T) {
@@ -136,6 +137,51 @@ func TestRelaySignsEachRequest(t *testing.T) {
 				t.Fatalf("the retry's jti %s is the first proof's", b)
 			}
 		})
+	})
+
+	// A 401 refusing the proof itself is not a stale token: the agent gets
+	// -32603 naming invalid_dpop_proof and its description, and the
+	// upstream is asked once, never again with another proof.
+	t.Run("proof_refusal", func(t *testing.T) {
+		key, err := dpop.NewKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var s seen
+		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			s.add(r)
+			w.Header().Set("WWW-Authenticate", `DPoP error="invalid_dpop_proof", error_description="proof htu does not match"`)
+			http.Error(w, "invalid_dpop_proof", http.StatusUnauthorized)
+		}))
+		defer up.Close()
+
+		p := New(map[string]Upstream{"runsheet": Runsheet{URL: up.URL + "/mcp", Key: key,
+			Bearer: func(context.Context) (string, error) { return bearerNew, nil }}})
+		c, _ := listen(t, p)
+		resp, body := post(t, c, "runsheet", nil, initialize)
+		var rpc struct {
+			Error struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(body), &rpc); err != nil {
+			t.Fatalf("client got %d, not a JSON-RPC error: %s", resp.StatusCode, body)
+		}
+		if rpc.Error.Code != -32603 {
+			t.Fatalf("JSON-RPC error code %d, want -32603: %s", rpc.Error.Code, body)
+		}
+		for _, want := range []string{"upstream refused the DPoP proof", "invalid_dpop_proof", "proof htu does not match"} {
+			if !strings.Contains(rpc.Error.Message, want) {
+				t.Errorf("message %q does not name %q", rpc.Error.Message, want)
+			}
+		}
+		if strings.Contains(body, bearerNew) {
+			t.Errorf("the error carries the bearer: %s", body)
+		}
+		if n := len(s.all()); n != 1 {
+			t.Fatalf("upstream saw %d requests, want exactly 1 (no retry)", n)
+		}
 	})
 }
 

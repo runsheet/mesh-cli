@@ -380,6 +380,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	resp, err := p.forward(req, u, body, false)
 	if err == nil && resp.StatusCode == http.StatusUnauthorized && u.retries401() {
 		resp.Body.Close()
+		if reason, refused := dpopRefusal(resp.Header); refused {
+			// a refused proof is the node's fault, not a stale token: asking
+			// again with another proof by the same key is refused the same way
+			msg := p.mask("upstream refused the DPoP proof: " + reason)
+			p.logf("sessionproxy: %s: %s", name, msg)
+			p.noteError(name, fmt.Sprintf("sessionproxy: %s: %s", name, msg))
+			writeError(w, http.StatusBadGateway, -32603, fmt.Sprintf("sessionproxy: %s: %s", name, msg))
+			return
+		}
 		resp, err = p.forward(req, u, body, true)
 	}
 	if err != nil {
@@ -486,4 +495,64 @@ func writeError(w http.ResponseWriter, status, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(b)
+}
+
+// dpopRefusal reads a 401's WWW-Authenticate challenges and says whether
+// one is a DPoP challenge refusing the proof itself (RFC 9449 §7.1,
+// error="invalid_dpop_proof"), with the reason: the error code and its
+// error_description when there is one. invalid_token, a Bearer
+// challenge or no header at all is no refusal of the proof.
+func dpopRefusal(h http.Header) (string, bool) {
+	for _, v := range h.Values("WWW-Authenticate") {
+		scheme, rest, _ := strings.Cut(strings.TrimSpace(v), " ")
+		if !strings.EqualFold(scheme, "DPoP") {
+			continue
+		}
+		params := challengeParams(rest)
+		if params["error"] != "invalid_dpop_proof" {
+			continue
+		}
+		if d := params["error_description"]; d != "" {
+			return "invalid_dpop_proof: " + d, true
+		}
+		return "invalid_dpop_proof", true
+	}
+	return "", false
+}
+
+// challengeParams parses a challenge's auth-params, `k=v` or `k="v"`
+// separated by commas, a quoted value's backslash escapes undone.
+func challengeParams(s string) map[string]string {
+	out := map[string]string{}
+	for {
+		s = strings.TrimLeft(s, " \t,")
+		if s == "" {
+			return out
+		}
+		k, rest, ok := strings.Cut(s, "=")
+		if !ok {
+			return out
+		}
+		k = strings.ToLower(strings.TrimSpace(k))
+		rest = strings.TrimLeft(rest, " \t")
+		var val strings.Builder
+		if strings.HasPrefix(rest, `"`) {
+			i := 1
+			for ; i < len(rest) && rest[i] != '"'; i++ {
+				if rest[i] == '\\' && i+1 < len(rest) {
+					i++
+				}
+				val.WriteByte(rest[i])
+			}
+			s = rest[min(i+1, len(rest)):]
+		} else {
+			end := strings.IndexByte(rest, ',')
+			if end < 0 {
+				end = len(rest)
+			}
+			val.WriteString(strings.TrimSpace(rest[:end]))
+			s = rest[end:]
+		}
+		out[k] = val.String()
+	}
 }

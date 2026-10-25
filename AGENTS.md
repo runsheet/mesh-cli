@@ -2201,7 +2201,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (`Listen`, a stale socket removed first) with one upstream per server
   — `Remote{URL, Headers}` (the headers the proxy holds; a client's
   Authorization never forwarded), `Runsheet{URL, Bearer}` (asked per
-  request, in memory, a 401 re-asked and retried once) and
+  request, in memory, a 401 re-asked and retried once — but a 401 whose
+  `WWW-Authenticate` is a DPoP challenge with `error="invalid_dpop_proof"`
+  (`dpopRefusal`) is never retried, the agent answered -32603
+  `sessionproxy: <name>: upstream refused the DPoP proof: <reason>`,
+  masked, while `invalid_token` keeps its one retry with a fresh proof;
+  `TestRelaySignsEachRequest`, runsheet ADR 064 §2) and
   `Local{Command, Args, Env, Secrets}` (a local tool run by the proxy
   on the host, lazily, restarted once with initialize replayed, its
   secrets in the child's env alone, ids of the proxy's own, its process
