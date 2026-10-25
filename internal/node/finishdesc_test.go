@@ -32,12 +32,12 @@ func TestFinishDescription(t *testing.T) {
 }
 
 // runFinishDesc runs item1 on node slug mini with pair as node.yaml's
-// pair: and, when noDescription, a fake whose FinishWorkItemInput takes
-// no description, and returns the fake's finishWorkItem inputs.
+// pair: and, unless noDescription, a fake whose FinishWorkItemInput takes
+// a description (Fake.TakesDescription), and returns the fake's finishWorkItem inputs.
 func runFinishDesc(t *testing.T, pair []Pairer, noDescription bool, result harness.Result) []map[string]any {
 	t.Helper()
 	f := seed(t)
-	f.NoDescription = noDescription
+	f.TakesDescription = !noDescription
 	r, _, item, _ := runnerOnFake(t, f, &resultHarness{result: result}, nil)
 	r.Cfg.Slug, r.Cfg.Pair = "mini", pair
 	if err := r.RunItem(context.Background(), item); err != nil {
@@ -70,8 +70,8 @@ func TestRunnerFinishCarriesTheDescription(t *testing.T) {
 	}
 }
 
-// A platform whose FinishWorkItemInput takes no description (Fake.
-// NoDescription) is sent none — the key is absent, not empty — and the
+// A platform whose FinishWorkItemInput takes no description (runsheet's,
+// the fake's default) is sent none — the key is absent, not empty — and the
 // finish still succeeds.
 func TestRunnerFinishWithNoDescriptionFieldOmitsIt(t *testing.T) {
 	finishes := runFinishDesc(t, nil, true, harness.Result{Success: true, WorkCalls: map[string]map[string]any{

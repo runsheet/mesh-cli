@@ -1,0 +1,45 @@
+{
+  "args": {
+    "body": {
+      "ask_id": "ask-1",
+      "asker": "alice",
+      "body": "What is blocking the release?",
+      "channel_id": "general",
+      "message_id": "m-ask-1",
+      "role": "assistant",
+      "tenant": "threadco",
+      "thread_key": "general:contract",
+      "transcript": [
+        {
+          "ask_id": "",
+          "asker": "bob",
+          "body": "Release is due Friday.",
+          "message_id": "m-0"
+        }
+      ]
+    },
+    "method": "POST",
+    "path": "/mesh/v1/thread-sessions"
+  },
+  "field": "mesh-thread-session",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "id": "00000000-0000-4000-8000-0000000fffff",
+    "last_at": "2026-01-01T00:00:00Z",
+    "org_id": "00000000-0000-4000-8000-0000000fffff",
+    "product": "wardroom",
+    "resumed": false,
+    "role": "assistant",
+    "status": "waiting",
+    "tenant": "threadco",
+    "thread_key": "general:contract",
+    "trigger": "thread",
+    "turn": {
+      "ask_id": "ask-1",
+      "id": "00000000-0000-4000-8000-0000000fffff",
+      "seq": 2
+    },
+    "turns": 2
+  }
+}

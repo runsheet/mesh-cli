@@ -1,0 +1,55 @@
+{
+  "args": {
+    "projectId": "a00ee511-6be8-5bef-bf59-4055ee443812",
+    "q": "contact"
+  },
+  "field": "projectChanges",
+  "kind": "query",
+  "list": true,
+  "sample": [
+    {
+      "approvals": null,
+      "areas": [
+        ".github/actions"
+      ],
+      "attestation": null,
+      "changes": [
+        "Contact page: the message form is replaced by an Email us button"
+      ],
+      "changes_source": "evaluation",
+      "checks": null,
+      "completeness": "incomplete",
+      "deploy": null,
+      "evaluation": null,
+      "goal_id": "a9fdff89-0ddb-5cfb-9a47-7bebdcceec06",
+      "goal_slug": "alpha",
+      "id": "00000000-0000-4000-8000-0000000fffff",
+      "item_seq": 2,
+      "item_title": "Item 2",
+      "merge": {
+        "merge_sha": "website-26-merged",
+        "merged_at": "2026-01-01T00:00:00Z",
+        "merged_by": "alice"
+      },
+      "merge_sha": "website-26-merged",
+      "missing": [
+        "approval"
+      ],
+      "paths": [
+        ".github/actions/setup/action.yml"
+      ],
+      "paths_total": 3,
+      "pr_number": 26,
+      "pr_title": "Links: fix dead buttons and audience links, add a link check over the built site to CI",
+      "pr_url": "https://github.com/contractco/api/pull/26",
+      "project_id": "a00ee511-6be8-5bef-bf59-4055ee443812",
+      "quarantined_red": null,
+      "recorded_at": "2026-01-01T00:00:00Z",
+      "repo_full_name": "contractco/api",
+      "repo_id": "7dacfd73-80d2-5f33-94d6-54f222403404",
+      "scan": null,
+      "tests": null,
+      "work_item_id": "00000000-0000-4000-8000-0000000c0002"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "field": "issueReleaseUploadToken",
+  "input": {
+    "version": "v0.2.0"
+  },
+  "inputType": "(version: String!)",
+  "kind": "mutation",
+  "result": {
+    "expiresAt": "2026-01-01T00:00:00Z",
+    "path": "/releases/mesh/v0.2.0/",
+    "token": "REDACTED",
+    "version": "v0.2.0"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "args": {
+    "method": "GET",
+    "path": "/mesh/v1/projects/contractco/mesh/traps"
+  },
+  "field": "mesh-context-traps",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "budget": 8000,
+    "entries": [],
+    "project": "contractco/mesh",
+    "size": 0
+  }
+}

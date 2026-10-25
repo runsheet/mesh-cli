@@ -1,0 +1,17 @@
+{
+  "field": "createDirection",
+  "input": {
+    "aggregateId": "ef42e7d8-6c1d-5e10-8606-1ec010c906f7",
+    "by": "e96b1f77-6ed9-53ce-8ef4-0861304b4a23",
+    "name": "Features overnight",
+    "namespace": "runsheet",
+    "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94",
+    "projectId": "a00ee511-6be8-5bef-bf59-4055ee443812",
+    "slug": "overnight"
+  },
+  "inputType": "CreateDirectionInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

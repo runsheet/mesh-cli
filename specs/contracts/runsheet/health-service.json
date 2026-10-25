@@ -1,0 +1,183 @@
+{
+  "args": {
+    "method": "GET",
+    "path": "/mesh/v1/health/service"
+  },
+  "field": "health-service",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "at": "2026-01-01T00:00:00Z",
+    "attestations": {
+      "days": [
+        {
+          "day": "2026-01-01",
+          "received": 3,
+          "refused": 1,
+          "refused_by_reason": {
+            "not_head": 1
+          },
+          "repo": "contractco/api",
+          "repo_id": "7dacfd73-80d2-5f33-94d6-54f222403404",
+          "reused": 1,
+          "signed": 1,
+          "verified": 1
+        }
+      ],
+      "since": "2026-01-01T00:00:00Z",
+      "windows": [
+        {
+          "days": 7,
+          "repos": [
+            {
+              "merged_prs": 1,
+              "missing": 1,
+              "missing_share": 0.5,
+              "repo": "contractco/api",
+              "repo_id": "7dacfd73-80d2-5f33-94d6-54f222403404",
+              "validations": 2,
+              "validations_per_merged_pr": 2,
+              "verifications": 2
+            }
+          ],
+          "since": "2026-01-01T00:00:00Z"
+        },
+        {
+          "days": 30,
+          "repos": [
+            {
+              "merged_prs": 1,
+              "missing": 1,
+              "missing_share": 0.5,
+              "repo": "contractco/api",
+              "repo_id": "7dacfd73-80d2-5f33-94d6-54f222403404",
+              "validations": 2,
+              "validations_per_merged_pr": 2,
+              "verifications": 2
+            }
+          ],
+          "since": "2026-01-01T00:00:00Z"
+        }
+      ]
+    },
+    "database": {
+      "idle_in_transaction": [],
+      "lock_waits": []
+    },
+    "errors": {
+      "last_day": [
+        {
+          "count": 1,
+          "last_seen": "2026-01-01T00:00:00Z",
+          "message": "panic: contract"
+        }
+      ],
+      "last_hour": [
+        {
+          "count": 1,
+          "last_seen": "2026-01-01T00:00:00Z",
+          "message": "panic: contract"
+        }
+      ],
+      "source": "cloud_logging",
+      "truncated": false
+    },
+    "flags": {
+      "tool_failing": 1
+    },
+    "gateway": {
+      "routes": [
+        {
+          "p50_ms": 120,
+          "p99_ms": 2400,
+          "requests": 900,
+          "route": "/graphql"
+        }
+      ],
+      "source": "instance",
+      "window": "1h"
+    },
+    "github": {
+      "counters_since": null,
+      "dead_letters_on_limit": {},
+      "installations": [
+        {
+          "account": "contractco",
+          "dead_letters_on_limit": 0,
+          "from": "installation",
+          "id": 98710,
+          "last_hour": {},
+          "limit": 5000,
+          "observed_at": "2026-01-01T00:00:00Z",
+          "remaining": 3210,
+          "reset_at": "2026-01-01T00:00:00Z",
+          "status": "active",
+          "under_floor": false
+        }
+      ],
+      "since_process_start": [],
+      "source": "unconfigured"
+    },
+    "latency": {
+      "p50_ms": 12.5,
+      "p95_ms": 80,
+      "p99_ms": 250.3,
+      "requests": 1200,
+      "source": "cloud_monitoring",
+      "window": "1h"
+    },
+    "processes": {
+      "max_lag_seconds": 1,
+      "runners": [
+        {
+          "global_seq": 0,
+          "lag_seconds": 1,
+          "oldest_unhandled_at": "2026-01-01T00:00:00Z",
+          "runner": "process:tenancy",
+          "service": "platform",
+          "unhandled": 1,
+          "updated_at": "2026-01-01T00:00:00Z"
+        }
+      ]
+    },
+    "restarts": {
+      "by_cause": {
+        "oom": 1
+      },
+      "count": 1,
+      "last_day": [
+        {
+          "at": "2026-01-01T00:00:00Z",
+          "cause": "oom",
+          "instance": "instance-contract"
+        }
+      ],
+      "source": "cloud_logging",
+      "window": "24h"
+    },
+    "sheds": {
+      "last_hour": {
+        "429": 94,
+        "504": 3
+      },
+      "source": "cloud_monitoring",
+      "window": "1h"
+    },
+    "timeouts": {
+      "last_day": [],
+      "last_hour": [],
+      "source": "cloud_logging",
+      "truncated": false
+    },
+    "tools": [
+      {
+        "error": "validating tool output: replacing_item_id: type",
+        "millis": 2000,
+        "project": "runsheet/runsheet",
+        "since": "2026-01-01T00:00:00Z",
+        "source": "healthtool/mesh_goals",
+        "tool": "mesh_goals"
+      }
+    ]
+  }
+}

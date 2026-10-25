@@ -1,0 +1,47 @@
+{
+  "args": {
+    "number": 101,
+    "repoId": "7dacfd73-80d2-5f33-94d6-54f222403404"
+  },
+  "field": "prAttestations",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "head_sha": "mesh/alpha-1-head",
+    "heads": [
+      {
+        "attestations": [
+          {
+            "evidence": [
+              {
+                "blob_ref": "evaluator_notes:00000000-0000-4000-8000-0000000c0001:1",
+                "kind": "evaluator_notes",
+                "label": "evaluator's notes and 1 failed clauses"
+              }
+            ],
+            "issued_at": "2026-01-01T00:00:00Z",
+            "issuer": {
+              "id": "00000000-0000-4000-8000-0000000c0001",
+              "kind": "evaluator",
+              "name": "00000000-0000-4000-8000-0000000c0001"
+            },
+            "kind": "evaluation",
+            "required": true,
+            "satisfies": [
+              "evaluator"
+            ],
+            "verdict": "fail"
+          }
+        ],
+        "current": false,
+        "sha": "mesh/alpha-1-rebased"
+      }
+    ],
+    "number": 101,
+    "policy_unread": "",
+    "repo_id": "7dacfd73-80d2-5f33-94d6-54f222403404",
+    "required_kinds": [
+      "evaluator"
+    ]
+  }
+}

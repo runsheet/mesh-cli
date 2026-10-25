@@ -1,0 +1,22 @@
+{
+  "errors": [
+    "registerProduct: billing moved to anythink (ADR 034)"
+  ],
+  "field": "registerProduct",
+  "input": {
+    "aggregateId": "00000000-0000-4000-8000-0000000fffff",
+    "displayName": "Contract Product",
+    "latchkeyClientId": "contract-metering",
+    "namespace": "runsheet",
+    "slug": "contractproduct",
+    "units": [
+      {
+        "displayName": "Sign-in",
+        "unit": "sign_in"
+      }
+    ]
+  },
+  "inputType": "RegisterProductInput",
+  "kind": "mutation",
+  "result": null
+}

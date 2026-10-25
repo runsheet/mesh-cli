@@ -1,0 +1,74 @@
+{
+  "args": {
+    "body": {
+      "commit": "fedcba9876543210fedcba9876543210fedcba98",
+      "report": {
+        "counts": {
+          "allowlisted": 1,
+          "dependencies": 3,
+          "expired": 0,
+          "failing": 2,
+          "secrets": 1
+        },
+        "findings": [
+          {
+            "aliases": [
+              "CVE-2026-90001"
+            ],
+            "allowlisted": true,
+            "expires": "2026-01-01",
+            "failing": false,
+            "id": "GO-2026-9001",
+            "kind": "dependency",
+            "location": "example.com/frames@v1.4.0 (fixed in v1.4.2)",
+            "message": "ok   govulncheck dependency GO-2026-9001 severity=high at example.com/frames@v1.4.0 (fixed in v1.4.2) — allowlisted until 2026-10-31: example.com/frames v1.4.2 lands with the next dependency bump",
+            "reason": "example.com/frames v1.4.2 lands with the next dependency bump",
+            "severity": "high",
+            "tool": "govulncheck"
+          }
+        ],
+        "head_sha": "fedcba9876543210fedcba9876543210fedcba98",
+        "run_url": "https://github.com/runsheet/runsheet/actions/runs/4242",
+        "scanned_at": "2026-01-01T00:00:00Z",
+        "threshold": "high",
+        "tools": [
+          {
+            "name": "gitleaks",
+            "version": "8.30.1"
+          }
+        ],
+        "verdict": "fail"
+      }
+    },
+    "method": "POST",
+    "path": "/mesh/v1/evidence/scan-report"
+  },
+  "field": "mesh-scan-report-upload",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "commit": "fedcba9876543210fedcba9876543210fedcba98",
+    "counts": {
+      "allowlisted": 1,
+      "dependencies": 3,
+      "expired": 0,
+      "failing": 2,
+      "secrets": 1
+    },
+    "id": "00000000-0000-4000-8000-0000000fffff",
+    "recorded_at": "2026-01-01T00:00:00Z",
+    "repo": "acme/widgets",
+    "run_id": "5150",
+    "run_url": "https://github.com/acme/widgets/actions/runs/5150",
+    "scanned_at": "2026-01-01T00:00:00Z",
+    "threshold": "high",
+    "tools": [
+      {
+        "name": "gitleaks",
+        "version": "8.30.1"
+      }
+    ],
+    "verdict": "fail"
+  },
+  "status": 201
+}

@@ -1,0 +1,28 @@
+{
+  "args": {
+    "input": {
+      "threadId": "00000000-0000-4000-8000-0000000fffff"
+    }
+  },
+  "field": "threadMessages",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "messages": [
+      {
+        "at": "2026-01-01T00:00:00Z",
+        "body": "I want reports exported as PDF",
+        "by": "e96b1f77-6ed9-53ce-8ef4-0861304b4a23",
+        "from": "person",
+        "seq": 1
+      }
+    ],
+    "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94",
+    "product": "runsheet",
+    "projectId": "a00ee511-6be8-5bef-bf59-4055ee443812",
+    "role": "goal-chat",
+    "status": "waiting",
+    "threadId": "00000000-0000-4000-8000-0000000fffff",
+    "threadKey": "chat-contract"
+  }
+}

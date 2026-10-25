@@ -1,0 +1,32 @@
+{
+  "args": {
+    "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94"
+  },
+  "field": "orgDocuments",
+  "kind": "query",
+  "list": true,
+  "sample": [
+    {
+      "behindRefs": [],
+      "brokenRefs": [],
+      "changedAt": "2026-01-01T00:00:00Z",
+      "feature": "",
+      "historicalRefs": [],
+      "id": "00000000-0000-4000-8000-0000000fffff",
+      "indexedAt": "2026-01-01T00:00:00Z",
+      "kind": "trd",
+      "layout": "spec-dir",
+      "order": 10,
+      "parentSlug": "ops",
+      "path": "specs/ops/10-releasing.md",
+      "projectId": "a00ee511-6be8-5bef-bf59-4055ee443812",
+      "removed": false,
+      "repoId": "7dacfd73-80d2-5f33-94d6-54f222403404",
+      "slug": "ops-10-releasing",
+      "status": "draft",
+      "statusLabel": "",
+      "summary": "How a release goes out.",
+      "title": "Releasing"
+    }
+  ]
+}

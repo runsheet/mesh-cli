@@ -1,0 +1,34 @@
+{
+  "args": {
+    "body": {
+      "ask_id": "ask-3",
+      "asker": "carol",
+      "body": "I do.",
+      "message_id": "m-3"
+    },
+    "method": "POST",
+    "path": "/mesh/v1/thread-sessions/00000000-0000-4000-8000-0000000fffff/turns"
+  },
+  "field": "mesh-thread-turn",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "id": "00000000-0000-4000-8000-0000000fffff",
+    "last_at": "2026-01-01T00:00:00Z",
+    "org_id": "00000000-0000-4000-8000-0000000fffff",
+    "product": "wardroom",
+    "resumed": true,
+    "role": "assistant",
+    "status": "waiting",
+    "tenant": "threadco",
+    "thread_key": "general:contract",
+    "trigger": "thread",
+    "turn": {
+      "ask_id": "ask-3",
+      "id": "00000000-0000-4000-8000-0000000fffff",
+      "seq": 6
+    },
+    "turns": 6
+  },
+  "status": 200
+}

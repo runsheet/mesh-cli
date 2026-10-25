@@ -1,0 +1,25 @@
+{
+  "args": {
+    "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94"
+  },
+  "field": "usageReports",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94",
+    "reports": [
+      {
+        "accountRef": "acct_contract",
+        "at": "2026-01-01T00:00:00Z",
+        "id": "00000000-0000-4000-8000-0000000fffff",
+        "idempotencyKey": "00000000-0000-4000-8000-0000000fffff:merged_item",
+        "quantity": 1,
+        "response": "{\"ok\":true}",
+        "status": "reported",
+        "tenant": "runsheet/contractco",
+        "unit": "merged_item",
+        "workItemId": "00000000-0000-4000-8000-0000000fffff"
+      }
+    ]
+  }
+}

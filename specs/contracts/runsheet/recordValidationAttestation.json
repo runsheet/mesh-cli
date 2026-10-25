@@ -1,0 +1,72 @@
+{
+  "field": "recordValidationAttestation",
+  "input": {
+    "input": {
+      "artifactDigests": [
+        "sha256:beef"
+      ],
+      "at": "2026-01-01T00:00:00Z",
+      "checks": [
+        {
+          "index": 1,
+          "kind": "acceptance",
+          "output": "ok  \tgithub.com/acme/api\t0.4s",
+          "verdict": "pass"
+        },
+        {
+          "kind": "full_integration",
+          "suites": [
+            "unit"
+          ],
+          "verdict": "pass"
+        },
+        {
+          "findings": [
+            {
+              "path": "main.go",
+              "severity": "low",
+              "summary": "the build comment names no item"
+            }
+          ],
+          "focus": "security",
+          "kind": "review",
+          "sessionId": "zeta-review",
+          "verdict": "pass"
+        }
+      ],
+      "commands": [
+        {
+          "command": "go test ./platform/...",
+          "durationMs": 61000,
+          "exitCode": 0,
+          "suite": "unit"
+        }
+      ],
+      "commit": "6fea9e4254fc80130d82c3777b35607d344d412a",
+      "reports": [
+        {
+          "content": "{\"Action\":\"pass\"}",
+          "suite": "unit"
+        }
+      ],
+      "runnerImage": "ghcr.io/runsheet/mesh-node@sha256:0123",
+      "sessionId": "zeta-build",
+      "suiteHash": "ff3098b20936d93f1f5fee43633b8e90c04ad98b71e22f15e839afa988200fa6",
+      "testsFailed": 0,
+      "testsPassed": 12,
+      "testsRun": 12,
+      "treeHash": "tree-38dc1c892fe1a2581ba77fed6ec2d2a29ee3d33f"
+    },
+    "workItemId": "00000000-0000-4000-8000-0000000c0007"
+  },
+  "inputType": "(workItemId: UUID, input: Map!)",
+  "kind": "mutation",
+  "result": {
+    "branch": "mesh/zeta-1",
+    "commit": "6fea9e4254fc80130d82c3777b35607d344d412a",
+    "keyId": "ed25519:KEYID",
+    "signature": "SIGNATURE",
+    "status": "ok",
+    "testEvidenceId": "00000000-0000-4000-8000-0000000fffff"
+  }
+}

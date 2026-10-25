@@ -1,0 +1,21 @@
+{
+  "field": "setDirection",
+  "input": {
+    "aggregateId": "ef42e7d8-6c1d-5e10-8606-1ec010c906f7",
+    "by": "e96b1f77-6ed9-53ce-8ef4-0861304b4a23",
+    "direction": "Ship what the console needs.",
+    "enabled": true,
+    "fromMinute": 0,
+    "gapMinutes": 0,
+    "maxLiveGoals": 2,
+    "mode": "set",
+    "namespace": "runsheet",
+    "timezone": "UTC",
+    "toMinute": 0
+  },
+  "inputType": "SetDirectionInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

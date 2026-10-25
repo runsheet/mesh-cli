@@ -1,0 +1,163 @@
+{
+  "args": {
+    "method": "GET",
+    "path": "/mesh/v1/health/stuck?project=contractco/mesh"
+  },
+  "field": "health-stuck",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "at": "2026-01-01T00:00:00Z",
+    "database": {
+      "idle_in_transaction": [],
+      "idle_seconds": 0
+    },
+    "dead_letters": {
+      "flags": {
+        "runner_dead_lettering": 1
+      },
+      "runners": [
+        {
+          "count": 1,
+          "flags": [
+            "runner_dead_lettering"
+          ],
+          "latest_error": "platformWatchdog on PlatformWatchTicked dispatched undeclared command MarkNodeOffline",
+          "newest_at": "2026-01-01T00:00:00Z",
+          "oldest_at": "2026-01-01T00:00:00Z",
+          "runner": "process:platformWatchdog"
+        }
+      ]
+    },
+    "errors": [
+      "contractco/mesh: deadline exceeded after 300ms, not read"
+    ],
+    "projects": [
+      {
+        "deploy_unresolved": [],
+        "empty_finish_refusals": 1,
+        "empty_finishes": [
+          {
+            "finish_refused_empty": false,
+            "goal": "epsilon",
+            "item_id": "00000000-0000-4000-8000-0000000c0004",
+            "last_error": "the session ended with nothing committed",
+            "refusals": 1,
+            "seq": 1,
+            "status": "ready",
+            "title": "Item 1"
+          }
+        ],
+        "flags": {
+          "check_no_verdict": 1,
+          "looping": 2,
+          "review_without_pr": 1,
+          "stalled": 1,
+          "waiting_on_person": 1
+        },
+        "goals": [
+          {
+            "flags": [
+              "waiting_on_person"
+            ],
+            "goal": "zeta",
+            "status": "running",
+            "title": "Zeta",
+            "waiting_on": "merge",
+            "waiting_on_person": true,
+            "waiting_reason": "1 pull request to merge: api#103",
+            "waiting_since": "2026-01-01T00:00:00Z"
+          }
+        ],
+        "invariants": [],
+        "looping": [
+          {
+            "claims_30m": 3,
+            "first_at": "2026-01-01T00:00:00Z",
+            "goal": "eta",
+            "item_id": "00000000-0000-4000-8000-0000000c0008",
+            "last_at": "2026-01-01T00:00:00Z",
+            "last_reason": "the conflict is not resolved: Pull request #104 conflicts with main, and a rebase session could not resolve it: main.go Rebase the branch o…",
+            "refusals_30m": 2,
+            "seq": 1,
+            "status": "pending",
+            "title": "Item 1"
+          }
+        ],
+        "merged_off_default": [
+          {
+            "default_branch": "",
+            "error": "not checked: deadline exceeded after 300ms",
+            "flags": [],
+            "goal": "alpha",
+            "item_id": "00000000-0000-4000-8000-0000000c0001",
+            "merge_sha": "item-1-merged",
+            "pr_number": 101,
+            "seq": 1,
+            "title": "Item 1"
+          }
+        ],
+        "open_prs": [],
+        "project": "contractco/mesh",
+        "release_prs": [],
+        "review": [
+          {
+            "check_name": "attestation",
+            "check_state": "success",
+            "error": "deadline exceeded after 300ms",
+            "evaluation_passed_at": "2026-01-01T00:00:00Z",
+            "flags": [],
+            "github": {
+              "base": "main",
+              "checks": "none",
+              "error": "github unreachable",
+              "head_sha": "6fea9e4254fc80130d82c3777b35607d344d412a",
+              "mergeable_state": "behind",
+              "merged": false,
+              "state": "open"
+            },
+            "goal": "zeta",
+            "merge_queue_position": 1,
+            "merge_queued_behind_pr": 0,
+            "minutes_waiting": 0,
+            "no_verdict": "missing",
+            "no_verdict_since": "2026-01-01T00:00:00Z",
+            "pr_number": 103,
+            "pr_url": "https://github.com/contractco/api/pull/103",
+            "protected_files": [],
+            "rebase_conflict": "both sides changed main.go",
+            "rebase_state": "rebased",
+            "repo": "contractco/api",
+            "run_length_minutes": 0,
+            "seq": 1,
+            "title": "Item 1"
+          }
+        ],
+        "waiting": [
+          {
+            "finish_refusal_kind": "conflict",
+            "finish_refusals": 2,
+            "flags": [],
+            "goal": "eta",
+            "held_reason": "the conflict is not resolved: Pull request #104 conflicts with main, and a rebase session could not resolve it: main.go\n\nRebase the branch onto origin/main, resolve the conflicts keeping both sides' intent, make the acceptance check pass again, and push with --force-with-lease; the pull request updates itself.",
+            "hold_deadline": "2026-01-01T00:00:00Z",
+            "hold_holder": "the integrator's rebase of pull request #104 onto its base",
+            "hold_kind": "finish_refused",
+            "hold_recovery": "refused twice on the same head: the builder cannot resolve a conflict it is told to leave to a rebase, so a rebase session is requested; a new head on the branch or a moved base releases it, and a person is named if the rebase fails or at hold_deadline",
+            "hold_since": "2026-01-01T00:00:00Z",
+            "holder": {
+              "goal": "eta",
+              "kind": "item",
+              "seq": 1,
+              "status": "pending"
+            },
+            "last_refused_head_sha": "eta-1-head",
+            "seq": 1,
+            "status": "pending",
+            "title": "Item 1"
+          }
+        ]
+      }
+    ]
+  }
+}

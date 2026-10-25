@@ -1,0 +1,80 @@
+{
+  "adr": "specs/adr-036-anythink-is-one-latchkey-org.md §6",
+  "call": "SetTenantProducts",
+  "claim": {
+    "note": "the tenant's products beside its standing, keyed as the ns claim is",
+    "products": {
+      "anythink/grapevine": [
+        "purser",
+        "terrastore"
+      ]
+    }
+  },
+  "consumer": "latchkeyid/latchkey goal latchkey-scopes-clients-and-mints-product-enablement",
+  "field": "latchkey-tenant-products",
+  "kind": "latchkey",
+  "note": "The platform owns only the products in its registry (ProductIndex) and merges: as its org's service client it reads the tenant first (the read below), keeps every product Latchkey lists that runsheet does not own — another anythink service's, such as wardroom — and puts the union with runsheet's current set, lowercase, deduplicated and sorted. The PUT still replaces the whole set; a product runsheet owns and no longer holds is dropped from it, and another service's is sent back unchanged. Latchkey stores it on the tenant, returns it as an array on the tenant read and the tenant list, and mints it as the products claim. An empty list turns every product off.",
+  "read": {
+    "body": {
+      "display_name": "Grapevine",
+      "products": [
+        "purser",
+        "terrastore"
+      ],
+      "slug": "grapevine",
+      "status": "active"
+    },
+    "method": "GET",
+    "path": "/org/{slug}/tenants/{tenant}",
+    "status": 200
+  },
+  "refusals": [
+    {
+      "body": {
+        "error": "unknown tenant"
+      },
+      "platform": "the reaction errors and retries: the tenant is made by the tenancy process first",
+      "status": 404
+    },
+    {
+      "body": {
+        "error": "products must be a list of product slugs"
+      },
+      "platform": "the reaction errors and parks",
+      "status": 400
+    },
+    {
+      "body": {
+        "error": "404 page not found"
+      },
+      "platform": "a Latchkey without the route: ErrTenantProductsUnsupported, the reaction parks naming Latchkey's answer",
+      "status": 404
+    }
+  ],
+  "request": {
+    "body": {
+      "products": [
+        "purser",
+        "terrastore"
+      ]
+    },
+    "example": "/org/anythink/tenants/grapevine/products",
+    "headers": {
+      "Authorization": "Bearer <the org's service client token>",
+      "Content-Type": "application/json"
+    },
+    "method": "PUT",
+    "path": "/org/{slug}/tenants/{tenant}/products"
+  },
+  "response": {
+    "body": {
+      "products": [
+        "purser",
+        "terrastore"
+      ],
+      "slug": "grapevine"
+    },
+    "status": 200
+  },
+  "served": "latchkeyid/latchkey PR 116 (oidc/orgtenants.go): the PUT replaces the set, slugs lowercase, tenant GETs return products as an array"
+}

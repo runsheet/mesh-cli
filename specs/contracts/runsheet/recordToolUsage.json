@@ -1,0 +1,31 @@
+{
+  "field": "recordToolUsage",
+  "input": {
+    "aggregateId": "00000000-0000-4000-8000-0000000c0003",
+    "namespace": "runsheet",
+    "tool": "brave",
+    "toolCallId": "call-1",
+    "usage": {
+      "actualCostCents": 5,
+      "adapter": "claude-code",
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "credentialId": "3d3d59f9-5d37-555d-a3ce-871fca90cafa",
+      "credentialKind": "api",
+      "inputTokens": 3000,
+      "listCostCents": 5,
+      "model": "opus",
+      "outputTokens": 1000,
+      "sessionId": "beta-build",
+      "sevenDayAfter": 0.4,
+      "sevenDayBefore": 0.3,
+      "toolCalls": 2,
+      "wallMs": 60000
+    }
+  },
+  "inputType": "RecordToolUsageInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

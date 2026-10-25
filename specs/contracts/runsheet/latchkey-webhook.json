@@ -1,0 +1,56 @@
+{
+  "adr": "specs/adr-047-a-token-names-an-org-by-ref-or-slug.md §7",
+  "consumer": "runsheet/runsheet hooks/latchkey.go",
+  "deliveries": {
+    "by_key": {
+      "event": "membership.set",
+      "id": "dlv_01J9ZK2W7Q4B8V3M6N1P5R0T9X",
+      "occurred_at": "2026-10-06T12:00:00Z",
+      "org": "runsheet",
+      "tenant": "grapevine"
+    },
+    "by_ref": {
+      "event": "membership.set",
+      "id": "dlv_01J9ZK2W7Q4B8V3M6N1P5R0T9Y",
+      "occurred_at": "2026-10-06T12:00:00Z",
+      "org": "vbqhxmtrlkzpwdnyfcse",
+      "tenant": "gjtnwzkqpxmfhrdlvyab"
+    },
+    "unknown": {
+      "event": "membership.set",
+      "id": "dlv_01J9ZK2W7Q4B8V3M6N1P5R0T9Z",
+      "occurred_at": "2026-10-06T12:00:00Z",
+      "org": "qwzxkplmvnbtrhgfdsay",
+      "tenant": "mnbvcxzlkjhgfdsapoiu"
+    }
+  },
+  "field": "latchkey-webhook",
+  "kind": "latchkey",
+  "note": "ASSUMED SHAPE: Latchkey has published no webhook fixture yet; this is the shape the platform builds against until it does (the goal the-platform-reads-a-token-by-ref-or-slug, item 5), and is replaced by Latchkey's when it exists. A delivery is a JSON object naming its event, its id, and the org and tenant it is about — each by ref for an org moved onto generated refs (the refs are the same ones gateway/testdata/token-ref-form.json carries for runsheet/grapevine) or by key (the legacy org name and tenant slug) otherwise. A tenant given as a whole namespace (`<org>/<tenant>`) is read by its last segment.",
+  "request": {
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Latchkey-Signature": "sha256=<hex HMAC-SHA256 of the raw body under LATCHKEY_WEBHOOK_SECRET>"
+    },
+    "method": "POST",
+    "path": "/webhooks/latchkey"
+  },
+  "responses": [
+    {
+      "platform": "the delivery matched an Org by latchkey_tenant_ref or tenant_slug and LatchkeyWebhookReceived is logged on it",
+      "status": 204
+    },
+    {
+      "platform": "verified, but naming no Org the platform knows (or no event): acknowledged, nothing recorded",
+      "status": 202
+    },
+    {
+      "platform": "the signature is missing or wrong",
+      "status": 401
+    },
+    {
+      "platform": "LATCHKEY_WEBHOOK_SECRET is unset: the mount is not there",
+      "status": 404
+    }
+  ]
+}

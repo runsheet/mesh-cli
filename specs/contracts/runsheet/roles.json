@@ -1,0 +1,21 @@
+{
+  "args": {},
+  "field": "roles",
+  "kind": "query",
+  "list": true,
+  "sample": [
+    {
+      "id": "00000000-0000-4000-8000-0000000fffff",
+      "identity": "member",
+      "powers": [
+        "reply"
+      ],
+      "product": "contractproduct",
+      "role": "product",
+      "slug": "contractproduct/assistant",
+      "sourceCommit": "manifest001",
+      "trigger": "thread",
+      "version": 1
+    }
+  ]
+}

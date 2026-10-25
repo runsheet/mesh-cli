@@ -1,0 +1,44 @@
+{
+  "field": "recordDeployAttestation",
+  "input": {
+    "deployId": "00000000-0000-4000-8000-0000000fffff",
+    "input": {
+      "at": "2026-01-01T00:00:00Z",
+      "commit": "0688ce05b8682fc9f629d16499098fc90cad0764",
+      "environment": "production",
+      "probe": {
+        "body": "",
+        "passed": true,
+        "status": 204,
+        "tries": 2
+      },
+      "sessionId": "deploy-1",
+      "steps": [
+        {
+          "durationMs": 61000,
+          "exitCode": 0,
+          "log": "built image\n",
+          "name": "build"
+        },
+        {
+          "durationMs": 9000,
+          "exitCode": 0,
+          "log": "rolled out\n",
+          "name": "deploy"
+        }
+      ]
+    }
+  },
+  "inputType": "(deployId: UUID!, input: Map!)",
+  "kind": "mutation",
+  "result": {
+    "commit": "0688ce05b8682fc9f629d16499098fc90cad0764",
+    "deployId": "00000000-0000-4000-8000-0000000fffff",
+    "environment": "production",
+    "failedStep": "",
+    "keyId": "ed25519:KEYID",
+    "probePassed": true,
+    "signature": "SIGNATURE",
+    "status": "live"
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "args": {
+    "triggerId": "00000000-0000-4000-8000-0000000fffff"
+  },
+  "field": "triggerFirings",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "firings": [
+      {
+        "actionKinds": [
+          "notify"
+        ],
+        "by": "e96b1f77-6ed9-53ce-8ef4-0861304b4a23",
+        "cause": "person",
+        "event": null,
+        "facts": {
+          "items_ready": 3,
+          "minutes_since_last_progress": 75
+        },
+        "firedAt": "2026-01-01T00:00:00Z",
+        "id": "00000000-0000-4000-8000-0000000fffff",
+        "results": [
+          "notify: 1 admin"
+        ],
+        "slug": "stall-alarm",
+        "triggerId": "00000000-0000-4000-8000-0000000fffff"
+      }
+    ],
+    "trigger": {
+      "actions": [
+        {
+          "budgetCents": 500,
+          "kind": "set_goal",
+          "priority": "high",
+          "projectId": "a00ee511-6be8-5bef-bf59-4055ee443812",
+          "slug": "unstick",
+          "statement": "Nothing moved for {{minutes_since_last_progress}} minutes.",
+          "title": "Unstick {{items_ready}} ready items"
+        }
+      ],
+      "builtin": false,
+      "cooldownMinutes": 0,
+      "createdAt": "2026-01-01T00:00:00Z",
+      "createdBy": "e96b1f77-6ed9-53ce-8ef4-0861304b4a23",
+      "enabled": true,
+      "firings": 1,
+      "id": "00000000-0000-4000-8000-0000000fffff",
+      "lastFiredAt": "2026-01-01T00:00:00Z",
+      "onEvent": null,
+      "onSchedule": "*/10 * * * *",
+      "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94",
+      "slug": "stall-alarm",
+      "title": "Ready work, nothing moving",
+      "when": "items_ready > 0 and minutes_since_last_progress >= 60"
+    }
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "field": "recordValidationAttestation",
+  "input": {
+    "input": {
+      "artifactDigests": [
+        "sha256:cafe"
+      ],
+      "at": "2026-01-01T00:00:00Z",
+      "commands": [
+        {
+          "command": "go test ./e2e/...",
+          "durationMs": 600000,
+          "exitCode": 0,
+          "suite": "integration"
+        }
+      ],
+      "commit": "3698eff3fd9343d5d0fa6c97076510fc41af4861",
+      "reports": [
+        {
+          "content": "{\"Action\":\"pass\"}",
+          "suite": "integration"
+        }
+      ],
+      "runnerImage": "ghcr.io/runsheet/mesh-node@sha256:0123",
+      "sessionId": "batch-2-validation",
+      "suiteHash": "ff3098b20936d93f1f5fee43633b8e90c04ad98b71e22f15e839afa988200fa6",
+      "testsFailed": 0,
+      "testsPassed": 40,
+      "testsRun": 40,
+      "treeHash": "tree-d5f7574355023730f14d4e2e214f4ead58f6e160"
+    },
+    "mergeBatchId": "00000000-0000-4000-8000-0000000fffff"
+  },
+  "inputType": "(mergeBatchId: UUID, input: Map!)",
+  "kind": "mutation",
+  "result": {
+    "branch": "mesh/batch/contractco/console/2",
+    "commit": "3698eff3fd9343d5d0fa6c97076510fc41af4861",
+    "keyId": "ed25519:KEYID",
+    "mergeBatchId": "00000000-0000-4000-8000-0000000fffff",
+    "signature": "SIGNATURE",
+    "status": "ok",
+    "testEvidenceId": "00000000-0000-4000-8000-0000000fffff"
+  }
+}

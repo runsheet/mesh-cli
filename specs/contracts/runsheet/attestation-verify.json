@@ -1,0 +1,114 @@
+{
+  "args": {
+    "method": "GET",
+    "path": "/mesh/v1/attestations/contractco/api/6fea9e4254fc80130d82c3777b35607d344d412a?base=e78d24db0e2de68d840a934d16cad8289631388b"
+  },
+  "field": "attestation-verify",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "attestation": {
+      "artifact_digests": [
+        "sha256:beef"
+      ],
+      "attested_at": "2026-01-01T00:00:00Z",
+      "checks": [
+        {
+          "check": "",
+          "expected": "",
+          "findings": [
+            {
+              "path": "main.go",
+              "severity": "low",
+              "summary": "the build comment names no item"
+            }
+          ],
+          "focus": "security",
+          "index": 0,
+          "kind": "review",
+          "output": "",
+          "session_id": "zeta-review",
+          "suites": [],
+          "verdict": "pass"
+        }
+      ],
+      "commands": [
+        {
+          "command": "go test ./platform/...",
+          "duration_ms": 61000,
+          "exit_code": 0,
+          "pod": "",
+          "suite": "unit"
+        }
+      ],
+      "commit_sha": "6fea9e4254fc80130d82c3777b35607d344d412a",
+      "duration_ms": 0,
+      "failures": 0,
+      "flaky_reruns": 0,
+      "format": "",
+      "goal_id": "bf293a3c-0dc8-5aaa-b472-c25ff39dc42d",
+      "human_reviews": null,
+      "item_seq": 1,
+      "job": "",
+      "key_id": "ed25519:KEYID",
+      "node_id": "d1f6c904-510f-5905-a598-8ea0b41f837a",
+      "passes": 0,
+      "received_at": "2026-01-01T00:00:00Z",
+      "repo_full_name": "contractco/api",
+      "repo_id": "7dacfd73-80d2-5f33-94d6-54f222403404",
+      "report": null,
+      "report_bytes": 0,
+      "report_expired": false,
+      "reports": [
+        {
+          "content": "{\"Action\":\"pass\"}",
+          "suite": "unit",
+          "truncated": false
+        }
+      ],
+      "reruns": [],
+      "retention_until": null,
+      "run_id": "",
+      "run_url": "",
+      "runner_image": "ghcr.io/runsheet/mesh-node@sha256:0123",
+      "second_validations": [
+        {
+          "findings": [
+            {
+              "path": "main.go",
+              "severity": "low",
+              "summary": "the build comment says what changed but not why"
+            }
+          ],
+          "key_id": "ed25519:KEYID",
+          "node_id": "d1f6c904-510f-5905-a598-8ea0b41f837a",
+          "recorded_at": "2026-01-01T00:00:00Z",
+          "session_id": "zeta-evaluate",
+          "signature": "SECOND_SIGNATURE",
+          "suite_hash": "ff3098b20936d93f1f5fee43633b8e90c04ad98b71e22f15e839afa988200fa6",
+          "verdict": "pass"
+        }
+      ],
+      "session_id": "zeta-build",
+      "signature": "SIGNATURE",
+      "skips": 0,
+      "suite_hash": "ff3098b20936d93f1f5fee43633b8e90c04ad98b71e22f15e839afa988200fa6",
+      "suites": 0,
+      "tests": 0,
+      "tests_failed": 0,
+      "tests_passed": 12,
+      "tests_run": 12,
+      "tree_hash": "tree-38dc1c892fe1a2581ba77fed6ec2d2a29ee3d33f",
+      "uploaded_at": null,
+      "work_item_id": "00000000-0000-4000-8000-0000000c0007",
+      "workflow": ""
+    },
+    "reasons": [],
+    "reused_from": "",
+    "risk_classes": [],
+    "skip_jobs": [
+      "unit"
+    ],
+    "verdict": "verified"
+  }
+}

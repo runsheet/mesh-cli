@@ -1,0 +1,62 @@
+{
+  "args": {
+    "method": "GET",
+    "path": "/mesh/v1/health/deploys?project=contractco/mesh"
+  },
+  "field": "health-deploys",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "at": "2026-01-01T00:00:00Z",
+    "hosts": [
+      {
+        "at": "2026-01-01T00:00:00Z",
+        "cores": 18,
+        "disk_free_gb": 412,
+        "disk_used_pct": 55,
+        "host": "mini",
+        "jobs_queued": 0,
+        "load1": 21.5,
+        "load_p90_24h": 21.5,
+        "org": "contractco",
+        "runners_busy": 3,
+        "runners_total": 9,
+        "stale": false
+      }
+    ],
+    "repos": [
+      {
+        "block": null,
+        "default_branch": "main",
+        "deployments": [],
+        "error": "deadline exceeded after 300ms",
+        "projects": [
+          "contractco/mesh"
+        ],
+        "repo": "contractco/api",
+        "runs": [
+          {
+            "by": "runsheet",
+            "conclusion": "success",
+            "created_at": "2026-01-01T00:00:00Z",
+            "environment": "production",
+            "finished_at": "2026-01-01T00:00:00Z",
+            "head_sha": "0688ce05b8682fc9f629d16499098fc90cad0764",
+            "id": 0,
+            "item_id": "00000000-0000-4000-8000-0000000c0003",
+            "job": "runsheet deploy",
+            "probe": {
+              "passed": true,
+              "status": 204,
+              "tries": 2
+            },
+            "state": "passed",
+            "status": "completed",
+            "workflow": ""
+          }
+        ]
+      }
+    ],
+    "runs": 5
+  }
+}

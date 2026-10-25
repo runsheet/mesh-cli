@@ -1,0 +1,28 @@
+{
+  "args": {
+    "body": {
+      "base_tree": "af040c5dbf6f42ffbae5a47160872d82e2b7851b",
+      "changeset_id": "00000000-0000-4000-8000-0000000fffff",
+      "paths_changed": [
+        "README.md"
+      ],
+      "tree": "d5afe7d74cd96c47d80aff7b49651675936da74e"
+    },
+    "method": "POST",
+    "path": "/mesh/v1/items/00000000-0000-4000-8000-0000000fffff/changesets"
+  },
+  "field": "mesh-changeset-record",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "base_tree": "af040c5dbf6f42ffbae5a47160872d82e2b7851b",
+    "changeset_id": "00000000-0000-4000-8000-0000000fffff",
+    "item_id": "00000000-0000-4000-8000-0000000fffff",
+    "made_by": "node:00000000-0000-4000-8000-0000000fffff",
+    "paths_changed": [
+      "README.md"
+    ],
+    "tree": "d5afe7d74cd96c47d80aff7b49651675936da74e"
+  },
+  "status": 200
+}

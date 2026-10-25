@@ -1,0 +1,16 @@
+{
+  "field": "evaluateWorkItem",
+  "input": {
+    "aggregateId": "00000000-0000-4000-8000-0000000c0002",
+    "costCents": 0,
+    "namespace": "runsheet",
+    "noVerdict": true,
+    "noVerdictReason": "no verdict — prologue: not found",
+    "passed": false
+  },
+  "inputType": "EvaluateWorkItemInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

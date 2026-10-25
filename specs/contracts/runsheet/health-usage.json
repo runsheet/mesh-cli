@@ -1,0 +1,51 @@
+{
+  "args": {
+    "method": "GET",
+    "path": "/mesh/v1/health/usage?org=contractco&project=contractco/mesh&goal=alpha"
+  },
+  "field": "health-usage",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "at": "2026-01-01T00:00:00Z",
+    "by_tool": [
+      {
+        "calls": 1,
+        "day": "2026-01-01",
+        "errors": 1,
+        "p50_response_bytes": 9,
+        "p95_response_bytes": 9,
+        "tool": "mesh_items"
+      }
+    ],
+    "calls": 1,
+    "days": 30,
+    "goal": {
+      "context_tokens": 3,
+      "context_tokens_per_item": 1,
+      "context_tokens_per_merged_item": 2,
+      "id": "a9fdff89-0ddb-5cfb-9a47-7bebdcceec06",
+      "items": [
+        {
+          "context_bytes": 48213,
+          "context_tokens": 3,
+          "id": "00000000-0000-4000-8000-0000000c0002",
+          "seq": 2,
+          "state": "merged"
+        }
+      ],
+      "merged_items": 2,
+      "project": "contractco/mesh",
+      "slug": "alpha"
+    },
+    "never_called": [
+      "mesh_ask"
+    ],
+    "since": "2026-01-01T00:00:00Z",
+    "story": {
+      "goals": 13,
+      "story_share": 0.38461538461538464,
+      "task_shaped_share": 0
+    }
+  }
+}

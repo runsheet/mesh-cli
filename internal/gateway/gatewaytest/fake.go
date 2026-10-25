@@ -47,7 +47,11 @@ type Fake struct {
 	Server *httptest.Server
 	Token  string
 
-	mu        sync.Mutex
+	mu sync.Mutex
+	// cmu guards violations, the contract misfits met (contracts.go).
+	cmu        sync.Mutex
+	violations []string
+
 	UserID    string
 	Orgs      []map[string]any
 	WorkItems map[string]map[string]any
@@ -207,11 +211,13 @@ type Fake struct {
 	// no `actor`, introspection leaves it out, and a command of the five
 	// carrying it is refused with "Unknown field".
 	NoActor bool
-	// NoDescription is a platform older than every-actor-has-a-name item
-	// 3: its FinishWorkItemInput has no `description`, introspection
-	// leaves it out, and a finishWorkItem carrying it is refused with
-	// "Unknown field".
-	NoDescription bool
+	// TakesDescription is a platform whose FinishWorkItemInput has
+	// `description` (every-actor-has-a-name item 3). runsheet's has none
+	// (platform/schema/workitem.loom FinishWorkItem; its finishJob
+	// fixture's changeset is FinishWorkItemInput), so by default
+	// introspection leaves it out and a finishWorkItem carrying it is
+	// refused with "Unknown field".
+	TakesDescription bool
 	// GoalSplit is a platform whose Mutation has proposeGoalSplit
 	// (ADR-023, the size rule): false, as the platform is today (goal
 	// a-goal-fits-in-eight-items is still queued), leaves the field out
@@ -647,15 +653,22 @@ func New(token string) *Fake {
 		MergeBatches: map[string]map[string]any{}, MainValidationRequests: map[string]map[string]any{}, PullRequestValidations: map[string]map[string]any{}, BatchGitHubTokens: map[string]map[string]any{},
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/graphql", f.graphql)
-	mux.HandleFunc("/mesh/v1/", f.mesh)
+	mux.HandleFunc("/graphql", f.contractedGraphQL(f.graphql))
+	mux.HandleFunc("/mesh/v1/", f.contractedREST(f.mesh))
 	mux.HandleFunc("/mcp", f.mcp)
 	f.Server = httptest.NewServer(mux)
 	return f
 }
 
-// Close stops the server.
-func (f *Fake) Close() { f.Server.Close() }
+// Close stops the server, and panics when the fake met a request or gave
+// an answer outside runsheet's contracts that no test took
+// (contracts.go).
+func (f *Fake) Close() {
+	f.Server.Close()
+	if vs := f.untakenViolations(); len(vs) > 0 {
+		panic(contractPanic(vs))
+	}
+}
 
 // URL is the fake's base URL.
 func (f *Fake) URL() string { return f.Server.URL }
@@ -890,7 +903,7 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request, q string, vars map[
 			if n == gateway.ActorField && f.NoActor {
 				continue
 			}
-			if n == gateway.DescriptionField && f.NoDescription {
+			if n == gateway.DescriptionField && !f.TakesDescription {
 				continue
 			}
 			fields = append(fields, map[string]any{"name": n})
@@ -1042,7 +1055,7 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request, q string, vars map[
 			writeErrors(w, 200, `Variable "$in" got invalid value; Unknown field "changesetId" is not defined by type "FinishWorkItemInput".`)
 			return
 		}
-		if m[2] == "finishWorkItem" && f.NoDescription {
+		if m[2] == "finishWorkItem" && !f.TakesDescription {
 			if _, ok := in[gateway.DescriptionField]; ok {
 				writeErrors(w, 200, `Variable "$in" got invalid value; Unknown field "description" is not defined by type "FinishWorkItemInput".`)
 				return

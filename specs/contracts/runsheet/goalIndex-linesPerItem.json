@@ -1,0 +1,18 @@
+{
+  "args": {
+    "id": "5d8fe036-18ce-592a-b095-9995d0473e75",
+    "namespace": "runsheet"
+  },
+  "field": "goalIndex",
+  "kind": "query",
+  "list": false,
+  "note": "How big a goal's merged items are (goal an-item-is-a-change-a-reviewer-reads-in-ten-minutes): medianLinesPerItem is the median lines_changed (the merged pull request's additions plus deletions) over its merged items that changed any, an even count the mean of the middle two rounded down; itemsCounted is how many those are. A merge whose size was never read (0 lines, or one recorded before the count) is in neither. Both are 0 while nothing has counted. Here four merged items changed 100, 300, 500 and 0 lines: 300 over 3.",
+  "sample": {
+    "id": "5d8fe036-18ce-592a-b095-9995d0473e75",
+    "itemsCounted": 3,
+    "itemsMerged": 4,
+    "medianLinesPerItem": 300,
+    "slug": "small-items"
+  },
+  "selection": "id slug itemsMerged medianLinesPerItem itemsCounted"
+}

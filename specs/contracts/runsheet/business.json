@@ -1,0 +1,204 @@
+{
+  "args": {
+    "enterpriseId": "2daa2ebe-ed9f-566b-914d-9c899a96eb95",
+    "slug": "contractent"
+  },
+  "field": "business",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "commitSha": "c0ffee",
+    "displayName": "Contract Held",
+    "domains": [
+      {
+        "domain": "contractent.test",
+        "drift": [],
+        "hold": {
+          "instructions": "Add a Cloudflare API token to enterprise contractent as vendor cloudflare (kind api_key: an account-scoped token with Zone:Edit, DNS:Edit and Pages:Edit) on the enterprise's Credentials page. Rigger makes the zone for contractent.test once it lands; the token never goes in the business file or CI.",
+          "kind": "business_cloudflare_credential",
+          "source": "business-domain/00000000-0000-4000-8000-0000000fffff/business_cloudflare_credential"
+        },
+        "lastObservedAt": "2026-01-01T00:00:00Z",
+        "nameservers": [],
+        "reason": "",
+        "records": [],
+        "since": "2026-01-01T00:00:00Z",
+        "status": "requested",
+        "zoneId": ""
+      }
+    ],
+    "drift": [],
+    "enterprise": {
+      "id": "2daa2ebe-ed9f-566b-914d-9c899a96eb95",
+      "slug": "contractent"
+    },
+    "github": {
+      "account": null,
+      "applied": null,
+      "drift": [],
+      "hold": {
+        "instructions": "Create github.com/contractent and install the runsheet App on it. GitHub has no API that makes an organization, so this step is a person's: make the org at https://github.com/account/organizations/new, then install the App at https://github.com/apps/runsheet/installations/new and choose contractent. Rigger links it to the runsheet org contractent and applies its settings once both are done.",
+        "kind": "business_github_org",
+        "source": "business/117a7e70-d698-53e5-bce5-6439b063d8e5/github"
+      },
+      "org": "contractent",
+      "repos": [
+        {
+          "error": null,
+          "name": "www",
+          "project": null,
+          "status": "pending",
+          "template": "runsheet/website",
+          "url": null
+        }
+      ],
+      "runners": {
+        "hold": null,
+        "status": "pending"
+      },
+      "settings": null,
+      "since": "2026-01-01T00:00:00Z",
+      "status": "held"
+    },
+    "id": "117a7e70-d698-53e5-bce5-6439b063d8e5",
+    "org": {
+      "hold": {
+        "instructions": "The slug contractent is an enterprise's, and no org can have it. Rename the business in .runsheet/businesses/contractent.yaml to a slug no enterprise or org holds.",
+        "kind": "business_org_taken",
+        "source": "business/117a7e70-d698-53e5-bce5-6439b063d8e5/org"
+      },
+      "id": null,
+      "slug": "contractent",
+      "status": "held"
+    },
+    "parts": [
+      {
+        "instructions": "The slug contractent is an enterprise's, and no org can have it. Rename the business in .runsheet/businesses/contractent.yaml to a slug no enterprise or org holds.",
+        "part": "org",
+        "since": "2026-01-01T00:00:00Z",
+        "source": "business/117a7e70-d698-53e5-bce5-6439b063d8e5/org",
+        "status": "held"
+      },
+      {
+        "instructions": "",
+        "part": "enterprise",
+        "since": "2026-01-01T00:00:00Z",
+        "source": "",
+        "status": "pending"
+      },
+      {
+        "instructions": "",
+        "part": "tenant",
+        "since": "2026-01-01T00:00:00Z",
+        "source": "",
+        "status": "pending"
+      },
+      {
+        "instructions": "Add a Cloudflare API token to enterprise contractent as vendor cloudflare (kind api_key: an account-scoped token with Zone:Edit, DNS:Edit and Pages:Edit) on the enterprise's Credentials page. Rigger makes the zone for contractent.test once it lands; the token never goes in the business file or CI.",
+        "part": "zone",
+        "since": "2026-01-01T00:00:00Z",
+        "source": "business-domain/00000000-0000-4000-8000-0000000fffff/business_cloudflare_credential",
+        "status": "held"
+      },
+      {
+        "instructions": "Add a Cloudflare API token to enterprise contractent as vendor cloudflare (kind api_key: an account-scoped token with Zone:Edit, DNS:Edit and Pages:Edit) on the enterprise's Credentials page. Rigger makes the zone for contractent.test once it lands; the token never goes in the business file or CI.",
+        "part": "records",
+        "since": "2026-01-01T00:00:00Z",
+        "source": "business-domain/00000000-0000-4000-8000-0000000fffff/business_cloudflare_credential",
+        "status": "held"
+      },
+      {
+        "instructions": "Create github.com/contractent and install the runsheet App on it. GitHub has no API that makes an organization, so this step is a person's: make the org at https://github.com/account/organizations/new, then install the App at https://github.com/apps/runsheet/installations/new and choose contractent. Rigger links it to the runsheet org contractent and applies its settings once both are done.",
+        "part": "github",
+        "since": "2026-01-01T00:00:00Z",
+        "source": "business/117a7e70-d698-53e5-bce5-6439b063d8e5/github",
+        "status": "held"
+      },
+      {
+        "instructions": "Add CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID to contractent/www's Actions secrets for www.yml, or wait for Slipway.",
+        "part": "sites",
+        "since": "2026-01-01T00:00:00Z",
+        "source": "business-site/00000000-0000-4000-8000-0000000fffff/business_site_deploy_secrets",
+        "status": "held"
+      }
+    ],
+    "path": ".runsheet/businesses/contractent.yaml",
+    "records": {
+      "entries": [
+        {
+          "content": "mx1.contractent.test",
+          "name": "@",
+          "priority": 10,
+          "proxied": false,
+          "ttl": 3600,
+          "type": "MX"
+        }
+      ],
+      "hold": {
+        "instructions": "Add a Cloudflare API token to enterprise contractent as vendor cloudflare (kind api_key: an account-scoped token with Zone:Edit, DNS:Edit and Pages:Edit) on the enterprise's Credentials page. Rigger makes the zone for contractent.test once it lands; the token never goes in the business file or CI.",
+        "kind": "business_cloudflare_credential",
+        "source": "business-domain/00000000-0000-4000-8000-0000000fffff/business_cloudflare_credential"
+      },
+      "status": "held"
+    },
+    "sites": {
+      "entries": [
+        {
+          "domain": "contractent.test",
+          "domains": [
+            "contractent.test"
+          ],
+          "framework": "astro",
+          "hold": {
+            "instructions": "Add CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID to contractent/www's Actions secrets for www.yml, or wait for Slipway.",
+            "kind": "business_site_deploy_secrets",
+            "source": "business-site/00000000-0000-4000-8000-0000000fffff/business_site_deploy_secrets"
+          },
+          "overwrote": [
+            "A contractent.test 192.0.2.10"
+          ],
+          "project": "contractent-www",
+          "reason": "waits for the enterprise's Cloudflare token: contractent.test's business_cloudflare_credential hold says what to add",
+          "records": [
+            {
+              "content": "contractent-www.pages.dev",
+              "name": "contractent.test",
+              "priority": 0,
+              "proxied": true,
+              "ttl": 0,
+              "type": "CNAME"
+            }
+          ],
+          "repo": "www",
+          "since": "2026-01-01T00:00:00Z",
+          "status": "ready",
+          "variableSet": true,
+          "waitingOn": "credential"
+        }
+      ],
+      "hold": {
+        "instructions": "Add CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID to contractent/www's Actions secrets for www.yml, or wait for Slipway.",
+        "kind": "business_site_deploy_secrets",
+        "source": "business-site/00000000-0000-4000-8000-0000000fffff/business_site_deploy_secrets"
+      },
+      "since": "2026-01-01T00:00:00Z",
+      "status": "held"
+    },
+    "slug": "contractent",
+    "sourceRepoId": "7dacfd73-80d2-5f33-94d6-54f222403404",
+    "status": "declared",
+    "zone": {
+      "domains": [
+        "contractent.test"
+      ],
+      "hold": {
+        "instructions": "Add a Cloudflare API token to enterprise contractent as vendor cloudflare (kind api_key: an account-scoped token with Zone:Edit, DNS:Edit and Pages:Edit) on the enterprise's Credentials page. Rigger makes the zone for contractent.test once it lands; the token never goes in the business file or CI.",
+        "kind": "business_cloudflare_credential",
+        "source": "business-domain/00000000-0000-4000-8000-0000000fffff/business_cloudflare_credential"
+      },
+      "nameservers": [],
+      "since": "2026-01-01T00:00:00Z",
+      "status": "held"
+    }
+  }
+}

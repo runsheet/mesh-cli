@@ -1,0 +1,18 @@
+{
+  "args": {
+    "method": "PUT",
+    "path": "/mesh/v1/products/acme/catalogue"
+  },
+  "field": "mesh-catalogue-publish",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "declared": [
+      "acme/assistant"
+    ],
+    "product": "acme",
+    "retired": [],
+    "revision": "sha256:a947efe1ba08d805a6f1f53f162a167452b1135ff1d21dfeb0328185b97df5f8",
+    "unchanged": []
+  }
+}

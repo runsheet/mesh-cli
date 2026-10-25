@@ -2,6 +2,7 @@ package gateway_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,5 +132,12 @@ func TestTheFakeRefusesANoVerdictThePlatformRefuses(t *testing.T) {
 	}
 	if row := f.Item(finishItem); row["status"] != "evaluating" || row["noVerdicts"] != nil {
 		t.Fatalf("row = %+v", row)
+	}
+	// the outcome shape is outside runsheet's contract too: the fake
+	// refused it there before the aggregate saw it
+	for _, v := range f.TakeContractViolations() {
+		if !strings.Contains(v, "outcome: not in the contract") {
+			t.Errorf("violation %q, want only the outcome one", v)
+		}
 	}
 }

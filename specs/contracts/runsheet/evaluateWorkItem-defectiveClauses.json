@@ -1,0 +1,30 @@
+{
+  "field": "evaluateWorkItem",
+  "input": {
+    "aggregateId": "00000000-0000-4000-8000-0000000c0001",
+    "costCents": 0,
+    "defectiveClauses": [
+      {
+        "clause": "the goal document records this item as merged",
+        "reason": "the item can record its own merge only after it merges"
+      }
+    ],
+    "failedClauses": [
+      {
+        "clause": "go test ./... passes",
+        "satisfy": "TestA passes"
+      }
+    ],
+    "files": [
+      "a_test.go"
+    ],
+    "namespace": "runsheet",
+    "notes": "TestA fails",
+    "passed": false
+  },
+  "inputType": "EvaluateWorkItemInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

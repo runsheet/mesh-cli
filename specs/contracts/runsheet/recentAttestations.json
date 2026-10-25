@@ -1,0 +1,25 @@
+{
+  "args": {
+    "repoId": "5ff615fb-2ed6-518d-9f97-3941d39435fe"
+  },
+  "field": "recentAttestations",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "attestations": [
+      {
+        "head_sha": "5e5e000000000000000000000000000000009777",
+        "issued_at": "2026-01-01T00:00:00Z",
+        "issuer": {
+          "id": "",
+          "kind": "node",
+          "name": "build-recent"
+        },
+        "kind": "validation",
+        "number": 5,
+        "verdict": "pass"
+      }
+    ],
+    "repo_id": "5ff615fb-2ed6-518d-9f97-3941d39435fe"
+  }
+}

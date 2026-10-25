@@ -1,0 +1,25 @@
+{
+  "args": {
+    "triggerId": "00000000-0000-4000-8000-0000000fffff"
+  },
+  "field": "triggerDeliveries",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "deliveries": [
+      {
+        "actionIndex": 1,
+        "attempt": 1,
+        "error": "",
+        "firingId": "00000000-0000-4000-8000-0000000fffff",
+        "id": "00000000-0000-4000-8000-0000000fffff",
+        "nextAttemptAt": null,
+        "ok": true,
+        "sentAt": "2026-01-01T00:00:00Z",
+        "statusCode": 200,
+        "triggerId": "00000000-0000-4000-8000-0000000fffff",
+        "url": "https://hooks.contract.test/runsheet"
+      }
+    ]
+  }
+}

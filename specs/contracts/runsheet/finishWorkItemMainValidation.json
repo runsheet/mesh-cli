@@ -1,0 +1,13 @@
+{
+  "field": "finishWorkItemMainValidation",
+  "input": {
+    "aggregateId": "00000000-0000-4000-8000-0000000c0001",
+    "namespace": "runsheet",
+    "sha": "alpha-1-merged"
+  },
+  "inputType": "FinishWorkItemMainValidationInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

@@ -1,0 +1,203 @@
+{
+  "args": {
+    "enterpriseId": "2daa2ebe-ed9f-566b-914d-9c899a96eb95"
+  },
+  "field": "businesses",
+  "kind": "query",
+  "list": true,
+  "sample": [
+    {
+      "commitSha": "c0ffee",
+      "displayName": "Contract Co",
+      "domains": [
+        {
+          "domain": "contractco.test",
+          "drift": [],
+          "hold": {
+            "instructions": "Add a Cloudflare API token to enterprise contractent as vendor cloudflare (kind api_key: an account-scoped token with Zone:Edit, DNS:Edit and Pages:Edit) on the enterprise's Credentials page. Rigger makes the zone for contractco.test once it lands; the token never goes in the business file or CI.",
+            "kind": "business_cloudflare_credential",
+            "source": "business-domain/00000000-0000-4000-8000-0000000fffff/business_cloudflare_credential"
+          },
+          "lastObservedAt": "2026-01-01T00:00:00Z",
+          "nameservers": [],
+          "reason": "",
+          "records": [],
+          "since": "2026-01-01T00:00:00Z",
+          "status": "requested",
+          "zoneId": ""
+        }
+      ],
+      "drift": [],
+      "enterprise": {
+        "id": "2daa2ebe-ed9f-566b-914d-9c899a96eb95",
+        "slug": "contractent"
+      },
+      "github": {
+        "account": {
+          "githubId": 9871,
+          "id": "27fa0177-19eb-51b0-ab0e-b3530fa0741c",
+          "installationId": 98710,
+          "linked": true,
+          "login": "contractco",
+          "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94"
+        },
+        "applied": {
+          "default_branch_ruleset": {
+            "allow_force_pushes": false,
+            "branch": "main",
+            "id": 1,
+            "name": "runsheet: default branch",
+            "require_pull_request": true,
+            "required_approvals": 0
+          },
+          "default_repository_permission": "read",
+          "member_visibility": "private",
+          "members_can_create_repositories": false,
+          "runner_labels": []
+        },
+        "drift": [],
+        "hold": null,
+        "org": "contractco",
+        "repos": [
+          {
+            "error": null,
+            "name": "www",
+            "project": {
+              "id": "dc655804-c5c4-5f97-922b-091827f90587",
+              "name": "Contract Co",
+              "slug": "contractco"
+            },
+            "status": "enrolled",
+            "template": "runsheet/website",
+            "url": "https://github.com/contractco/www"
+          }
+        ],
+        "runners": {
+          "hold": null,
+          "status": "pending"
+        },
+        "settings": {
+          "default_branch": "main",
+          "runner_labels": []
+        },
+        "since": "2026-01-01T00:00:00Z",
+        "status": "configured"
+      },
+      "id": "18a9bf32-92c2-5afd-aca2-a36ac371a932",
+      "org": {
+        "hold": null,
+        "id": "e86a269f-78f4-5903-a7eb-f571f2b3ab94",
+        "slug": "contractco",
+        "status": "done"
+      },
+      "parts": [
+        {
+          "instructions": "",
+          "part": "org",
+          "since": "2026-01-01T00:00:00Z",
+          "source": "",
+          "status": "done"
+        },
+        {
+          "instructions": "",
+          "part": "enterprise",
+          "since": "2026-01-01T00:00:00Z",
+          "source": "",
+          "status": "done"
+        },
+        {
+          "instructions": "",
+          "part": "tenant",
+          "since": "2026-01-01T00:00:00Z",
+          "source": "",
+          "status": "done"
+        },
+        {
+          "instructions": "Add a Cloudflare API token to enterprise contractent as vendor cloudflare (kind api_key: an account-scoped token with Zone:Edit, DNS:Edit and Pages:Edit) on the enterprise's Credentials page. Rigger makes the zone for contractco.test once it lands; the token never goes in the business file or CI.",
+          "part": "zone",
+          "since": "2026-01-01T00:00:00Z",
+          "source": "business-domain/00000000-0000-4000-8000-0000000fffff/business_cloudflare_credential",
+          "status": "held"
+        },
+        {
+          "instructions": "Add a Cloudflare API token to enterprise contractent as vendor cloudflare (kind api_key: an account-scoped token with Zone:Edit, DNS:Edit and Pages:Edit) on the enterprise's Credentials page. Rigger makes the zone for contractco.test once it lands; the token never goes in the business file or CI.",
+          "part": "records",
+          "since": "2026-01-01T00:00:00Z",
+          "source": "business-domain/00000000-0000-4000-8000-0000000fffff/business_cloudflare_credential",
+          "status": "held"
+        },
+        {
+          "instructions": "",
+          "part": "github",
+          "since": "2026-01-01T00:00:00Z",
+          "source": "",
+          "status": "configured"
+        },
+        {
+          "instructions": "",
+          "part": "sites",
+          "since": "2026-01-01T00:00:00Z",
+          "source": "",
+          "status": "pending"
+        }
+      ],
+      "path": ".runsheet/businesses/contractco.yaml",
+      "records": {
+        "entries": [
+          {
+            "content": "contractco-www.pages.dev",
+            "name": "www",
+            "priority": 0,
+            "proxied": false,
+            "ttl": 0,
+            "type": "CNAME"
+          }
+        ],
+        "hold": {
+          "instructions": "Add a Cloudflare API token to enterprise contractent as vendor cloudflare (kind api_key: an account-scoped token with Zone:Edit, DNS:Edit and Pages:Edit) on the enterprise's Credentials page. Rigger makes the zone for contractco.test once it lands; the token never goes in the business file or CI.",
+          "kind": "business_cloudflare_credential",
+          "source": "business-domain/00000000-0000-4000-8000-0000000fffff/business_cloudflare_credential"
+        },
+        "status": "held"
+      },
+      "sites": {
+        "entries": [
+          {
+            "domain": "contractco.test",
+            "domains": [],
+            "framework": "astro",
+            "hold": null,
+            "overwrote": [],
+            "project": "contractco-www",
+            "reason": "waits for the enterprise's Cloudflare token: contractco.test's business_cloudflare_credential hold says what to add",
+            "records": [],
+            "repo": "www",
+            "since": "2026-01-01T00:00:00Z",
+            "status": "requested",
+            "variableSet": false,
+            "waitingOn": "credential"
+          }
+        ],
+        "hold": null,
+        "since": null,
+        "status": "pending"
+      },
+      "slug": "contractco",
+      "sourceRepoId": "7dacfd73-80d2-5f33-94d6-54f222403404",
+      "status": "declared",
+      "zone": {
+        "domains": [
+          "contractco.test"
+        ],
+        "hold": {
+          "instructions": "Add a Cloudflare API token to enterprise contractent as vendor cloudflare (kind api_key: an account-scoped token with Zone:Edit, DNS:Edit and Pages:Edit) on the enterprise's Credentials page. Rigger makes the zone for contractco.test once it lands; the token never goes in the business file or CI.",
+          "kind": "business_cloudflare_credential",
+          "source": "business-domain/00000000-0000-4000-8000-0000000fffff/business_cloudflare_credential"
+        },
+        "nameservers": [],
+        "since": "2026-01-01T00:00:00Z",
+        "status": "held"
+      }
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "errors": [
+    "applyDocumentsMove: nothing to move: the filter selects no document in contractco/api"
+  ],
+  "field": "applyDocumentsMove",
+  "input": {
+    "filter": "{\"kinds\":[\"adr\"]}",
+    "fromRepoId": "7dacfd73-80d2-5f33-94d6-54f222403404",
+    "projectId": "a00ee511-6be8-5bef-bf59-4055ee443812",
+    "toRepoId": "1e170b56-9f4e-56a0-9159-ce04e94eb3d8"
+  },
+  "inputType": "(projectId: UUID!, fromRepoId: UUID!, toRepoId: UUID!, filter: String!)",
+  "kind": "mutation",
+  "result": null
+}

@@ -1,0 +1,1219 @@
+{
+  "args": {
+    "method": "tools/list",
+    "path": "/mcp",
+    "server": "runsheet"
+  },
+  "field": "mcp-tools-runsheet",
+  "kind": "mcp-tools",
+  "list": true,
+  "sample": [
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "project": {
+            "description": "your own project, as org/slug: the slug is looked for there first, then in the org's .github, then in every other project of the same org",
+            "type": "string"
+          },
+          "section": {
+            "description": "a section to read whole: of a directory document, the slug its sections list (or that slug without the document's prefix); of a single file, a heading's anchor as its outline lists it; omitted, a directory document is its README and the outline of its sections, and a file over 12KiB the outline of its headings",
+            "type": "string"
+          },
+          "slug": {
+            "description": "the document's slug (see mesh_documents)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "slug"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_document"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "the previous answer's next, to read the page after it; omitted, the first page. A cursor belongs to the arguments that gave it",
+            "type": "string"
+          },
+          "detail": {
+            "description": "concise (the default): each row's identifying fields alone; full: every field",
+            "type": "string"
+          },
+          "fields": {
+            "description": "only these top-level fields of each row, e.g. [\"slug\",\"title\"]; overrides detail",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "include_superseded": {
+            "description": "keep the superseded documents a listing with no status leaves out",
+            "type": "boolean"
+          },
+          "kind": {
+            "description": "only this kind: prd, trd, rfc, adr, spec, plan, tasks, requirements, design, instructions, skill, runbook, log (HANDOFF and other journals), handoff, or agent for the project's resolved agent definitions",
+            "type": "string"
+          },
+          "layout": {
+            "description": "only this layout: mesh-goal, spec-kit, openspec, kiro, adr, docs, instructions, skill",
+            "type": "string"
+          },
+          "limit": {
+            "description": "at most this many rows on the page (default 50, or as the tool's description says; at most 200)",
+            "type": "integer"
+          },
+          "only_project": {
+            "description": "only project's own documents — its repositories, its org's .github and its agent rows — and none of the rest of the org",
+            "type": "boolean"
+          },
+          "project": {
+            "description": "your own project, as org/slug (see mesh_projects): its documents are listed first, then every other project's of the same org; omitted, every project you can read",
+            "type": "string"
+          },
+          "repo": {
+            "description": "only this repository, as owner/name or name",
+            "type": "string"
+          },
+          "status": {
+            "description": "only this status: draft, review, approved, superseded (deprecated is indexed superseded); omitted, every status but superseded",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "mesh_documents"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "the previous answer's next, to read the page after it; omitted, the first page. A cursor belongs to the arguments that gave it",
+            "type": "string"
+          },
+          "detail": {
+            "description": "concise (the default): each row's identifying fields alone; full: every field",
+            "type": "string"
+          },
+          "fields": {
+            "description": "only these top-level fields of each row, e.g. [\"slug\",\"title\"]; overrides detail",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "goal": {
+            "description": "only records of this goal's slug",
+            "type": "string"
+          },
+          "limit": {
+            "description": "at most this many rows on the page (default 50, or as the tool's description says; at most 200)",
+            "type": "integer"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects)",
+            "type": "string"
+          },
+          "sha": {
+            "description": "only the record of this merge commit sha",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_evidence"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "branch": {
+            "description": "the branch the work was pushed to",
+            "type": "string"
+          },
+          "cost_cents": {
+            "description": "what the session cost, in cents",
+            "type": "integer"
+          },
+          "goal": {
+            "description": "the goal's slug (see mesh_goals); with project and seq, or give item_id alone",
+            "type": "string"
+          },
+          "head_sha": {
+            "description": "the branch's head commit, its full forty-character sha (git rev-parse HEAD): an abbreviated one is refused",
+            "type": "string"
+          },
+          "item_id": {
+            "description": "the item's id, instead of project, goal and seq",
+            "type": "string"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects); with goal and seq, or give item_id alone",
+            "type": "string"
+          },
+          "ran_model": {
+            "description": "the model the session ran on",
+            "type": "string"
+          },
+          "role": {
+            "description": "for a machine's bearer, the role its agent plays — agent:<role>@<node slug> (default builder); a person's bearer is always user:<id>",
+            "type": "string"
+          },
+          "seq": {
+            "description": "the item's seq (see mesh_items); with project and goal, or give item_id alone",
+            "type": "integer"
+          },
+          "waits_on": {
+            "additionalProperties": false,
+            "description": "what the session was waiting for when it ended with nothing committed (ADR 048): an item of this org by its goal's slug and seq, seq 0 the whole goal. Read only on a finish whose head is its base; ignored otherwise",
+            "properties": {
+              "goal_slug": {
+                "description": "the goal of the item or whole goal the session waited on",
+                "type": "string"
+              },
+              "seq": {
+                "description": "the item's seq; 0 is the whole goal",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "goal_slug"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          }
+        },
+        "required": [
+          "branch"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_finish"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "the previous answer's next, to read the page after it; omitted, the first page. A cursor belongs to the arguments that gave it",
+            "type": "string"
+          },
+          "detail": {
+            "description": "concise (the default): each row's identifying fields alone; full: every field",
+            "type": "string"
+          },
+          "fields": {
+            "description": "only these top-level fields of each row, e.g. [\"slug\",\"title\"]; overrides detail",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "limit": {
+            "description": "at most this many rows on the page (default 50, or as the tool's description says; at most 200)",
+            "type": "integer"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects)",
+            "type": "string"
+          },
+          "status": {
+            "description": "active (the default): every goal not done or cancelled; all: every goal; or one status, e.g. done",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_goals"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "org": {
+            "description": "only this org's projects, by its login",
+            "type": "string"
+          },
+          "project": {
+            "description": "only this project, as org/slug (see mesh_projects)",
+            "type": "string"
+          },
+          "runs": {
+            "description": "how many of the latest deploy runs of each default branch to list (default 5, at most 30)",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "mesh_health_deploys"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "org": {
+            "description": "only this org's projects, by its login",
+            "type": "string"
+          },
+          "project": {
+            "description": "only this project, as org/slug (see mesh_projects)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "mesh_health_flow"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "the previous answer's next, to read the page after it; omitted, the first page. A cursor belongs to the arguments that gave it",
+            "type": "string"
+          },
+          "detail": {
+            "description": "concise (the default): each row's identifying fields alone; full: every field",
+            "type": "string"
+          },
+          "fields": {
+            "description": "only these top-level fields of each row, e.g. [\"slug\",\"title\"]; overrides detail",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "limit": {
+            "description": "at most this many rows on the page (default 50, or as the tool's description says; at most 200)",
+            "type": "integer"
+          },
+          "org": {
+            "description": "the org, by its login (or tenant slug); may be left out when project is org/slug",
+            "type": "string"
+          },
+          "project": {
+            "description": "only this project's rows, by its slug (or org/slug)",
+            "type": "string"
+          },
+          "status": {
+            "description": "which rows: not_held (the default) every row but the held ones, which are counted in held_count; held only those; all every row; or one stage's name (building, evaluating, ci_queued, ci_running, checks_failed, rebasing, merge_queue, integrator_waiting, stalled, held, waiting_on_person, deploying)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "mesh_health_pipeline"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "goal": {
+            "description": "the goal's slug (see mesh_goals); optional with item_id",
+            "type": "string"
+          },
+          "item_id": {
+            "description": "the item's id, instead of goal and seq",
+            "type": "string"
+          },
+          "project": {
+            "description": "the project as org/slug",
+            "type": "string"
+          },
+          "seq": {
+            "description": "the item's seq in its goal (see mesh_items)",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_item"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "the previous answer's next, to read the page after it; omitted, the first page. A cursor belongs to the arguments that gave it",
+            "type": "string"
+          },
+          "detail": {
+            "description": "concise (the default): each row's identifying fields alone; full: every field",
+            "type": "string"
+          },
+          "fields": {
+            "description": "only these top-level fields of each row, e.g. [\"slug\",\"title\"]; overrides detail",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "goal": {
+            "description": "the goal's slug (see mesh_goals)",
+            "type": "string"
+          },
+          "limit": {
+            "description": "at most this many rows on the page (default 50, or as the tool's description says; at most 200)",
+            "type": "integer"
+          },
+          "project": {
+            "description": "the project as org/slug",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "goal"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_items"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "the previous answer's next, to read the page after it; omitted, the first page. A cursor belongs to the arguments that gave it",
+            "type": "string"
+          },
+          "detail": {
+            "description": "concise (the default): each row's identifying fields alone; full: every field",
+            "type": "string"
+          },
+          "fields": {
+            "description": "only these top-level fields of each row, e.g. [\"slug\",\"title\"]; overrides detail",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "limit": {
+            "description": "at most this many rows on the page (default 50, or as the tool's description says; at most 200)",
+            "type": "integer"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_pitches"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "already_done": {
+            "description": "acceptance clauses the planning session found already satisfied on main, each {clause, evidence}: the planner's own check while planning, never a work item (ADR 057)",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "clause": {
+                  "description": "the acceptance clause found already satisfied on main",
+                  "type": "string"
+                },
+                "evidence": {
+                  "description": "what on main satisfies it",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "clause",
+                "evidence"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "checkpoints": {
+            "description": "not taken here: a plan carries no checkpoints (a person sets a goal's), so non-empty checkpoints are refused",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "goal": {
+            "description": "the goal's slug; the goal is in planning",
+            "type": "string"
+          },
+          "goal_id": {
+            "description": "the goal's id, instead of project and goal",
+            "type": "string"
+          },
+          "items": {
+            "description": "the plan: every item, in seq order",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "acceptance": {
+                  "description": "how the item is checked (ADR 056): at least one {kind, check, expected}; kind is command (a command and what it answers), test (a test by name and package that must pass) or observable (what a person can see)",
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "check": {
+                        "type": "string"
+                      },
+                      "expected": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "enum": [
+                          "command",
+                          "observable",
+                          "test"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "check",
+                      "expected"
+                    ],
+                    "type": "object"
+                  },
+                  "minItems": 1,
+                  "type": "array"
+                },
+                "agent_slug": {
+                  "description": "the agent definition the item is built by",
+                  "type": "string"
+                },
+                "atomic": {
+                  "description": "whether the item is one commit's worth of change: true, false or the planner's own words",
+                  "type": [
+                    "string",
+                    "boolean"
+                  ]
+                },
+                "base_ref": {
+                  "description": "the branch the item builds on (default main)",
+                  "type": "string"
+                },
+                "brief": {
+                  "type": "string"
+                },
+                "depends_on": {
+                  "description": "the seqs this item waits on, each a seq or {seq, because}; a because is appended to the brief as 'Depends on N because …'",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "because": {
+                            "type": "string"
+                          },
+                          "seq": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "seq"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "depends_on_items": {
+                  "description": "items of other goals of the same org that must merge before this one (ADR 040): each a goal_slug and that goal's item seq; an item of this plan goes in depends_on. An unknown goal or seq refuses the plan, naming it",
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "goal_slug": {
+                        "description": "the other goal's slug, in this goal's org",
+                        "type": "string"
+                      },
+                      "seq": {
+                        "description": "the item's seq in that goal's plan",
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "goal_slug",
+                      "seq"
+                    ],
+                    "type": "object"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "files": {
+                  "description": "the paths the item is expected to touch",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                },
+                "model": {
+                  "description": "the tier the item is served on; empty for the node's default",
+                  "type": "string"
+                },
+                "model_reason": {
+                  "description": "why this model, free text; recorded on the item",
+                  "type": "string"
+                },
+                "precondition": {
+                  "description": "what must be true before the item starts, free text",
+                  "type": "string"
+                },
+                "repo": {
+                  "description": "one of the project's repositories, as owner/name or name",
+                  "type": "string"
+                },
+                "seq": {
+                  "description": "1, 2, …: the item's place in the plan",
+                  "type": "integer"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "writes_shared_docs": {
+                  "description": "whether the item writes a document another item of the plan also touches",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "seq",
+                "title",
+                "brief",
+                "repo"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects); with goal, or give goal_id alone",
+            "type": "string"
+          },
+          "questions": {
+            "description": "not taken here: a plan with questions is handed in by the node from the final message's json block, so non-empty questions are refused",
+            "items": true,
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "role": {
+            "description": "for a machine's bearer, the role its agent plays — agent:<role>@<node slug> (default builder); a person's bearer is always user:<id>",
+            "type": "string"
+          },
+          "split": {
+            "description": "instead of items, when the plan would exceed the project's max_items: goal drafts, each a goal-sized slice of the work, set as draft goals under an initiative while this goal is marked split (ADR 042)",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "acceptance": {
+                  "description": "how the draft goal is checked: every clause names its proof",
+                  "type": "string"
+                },
+                "repo": {
+                  "description": "one of the project's repositories, as owner/name or name; empty for this goal's",
+                  "type": "string"
+                },
+                "slug": {
+                  "description": "the draft goal's slug, unique in the org",
+                  "type": "string"
+                },
+                "statement": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "slug",
+                "title",
+                "acceptance"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "mesh_plan"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "the previous answer's next, to read the page after it; omitted, the first page. A cursor belongs to the arguments that gave it",
+            "type": "string"
+          },
+          "detail": {
+            "description": "concise (the default): each row's identifying fields alone; full: every field",
+            "type": "string"
+          },
+          "fields": {
+            "description": "only these top-level fields of each row, e.g. [\"slug\",\"title\"]; overrides detail",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "limit": {
+            "description": "at most this many rows on the page (default 50, or as the tool's description says; at most 200)",
+            "type": "integer"
+          },
+          "project": {
+            "description": "only this project, as org/slug, read as a research session reads it: each direction's pitch_feedback, the strategy bets and the goal_history",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "mesh_projects"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "card": {
+            "additionalProperties": false,
+            "description": "the whole card, reasons first; a verdict, contested and task_shaped are the platform's and never taken",
+            "properties": {
+              "cost_band": {
+                "description": "s, m, l or xl",
+                "type": "string"
+              },
+              "evidence": {
+                "description": "what the level rests on",
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "description": "research_note, metric, incident or user_signal",
+                      "type": "string"
+                    },
+                    "level": {
+                      "description": "opinion, anecdotal, data or tested",
+                      "type": "string"
+                    },
+                    "note": {
+                      "type": "string"
+                    },
+                    "ref": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "level",
+                    "kind",
+                    "ref"
+                  ],
+                  "type": "object"
+                },
+                "type": [
+                  "null",
+                  "array"
+                ]
+              },
+              "evidence_level": {
+                "description": "opinion, anecdotal, data or tested",
+                "type": "string"
+              },
+              "learning_value": {
+                "description": "high or low",
+                "type": "string"
+              },
+              "mission_fit": {
+                "description": "core, adjacent, maintenance, off_mission or conflicts_with_non_goal",
+                "type": "string"
+              },
+              "non_goal": {
+                "description": "the non-goal it conflicts with, for conflicts_with_non_goal",
+                "type": "string"
+              },
+              "p_moves": {
+                "description": "the probability (0-1) the target is met by check_by",
+                "type": "number"
+              },
+              "premortem": {
+                "additionalProperties": false,
+                "description": "it is check_by and this failed: up to three tigers and one elephant",
+                "properties": {
+                  "elephant": {
+                    "type": "string"
+                  },
+                  "tigers": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": [
+                      "null",
+                      "array"
+                    ]
+                  }
+                },
+                "type": [
+                  "null",
+                  "object"
+                ]
+              },
+              "reasons": {
+                "description": "why, written first: who it serves, what changes, why the signal moves",
+                "type": "string"
+              },
+              "reversibility": {
+                "description": "easy, costly or one_way",
+                "type": "string"
+              },
+              "target": {
+                "additionalProperties": false,
+                "description": "the kill criterion: signal_id, direction, threshold, check_by",
+                "properties": {
+                  "check_by": {
+                    "description": "RFC 3339",
+                    "type": "string"
+                  },
+                  "direction": {
+                    "description": "up or down",
+                    "type": "string"
+                  },
+                  "signal_id": {
+                    "type": "string"
+                  },
+                  "threshold": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "signal_id",
+                  "direction",
+                  "threshold",
+                  "check_by"
+                ],
+                "type": [
+                  "null",
+                  "object"
+                ]
+              }
+            },
+            "required": [
+              "reasons",
+              "mission_fit",
+              "p_moves",
+              "evidence_level",
+              "cost_band",
+              "reversibility",
+              "learning_value"
+            ],
+            "type": "object"
+          },
+          "cost_cents": {
+            "description": "what the session cost, in cents: the forecast's and the project's, never the goal's budget",
+            "type": "integer"
+          },
+          "forecast_id": {
+            "description": "the forecast mesh_claim_score answered",
+            "type": "string"
+          },
+          "model": {
+            "description": "the model the session ran on",
+            "type": "string"
+          },
+          "prompt_hash": {
+            "description": "the hash of the scorer prompt the session ran",
+            "type": "string"
+          },
+          "role": {
+            "description": "for a machine's bearer, the role its agent plays (default builder)",
+            "type": "string"
+          },
+          "round": {
+            "description": "the round claimed",
+            "type": "integer"
+          },
+          "session_id": {
+            "description": "the score session that claimed it",
+            "type": "string"
+          }
+        },
+        "required": [
+          "forecast_id",
+          "round",
+          "session_id",
+          "model",
+          "prompt_hash",
+          "card"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_record_forecast_sample"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "the previous answer's next, to read the page after it; omitted, the first page. A cursor belongs to the arguments that gave it",
+            "type": "string"
+          },
+          "detail": {
+            "description": "concise (the default): each row's identifying fields alone; full: every field",
+            "type": "string"
+          },
+          "fields": {
+            "description": "only these top-level fields of each row, e.g. [\"slug\",\"title\"]; overrides detail",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "include_superseded": {
+            "description": "keep superseded documents (deprecated is indexed superseded), which search leaves out by default",
+            "type": "boolean"
+          },
+          "limit": {
+            "description": "at most this many rows on the page (default 50, or as the tool's description says; at most 200)",
+            "type": "integer"
+          },
+          "only_project": {
+            "description": "only project's hits, none of the rest of the org",
+            "type": "boolean"
+          },
+          "project": {
+            "description": "your own project, as org/slug: results are ranked across the same org, and at equal rank its hits come first; omitted, every project you can read",
+            "type": "string"
+          },
+          "query": {
+            "description": "the words to look for; matched against titles, summaries and bodies, stemmed and ranked",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_search"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptance": {
+            "description": "how the goal is checked: every clause names its proof",
+            "type": "string"
+          },
+          "beneficiary": {
+            "description": "who the goal is for: a person, a role or a customer tenant (ADR 053, story first)",
+            "type": "string"
+          },
+          "change": {
+            "description": "what they can do or see that they could not",
+            "type": "string"
+          },
+          "initiative": {
+            "description": "the initiative of the org the goal is filed under, by slug or id; a new goal names one or gives no_initiative_reason (trd §6h)",
+            "type": "string"
+          },
+          "no_initiative_reason": {
+            "description": "when set, files the goal under no initiative, saying why (trd §6h); refused beside initiative",
+            "type": "string"
+          },
+          "priority": {
+            "description": "urgent, high, normal or low; normal when unset",
+            "type": "string"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects)",
+            "type": "string"
+          },
+          "repo": {
+            "description": "one of the project's repositories, as owner/name or name",
+            "type": "string"
+          },
+          "signal": {
+            "additionalProperties": false,
+            "description": "the signal that will show it worked: signal_id alone, or metric with direction",
+            "properties": {
+              "direction": {
+                "description": "up or down: the way metric should move; required with metric",
+                "type": "string"
+              },
+              "metric": {
+                "description": "a named measurable figure, when no mission signal names it",
+                "type": "string"
+              },
+              "signal_id": {
+                "description": "a signal of the project's mission, sig_<slug>; metric and direction are then left unset",
+                "type": "string"
+              }
+            },
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "slug": {
+            "description": "the goal's slug, unique in the org; the same slug again restates a draft goal",
+            "type": "string"
+          },
+          "statement": {
+            "type": "string"
+          },
+          "title": {
+            "description": "what the goal delivers, as an outcome",
+            "type": "string"
+          },
+          "unproven_reason": {
+            "description": "when set, passes the acceptance clauses that name no proof, saying why (ADR 042 §1)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "slug",
+          "title"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_set_goal"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "project": {
+            "description": "the project as org/slug (see mesh_projects)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_traps"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "advice": {
+            "description": "process clauses: [{clause, satisfy}] only the world after the pull request can satisfy — a CI check on its own pull request, its merge or deploy, a person's confirmation, a production observation, a host measurement (ADR 057); recorded on the item as advice, never a failed clause, and a fail left with no failed clause passes",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "clause": {
+                  "type": "string"
+                },
+                "satisfy": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "clause",
+                "satisfy"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "defective_clauses": {
+            "description": "acceptance clauses no attempt could satisfy by writing code, each {clause, reason} (not-yet, ADR 041); refused beside a not-yet or a no-verdict",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "clause": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "clause",
+                "reason"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "failed_clauses": {
+            "description": "on a fail, every failing acceptance clause: [{clause, satisfy}], satisfy saying what would satisfy it (ADR 042: a fail names every one it can, or is refused)",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "clause": {
+                  "type": "string"
+                },
+                "satisfy": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "clause",
+                "satisfy"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "files": {
+            "description": "the files the failed clauses and follow-ups name",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "follow_ups": {
+            "description": "on a re-evaluation, findings on lines this retry did not change: [{clause, satisfy}] — a re-evaluation with no failed_clauses and at least one follow_up passes (ADR 042); refused on a first evaluation",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "clause": {
+                  "type": "string"
+                },
+                "satisfy": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "clause",
+                "satisfy"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "goal": {
+            "description": "the goal's slug (see mesh_goals); with project and seq, or give item_id alone",
+            "type": "string"
+          },
+          "item_id": {
+            "description": "the item's id, instead of project, goal and seq",
+            "type": "string"
+          },
+          "notes": {
+            "description": "why: what was checked and what failed",
+            "type": "string"
+          },
+          "passed": {
+            "description": "whether the item meets its acceptance",
+            "type": "boolean"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects); with goal and seq, or give item_id alone",
+            "type": "string"
+          },
+          "readings": {
+            "description": "what the evaluator ran and read while judging the item, one command and what it showed per entry; recorded on notes under a 'Readings:' line (trd §7a) — no command carries these on their own yet",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "role": {
+            "description": "for a machine's bearer, the role its agent plays — agent:<role>@<node slug> (default builder); a person's bearer is always user:<id>",
+            "type": "string"
+          },
+          "seq": {
+            "description": "the item's seq (see mesh_items); with project and goal, or give item_id alone",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "passed",
+          "notes"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_verdict"
+    }
+  ]
+}

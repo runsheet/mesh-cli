@@ -1,0 +1,23 @@
+{
+  "args": {},
+  "field": "myEnterprises",
+  "kind": "query",
+  "list": false,
+  "note": "createEnterprise answers when the enterprise is recorded; the Latchkey tenant and the creator's admin grant follow from the enterprises process, and a client waits on myEnterprises.tenantReady (tenantReadyAt says when) before attachOrgToEnterprise (ADR 003 amendment 2026-09-28).",
+  "sample": [
+    {
+      "billingProfileId": null,
+      "createdAt": "2026-01-01T00:00:00Z",
+      "createdBy": "e96b1f77-6ed9-53ce-8ef4-0861304b4a23",
+      "displayName": "Contract Enterprise",
+      "id": "2daa2ebe-ed9f-566b-914d-9c899a96eb95",
+      "level": "admin",
+      "role": "admin",
+      "slug": "contractent",
+      "status": "active",
+      "tenantReady": true,
+      "tenantReadyAt": "2026-01-01T00:00:00Z",
+      "tenantSlug": "contractent"
+    }
+  ]
+}

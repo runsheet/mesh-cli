@@ -1,0 +1,16 @@
+{
+  "args": {},
+  "field": "products",
+  "kind": "query",
+  "list": true,
+  "sample": [
+    {
+      "displayName": "Contract Product",
+      "id": "00000000-0000-4000-8000-0000000fffff",
+      "latchkeyClientId": "contract-metering",
+      "slug": "contractproduct",
+      "status": "active",
+      "units": []
+    }
+  ]
+}

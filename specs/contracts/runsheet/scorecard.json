@@ -1,0 +1,1291 @@
+{
+  "args": {
+    "orgId": "e86a269f-78f4-5903-a7eb-f571f2b3ab94"
+  },
+  "field": "scorecard",
+  "kind": "query",
+  "list": false,
+  "sample": {
+    "github": {
+      "installations": [
+        {
+          "account": "contractco",
+          "deadLettersOnLimit": 0,
+          "installationId": 98710,
+          "limit": 5000,
+          "observedAt": "2026-01-01T00:00:00Z",
+          "remaining": 3210,
+          "resetAt": "2026-01-01T00:00:00Z",
+          "underFloor": false
+        }
+      ]
+    },
+    "projects": [
+      {
+        "budgetExtensions": {
+          "goals": [],
+          "total": 0
+        },
+        "directions": [
+          {
+            "directionId": "ef42e7d8-6c1d-5e10-8606-1ec010c906f7",
+            "hitRate": null,
+            "name": "Features overnight",
+            "pitchesApproved": 0,
+            "pitchesHit": 0,
+            "pitchesMeasured": 0,
+            "projectId": "a00ee511-6be8-5bef-bf59-4055ee443812",
+            "slug": "overnight",
+            "status": "active"
+          }
+        ],
+        "falseGreen": [
+          {
+            "concluded": 2,
+            "disagreed": 0,
+            "inconclusive": 2,
+            "rate": null,
+            "repo": "contractco/console",
+            "repoId": "1e170b56-9f4e-56a0-9159-ce04e94eb3d8",
+            "sampled": 3,
+            "week": "2026-01-01",
+            "wilson95": {
+              "high": null,
+              "low": null
+            }
+          }
+        ],
+        "projectId": "a00ee511-6be8-5bef-bf59-4055ee443812",
+        "projectName": "Mesh",
+        "timeInStage": {
+          "buildP90Minutes": null,
+          "windows": [
+            {
+              "buildP90Minutes": null,
+              "hours": 24,
+              "stages": [
+                {
+                  "entered": 0,
+                  "episodes": 0,
+                  "overTarget": false,
+                  "p50Minutes": null,
+                  "p90Minutes": null,
+                  "stage": "deploying",
+                  "targetMinutes": null
+                },
+                {
+                  "entered": 0,
+                  "episodes": 0,
+                  "overTarget": false,
+                  "p50Minutes": null,
+                  "p90Minutes": null,
+                  "stage": "stalled",
+                  "targetMinutes": null
+                },
+                {
+                  "entered": 0,
+                  "episodes": 0,
+                  "overTarget": false,
+                  "p50Minutes": null,
+                  "p90Minutes": null,
+                  "stage": "waiting_on_person",
+                  "targetMinutes": 0
+                },
+                {
+                  "entered": 0,
+                  "episodes": 0,
+                  "overTarget": false,
+                  "p50Minutes": null,
+                  "p90Minutes": null,
+                  "stage": "held",
+                  "targetMinutes": null
+                },
+                {
+                  "entered": 0,
+                  "episodes": 0,
+                  "overTarget": false,
+                  "p50Minutes": null,
+                  "p90Minutes": null,
+                  "stage": "building",
+                  "targetMinutes": null
+                },
+                {
+                  "entered": 0,
+                  "episodes": 0,
+                  "overTarget": false,
+                  "p50Minutes": null,
+                  "p90Minutes": null,
+                  "stage": "evaluating",
+                  "targetMinutes": null
+                },
+                {
+                  "entered": 0,
+                  "episodes": 0,
+                  "overTarget": false,
+                  "p50Minutes": null,
+                  "p90Minutes": null,
+                  "stage": "rebasing",
+                  "targetMinutes": null
+                },
+                {
+                  "entered": 0,
+                  "episodes": 0,
+                  "overTarget": false,
+                  "p50Minutes": null,
+                  "p90Minutes": null,
+                  "stage": "checks_failed",
+                  "targetMinutes": null
+                },
+                {
+                  "entered": 0,
+                  "episodes": 0,
+                  "overTarget": false,
+                  "p50Minutes": null,
+                  "p90Minutes": null,
+                  "stage": "integrator_waiting",
+                  "targetMinutes": 0
+                },
+                {
+                  "entered": 0,
+                  "episodes": 0,
+                  "overTarget": false,
+                  "p50Minutes": null,
+                  "p90Minutes": null,
+                  "stage": "merge_queue",
+                  "targetMinutes": 0
+                },
+                {
+                  "entered": 0,
+                  "episodes": 0,
+                  "overTarget": false,
+                  "p50Minutes": null,
+                  "p90Minutes": null,
+                  "stage": "ci_running",
+                  "targetMinutes": null
+                },
+                {
+                  "entered": 0,
+                  "episodes": 0,
+                  "note": "ADR 029's build p90: CI queued and running are one stage until a workflow_job feed",
+                  "overTarget": false,
+                  "p50Minutes": null,
+                  "p90Minutes": null,
+                  "stage": "ci_queued",
+                  "targetMinutes": 0
+                }
+              ]
+            },
+            {
+              "buildP90Minutes": null,
+              "days": 7,
+              "hours": 168,
+              "stages": [
+                {
+                  "entered": 0,
+                  "episodes": 0,
+                  "overTarget": false,
+                  "p50Minutes": null,
+                  "p90Minutes": null,
+                  "stage": "deploying",
+                  "targetMinutes": null
+                },
+                {
+                  "entered": 0,
+                  "episodes": 0,
+                  "overTarget": false,
+                  "p50Minutes": null,
+                  "p90Minutes": null,
+                  "stage": "stalled",
+                  "targetMinutes": null
+                },
+                {
+                  "entered": 0,
+                  "episodes": 0,
+                  "overTarget": false,
+                  "p50Minutes": null,
+                  "p90Minutes": null,
+                  "stage": "waiting_on_person",
+                  "targetMinutes": 0
+                },
+                {
+                  "entered": 0,
+                  "episodes": 0,
+                  "overTarget": false,
+                  "p50Minutes": null,
+                  "p90Minutes": null,
+                  "stage": "held",
+                  "targetMinutes": null
+                },
+                {
+                  "entered": 0,
+                  "episodes": 0,
+                  "overTarget": false,
+                  "p50Minutes": null,
+                  "p90Minutes": null,
+                  "stage": "building",
+                  "targetMinutes": null
+                },
+                {
+                  "entered": 0,
+                  "episodes": 0,
+                  "overTarget": false,
+                  "p50Minutes": null,
+                  "p90Minutes": null,
+                  "stage": "evaluating",
+                  "targetMinutes": null
+                },
+                {
+                  "entered": 0,
+                  "episodes": 0,
+                  "overTarget": false,
+                  "p50Minutes": null,
+                  "p90Minutes": null,
+                  "stage": "rebasing",
+                  "targetMinutes": null
+                },
+                {
+                  "entered": 0,
+                  "episodes": 0,
+                  "overTarget": false,
+                  "p50Minutes": null,
+                  "p90Minutes": null,
+                  "stage": "checks_failed",
+                  "targetMinutes": null
+                },
+                {
+                  "entered": 0,
+                  "episodes": 0,
+                  "overTarget": false,
+                  "p50Minutes": null,
+                  "p90Minutes": null,
+                  "stage": "integrator_waiting",
+                  "targetMinutes": 0
+                },
+                {
+                  "entered": 0,
+                  "episodes": 0,
+                  "overTarget": false,
+                  "p50Minutes": null,
+                  "p90Minutes": null,
+                  "stage": "merge_queue",
+                  "targetMinutes": 0
+                },
+                {
+                  "entered": 0,
+                  "episodes": 0,
+                  "overTarget": false,
+                  "p50Minutes": null,
+                  "p90Minutes": null,
+                  "stage": "ci_running",
+                  "targetMinutes": null
+                },
+                {
+                  "entered": 0,
+                  "episodes": 0,
+                  "note": "ADR 029's build p90: CI queued and running are one stage until a workflow_job feed",
+                  "overTarget": false,
+                  "p50Minutes": null,
+                  "p90Minutes": null,
+                  "stage": "ci_queued",
+                  "targetMinutes": 0
+                }
+              ]
+            }
+          ]
+        },
+        "whereTheTimeGoes": {
+          "weeks": [
+            {
+              "cacheReadTokens": 0,
+              "cacheWriteTokens": 0,
+              "inputTokens": 0,
+              "items": 2,
+              "outputTokens": 0,
+              "phases": [
+                {
+                  "medianMinutes": 0,
+                  "p90Minutes": 0,
+                  "phase": "build",
+                  "slowest": [],
+                  "totalMinutes": 0
+                }
+              ],
+              "relands": {
+                "costCents": 0,
+                "count": 0,
+                "minutes": 0
+              },
+              "reworkMinutes": 0,
+              "reworkShare": null,
+              "sessionMs": 0,
+              "turns": 0,
+              "weekStart": "2026-01-01"
+            }
+          ]
+        },
+        "windows": [
+          {
+            "attestations": {
+              "attestedThenBroken": 0,
+              "brokenShare": 0,
+              "byRepo": [
+                {
+                  "mergedPrs": 1,
+                  "missing": 1,
+                  "missingShare": 0.5,
+                  "repo": "contractco/api",
+                  "repoId": "7dacfd73-80d2-5f33-94d6-54f222403404",
+                  "validations": 2,
+                  "validationsPerMergedPr": 2,
+                  "verifications": 2
+                }
+              ],
+              "byRepoDay": [
+                {
+                  "day": "2026-01-01",
+                  "received": 3,
+                  "refused": 1,
+                  "refusedByReason": {
+                    "not_head": 1
+                  },
+                  "repo": "contractco/api",
+                  "repoId": "7dacfd73-80d2-5f33-94d6-54f222403404",
+                  "reused": 1,
+                  "signed": 1,
+                  "verified": 1
+                }
+              ],
+              "ciMinutesSaved": 1,
+              "skippedRuns": 1,
+              "verified": 1,
+              "verifiedPrs": 1
+            },
+            "avgGoalDurationSeconds": 0,
+            "batchMeanSize": 0,
+            "batchPassRate": 0,
+            "batchRunsSaved": 0,
+            "batchesFormed": 2,
+            "byCohort": [
+              {
+                "cohort": "d",
+                "costCents": 550,
+                "evaluated": 1,
+                "evaluatorFalsePass": 0,
+                "firstPass": 1,
+                "firstPassRate": 1,
+                "items": 1,
+                "merged": 1,
+                "noVerdicts": 1,
+                "reworksCi": 0,
+                "reworksConflict": 0,
+                "reworksEvaluator": 0
+              }
+            ],
+            "changes": {
+              "described": 0,
+              "merged": 1,
+              "not_described": 1
+            },
+            "conflictFilesByResolver": {
+              "files": 1,
+              "resolvers": [
+                {
+                  "files": 1,
+                  "resolver": "session",
+                  "share": 1
+                }
+              ],
+              "settledWithoutSession": 0,
+              "shareSettledWithoutSession": 0
+            },
+            "conflictReworksPer100Merges": 0,
+            "costCents": 1050,
+            "days": 7,
+            "delivery": {
+              "repos": [
+                {
+                  "deployBlockMedianHeldMinutes": null,
+                  "deployBlocksClearedByPerson": 0,
+                  "deployBlocksClearedByPlatform": 0,
+                  "deployBlocksRaised": 0,
+                  "mergeToRunningP50Minutes": 0,
+                  "mergeToRunningP90Minutes": 0,
+                  "mergesCovered": 1,
+                  "mergesUncovered": 0,
+                  "repo": "contractco/api",
+                  "weeks": [
+                    {
+                      "deployBlockMedianHeldMinutes": null,
+                      "deployBlocksClearedByPerson": 0,
+                      "deployBlocksClearedByPlatform": 0,
+                      "deployBlocksRaised": 0,
+                      "mergeToRunningP50Minutes": 0,
+                      "mergeToRunningP90Minutes": 0,
+                      "mergesCovered": 1,
+                      "mergesUncovered": 0,
+                      "week": "2026-01-01"
+                    }
+                  ]
+                }
+              ],
+              "total": {
+                "deployBlockMedianHeldMinutes": null,
+                "deployBlocksClearedByPerson": 0,
+                "deployBlocksClearedByPlatform": 0,
+                "deployBlocksRaised": 0,
+                "mergeToRunningP50Minutes": 0,
+                "mergeToRunningP90Minutes": 0,
+                "mergesCovered": 1,
+                "mergesUncovered": 0,
+                "weeks": [
+                  {
+                    "deployBlockMedianHeldMinutes": null,
+                    "deployBlocksClearedByPerson": 0,
+                    "deployBlocksClearedByPlatform": 0,
+                    "deployBlocksRaised": 0,
+                    "mergeToRunningP50Minutes": 0,
+                    "mergeToRunningP90Minutes": 0,
+                    "mergesCovered": 1,
+                    "mergesUncovered": 0,
+                    "week": "2026-01-01"
+                  }
+                ]
+              }
+            },
+            "deploys": {
+              "mergesPerDeploy": 2,
+              "perDay": 0.1
+            },
+            "evaluatorFalsePass": 0,
+            "evidence": [
+              {
+                "complete": 1,
+                "merged": 1,
+                "repo": "contractco/api",
+                "scanned": 1,
+                "shareComplete": 1,
+                "shareScanned": 1
+              }
+            ],
+            "flakyTests": [
+              {
+                "count": 1,
+                "file": "flaky_test.go",
+                "lastPr": 0,
+                "lastRunUrl": "https://github.com/contractco/api/actions/runs/7001",
+                "lastSeenAt": "2026-01-01T00:00:00Z",
+                "line": 10,
+                "repo": "api",
+                "soakCount": 1,
+                "source": "soak",
+                "test": "TestFlaky"
+              }
+            ],
+            "goals": [
+              {
+                "batchMeanSize": 0,
+                "batchPassRate": 0,
+                "batchRunsSaved": 0,
+                "batchesFormed": 0,
+                "byCohort": [
+                  {
+                    "cohort": "d",
+                    "costCents": 550,
+                    "evaluated": 1,
+                    "evaluatorFalsePass": 0,
+                    "firstPass": 1,
+                    "firstPassRate": 1,
+                    "items": 1,
+                    "merged": 1,
+                    "noVerdicts": 1,
+                    "reworksCi": 0,
+                    "reworksConflict": 0,
+                    "reworksEvaluator": 0
+                  }
+                ],
+                "conflictFilesByResolver": {
+                  "files": 1,
+                  "resolvers": [
+                    {
+                      "files": 1,
+                      "resolver": "session",
+                      "share": 1
+                    }
+                  ],
+                  "settledWithoutSession": 0,
+                  "shareSettledWithoutSession": 0
+                },
+                "conflictReworksPer100Merges": 0,
+                "costCents": 1050,
+                "costPerMergedCents": 525,
+                "doneAt": "2026-01-01T00:00:00Z",
+                "durationSeconds": 0,
+                "evaluatorFalsePass": 0,
+                "goalId": "a9fdff89-0ddb-5cfb-9a47-7bebdcceec06",
+                "goalSlug": "alpha",
+                "goalTitle": "Alpha",
+                "itemsMerged": 2,
+                "itemsPlanned": 3,
+                "itemsWithBaseAtFinish": 0,
+                "medianCommitsBehindAtFinish": null,
+                "medianCommitsBehindAtMerge": null,
+                "merged": 2,
+                "mergedWithoutRewrite": 2,
+                "models": [
+                  {
+                    "buildCostCents": 850,
+                    "costCents": 1050,
+                    "costPerItemCents": 350,
+                    "evaluated": 2,
+                    "evaluationCostCents": 200,
+                    "firstPass": 1,
+                    "firstPassRate": 0.5,
+                    "items": 3,
+                    "model": "opus"
+                  }
+                ],
+                "noVerdictCostCents": 0,
+                "noVerdicts": 1,
+                "parkCostCents": 0,
+                "parks": 1,
+                "plans": [
+                  {
+                    "costCents": 0,
+                    "model": "default",
+                    "plans": 1
+                  }
+                ],
+                "rebaseAttempts": 3,
+                "rebaseByMethod": [
+                  {
+                    "attempts": 1,
+                    "costCents": 0,
+                    "method": "in_process"
+                  }
+                ],
+                "rebaseCostCents": 0,
+                "reconciled": true,
+                "recordedSpendCents": 1050,
+                "reworksCi": 0,
+                "reworksConflict": 0,
+                "reworksEvaluator": 1,
+                "setAt": "2026-01-01T00:00:00Z"
+              }
+            ],
+            "goalsDone": 1,
+            "itemsWithBaseAtFinish": 0,
+            "medianCommitsBehindAtFinish": null,
+            "medianCommitsBehindAtMerge": null,
+            "merged": 2,
+            "mergedWithoutRewrite": 2,
+            "models": [
+              {
+                "buildCostCents": 850,
+                "costCents": 1050,
+                "costPerItemCents": 350,
+                "evaluated": 2,
+                "evaluationCostCents": 200,
+                "firstPass": 1,
+                "firstPassRate": 0.5,
+                "items": 3,
+                "model": "opus"
+              }
+            ],
+            "noVerdictCostCents": 0,
+            "noVerdicts": 1,
+            "parkCostCents": 0,
+            "parks": 1,
+            "plans": [
+              {
+                "costCents": 0,
+                "model": "default",
+                "plans": 1
+              }
+            ],
+            "rebaseAttempts": 3,
+            "rebaseByMethod": [
+              {
+                "attempts": 1,
+                "costCents": 0,
+                "method": "in_process"
+              }
+            ],
+            "rebaseCostCents": 0,
+            "reconciled": true,
+            "recordedSpendCents": 1050,
+            "retries": {
+              "repos": [
+                {
+                  "merged": 1,
+                  "repo": "contractco/api",
+                  "retries": 1,
+                  "retriesPerMergedItem": 1,
+                  "weeks": [
+                    {
+                      "merged": 1,
+                      "retries": 1,
+                      "retriesPerMergedItem": 1,
+                      "week": "2026-01-01"
+                    }
+                  ]
+                }
+              ],
+              "total": {
+                "merged": 2,
+                "retries": 1,
+                "retriesPerMergedItem": 0.5,
+                "weeks": [
+                  {
+                    "merged": 2,
+                    "retries": 1,
+                    "retriesPerMergedItem": 0.5,
+                    "week": "2026-01-01"
+                  }
+                ]
+              }
+            },
+            "reworksCi": 0,
+            "reworksConflict": 0,
+            "reworksEvaluator": 1,
+            "soak": {
+              "broken": 1,
+              "flakesFound": 1,
+              "runs": 1
+            },
+            "soakWeeks": [
+              {
+                "flakesFound": 1,
+                "runs": 1,
+                "week": "2026-01-01"
+              }
+            ],
+            "story": {
+              "forecastCapCents": 0,
+              "forecastSpendCents": 0,
+              "goals": 13,
+              "overCap": false,
+              "storyShare": 0.38461538461538464,
+              "taskShapedShare": 0
+            },
+            "testRuns": {
+              "byRepo": [
+                {
+                  "candidateAttestations": 0,
+                  "headAttestations": 1,
+                  "mainValidations": 1,
+                  "merged": 1,
+                  "repo": "contractco/api",
+                  "repoId": "7dacfd73-80d2-5f33-94d6-54f222403404",
+                  "revalidations": 0,
+                  "runs": 2,
+                  "testRunsPerMergedChange": 2,
+                  "workflowRuns": 0
+                }
+              ],
+              "testRunsPerMergedChange": 2
+            },
+            "testRunsPerMergedChange": 2
+          },
+          {
+            "attestations": {
+              "attestedThenBroken": 0,
+              "brokenShare": 0,
+              "byRepo": [
+                {
+                  "mergedPrs": 1,
+                  "missing": 1,
+                  "missingShare": 0.5,
+                  "repo": "contractco/api",
+                  "repoId": "7dacfd73-80d2-5f33-94d6-54f222403404",
+                  "validations": 2,
+                  "validationsPerMergedPr": 2,
+                  "verifications": 2
+                }
+              ],
+              "byRepoDay": [
+                {
+                  "day": "2026-01-01",
+                  "received": 3,
+                  "refused": 1,
+                  "refusedByReason": {
+                    "not_head": 1
+                  },
+                  "repo": "contractco/api",
+                  "repoId": "7dacfd73-80d2-5f33-94d6-54f222403404",
+                  "reused": 1,
+                  "signed": 1,
+                  "verified": 1
+                }
+              ],
+              "ciMinutesSaved": 1,
+              "skippedRuns": 1,
+              "verified": 1,
+              "verifiedPrs": 1
+            },
+            "avgGoalDurationSeconds": 0,
+            "batchMeanSize": 0,
+            "batchPassRate": 0,
+            "batchRunsSaved": 0,
+            "batchesFormed": 2,
+            "byCohort": [
+              {
+                "cohort": "d",
+                "costCents": 550,
+                "evaluated": 1,
+                "evaluatorFalsePass": 0,
+                "firstPass": 1,
+                "firstPassRate": 1,
+                "items": 1,
+                "merged": 1,
+                "noVerdicts": 1,
+                "reworksCi": 0,
+                "reworksConflict": 0,
+                "reworksEvaluator": 0
+              }
+            ],
+            "changes": {
+              "described": 0,
+              "merged": 1,
+              "not_described": 1
+            },
+            "conflictFilesByResolver": {
+              "files": 1,
+              "resolvers": [
+                {
+                  "files": 1,
+                  "resolver": "session",
+                  "share": 1
+                }
+              ],
+              "settledWithoutSession": 0,
+              "shareSettledWithoutSession": 0
+            },
+            "conflictReworksPer100Merges": 0,
+            "costCents": 1050,
+            "days": 30,
+            "delivery": {
+              "repos": [
+                {
+                  "deployBlockMedianHeldMinutes": null,
+                  "deployBlocksClearedByPerson": 0,
+                  "deployBlocksClearedByPlatform": 0,
+                  "deployBlocksRaised": 0,
+                  "mergeToRunningP50Minutes": 0,
+                  "mergeToRunningP90Minutes": 0,
+                  "mergesCovered": 1,
+                  "mergesUncovered": 0,
+                  "repo": "contractco/api",
+                  "weeks": [
+                    {
+                      "deployBlockMedianHeldMinutes": null,
+                      "deployBlocksClearedByPerson": 0,
+                      "deployBlocksClearedByPlatform": 0,
+                      "deployBlocksRaised": 0,
+                      "mergeToRunningP50Minutes": 0,
+                      "mergeToRunningP90Minutes": 0,
+                      "mergesCovered": 1,
+                      "mergesUncovered": 0,
+                      "week": "2026-01-01"
+                    }
+                  ]
+                }
+              ],
+              "total": {
+                "deployBlockMedianHeldMinutes": null,
+                "deployBlocksClearedByPerson": 0,
+                "deployBlocksClearedByPlatform": 0,
+                "deployBlocksRaised": 0,
+                "mergeToRunningP50Minutes": 0,
+                "mergeToRunningP90Minutes": 0,
+                "mergesCovered": 1,
+                "mergesUncovered": 0,
+                "weeks": [
+                  {
+                    "deployBlockMedianHeldMinutes": null,
+                    "deployBlocksClearedByPerson": 0,
+                    "deployBlocksClearedByPlatform": 0,
+                    "deployBlocksRaised": 0,
+                    "mergeToRunningP50Minutes": 0,
+                    "mergeToRunningP90Minutes": 0,
+                    "mergesCovered": 1,
+                    "mergesUncovered": 0,
+                    "week": "2026-01-01"
+                  }
+                ]
+              }
+            },
+            "deploys": {
+              "mergesPerDeploy": 2,
+              "perDay": 0
+            },
+            "evaluatorFalsePass": 0,
+            "evidence": [
+              {
+                "complete": 1,
+                "merged": 1,
+                "repo": "contractco/api",
+                "scanned": 1,
+                "shareComplete": 1,
+                "shareScanned": 1
+              }
+            ],
+            "flakyTests": [
+              {
+                "count": 1,
+                "file": "flaky_test.go",
+                "lastPr": 0,
+                "lastRunUrl": "https://github.com/contractco/api/actions/runs/7001",
+                "lastSeenAt": "2026-01-01T00:00:00Z",
+                "line": 10,
+                "repo": "api",
+                "soakCount": 1,
+                "source": "soak",
+                "test": "TestFlaky"
+              }
+            ],
+            "goals": [
+              {
+                "batchMeanSize": 0,
+                "batchPassRate": 0,
+                "batchRunsSaved": 0,
+                "batchesFormed": 0,
+                "byCohort": [
+                  {
+                    "cohort": "d",
+                    "costCents": 550,
+                    "evaluated": 1,
+                    "evaluatorFalsePass": 0,
+                    "firstPass": 1,
+                    "firstPassRate": 1,
+                    "items": 1,
+                    "merged": 1,
+                    "noVerdicts": 1,
+                    "reworksCi": 0,
+                    "reworksConflict": 0,
+                    "reworksEvaluator": 0
+                  }
+                ],
+                "conflictFilesByResolver": {
+                  "files": 1,
+                  "resolvers": [
+                    {
+                      "files": 1,
+                      "resolver": "session",
+                      "share": 1
+                    }
+                  ],
+                  "settledWithoutSession": 0,
+                  "shareSettledWithoutSession": 0
+                },
+                "conflictReworksPer100Merges": 0,
+                "costCents": 1050,
+                "costPerMergedCents": 525,
+                "doneAt": "2026-01-01T00:00:00Z",
+                "durationSeconds": 0,
+                "evaluatorFalsePass": 0,
+                "goalId": "a9fdff89-0ddb-5cfb-9a47-7bebdcceec06",
+                "goalSlug": "alpha",
+                "goalTitle": "Alpha",
+                "itemsMerged": 2,
+                "itemsPlanned": 3,
+                "itemsWithBaseAtFinish": 0,
+                "medianCommitsBehindAtFinish": null,
+                "medianCommitsBehindAtMerge": null,
+                "merged": 2,
+                "mergedWithoutRewrite": 2,
+                "models": [
+                  {
+                    "buildCostCents": 850,
+                    "costCents": 1050,
+                    "costPerItemCents": 350,
+                    "evaluated": 2,
+                    "evaluationCostCents": 200,
+                    "firstPass": 1,
+                    "firstPassRate": 0.5,
+                    "items": 3,
+                    "model": "opus"
+                  }
+                ],
+                "noVerdictCostCents": 0,
+                "noVerdicts": 1,
+                "parkCostCents": 0,
+                "parks": 1,
+                "plans": [
+                  {
+                    "costCents": 0,
+                    "model": "default",
+                    "plans": 1
+                  }
+                ],
+                "rebaseAttempts": 3,
+                "rebaseByMethod": [
+                  {
+                    "attempts": 1,
+                    "costCents": 0,
+                    "method": "in_process"
+                  }
+                ],
+                "rebaseCostCents": 0,
+                "reconciled": true,
+                "recordedSpendCents": 1050,
+                "reworksCi": 0,
+                "reworksConflict": 0,
+                "reworksEvaluator": 1,
+                "setAt": "2026-01-01T00:00:00Z"
+              }
+            ],
+            "goalsDone": 1,
+            "itemsWithBaseAtFinish": 0,
+            "medianCommitsBehindAtFinish": null,
+            "medianCommitsBehindAtMerge": null,
+            "merged": 2,
+            "mergedWithoutRewrite": 2,
+            "models": [
+              {
+                "buildCostCents": 850,
+                "costCents": 1050,
+                "costPerItemCents": 350,
+                "evaluated": 2,
+                "evaluationCostCents": 200,
+                "firstPass": 1,
+                "firstPassRate": 0.5,
+                "items": 3,
+                "model": "opus"
+              }
+            ],
+            "noVerdictCostCents": 0,
+            "noVerdicts": 1,
+            "parkCostCents": 0,
+            "parks": 1,
+            "plans": [
+              {
+                "costCents": 0,
+                "model": "default",
+                "plans": 1
+              }
+            ],
+            "rebaseAttempts": 3,
+            "rebaseByMethod": [
+              {
+                "attempts": 1,
+                "costCents": 0,
+                "method": "in_process"
+              }
+            ],
+            "rebaseCostCents": 0,
+            "reconciled": true,
+            "recordedSpendCents": 1050,
+            "retries": {
+              "repos": [
+                {
+                  "merged": 1,
+                  "repo": "contractco/api",
+                  "retries": 1,
+                  "retriesPerMergedItem": 1,
+                  "weeks": [
+                    {
+                      "merged": 1,
+                      "retries": 1,
+                      "retriesPerMergedItem": 1,
+                      "week": "2026-01-01"
+                    }
+                  ]
+                }
+              ],
+              "total": {
+                "merged": 2,
+                "retries": 1,
+                "retriesPerMergedItem": 0.5,
+                "weeks": [
+                  {
+                    "merged": 2,
+                    "retries": 1,
+                    "retriesPerMergedItem": 0.5,
+                    "week": "2026-01-01"
+                  }
+                ]
+              }
+            },
+            "reworksCi": 0,
+            "reworksConflict": 0,
+            "reworksEvaluator": 1,
+            "soak": {
+              "broken": 1,
+              "flakesFound": 1,
+              "runs": 1
+            },
+            "soakWeeks": [
+              {
+                "flakesFound": 1,
+                "runs": 1,
+                "week": "2026-01-01"
+              }
+            ],
+            "story": {
+              "forecastCapCents": 0,
+              "forecastSpendCents": 0,
+              "goals": 13,
+              "overCap": false,
+              "storyShare": 0.38461538461538464,
+              "taskShapedShare": 0
+            },
+            "testRuns": {
+              "byRepo": [
+                {
+                  "candidateAttestations": 0,
+                  "headAttestations": 1,
+                  "mainValidations": 1,
+                  "merged": 1,
+                  "repo": "contractco/api",
+                  "repoId": "7dacfd73-80d2-5f33-94d6-54f222403404",
+                  "revalidations": 0,
+                  "runs": 2,
+                  "testRunsPerMergedChange": 2,
+                  "workflowRuns": 0
+                }
+              ],
+              "testRunsPerMergedChange": 2
+            },
+            "testRunsPerMergedChange": 2
+          }
+        ]
+      }
+    ],
+    "timeInStage": {
+      "buildP90Minutes": null,
+      "windows": [
+        {
+          "buildP90Minutes": null,
+          "hours": 24,
+          "stages": [
+            {
+              "entered": 0,
+              "episodes": 0,
+              "overTarget": false,
+              "p50Minutes": null,
+              "p90Minutes": null,
+              "stage": "deploying",
+              "targetMinutes": null
+            },
+            {
+              "entered": 0,
+              "episodes": 0,
+              "overTarget": false,
+              "p50Minutes": null,
+              "p90Minutes": null,
+              "stage": "stalled",
+              "targetMinutes": null
+            },
+            {
+              "entered": 0,
+              "episodes": 0,
+              "overTarget": false,
+              "p50Minutes": null,
+              "p90Minutes": null,
+              "stage": "waiting_on_person",
+              "targetMinutes": 0
+            },
+            {
+              "entered": 0,
+              "episodes": 0,
+              "overTarget": false,
+              "p50Minutes": null,
+              "p90Minutes": null,
+              "stage": "held",
+              "targetMinutes": null
+            },
+            {
+              "entered": 0,
+              "episodes": 0,
+              "overTarget": false,
+              "p50Minutes": null,
+              "p90Minutes": null,
+              "stage": "building",
+              "targetMinutes": null
+            },
+            {
+              "entered": 0,
+              "episodes": 0,
+              "overTarget": false,
+              "p50Minutes": null,
+              "p90Minutes": null,
+              "stage": "evaluating",
+              "targetMinutes": null
+            },
+            {
+              "entered": 0,
+              "episodes": 0,
+              "overTarget": false,
+              "p50Minutes": null,
+              "p90Minutes": null,
+              "stage": "rebasing",
+              "targetMinutes": null
+            },
+            {
+              "entered": 0,
+              "episodes": 0,
+              "overTarget": false,
+              "p50Minutes": null,
+              "p90Minutes": null,
+              "stage": "checks_failed",
+              "targetMinutes": null
+            },
+            {
+              "entered": 0,
+              "episodes": 0,
+              "overTarget": false,
+              "p50Minutes": null,
+              "p90Minutes": null,
+              "stage": "integrator_waiting",
+              "targetMinutes": 0
+            },
+            {
+              "entered": 0,
+              "episodes": 0,
+              "overTarget": false,
+              "p50Minutes": null,
+              "p90Minutes": null,
+              "stage": "merge_queue",
+              "targetMinutes": 0
+            },
+            {
+              "entered": 0,
+              "episodes": 0,
+              "overTarget": false,
+              "p50Minutes": null,
+              "p90Minutes": null,
+              "stage": "ci_running",
+              "targetMinutes": null
+            },
+            {
+              "entered": 0,
+              "episodes": 0,
+              "note": "ADR 029's build p90: CI queued and running are one stage until a workflow_job feed",
+              "overTarget": false,
+              "p50Minutes": null,
+              "p90Minutes": null,
+              "stage": "ci_queued",
+              "targetMinutes": 0
+            }
+          ]
+        },
+        {
+          "buildP90Minutes": null,
+          "days": 7,
+          "hours": 168,
+          "stages": [
+            {
+              "entered": 0,
+              "episodes": 0,
+              "overTarget": false,
+              "p50Minutes": null,
+              "p90Minutes": null,
+              "stage": "deploying",
+              "targetMinutes": null
+            },
+            {
+              "entered": 0,
+              "episodes": 0,
+              "overTarget": false,
+              "p50Minutes": null,
+              "p90Minutes": null,
+              "stage": "stalled",
+              "targetMinutes": null
+            },
+            {
+              "entered": 0,
+              "episodes": 0,
+              "overTarget": false,
+              "p50Minutes": null,
+              "p90Minutes": null,
+              "stage": "waiting_on_person",
+              "targetMinutes": 0
+            },
+            {
+              "entered": 0,
+              "episodes": 0,
+              "overTarget": false,
+              "p50Minutes": null,
+              "p90Minutes": null,
+              "stage": "held",
+              "targetMinutes": null
+            },
+            {
+              "entered": 0,
+              "episodes": 0,
+              "overTarget": false,
+              "p50Minutes": null,
+              "p90Minutes": null,
+              "stage": "building",
+              "targetMinutes": null
+            },
+            {
+              "entered": 0,
+              "episodes": 0,
+              "overTarget": false,
+              "p50Minutes": null,
+              "p90Minutes": null,
+              "stage": "evaluating",
+              "targetMinutes": null
+            },
+            {
+              "entered": 0,
+              "episodes": 0,
+              "overTarget": false,
+              "p50Minutes": null,
+              "p90Minutes": null,
+              "stage": "rebasing",
+              "targetMinutes": null
+            },
+            {
+              "entered": 0,
+              "episodes": 0,
+              "overTarget": false,
+              "p50Minutes": null,
+              "p90Minutes": null,
+              "stage": "checks_failed",
+              "targetMinutes": null
+            },
+            {
+              "entered": 0,
+              "episodes": 0,
+              "overTarget": false,
+              "p50Minutes": null,
+              "p90Minutes": null,
+              "stage": "integrator_waiting",
+              "targetMinutes": 0
+            },
+            {
+              "entered": 0,
+              "episodes": 0,
+              "overTarget": false,
+              "p50Minutes": null,
+              "p90Minutes": null,
+              "stage": "merge_queue",
+              "targetMinutes": 0
+            },
+            {
+              "entered": 0,
+              "episodes": 0,
+              "overTarget": false,
+              "p50Minutes": null,
+              "p90Minutes": null,
+              "stage": "ci_running",
+              "targetMinutes": null
+            },
+            {
+              "entered": 0,
+              "episodes": 0,
+              "note": "ADR 029's build p90: CI queued and running are one stage until a workflow_job feed",
+              "overTarget": false,
+              "p50Minutes": null,
+              "p90Minutes": null,
+              "stage": "ci_queued",
+              "targetMinutes": 0
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

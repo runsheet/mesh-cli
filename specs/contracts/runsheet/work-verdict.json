@@ -1,0 +1,85 @@
+{
+  "args": {
+    "arguments": {
+      "goal": "work",
+      "notes": "go test ./... passes",
+      "passed": true,
+      "project": "contractwork/work",
+      "seq": 1
+    },
+    "tool": "mesh_verdict"
+  },
+  "field": "work-verdict",
+  "kind": "mcp",
+  "list": false,
+  "sample": {
+    "actor": "user:00000000-0000-4000-8000-0000000fffff",
+    "goal": "work",
+    "item": {
+      "acceptance_checks": [
+        {
+          "check": "go test ./... passes",
+          "expected": "passes",
+          "index": 1,
+          "kind": "test"
+        }
+      ],
+      "acceptance_results": [
+        {
+          "head_sha": "",
+          "index": 1,
+          "output": "",
+          "verdict": "not_run"
+        }
+      ],
+      "atomic": "true",
+      "attempts": 0,
+      "branch": "mesh/work-1",
+      "build_context_bytes": 0,
+      "build_context_files": 0,
+      "cost_cents": 160,
+      "empty_ok": false,
+      "eval_context_bytes": 0,
+      "eval_context_files": 0,
+      "evaluation_passed": true,
+      "evaluation_passed_at": "2026-01-01T00:00:00Z",
+      "files": [
+        "main.go"
+      ],
+      "heartbeat_at": "2026-01-01T00:00:00Z",
+      "last_note": "asks: which port does the service listen on?",
+      "last_verdict": {
+        "at": "2026-01-01T00:00:00Z",
+        "head_sha": "head-work-1",
+        "notes": "go test ./... passes",
+        "passed": true
+      },
+      "lineage": {
+        "attempts": 1,
+        "cost_cents": 160,
+        "root_seq": 1,
+        "seqs": [
+          1
+        ]
+      },
+      "lineage_attempt": 1,
+      "lineage_root_seq": 1,
+      "model": "sonnet",
+      "model_reason": "a mechanical change",
+      "no_change_count": 0,
+      "paired": [
+        "agent:builder@mini"
+      ],
+      "planned_model": "sonnet",
+      "retries": 0,
+      "retry_cap": 3,
+      "seq": 1,
+      "sharpened": false,
+      "stalled": false,
+      "status": "review",
+      "title": "Build me",
+      "writes_shared_docs": false
+    },
+    "project": "contractwork/work"
+  }
+}

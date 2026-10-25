@@ -1,0 +1,26 @@
+{
+  "args": {
+    "body": {
+      "blobs": [
+        "3c5635c4305ccaab36c38f589fb387ed1e4133af"
+      ],
+      "trees": [
+        "d5afe7d74cd96c47d80aff7b49651675936da74e"
+      ]
+    },
+    "method": "POST",
+    "path": "/mesh/v1/items/00000000-0000-4000-8000-0000000fffff/changeset/missing"
+  },
+  "field": "mesh-changeset-missing",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "blobs": [
+      "3c5635c4305ccaab36c38f589fb387ed1e4133af"
+    ],
+    "trees": [
+      "d5afe7d74cd96c47d80aff7b49651675936da74e"
+    ]
+  },
+  "status": 200
+}

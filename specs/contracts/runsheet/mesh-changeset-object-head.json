@@ -1,0 +1,11 @@
+{
+  "args": {
+    "method": "HEAD",
+    "path": "/mesh/v1/items/00000000-0000-4000-8000-0000000fffff/changeset/objects/tree/d5afe7d74cd96c47d80aff7b49651675936da74e"
+  },
+  "field": "mesh-changeset-object-head",
+  "kind": "http",
+  "list": false,
+  "sample": null,
+  "status": 200
+}

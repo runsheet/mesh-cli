@@ -1,0 +1,21 @@
+{
+  "field": "linkInstallation",
+  "input": {
+    "installationId": 97610,
+    "setupAction": "install",
+    "state": "STATE"
+  },
+  "inputType": "(installationId: Int!, state: String!, setupAction: String)",
+  "kind": "mutation",
+  "result": {
+    "accountType": "organization",
+    "action": "install",
+    "created": true,
+    "githubId": 9761,
+    "installationId": 97610,
+    "linked": true,
+    "login": "contractnew",
+    "orgId": "d2f96ae0-8e53-5c67-999b-abd2d9b93de2",
+    "tenantSlug": "contractnew"
+  }
+}

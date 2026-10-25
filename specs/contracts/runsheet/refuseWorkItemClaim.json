@@ -1,0 +1,16 @@
+{
+  "field": "refuseWorkItemClaim",
+  "input": {
+    "actor": "agent:builder@box",
+    "aggregateId": "00000000-0000-4000-8000-0000000c0001",
+    "error": "github token: latchkey github proxy: forbidden: you are not a member of anythink",
+    "namespace": "runsheet",
+    "sessionId": "",
+    "stage": "token"
+  },
+  "inputType": "RefuseWorkItemClaimInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}
