@@ -250,6 +250,15 @@ func TestCommitTextRebuildsTheObject(t *testing.T) {
 			t.Fatalf("signed commitText = %q, %v", got, err)
 		}
 	}
+	// GitHub's own signature (web-flow: a squash merge on main, a merge
+	// batch candidate made through the API) is served ending in one
+	// newline and sits in the object followed by a lone-space line, as
+	// runsheet's c2997d424 and every candidate of 2026-10-25 do
+	webFlow := "tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor A <a@x> 1761400000 +1100\ncommitter GitHub <noreply@github.com> 1761400000 +1100\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n wsBc\n -----END PGP SIGNATURE-----\n \n\nmsg\n"
+	webPayload := "tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor A <a@x> 1761400000 +1100\ncommitter GitHub <noreply@github.com> 1761400000 +1100\n\nmsg\n"
+	if got, err := commitText(gitdata.Commit{SHA: gitObjectID("commit", []byte(webFlow), 40), Payload: webPayload, Signature: sig + "\n"}); err != nil || got != webFlow {
+		t.Fatalf("GitHub-signed commitText = %q, %v", got, err)
+	}
 	unsigned := gitdata.Commit{
 		SHA: gitObjectID("commit", []byte(payload), 40), TreeSHA: "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
 		Author:    gitdata.Person{Name: "A", Email: "a@x", Date: time.Unix(1761400000, 0).UTC()},

@@ -304,6 +304,9 @@ type Loop struct {
 	// for a merged item's, workItemId: each a session against the
 	// capacity (Running).
 	validating map[string]bool
+	// laneHeld is those of validating that started in a slot of the
+	// validation lane, by the same key (ValidatingInLane)
+	laneHeld map[string]bool
 	// sessionOrg is the org each build, plan and research session counts
 	// toward, by subject (item, goal or direction id): heldByOrg's count
 	// against the org's floor (ADR-023).
@@ -1301,9 +1304,12 @@ func (l *Loop) Tick(ctx context.Context) {
 			// a merge batch candidate's and a merged item's validation
 			// are asked for first, every tick, before any new build or
 			// plan: they land work already built and attested. They take
-			// any free slot and, when builds fill the rest, their lane.
-			// it says why when it skips (low disk or memory among them)
-			inUse += l.validateBatches(ctx, max(l.Capacity()-inUse, lanes.Validate-l.Validating()))
+			// any free slot and, when builds fill the rest, their lane —
+			// a candidate first, a main validation only while no
+			// candidate waits, a hand-opened pull request never
+			// (laneTakes). It says why when it skips (low disk or
+			// memory among them)
+			inUse += l.validateBatches(ctx, l.Capacity()-inUse, lanes.Validate-l.ValidatingInLane())
 			if !low {
 				l.evaluateHeld(ctx)
 				l.rebaseRequested(ctx)
@@ -1314,7 +1320,7 @@ func (l *Loop) Tick(ctx context.Context) {
 			// a build never takes a lane: the validation lane while no
 			// validation fills it, the evaluation lane always (an
 			// evaluation is not counted in inUse)
-			kept := max(lanes.Validate-l.Validating(), 0) + lanes.Evaluate
+			kept := max(lanes.Validate-l.ValidatingInLane(), 0) + lanes.Evaluate
 			free := l.Capacity() - inUse
 			if p.mode == pacePaced {
 				free = pacedFree(free, l.Capacity(), inUse)
