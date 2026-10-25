@@ -360,9 +360,10 @@ func ReleaseOnHostFallback(ctx context.Context, gw Gateway, itemID, nodeID, labe
 	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 		return wrapped
 	}
-	logf("item %s: %s release refused (%v); failed instead", label, validate.SandboxRequired, err)
-	if err := gw.FailWorkItem(ctx, itemID, reason); err != nil && !errors.Is(err, context.Canceled) {
-		logf("item %s: fail: %v", label, err)
+	_ = handInRefused(logf, nil, label, "ReleaseWorkItem", err)
+	logf("item %s: %s release refused; failed instead", label, validate.SandboxRequired)
+	if err := gw.FailWorkItem(ctx, itemID, reason); !errors.Is(err, context.Canceled) {
+		_ = handInRefused(logf, nil, label, "FailWorkItem", err)
 	}
 	return wrapped
 }

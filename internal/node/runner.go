@@ -569,9 +569,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 			// machine's own login; the reason is said once for the goal
 			// (NoCredentials.Say), not on every release
 			r.logf("item %s: no credential for %s; released", label, nc.Adapter)
-			if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, "accounts: "+nc.Error()); rerr != nil {
-				r.logf("item %s: release: %v", label, rerr)
-			}
+			_ = handInRefused(r.logf, nil, label, "ReleaseWorkItem", r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, "accounts: "+nc.Error()))
 			return end(nil)
 		}
 		if errors.Is(err, ErrNoAccount) {
@@ -583,9 +581,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 			} else {
 				r.logf("item %s: %v; released", label, err)
 			}
-			if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, "accounts: "+err.Error()); rerr != nil {
-				r.logf("item %s: release: %v", label, rerr)
-			}
+			_ = handInRefused(r.logf, nil, label, "ReleaseWorkItem", r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, "accounts: "+err.Error()))
 			return end(nil)
 		}
 		if err != nil {
@@ -603,9 +599,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		if err != nil {
 			reason := err.Error()
 			r.logf("item %s: %s; released", label, reason)
-			if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason); rerr != nil {
-				r.logf("item %s: release: %v", label, rerr)
-			}
+			_ = handInRefused(r.logf, nil, label, "ReleaseWorkItem", r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason))
 			return end(nil)
 		}
 		hold(unbind)
@@ -621,9 +615,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 			reason := st.DeclineReason()
 			r.Declines.Record(item.ID, st.Missing, runtimes, time.Now())
 			r.logf("item %s: declined, %s; released", label, reason)
-			if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason); rerr != nil {
-				r.logf("item %s: release: %v", label, rerr)
-			}
+			_ = handInRefused(r.logf, nil, label, "ReleaseWorkItem", r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason))
 			return end(nil)
 		}
 		closeProxy, err := st.UseVia(r.Proxies, mcpRootFor(r.Layout, item.ID), &job, mcp, acct)
@@ -660,9 +652,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 			reason := pod.ReleaseReason()
 			r.Declines.Record(item.ID, pod.Declined(), runtimes, time.Now())
 			r.logf("item %s: %s; released", label, reason)
-			if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason); rerr != nil {
-				r.logf("item %s: release: %v", label, rerr)
-			}
+			_ = handInRefused(r.logf, nil, label, "ReleaseWorkItem", r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason))
 			return end(nil)
 		}
 		pod.Apply(&job)
@@ -1086,9 +1076,7 @@ func (t *buildTail) end(ctx context.Context) error {
 		}
 		r.logf("item %s: %s", label, reason)
 		bsc, _ := r.Scopes.ByOrg(b.item.OrgID)
-		if rerr := r.GW.ReleaseWorkItem(ctx, b.item.ID, bsc.NodeID, reason); rerr != nil {
-			r.logf("item %s: release: %v", label, rerr)
-		}
+		_ = handInRefused(r.logf, nil, label, "ReleaseWorkItem", r.GW.ReleaseWorkItem(ctx, b.item.ID, bsc.NodeID, reason))
 		return t.stop(nil)
 	}
 	if re := RuntimeErrorOf(runErr); re != nil {
@@ -1575,7 +1563,8 @@ func (r *Runner) fail(ctx context.Context, item gateway.WorkItem, cause error) e
 	}
 	// an environment failure's reason opens with its kind (adr-030)
 	reason := validate.Reason(cause)
-	r.logf("item %s: failed: %s", item.ID, reason)
+	label := itemLabelOf(ctx, item)
+	r.logf("item %s: failed: %s", label, reason)
 	reason = truncate(reason, 2000)
 	err := sendReport(ctx, func(ctx context.Context) error { return r.GW.FailWorkItem(ctx, item.ID, reason) })
 	if err == nil || ctx.Err() != nil {
@@ -1586,9 +1575,9 @@ func (r *Runner) fail(ctx context.Context, item gateway.WorkItem, cause error) e
 	// is logged with the gateway's answer and the claim released naming
 	// the reason
 	if gateway.IsRefusal(err) && !gateway.IsTransient(err) {
-		r.logf("item %s: fail refused: %v", item.ID, err)
+		_ = handInRefused(r.logf, nil, label, "FailWorkItem", err)
 	} else {
-		r.logf("item %s: fail: %v", item.ID, err)
+		r.logf("item %s: fail: %v", label, err)
 	}
 	r.releaseNaming(ctx, item, reason)
 	return cause
@@ -1615,15 +1604,16 @@ func sendReport(ctx context.Context, fn func(context.Context) error) error {
 // finish the platform did not take, logging a refusal with its answer.
 func (r *Runner) releaseNaming(ctx context.Context, item gateway.WorkItem, reason string) {
 	sc, _ := r.Scopes.ByOrg(item.OrgID)
+	label := itemLabelOf(ctx, item)
 	err := sendReport(ctx, func(ctx context.Context) error { return r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason) })
 	switch {
 	case err == nil:
-		r.logf("item %s: released: %s", item.ID, truncate(reason, 200))
+		r.logf("item %s: released: %s", label, truncate(reason, 200))
 	case ctx.Err() != nil:
 	case gateway.IsRefusal(err) && !gateway.IsTransient(err):
-		r.logf("item %s: release refused: %v", item.ID, err)
+		_ = handInRefused(r.logf, nil, label, "ReleaseWorkItem", err)
 	default:
-		r.logf("item %s: release: %v", item.ID, err)
+		r.logf("item %s: release: %v", label, err)
 	}
 }
 
