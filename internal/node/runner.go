@@ -1152,7 +1152,7 @@ func (t *buildTail) end(ctx context.Context) error {
 	if already {
 		// main already holds the work (adr-003): no push, no branch, and
 		// the evaluator checks the evidence on the base ref
-		if err := b.acct.Carried(r.GW.FinishWorkItemAlreadyDone(ctx, item.ID, truncate(b.acct.Redact(evidence), 4000), b.cost.delta(), b.acct.Report(*result), b.description(ctx))); err != nil {
+		if err := handInRefused(r.logf, b.acct.Redact, label, "FinishWorkItemAlreadyDone", b.acct.Carried(r.GW.FinishWorkItemAlreadyDone(ctx, item.ID, truncate(b.acct.Redact(evidence), 4000), b.cost.delta(), b.acct.Report(*result), b.description(ctx)))); err != nil {
 			return t.stop(r.finishRefused(ctx, item, label, err))
 		}
 		r.logf("item %s: finished already done ($%.2f): %s", label, result.CostUSD, truncate(evidence, 200))
@@ -1253,7 +1253,7 @@ func (t *buildTail) finish(ctx context.Context, state *sessionsteps.State) error
 				}
 			}
 			ctx = gateway.WithNodeID(ctx, nodeIDOf(r.Scopes, item.OrgID, r.Cfg))
-			return b.acct.Carried(r.validationUsage(r.GW.FinishWorkItem(ctx, itemID, branch, sha, b.cost.delta(), b.acct.Report(result), b.description(ctx))))
+			return handInRefused(r.logf, b.acct.Redact, label, "FinishWorkItem", b.acct.Carried(r.validationUsage(r.GW.FinishWorkItem(ctx, itemID, branch, sha, b.cost.delta(), b.acct.Report(result), b.description(ctx)))))
 		},
 	}
 	if cg, ok := r.GW.(changesetGateway); ok && cg.TakesChangesets(ctx) {
