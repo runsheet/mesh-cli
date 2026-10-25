@@ -41,9 +41,14 @@ func claudeSub() gateway.Credential {
 // home root under it.
 func cacheRoot(t *testing.T) string {
 	t.Helper()
-	cache := t.TempDir()
-	t.Setenv("XDG_CACHE_HOME", cache)
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
+	// os.UserCacheDir's own answer: XDG_CACHE_HOME on Linux, but
+	// $HOME/Library/Caches on macOS, which reads no XDG variable
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
 	return filepath.Join(cache, "mesh", "codex")
 }
 

@@ -18,6 +18,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
+	"projectmesh.io/mesh-cli/internal/sockettest"
 	"projectmesh.io/mesh-cli/internal/tools"
 )
 
@@ -27,15 +28,11 @@ const (
 )
 
 // shortProxyRoot is an MCP root short enough for a unix socket's path
-// under it (t.TempDir() can pass 108 bytes on macOS).
+// under it (t.TempDir() can pass 108 bytes on macOS, and so can a
+// sandboxed validation's TMPDIR: sockettest.Dir).
 func shortProxyRoot(t *testing.T) string {
 	t.Helper()
-	d, err := os.MkdirTemp("", "mcp")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(d) })
-	return d
+	return sockettest.Dir(t, "mcp")
 }
 
 // mcpUpstream is a fake HTTP MCP server answering every request with

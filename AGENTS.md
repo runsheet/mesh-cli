@@ -2324,6 +2324,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
 - A change to what the node reports or claims changes the platform's
   contract too; land the platform side first (a process reacts only to
   events after its deploy).
+- The unit suite passes in the node's own validation sandbox, which
+  attests every mesh-cli PR: TMPDIR is the run's scratch deep in the
+  job dir, HOME a fresh one naming no git identity. A test binds a unix
+  socket under `sockettest.Dir` (never `t.TempDir()` or
+  `os.MkdirTemp("", …)`, which run past sun_path there), and a test
+  that commits names its own identity (`git -c user.name=… -c
+  user.email=…`, or the `GIT_AUTHOR_*`/`GIT_COMMITTER_*` variables).
 - Tests that render the context index or the prompts assert exact rows
   and lines; update them with the change, not around it.
 - A commit's only Co-Authored-By trailer is the paired person the node

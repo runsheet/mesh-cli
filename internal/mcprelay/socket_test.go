@@ -6,11 +6,12 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+
+	"projectmesh.io/mesh-cli/internal/sockettest"
 )
 
 // proxyGateway is a fake sessionproxy, served on a unix socket at
@@ -70,13 +71,9 @@ func (g *proxyGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func TestProxySocketRelay(t *testing.T) {
 	gw := &proxyGateway{name: "search", sessions: map[string]bool{}}
 	// A short dir of its own, not t.TempDir(): nested under the test's
-	// own name, that can run past AF_UNIX's ~108-byte sun_path, as
-	// internal/sessionproxy's own proxy_test.go avoids the same way.
-	dir, err := os.MkdirTemp("", "sp")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	// own name, that can run past AF_UNIX's ~108-byte sun_path
+	// (sockettest.Dir).
+	dir := sockettest.Dir(t, "sp")
 	socket := filepath.Join(dir, "proxy.sock")
 	ln, err := net.Listen("unix", socket)
 	if err != nil {

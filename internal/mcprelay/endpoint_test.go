@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"projectmesh.io/mesh-cli/internal/sockettest"
 )
 
 // socketClient is an HTTP client that dials sock whatever the URL says,
@@ -131,11 +133,7 @@ func TestRelayBearerStaysOnTheNode(t *testing.T) {
 // A socket a node before this one left is served again.
 func TestEndpointReplacesAStaleSocket(t *testing.T) {
 	_, srv := newGateway(t, "t1")
-	dir, err := os.MkdirTemp("", "ep")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(dir)
+	dir := sockettest.Dir(t, "ep")
 	sock := filepath.Join(dir, "runsheet.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
