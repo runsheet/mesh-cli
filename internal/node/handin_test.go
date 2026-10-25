@@ -21,6 +21,11 @@ func TestHandInRefusalIsLogged(t *testing.T) {
 		// changesets: the platform takes changesets, so the finish is
 		// recorded from a real checkout of origin
 		changesets bool
+		// exits: the session ends without success, so the node fails the
+		// item; refuse: other mutations the fake refuses, each with its
+		// own text; the refusal then does not reach RunItem's error
+		exits  bool
+		refuse map[string]string
 	}{
 		{
 			call:     "FinishWorkItem",
@@ -44,19 +49,44 @@ func TestHandInRefusalIsLogged(t *testing.T) {
 				"mesh_finish": {"item_id": item1, "branch": "mesh/g-1", "head_sha": "abc123def456"},
 			},
 		},
+		{
+			call:     "FailWorkItem",
+			mutation: "failWorkItem",
+			exits:    true,
+		},
+		{
+			// a refused fail is followed by a release naming the reason,
+			// which the fake refuses too
+			call:     "ReleaseWorkItem",
+			mutation: "releaseWorkItem",
+			exits:    true,
+			refuse:   map[string]string{"failWorkItem": "the gateway says no to the fail (wombat-3)"},
+		},
 	} {
 		t.Run(tc.call, func(t *testing.T) {
 			refusal := "the gateway says no to " + tc.call + " (quokka-7)"
 			f := seed(t)
 			f.Refuse[tc.mutation] = refusal
+			for m, text := range tc.refuse {
+				f.Refuse[m] = text
+			}
 			f.Changesets = tc.changesets
-			r, ws, item, _ := runnerOnFake(t, f, &resultHarness{result: harness.Result{Success: true, WorkCalls: tc.calls}}, nil)
+			var h harness.Harness = &resultHarness{result: harness.Result{Success: true, WorkCalls: tc.calls}}
+			if tc.exits {
+				shortReportRetry(t)
+				h = exitsAtOnce
+			}
+			r, ws, item, _ := runnerOnFake(t, f, h, nil)
 			if tc.changesets {
 				r.WS = &gitWS{fakeWS: ws, t: t, origin: originRepo(t, nil)}
 			}
 			logs := &syncBuf{}
 			r.Log = log.New(logs, "", 0)
-			if err := r.RunItem(context.Background(), item); err == nil || !strings.Contains(err.Error(), refusal) {
+			if err := r.RunItem(context.Background(), item); tc.exits {
+				if err == nil {
+					t.Fatalf("RunItem = nil, want the session's failure")
+				}
+			} else if err == nil || !strings.Contains(err.Error(), refusal) {
 				t.Fatalf("RunItem = %v, want the refusal", err)
 			}
 			var line string

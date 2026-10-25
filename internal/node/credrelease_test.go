@@ -171,7 +171,7 @@ func TestCredentialReleaseRefusedFailsTheItem(t *testing.T) {
 	if run.row["lastError"] != reason {
 		t.Fatalf("failed with %q, last error %q", reason, run.row["lastError"])
 	}
-	if !strings.Contains(run.logged, "release refused (") || !strings.Contains(run.logged, "failed instead: "+reason) {
+	if !strings.Contains(run.logged, ": ReleaseWorkItem refused: ") || !strings.Contains(run.logged, "failed instead: "+reason) {
 		t.Fatalf("the log must say the release was refused and the item failed with the same reason:\n%s", run.logged)
 	}
 	for _, tok := range credTokens {

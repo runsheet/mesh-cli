@@ -47,7 +47,7 @@ func TestSessionThatExitsAtOnceFailIsRetriedOnATransientAnswer(t *testing.T) {
 	if rel := f.CallsNamed("releaseWorkItem"); len(rel) != 0 {
 		t.Fatalf("a fail that landed was released too: %v", rel)
 	}
-	if strings.Contains(logs.String(), "fail refused") {
+	if strings.Contains(logs.String(), "FailWorkItem refused") {
 		t.Fatalf("a transient answer logged as a refusal:\n%s", logs.String())
 	}
 }
@@ -64,7 +64,7 @@ func TestSessionThatExitsAtOnceFailRefusedIsReleased(t *testing.T) {
 	r.Log = log.New(&logs, "", 0)
 	r.RunItem(context.Background(), item)
 
-	if !strings.Contains(logs.String(), "fail refused: failWorkItem: the item is not running") {
+	if !strings.Contains(logs.String(), "item ship-it/1: FailWorkItem refused: failWorkItem: the item is not running") {
 		t.Fatalf("the refusal is not logged with the gateway's answer:\n%s", logs.String())
 	}
 	rel := f.CallsNamed("releaseWorkItem")
@@ -89,7 +89,7 @@ func TestSessionThatExitsAtOnceReleaseRefusedIsLogged(t *testing.T) {
 	var logs syncBuf
 	r.Log = log.New(&logs, "", 0)
 	r.RunItem(context.Background(), item)
-	if !strings.Contains(logs.String(), "release refused: releaseWorkItem: not held by this node") {
+	if !strings.Contains(logs.String(), "item ship-it/1: ReleaseWorkItem refused: releaseWorkItem: not held by this node") {
 		t.Fatalf("the release's refusal is not logged with its answer:\n%s", logs.String())
 	}
 }
