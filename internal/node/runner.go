@@ -1271,7 +1271,7 @@ func (t *buildTail) finish(ctx context.Context, state *sessionsteps.State) error
 				r.attestChangeset(ctx, b, att, res)
 			}
 		}
-		f.Gateway = &carriedChangesets{ChangesetGateway: cg, carried: b.acct.Carried}
+		f.Gateway = &carriedChangesets{ChangesetGateway: cg, carried: b.acct.Carried, logf: r.logf, redact: b.acct.Redact, label: label}
 		f.CostCents = b.cost.delta()
 		f.Usage = b.acct.Report(result)
 	}
@@ -1325,14 +1325,18 @@ func (r *Runner) checkoutBaseSHA(ctx context.Context, dir, baseRef, def, label s
 }
 
 // carriedChangesets is a ChangesetGateway whose changeset finish carries
-// the session's usage report as FinishWorkItem's does (SessionAccount.Carried).
+// the session's usage report as FinishWorkItem's does (SessionAccount.Carried),
+// and whose refusal is logged with the gateway's answer (handInRefused).
 type carriedChangesets struct {
 	sessionsteps.ChangesetGateway
 	carried func(error) error
+	logf    func(string, ...any)
+	redact  func(string) string
+	label   string
 }
 
 func (c *carriedChangesets) FinishWorkItemChangeset(ctx context.Context, itemID, branch, changesetID, baseSHA string, costCents int, usage *gateway.UsageReport, description ...string) error {
-	return c.carried(c.ChangesetGateway.FinishWorkItemChangeset(ctx, itemID, branch, changesetID, baseSHA, costCents, usage, description...))
+	return handInRefused(c.logf, c.redact, c.label, "FinishWorkItemChangeset", c.carried(c.ChangesetGateway.FinishWorkItemChangeset(ctx, itemID, branch, changesetID, baseSHA, costCents, usage, description...)))
 }
 
 // changesetGateway is a platform client that can say whether it holds
