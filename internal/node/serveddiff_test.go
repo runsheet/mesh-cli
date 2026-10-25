@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -21,6 +22,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 	"projectmesh.io/mesh-cli/internal/gitdata"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 )
 
 // Goal a-node-validates-from-a-served-diff-with-a-shared-cache, item 3:
@@ -32,8 +34,14 @@ import (
 // attests.
 
 // servedYML has two suites by path: api/ selects api, web/ selects web.
+// api also finds the repo root through git from api/, as runsheet's
+// loomgen suite does, and its HEAD's tree there, written to
+// $SERVED_GIT_OUT when that is set.
 const servedYML = "suites:\n" +
-	"  - name: api\n    kind: unit\n    command: tmp=$(mktemp) && rm \"$tmp\" && test -x bin/tool.sh && test -f api/new.go && test ! -e gone.txt && test -f moved/name.go && test ! -e old/name.go\n    paths: [\"api/**\"]\n" +
+	"  - name: api\n    kind: unit\n    command: tmp=$(mktemp) && rm \"$tmp\" && test -x bin/tool.sh && test -f api/new.go && test ! -e gone.txt && test -f moved/name.go && test ! -e old/name.go" +
+	" && cd api && top=$(git rev-parse --show-toplevel) && test -f \"$top/.runsheet/validate.yml\" && tree=$(git rev-parse HEAD^{tree})" +
+	" && if test -n \"$SERVED_GIT_OUT\"; then printf '%s\\n%s\\n' \"$top\" \"$tree\" > \"$SERVED_GIT_OUT\"; fi" +
+	" && if test -n \"$SERVED_HISTORY_OUT\"; then git log -p -U0 HEAD^..HEAD > /dev/null && { git rev-parse HEAD HEAD^ HEAD^^{tree}; echo \"env $HEAD_SHA $BASE_SHA\"; echo \"log $(git log --oneline HEAD^..HEAD | wc -l)\"; git diff --name-only HEAD^ HEAD; } > \"$SERVED_HISTORY_OUT\"; fi\n    paths: [\"api/**\"]\n" +
 	"  - name: web\n    kind: unit\n    command: \"true\"\n    paths: [\"web/**\"]\n"
 
 // servedGitHub serves GitHub's commit, compare, tree and blob reads of
@@ -45,6 +53,9 @@ type servedGitHub struct {
 	token  string
 	// tooLarge answers every compare with DiffCapFiles files.
 	tooLarge bool
+	// noHistory serves a commit's tree and parents alone: no author,
+	// committer, message or verification to rebuild it from.
+	noHistory bool
 
 	mu   sync.Mutex
 	reqs []string
@@ -123,7 +134,68 @@ func (g *servedGitHub) commit(ref string) (any, error) {
 	for _, p := range strings.Fields(out)[1:] {
 		parents = append(parents, map[string]string{"sha": p})
 	}
-	return map[string]any{"sha": sha, "commit": map[string]any{"tree": map[string]string{"sha": tree}}, "parents": parents}, nil
+	body := map[string]any{"tree": map[string]string{"sha": tree}}
+	if !g.noHistory {
+		raw, err := g.git("cat-file", "commit", sha)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range commitFields(g.t, raw) {
+			body[k] = v
+		}
+	}
+	return map[string]any{"sha": sha, "commit": body, "parents": parents}, nil
+}
+
+// commitFields is a raw commit object's author, committer, message and
+// verification as GitHub's "Get a commit" serves them: the dates in UTC,
+// the zone dropped; the message with its closing newline trimmed; a
+// signed commit's payload (the object without its gpgsig header) and
+// signature, an unsigned one's both null.
+func commitFields(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	header, msg, _ := strings.Cut(raw, "\n\n")
+	person := func(line string) map[string]string {
+		// Name <email> 1700000000 +1100
+		name, rest, _ := strings.Cut(line, " <")
+		email, rest, _ := strings.Cut(rest, "> ")
+		f := strings.Fields(rest)
+		var unix int64
+		fmt.Sscan(f[0], &unix)
+		return map[string]string{"name": name, "email": email, "date": time.Unix(unix, 0).UTC().Format(time.RFC3339)}
+	}
+	out := map[string]any{"message": strings.TrimRight(msg, "\n")}
+	var payload strings.Builder
+	var sig strings.Builder
+	inSig := false
+	for _, line := range strings.SplitAfter(header+"\n", "\n") {
+		if line == "" {
+			continue
+		}
+		switch {
+		case inSig && strings.HasPrefix(line, " "):
+			sig.WriteString(line[1:])
+			continue
+		case strings.HasPrefix(line, "gpgsig "):
+			inSig = true
+			sig.WriteString(strings.TrimPrefix(line, "gpgsig "))
+			continue
+		}
+		inSig = false
+		payload.WriteString(line)
+		if a, ok := strings.CutPrefix(line, "author "); ok {
+			out["author"] = person(strings.TrimSuffix(a, "\n"))
+		}
+		if c, ok := strings.CutPrefix(line, "committer "); ok {
+			out["committer"] = person(strings.TrimSuffix(c, "\n"))
+		}
+	}
+	verification := map[string]any{"verified": false, "reason": "unsigned", "signature": nil, "payload": nil}
+	if sig.Len() > 0 {
+		verification = map[string]any{"verified": true, "reason": "valid", "signature": sig.String(), "payload": payload.String() + "\n" + msg}
+	}
+	out["verification"] = verification
+	return out
 }
 
 func (g *servedGitHub) compare(base, head string) (any, error) {
@@ -533,4 +605,174 @@ func TestServedDiffTooLargeFallsBackToTheWorktree(t *testing.T) {
 		t.Fatalf("fallback said %d times, want once per run:\n%s", n, s.logs.String())
 	}
 	assertWorktreeGone(t, s.r, s.batch)
+}
+
+// A served checkout is a git repository whose HEAD's tree is the served
+// commit's: a suite in a subdirectory finds the scratch as the repo's
+// top level through git (runsheet's loomgen suite, `cd platform && go
+// tool loom ... --check`, was red on dl360 at 2026-10-25 05:57Z for want
+// of one), and `git rev-parse HEAD^{tree}` there is the commit's tree.
+// The attestation names the served commit's sha, not the scratch's
+// commit's, and nothing is left behind.
+func TestServedDiffScratchIsARepositoryOfTheCommitsTree(t *testing.T) {
+	s := newServedFixture(t)
+	out := filepath.Join(t.TempDir(), "git.out")
+	t.Setenv("SERVED_GIT_OUT", out)
+	claimBatch(t, s.r, s.batch)
+	att, err := handedBack(t, s.r, "candidate", s.batch.MergeBatchID)(s.r.ValidateCandidate(context.Background(), s.batch))
+	if err != nil {
+		t.Fatalf("ValidateCandidate: %v\n%s", err, s.logs.String())
+	}
+	b, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("the suite wrote nothing: %v\n%s", err, s.logs.String())
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("suite wrote %q, want top level and tree", b)
+	}
+	top, tree := lines[0], lines[1]
+	if !strings.HasPrefix(filepath.Base(top), "served-") {
+		t.Fatalf("git's top level from api/ = %s, want the served scratch", top)
+	}
+	want := gitRun(t, s.seedDir, "rev-parse", s.batch.SHA+"^{tree}")
+	if tree != want {
+		t.Fatalf("HEAD^{tree} in the scratch = %s, want the commit's %s", tree, want)
+	}
+	if att.Commit != s.batch.SHA || att.Tree != want {
+		t.Fatalf("attestation names %s at tree %s, want the served commit %s at %s", att.Commit, att.Tree, s.batch.SHA, want)
+	}
+	if strings.Contains(s.logs.String(), "served diff:") {
+		t.Fatalf("fell back to the worktree:\n%s", s.logs.String())
+	}
+	s.assertNoClone(t)
+	s.assertNothingLeft(t)
+}
+
+// commitServed hashes the bytes on disk, whatever the tree's own
+// .gitignore and .gitattributes say: a tracked file the .gitignore names,
+// a CRLF blob under `* text=auto`, a symlink, an executable and a
+// submodule's gitlink all land in a tree equal to the commit's, HEAD
+// detached at a commit of it; the .git it writes is a full repository
+// (a sandbox mounts the scratch alone) and checkMaterialized ignores it.
+// A file that differs from the commit is a *servedTreeMismatch.
+func TestCommitServedMakesTheScratchARepositoryOfExactlyTheTree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	src := t.TempDir()
+	gitRun(t, src, "init", "--quiet")
+	writeFiles(t, src, map[string]string{
+		".gitignore":     "*.log\n",
+		".gitattributes": "* text=auto\n",
+		"keep.log":       "tracked though ignored\n",
+		"crlf.txt":       "line one\r\nline two\r\n",
+		"bin/run.sh":     "#!/bin/sh\necho run\n",
+		"platform/go.go": "package platform\n",
+	})
+	if err := os.Chmod(filepath.Join(src, "bin/run.sh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("platform/go.go", filepath.Join(src, "link")); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, src, "add", "--force", ".gitignore", ".gitattributes", "keep.log", "bin/run.sh", "platform/go.go", "link")
+	// the CRLF bytes as they are, not normalised by text=auto
+	crlf := gitRun(t, src, "hash-object", "-w", "--no-filters", "crlf.txt")
+	gitRun(t, src, "update-index", "--add", "--cacheinfo", "100644,"+crlf+",crlf.txt")
+	gitRun(t, src, "update-index", "--add", "--cacheinfo", "160000,"+strings.Repeat("ab", 20)+",vendor/sub")
+	gitRun(t, src, "commit", "--quiet", "--no-verify", "-m", "tree")
+	commit := gitRun(t, src, "rev-parse", "HEAD")
+
+	want := CacheTree{SHA: gitRun(t, src, "rev-parse", "HEAD^{tree}")}
+	for _, rec := range strings.Split(gitRun(t, src, "ls-tree", "-r", "-z", "HEAD"), "\x00") {
+		if rec == "" {
+			continue
+		}
+		meta, path, _ := strings.Cut(rec, "\t")
+		f := strings.Fields(meta)
+		want.Entries = append(want.Entries, CacheTreeEntry{Path: path, Mode: f[0], SHA: f[2]})
+	}
+	// materialise as the cache does: each blob's bytes at its mode, a
+	// submodule an empty directory
+	materialise := func() string {
+		dir := filepath.Join(t.TempDir(), "served-x")
+		for _, e := range want.Entries {
+			p := filepath.Join(dir, filepath.FromSlash(e.Path))
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if e.Mode == "160000" {
+				if err := os.MkdirAll(p, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				continue
+			}
+			cmd := exec.Command("git", "cat-file", "blob", e.SHA)
+			cmd.Dir = src
+			data, err := cmd.Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if e.Mode == "120000" {
+				if err := os.Symlink(string(data), p); err != nil {
+					t.Fatal(err)
+				}
+				continue
+			}
+			mode := os.FileMode(0o644)
+			if e.Mode == "100755" {
+				mode = 0o755
+			}
+			if err := os.WriteFile(p, data, mode); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return dir
+	}
+
+	dir := materialise()
+	if _, err := commitServed(context.Background(), dir, want, nil); err != nil {
+		t.Fatalf("commitServed: %v", err)
+	}
+	sub := filepath.Join(dir, "platform")
+	if got := gitRun(t, sub, "rev-parse", "HEAD^{tree}"); got != want.SHA {
+		t.Fatalf("HEAD^{tree} = %s, want %s", got, want.SHA)
+	}
+	top, err := filepath.EvalSymlinks(gitRun(t, sub, "rev-parse", "--show-toplevel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if real, _ := filepath.EvalSymlinks(dir); top != real {
+		t.Fatalf("top level = %s, want %s", top, real)
+	}
+	if head := gitRun(t, dir, "rev-parse", "HEAD"); head == commit {
+		t.Fatalf("HEAD is the served commit %s; the scratch's commit is the node's own", head)
+	}
+	if ref := exec.Command("git", "-C", dir, "symbolic-ref", "-q", "HEAD"); ref.Run() == nil {
+		t.Fatal("HEAD is on a branch, want detached")
+	}
+	if fi, err := os.Stat(filepath.Join(dir, ".git")); err != nil || !fi.IsDir() {
+		t.Fatalf(".git is not a directory: %v", err)
+	}
+	// a full repository: the sandbox mounts the scratch alone, its .git
+	// in it (no common dir elsewhere to mount)
+	if common, err := sandbox.GitCommonDir(dir); err != nil || common != "" {
+		t.Fatalf("GitCommonDir = %q, %v; want none, the scratch mounted alone", common, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git", "info", "attributes")); !os.IsNotExist(err) {
+		t.Fatalf("info/attributes left behind: %v", err)
+	}
+	if err := checkMaterialized(dir, want); err != nil {
+		t.Fatalf("checkMaterialized with .git: %v", err)
+	}
+
+	tampered := materialise()
+	if err := os.WriteFile(filepath.Join(tampered, "platform/go.go"), []byte("package tampered\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var mm *servedTreeMismatch
+	if _, err := commitServed(context.Background(), tampered, want, nil); !errors.As(err, &mm) {
+		t.Fatalf("tampered commitServed = %v, want a tree mismatch", err)
+	}
 }

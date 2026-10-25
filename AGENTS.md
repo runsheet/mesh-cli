@@ -1896,8 +1896,41 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `jobCheckoutOf`; never another job's) else the `BlobSource`,
   `GitDataSource`; `Runner.ServedDiff`, `NewServedDiffCache`) into
   `MakeScratch(ScratchRoot(WorkRoot), "served", <subject>)`, the diff
-  applied through the cache (`ApplyDiff`) and checked against the
-  commit's tree (`checkMaterialized`) — logged `<prefix>: materialised
+  applied through the cache (`ApplyDiff`), then made a git repository
+  whose detached HEAD is the served commit itself
+  (`commitServed`: `git init --template=`, `add --all --force` once
+  with hooks off and `.git/info/attributes` unsetting text/eol/filter
+  while it hashes, submodules as gitlinks, `write-tree` compared with
+  the commit's tree — another is a tree mismatch, `checkMaterialized`
+  naming the first path that differs), so a suite that
+  finds the repo root through git (runsheet's loomgen, red on dl360
+  2026-10-25 without one) finds the scratch, and HEAD^ is its real first
+  parent with its real tree, so one that reads `git rev-parse HEAD`,
+  `HEAD^` and HEAD^..HEAD (runsheet's scan.sh and gitleaks, exit 128 on
+  every served validation 2026-10-25 while HEAD was parentless) reads the
+  attested commit (`realHead`, `internal/node/servedhistory.go`): both
+  commit objects rebuilt byte for byte from `gitdata.Commit` — a signed
+  one from GitHub's `verification.payload` with `verification.signature`
+  put back as git's gpgsig header (`withSignature`), an unsigned one from
+  its fields, the zones GitHub does not serve found by hashing
+  (`commitFromFields`) — each written only when it hashes to the real
+  sha; the parent read once (`Commit`, its tree from the shared cache on
+  `withCommitTree`, so a miss is one tree read) and its tree written in
+  an index of its own from cached blobs (`writeServedTree`,
+  `SharedCache.WithBlobs`); `.git/shallow` names the parent; a merge is
+  grafted onto its first parent (`git replace --graft`). What cannot be
+  rebuilt — a root commit, an odd signature or header, an unreadable
+  parent — is `syntheticHead`: `commit-tree` unsigned by the fixed
+  identity `mesh node <node@projectmesh.io>`, its parent a synthetic
+  commit of the merge base's tree. Each validation logs `<prefix>:
+  scratch HEAD is <sha7> itself, HEAD^ its first parent <p7> (shallow)`
+  or `... a synthetic commit of <sha7>'s tree, HEAD^ one of the merge
+  base <b7>'s: <why>`; either way the suites get `HEAD_SHA` and
+  `BASE_SHA`, the real commit and its first parent (`servedTree.env`;
+  in a pod `sandbox.RunSpec.Vars`, set past the allow-list by
+  `sandbox.SetEnv`), and the attestation names the served commit's sha
+  and tree; a sandboxed pod mounts the scratch, `.git` inside it, alone;
+  `.git` is never in a tree check or an artifact digest — logged `<prefix>: materialised
   <sha7> from <base7> and <n> changed file(s) of the served diff` — no
   clone, no fetch, no repo lock; the suites chosen by the compare's
   paths, the scratch removed on every path (`validator.removeScratch`,
@@ -1911,8 +1944,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (<size>) to hold the cap of <cap>; <size> now`, then `go clean
   -cache`, still over the finding `cache over cap: <size> of <cap>`,
   once until back under. A diff past the cap, a truncated tree, no
-  minted token (a request today), no cache, no parent or a tree
-  mismatch takes the clone above, `<prefix>: served diff: <reason>;
+  minted token (a request today), no cache, no parent, a tree
+  mismatch or a scratch repository git could not make takes the clone above, `<prefix>: served diff: <reason>;
   validating from a worktree (said once per run)` (`servedFallback`,
   `noteServedFallback`). A sandboxed validation's pod mounts
   `sandbox.ValidationCache` (`RunSpec.Cache`): its scratch rw (TMPDIR,
@@ -2314,6 +2347,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
 - A change to what the node reports or claims changes the platform's
   contract too; land the platform side first (a process reacts only to
   events after its deploy).
+- The unit suite passes in the node's own validation sandbox, which
+  attests every mesh-cli PR: TMPDIR is the run's scratch deep in the
+  job dir, HOME a fresh one naming no git identity. A test binds a unix
+  socket under `sockettest.Dir` (never `t.TempDir()` or
+  `os.MkdirTemp("", …)`, which run past sun_path there), and a test
+  that commits names its own identity (`git -c user.name=… -c
+  user.email=…`, or the `GIT_AUTHOR_*`/`GIT_COMMITTER_*` variables).
 - Tests that render the context index or the prompts assert exact rows
   and lines; update them with the change, not around it.
 - A commit's only Co-Authored-By trailer is the paired person the node

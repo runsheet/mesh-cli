@@ -3,6 +3,23 @@
   "commit": {
     "tree": {
       "sha": "6b2919a53dd3c3e5b3a98cee04f9622f46f8d2e4"
+    },
+    "author": {
+      "name": "Monalisa Octocat",
+      "email": "mona@github.com",
+      "date": "2011-04-14T16:00:49Z"
+    },
+    "committer": {
+      "name": "Monalisa Octocat",
+      "email": "mona@github.com",
+      "date": "2011-04-14T16:00:49Z"
+    },
+    "message": "Fix all the bugs",
+    "verification": {
+      "verified": true,
+      "reason": "valid",
+      "signature": "-----BEGIN PGP SIGNATURE-----\n\nabc\n-----END PGP SIGNATURE-----\n",
+      "payload": "tree 6b2919a53dd3c3e5b3a98cee04f9622f46f8d2e4\n"
     }
   },
   "parents": [

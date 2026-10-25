@@ -14,7 +14,7 @@ func TestPlanPromptAcceptanceTheEvaluatorCanSee(t *testing.T) {
 		"3. Each item's brief says what to do and where, naming files and functions where it helps; its acceptance is what an evaluator can check — a test that passes, a command's output, a document with named sections — never a feeling.\n",
 		"   An item's acceptance names only what the evaluator can see at evaluation time, on that item's branch, in that item's repository: tests, commands and their output, file contents. It never names a CI check on the item's own pull request (the pull request opens only after evaluation passes), a deploy, or a file in another repository. Work like that becomes its own item in the right repo, or goes in the goal's acceptance.\n",
 		"4. depends_on names earlier seqs",
-		"`plan.items` is the graph: each item `{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [{\"seq\": 1, \"because\": \"uses the … item 1 adds\"}], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\", \"files\": [\"…\"]}`",
+		"`plan.items` is the graph: each item `{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"acceptance_checks\": [{\"kind\": \"test\", \"check\": \"go test ./internal/<pkg>/\", \"expected\": \"passes\"}], \"depends_on\": [{\"seq\": 1, \"because\": \"uses the … item 1 adds\"}], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\", \"files\": [\"…\"]}`",
 		"`plan.questions`, one `{\"clause\", \"question\"}` per clause no pull request can satisfy",
 	} {
 		if !strings.Contains(p, want) {
@@ -41,7 +41,7 @@ func TestPlanPromptHostRule(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(reask, "goes in the goal's acceptance. "+planHostRule+" "+planSplitRule+" "+planSizeRule+" "+planCloseOutRule+" "+planCutOverRule+" "+planRepoRule+" "+planFilesRule+" "+planSharedDocsRule+" Write the whole graph again") {
+	if !strings.Contains(reask, "goes in the goal's acceptance. "+planChecksRule+" "+planHostRule+" "+planSplitRule+" "+planSizeRule+" "+planCloseOutRule+" "+planCutOverRule+" "+planRepoRule+" "+planFilesRule+" "+planSharedDocsRule+" Write the whole graph again") {
 		t.Errorf("the re-ask does not restate the host rule:\n%s", reask)
 	}
 }
@@ -494,8 +494,8 @@ func TestPlanPromptRejected(t *testing.T) {
 	}
 	p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", Rejected: []string{"item 1 (Ship): a check on its own pull request (`deploy / verify`)"}})
 	for _, want := range []string{
-		"## Your last answer was flagged\n\nThe node checked your graph before handing it in and flagged these items — an acceptance naming what no evaluator can see or a reading of the host as a merge gate, or a model the scorecard says does not work on its repo:\n\n- item 1 (Ship): a check on its own pull request (`deploy / verify`)\n\n",
-		"Work like that becomes its own item in the right repo, or goes in the goal's acceptance. " + planHostRule + " " + planSplitRule + " " + planSizeRule + " " + planCloseOutRule + " " + planCutOverRule + " " + planRepoRule + " " + planFilesRule + " " + planSharedDocsRule + " Write the whole graph again with those acceptances and models rewritten; this is the last ask.\n",
+		"## Your last answer was flagged\n\nThe node checked your graph before handing it in and flagged these items — an acceptance naming what no evaluator can see or a reading of the host as a merge gate, an item with no `acceptance_checks`, or a model the scorecard says does not work on its repo:\n\n- item 1 (Ship): a check on its own pull request (`deploy / verify`)\n\n",
+		"Work like that becomes its own item in the right repo, or goes in the goal's acceptance. " + planChecksRule + " " + planHostRule + " " + planSplitRule + " " + planSizeRule + " " + planCloseOutRule + " " + planCutOverRule + " " + planRepoRule + " " + planFilesRule + " " + planSharedDocsRule + " Write the whole graph again with those acceptances and models rewritten; this is the last ask.\n",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("plan prompt lacks %q", want)

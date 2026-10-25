@@ -504,13 +504,42 @@ func (c *SharedCache) blobFromClone(ctx context.Context, repo, sha string) ([]by
 // gitBlobID is the git object id of data as a blob, sha1 for a 40-hex
 // id and sha256 for a 64.
 func gitBlobID(data []byte, hexLen int) string {
+	return gitObjectID("blob", data, hexLen)
+}
+
+// gitObjectID is the git object id of data as an object of kind (blob,
+// tree, commit), sha1 for a 40-hex id and sha256 for a 64.
+func gitObjectID(kind string, data []byte, hexLen int) string {
 	var h hash.Hash = sha1.New()
 	if hexLen == 64 {
 		h = sha256.New()
 	}
-	h.Write([]byte("blob " + strconv.Itoa(len(data)) + "\x00"))
+	h.Write([]byte(kind + " " + strconv.Itoa(len(data)) + "\x00"))
 	h.Write(data)
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// WithBlobs runs fn with the cached files of shas' blobs, in order, each
+// filled first on a miss; nothing is evicted while fn runs.
+func (c *SharedCache) WithBlobs(ctx context.Context, repo string, shas []string, fn func(paths []string) error) error {
+	err := func() error {
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		paths := make([]string, 0, len(shas))
+		for _, sha := range shas {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			p, _, err := c.blob(ctx, repo, sha)
+			if err != nil {
+				return fmt.Errorf("cache: blob %s: %w", sha, err)
+			}
+			paths = append(paths, p)
+		}
+		return fn(paths)
+	}()
+	c.persistCounts()
+	return err
 }
 
 // fillOnce runs fill for key unless a fill of key is in flight, in

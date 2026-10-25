@@ -57,14 +57,15 @@ func ReleaseOnRuntime(ctx context.Context, gw Gateway, itemID, nodeID, label str
 	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 		return wrapped
 	}
+	_ = handInRefused(logf, nil, label, "ReleaseWorkItem", err)
 	if refused != nil {
-		logf("item %s: container runtime broken and the release was refused (%v): %s", label, err, oneLine(reason))
+		logf("item %s: container runtime broken and the release was refused: %s", label, oneLine(reason))
 		refused(reason)
 		return wrapped
 	}
-	logf("item %s: container runtime broken and the release was refused (%v); failed instead: %s", label, err, oneLine(reason))
-	if err := gw.FailWorkItem(ctx, itemID, reason); err != nil && !errors.Is(err, context.Canceled) {
-		logf("item %s: fail: %v", label, err)
+	logf("item %s: container runtime broken and the release was refused; failed instead: %s", label, oneLine(reason))
+	if err := gw.FailWorkItem(ctx, itemID, reason); !errors.Is(err, context.Canceled) {
+		_ = handInRefused(logf, nil, label, "FailWorkItem", err)
 	}
 	return wrapped
 }

@@ -97,8 +97,6 @@ func (r *Runner) afterStarved(ctx context.Context, b *buildRun, why string, resu
 	r.logf("item %s: stalled on an overloaded host; released: %s", b.label, reason)
 	logKilled(r.logf, "item "+b.label, result.KilledPerSession(), result.KillError)
 	_ = harness.RemoveSession(b.dir)
-	if rerr := r.GW.ReleaseWorkItem(ctx, b.item.ID, b.nodeID, reason); rerr != nil {
-		r.logf("item %s: release: %v", b.label, rerr)
-	}
+	_ = handInRefused(r.logf, nil, b.label, "ReleaseWorkItem", r.GW.ReleaseWorkItem(ctx, b.item.ID, b.nodeID, reason))
 	return nil
 }
