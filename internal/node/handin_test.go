@@ -18,6 +18,9 @@ func TestHandInRefusalIsLogged(t *testing.T) {
 		call     string // the call the log line names, and the subtest's name
 		mutation string // the fake's mutation that refuses
 		calls    map[string]map[string]any
+		// changesets: the platform takes changesets, so the finish is
+		// recorded from a real checkout of origin
+		changesets bool
 	}{
 		{
 			call:     "FinishWorkItem",
@@ -33,12 +36,24 @@ func TestHandInRefusalIsLogged(t *testing.T) {
 				"mesh_finish": {"item_id": item1, "outcome": "already_done", "evidence": "https://github.com/acme/widgets/pull/3 merged it"},
 			},
 		},
+		{
+			call:       "FinishWorkItemChangeset",
+			mutation:   "finishWorkItem",
+			changesets: true,
+			calls: map[string]map[string]any{
+				"mesh_finish": {"item_id": item1, "branch": "mesh/g-1", "head_sha": "abc123def456"},
+			},
+		},
 	} {
 		t.Run(tc.call, func(t *testing.T) {
 			refusal := "the gateway says no to " + tc.call + " (quokka-7)"
 			f := seed(t)
 			f.Refuse[tc.mutation] = refusal
-			r, _, item, _ := runnerOnFake(t, f, &resultHarness{result: harness.Result{Success: true, WorkCalls: tc.calls}}, nil)
+			f.Changesets = tc.changesets
+			r, ws, item, _ := runnerOnFake(t, f, &resultHarness{result: harness.Result{Success: true, WorkCalls: tc.calls}}, nil)
+			if tc.changesets {
+				r.WS = &gitWS{fakeWS: ws, t: t, origin: originRepo(t, nil)}
+			}
 			logs := &syncBuf{}
 			r.Log = log.New(logs, "", 0)
 			if err := r.RunItem(context.Background(), item); err == nil || !strings.Contains(err.Error(), refusal) {
