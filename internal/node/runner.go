@@ -1202,7 +1202,17 @@ func (t *buildTail) validate(ctx context.Context) error {
 	var vf *validationFailure
 	if errors.As(err, &vf) {
 		if len(v.runs) > 0 {
-			r.uploadAttestation(ctx, b, v.runs[len(v.runs)-1])
+			att := v.runs[len(v.runs)-1]
+			if cg, ok := r.GW.(changesetGateway); ok && cg.TakesChangesets(ctx) {
+				// a failed build records no changeset, and the platform
+				// holds a changeset item's attestation to its recorded
+				// changeset's tree: sent, it is refused (GitHub has none,
+				// or wrong_tree against the previous attempt's) and
+				// proves nothing, so it is not sent
+				r.logf("item %s: validation failed on %s; no changeset is recorded for it, so no attestation is sent", b.label, short(att.Commit))
+			} else {
+				r.uploadAttestation(ctx, b, att)
+			}
 		}
 		b.report(ctx, vf.Error())
 		return t.stop(r.fail(ctx, item, vf))

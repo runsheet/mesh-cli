@@ -101,6 +101,15 @@ type Fake struct {
 	Changesets         bool
 	ChangesetObjects   map[string][]byte
 	RecordedChangesets map[string][]gateway.Changeset
+	// ChangesetIndexLags is the platform's index not yet having folded
+	// an item's newest recorded changeset when the node attests: its
+	// latest is the one before (none for a first), as
+	// WorkItemIndex.latest_changeset_id reads right after the record.
+	// The platform holds an attestation to the changeset it names
+	// (changesetId) when it is the item's newest, so only an attestation
+	// naming none is refused for the lag (runsheet #5110's amendment of
+	// 2026-10-25).
+	ChangesetIndexLags bool
 	// ItemBearers are further tokens the fake takes on GraphQL, beside
 	// Token: an item's claim-time token, as RecordValidationAttestation
 	// carries it (WithItemToken).
@@ -2837,7 +2846,8 @@ func (f *Fake) recordValidationAttestation(w http.ResponseWriter, r *http.Reques
 // (runsheet gateway/attestation.go signChangeset, refusal kind
 // wrong_tree), "" for one it takes: on a platform holding changesets
 // (Changesets) an item with a changeset recorded is held to its latest's
-// tree. An item with none recorded is held to its branch head as the
+// tree — the one it names when that is the newest, else the index's
+// (ChangesetIndexLags: the one before the newest). An item with none recorded is held to its branch head as the
 // platform's signHead holds it, and the platform makes that branch from
 // a changeset, so there is none yet: refused naming no head.
 func (f *Fake) wrongTree(item string, in map[string]any) string {
@@ -2845,6 +2855,13 @@ func (f *Fake) wrongTree(item string, in map[string]any) string {
 		return ""
 	}
 	css := f.RecordedChangesets[item]
+	named, _ := in["changesetId"].(string)
+	// the changeset the node names is read from its aggregate, so the
+	// newest is held to whatever the index has folded; named none, a
+	// lagging index has not reached it
+	if n := len(css); f.ChangesetIndexLags && n > 0 && (named == "" || css[n-1].ChangesetID != named) {
+		css = css[:n-1]
+	}
 	if len(css) == 0 {
 		commit, _ := in["commit"].(string)
 		return fmt.Sprintf("recordValidationAttestation: %s is not the head of the item's branch (GitHub has none): not yours", commit)
