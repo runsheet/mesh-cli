@@ -17,7 +17,7 @@
             "type": "string"
           },
           "section": {
-            "description": "a section to read whole: of a directory document, the slug its sections list (or that slug without the document's prefix); of a single file, a heading's anchor as its outline lists it; omitted, a directory document is its README and the outline of its sections, and a file over 24KiB the outline of its headings",
+            "description": "a section to read whole: of a directory document, the slug its sections list (or that slug without the document's prefix); of a single file, a heading's anchor as its outline lists it; omitted, a directory document is its README and the outline of its sections, and a file over 12KiB the outline of its headings",
             "type": "string"
           },
           "slug": {
@@ -68,7 +68,7 @@
             "type": "string"
           },
           "limit": {
-            "description": "at most this many rows on the page (default 50, at most 200)",
+            "description": "at most this many rows on the page (default 50, or as the tool's description says; at most 200)",
             "type": "integer"
           },
           "only_project": {
@@ -119,7 +119,7 @@
             "type": "string"
           },
           "limit": {
-            "description": "at most this many rows on the page (default 50, at most 200)",
+            "description": "at most this many rows on the page (default 50, or as the tool's description says; at most 200)",
             "type": "integer"
           },
           "project": {
@@ -230,7 +230,7 @@
             ]
           },
           "limit": {
-            "description": "at most this many rows on the page (default 50, at most 200)",
+            "description": "at most this many rows on the page (default 50, or as the tool's description says; at most 200)",
             "type": "integer"
           },
           "project": {
@@ -310,7 +310,7 @@
             ]
           },
           "limit": {
-            "description": "at most this many rows on the page (default 50, at most 200)",
+            "description": "at most this many rows on the page (default 50, or as the tool's description says; at most 200)",
             "type": "integer"
           },
           "org": {
@@ -385,7 +385,7 @@
             "type": "string"
           },
           "limit": {
-            "description": "at most this many rows on the page (default 50, at most 200)",
+            "description": "at most this many rows on the page (default 50, or as the tool's description says; at most 200)",
             "type": "integer"
           },
           "project": {
@@ -424,7 +424,7 @@
             ]
           },
           "limit": {
-            "description": "at most this many rows on the page (default 50, at most 200)",
+            "description": "at most this many rows on the page (default 50, or as the tool's description says; at most 200)",
             "type": "integer"
           },
           "project": {
@@ -724,7 +724,7 @@
             ]
           },
           "limit": {
-            "description": "at most this many rows on the page (default 50, at most 200)",
+            "description": "at most this many rows on the page (default 50, or as the tool's description says; at most 200)",
             "type": "integer"
           },
           "project": {
@@ -940,7 +940,7 @@
             "type": "boolean"
           },
           "limit": {
-            "description": "at most this many rows on the page (default 50, at most 200)",
+            "description": "at most this many rows on the page (default 50, or as the tool's description says; at most 200)",
             "type": "integer"
           },
           "only_project": {

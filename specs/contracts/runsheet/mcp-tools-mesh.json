@@ -238,7 +238,7 @@
             "type": "integer"
           },
           "limit": {
-            "description": "at most this many rows on the page (default 50, at most 200)",
+            "description": "at most this many rows on the page (default 50, or as the tool's description says; at most 200)",
             "type": "integer"
           },
           "org": {
