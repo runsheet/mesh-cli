@@ -152,3 +152,48 @@ node could say nothing better because the failure was inside the pod.
   MCP root until it sets `Roots`; channel-mode sessions, not in a pod,
   are not proxied; the mesh-specs amendment to ADR 006 decision 2 is
   owed by `runsheet/mesh-specs`.
+
+## Amendment 2026-10-26: the session's token is DPoP-bound and each /mcp request is signed
+
+Goal `the-relay-signs-each-mcp-request-with-its-sessions-key`, runsheet
+ADR 064 (a mesh session token is DPoP-bound) §2 and §5.
+
+- **The mint.** `SessionBearers` (`internal/node/meshsession.go`) mints
+  a build session's token for audience `mesh-session`
+  (`MeshSessionAudience`, the default when `Audience` is unset; no
+  longer `MeshMCPURL`), its mint request carrying a DPoP proof by the
+  node's own key (`SessionBearers.Key`, a `dpop.Key` made in memory by
+  `mesh node start` and never written to disk), so the token is bound
+  to that key's thumbprint. `TokenFiles.Bind` keeps the key beside the
+  bearer and `TokenFiles.KeyOf` hands it to the session's proxy
+  (`SessionProxies.Key`).
+- **Each request.** The proxy's `Runsheet{URL, Bearer, Key}` upstream
+  (`upstreamsOf`, `internal/node/sessionproxy.go`) sends every /mcp
+  request as `Authorization: DPoP <token>` with a `DPoP` header of its
+  own — a fresh proof, a new `jti`, over the request's method, URL and
+  the token's `ath` — never a proof reused.
+- **A 401 `invalid_token`** is the token, not the proof: the request is
+  forwarded again exactly once, re-authorized with a fresh proof; a
+  second 401 is the answer.
+- **A 401 `invalid_dpop_proof`** is the proof refused: `dpopRefusal`
+  reads the 401's `WWW-Authenticate` (every header, every challenge,
+  RFC 9110 params) and only a `DPoP` challenge with
+  `error="invalid_dpop_proof"` is a refusal — `invalid_token`, a
+  `Bearer` challenge or no header is not. The proxy does not retry it
+  (the upstream sees it once) and answers the client a 502 JSON-RPC
+  `-32603` `sessionproxy: <server>: DPoP proof refused:
+  invalid_dpop_proof[: <error_description>]`, kept as the server's
+  `FirstError` (`Proxy.proofRefused`, checked after the first forward
+  and after the `invalid_token` retry).
+- **The stop-gap is gone.** `SessionBearers.MachineUntilDPoP` (mesh-cli
+  #1494), which sent the machine bearer to /mcp until Latchkey minted
+  bound tokens, is removed with its setting in
+  `internal/commands/nodecmd.go`: a session that cannot mint a bound
+  token does not start.
+
+Proved by `TestRelaySignsEachRequest`: in `internal/sessionproxy`
+(`invalid_token_retries/once`, `…/fresh_proof`,
+`proof_refusal/reads_32603`, `proof_refusal/not_retried`) and in
+`internal/node` (`mint_asks_mesh_session`; `each_request_fresh_proof`,
+two requests through `upstreamsOf`'s proxy on `SessionBearers`' source
+and key, each verified by `dpoptest.Verifier` with distinct `jti`s).
