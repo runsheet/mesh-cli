@@ -184,6 +184,34 @@ func TestRelaySignsEachRequest(t *testing.T) {
 				t.Errorf("FirstError %q names no invalid_dpop_proof", got)
 			}
 		})
+
+		// A proof refusal reaches the upstream exactly once: the proxy
+		// never retries it, whatever answer the client's request would
+		// otherwise need.
+		t.Run("not_retried", func(t *testing.T) {
+			key, err := dpop.NewKey()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var s seen
+			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				s.add(r)
+				w.Header().Set("WWW-Authenticate", `DPoP error="invalid_dpop_proof"`)
+				http.Error(w, "invalid_dpop_proof", http.StatusUnauthorized)
+			}))
+			defer up.Close()
+
+			p := New(map[string]Upstream{"runsheet": Runsheet{URL: up.URL + "/mcp", Key: key,
+				Bearer: func(context.Context) (string, error) { return bearerNew, nil }}})
+			c, _ := listen(t, p)
+			post(t, c, "runsheet", nil, initialize)
+			if n := len(s.all()); n != 1 {
+				t.Fatalf("upstream saw %d requests, want exactly 1", n)
+			}
+			if got := p.FirstError("runsheet"); !strings.Contains(got, "invalid_dpop_proof") {
+				t.Errorf("FirstError %q names no invalid_dpop_proof", got)
+			}
+		})
 	})
 }
 
