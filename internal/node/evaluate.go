@@ -220,7 +220,7 @@ func (e *Evaluator) failDiff(ctx context.Context, item gateway.WorkItem, label, 
 	e.logf("item %s: not evaluated, failed: %s", label, notes)
 	stopHeartbeat(ctx)
 	ctx = gateway.WithNodeID(ctx, nodeIDOf(e.Scopes, item.OrgID, e.Cfg))
-	if err := e.GW.EvaluateWorkItem(ctx, item.ID, false, notes, nil, 0, nil, gateway.EvaluateChoice{}); err != nil {
+	if err := handInRefused(e.logf, nil, label, "EvaluateWorkItem", e.GW.EvaluateWorkItem(ctx, item.ID, false, notes, nil, 0, nil, gateway.EvaluateChoice{})); err != nil {
 		return fmt.Errorf("record verdict: %w", err)
 	}
 	return nil
@@ -852,7 +852,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	// no heartbeat after the verdict
 	stopHeartbeat(ctx)
 	ctx = gateway.WithNodeID(ctx, nodeIDOf(e.Scopes, item.OrgID, e.Cfg))
-	if err := acct.Carried(e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, failed, Cents(cost), usage, gateway.EvaluateChoice{EvaluatedModel: fam.model})); err != nil {
+	if err := handInRefused(e.logf, acct.Redact, label, "EvaluateWorkItem", acct.Carried(e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, failed, Cents(cost), usage, gateway.EvaluateChoice{EvaluatedModel: fam.model}))); err != nil {
 		if evaluationNotYours(err) {
 			// another node converged on the evaluation while this session
 			// ran; its own verdict (or tool call) is the one of record, and
@@ -991,7 +991,7 @@ func (e *Evaluator) noVerdict(ctx context.Context, ev evalRun, reason string, co
 		}
 		return fallback()
 	}
-	if err := ev.acct.Carried(err); err != nil {
+	if err := handInRefused(e.logf, ev.acct.Redact, ev.label, "EvaluateWorkItemNoVerdict", ev.acct.Carried(err)); err != nil {
 		return fmt.Errorf("record no verdict: %w", err)
 	}
 	e.Blind.Forget(ev.item.ID)
