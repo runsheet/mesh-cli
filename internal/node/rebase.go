@@ -25,9 +25,9 @@ import (
 // Rebaser is a node's session of kind rebase (runsheet ADR 008 step 2,
 // trd §6a): an item whose pull request conflicts with its base in a way
 // the integrator could not resolve itself, claimed with
-// ClaimWorkItemRebase. The session runs in a fresh detached worktree of
-// the branch at origin/<branch> (RebaseWorkspaceSpec, never the item's
-// build checkout; a worktree that cannot be made releases the claim as
+// ClaimWorkItemRebase. The session runs in a fresh detached clone of
+// its own at origin/<branch> (RebaseWorkspaceSpec, never the item's
+// build checkout nor a worktree of a shared clone; a checkout that cannot be made releases the claim as
 // infrastructure, ADR-024), rebases it onto the base keeping both sides' intent,
 // re-runs the acceptance and pushes with --force-with-lease; the node
 // reads the pushed head back and records it with FinishWorkItemRebase —
@@ -160,7 +160,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 		noteHostFallback(err, r.logf)
 		return fail(fmt.Errorf("%s%w", SandboxRequiredPrefix, err))
 	}
-	// the rebase's own fresh worktree at origin/<branch>, never the
+	// the rebase's own fresh clone at origin/<branch>, never the
 	// item's build checkout: that one may be gone, swept, or pointing at
 	// a pruned worktree registration (ADR-028, A rebase gets its own
 	// worktree)
@@ -180,10 +180,10 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 			unlessDetached(ctx, func() { r.removeCheckout(ctx, wt, label, dir) })
 		}
 	}()
-	// the item's own GitHub token, written into the fresh worktree once
+	// the item's own GitHub token, written into the fresh clone once
 	// it is made: the push is the session's whole point
 	cred, err := NewItemCredAt(ctx, r.GW, r.WS, r.Scopes, item, rspec, r.Fallback, r.logf, func(tctx context.Context) error {
-		made = true // a half-made worktree goes too
+		made = true // a half-made clone goes too
 		return wt.AddRebaseWorktree(tctx, rspec.Repo, dir, branch)
 	})
 	if we := WorkspaceErrorOf(err); we != nil {
