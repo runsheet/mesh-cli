@@ -378,9 +378,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	resp, err := p.forward(req, u, body, false)
+	if p.proofRefused(w, name, resp, err) {
+		return
+	}
 	if err == nil && resp.StatusCode == http.StatusUnauthorized && u.retries401() {
 		resp.Body.Close()
 		resp, err = p.forward(req, u, body, true)
+		if p.proofRefused(w, name, resp, err) {
+			return
+		}
 	}
 	if err != nil {
 		msg := p.mask(err.Error())
@@ -398,6 +404,26 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	p.reply(w, resp)
+}
+
+// proofRefused answers a 401 that refuses the DPoP proof rather than the
+// token (runsheet ADR 064 §2) as the proxy's own -32603 naming the
+// reason, never retried: a fresh proof over the same key would be
+// refused the same way.
+func (p *Proxy) proofRefused(w http.ResponseWriter, name string, resp *http.Response, err error) bool {
+	if err != nil {
+		return false
+	}
+	reason, refused := dpopRefusal(resp)
+	if !refused {
+		return false
+	}
+	resp.Body.Close()
+	msg := fmt.Sprintf("sessionproxy: %s: DPoP proof refused: %s", name, p.mask(reason))
+	p.logf("%s", msg)
+	p.noteError(name, msg)
+	writeError(w, http.StatusBadGateway, -32603, msg)
+	return true
 }
 
 // forward sends the request on to u with the client's MCP headers and
