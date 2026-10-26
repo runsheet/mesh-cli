@@ -2232,8 +2232,16 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   streamable-HTTP MCP at `/mcp/<server>` on a 0600 unix socket
   (`Listen`, a stale socket removed first) with one upstream per server
   — `Remote{URL, Headers}` (the headers the proxy holds; a client's
-  Authorization never forwarded), `Runsheet{URL, Bearer}` (asked per
-  request, in memory, a 401 re-asked and retried once) and
+  Authorization never forwarded), `Runsheet{URL, Bearer, Key}` (asked per
+  request, in memory; a build's bearer its mesh session's token, minted
+  for audience `mesh-session` DPoP-bound to the node's in-memory key,
+  `SessionBearers.Key`/`TokenFiles.KeyOf`, each request sent
+  `Authorization: DPoP <token>` with a fresh proof; a 401
+  `invalid_token` retried once with a fresh proof, a 401 DPoP
+  `invalid_dpop_proof` (`dpopRefusal`) never retried and answered
+  -32603 `sessionproxy: <name>: DPoP proof refused: <reason>`, the
+  `MachineUntilDPoP` stop-gap gone; ADR-038's and ADR-035's amendments
+  2026-10-26, `TestRelaySignsEachRequest` in both packages) and
   `Local{Command, Args, Env, Secrets}` (a local tool run by the proxy
   on the host, lazily, restarted once with initialize replayed, its
   secrets in the child's env alone, ids of the proxy's own, its process
