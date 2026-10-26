@@ -74,9 +74,15 @@ are scanned for every regular file under them (no user filter — the
 fixture is already the two snapshots), FIXTURE-DIR/status-before.txt
 and FIXTURE-DIR/status-after.txt stand in for `mesh node status`'s
 output (its `validation cache:` line is read from each the same way),
-and FIXTURE-DIR/node.log stands in for the window's node.log — every
+FIXTURE-DIR/node.log stands in for the window's node.log — every
 `attestation recorded ` line in it counts, the fixture already being
-scoped to the window. The fixture this repository carries is read by
+scoped to the window — and FIXTURE-DIR/work stands in for
+$MESH_HOME/work.
+
+Both runs close with `leftover work directories: N`: the directories
+under $MESH_HOME/work/<goal>/<seq> with no live job (no
+`<seq>.session/state.json` beside them whose pid is alive or 0). Every
+job works under $MESH_HOME/jobs/<id>/ (ADR-039), so a node reads 0. The fixture this repository carries is read by
 
   bash scripts/validation-residue-reading.sh --dry scripts/testdata/validation-residue-reading
 
@@ -164,6 +170,31 @@ scan() {
   printf '%s %s\n' "$count" "$bytes"
 }
 
+# leftover_work_dirs root: how many work directories under
+# root/<goal>/<seq> (ADR-039 left ~/.mesh/work behind: every job works
+# in ~/.mesh/jobs/<id>/) have no live job — no `<seq>.session/state.json`
+# beside them (sessionunit's State, written while a session runs) whose
+# pid is alive or 0 (a sandboxed session's, judged by its container).
+# The `.session` and `.hooks` dirs themselves, and dot dirs, are not
+# work directories. A missing root gives 0.
+leftover_work_dirs() {
+  local root="$1" dir state pid n=0
+  [ -d "$root" ] || { echo 0; return 0; }
+  while IFS= read -r -d '' dir; do
+    case "$(basename "$dir")" in .* | *.session | *.hooks) continue ;; esac
+    state="$dir.session/state.json"
+    if [ -f "$state" ]; then
+      pid="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$state" | head -n1)"
+      pid="${pid:-0}"
+      if [ "$pid" -eq 0 ] || kill -0 "$pid" 2>/dev/null; then
+        continue
+      fi
+    fi
+    n=$((n + 1))
+  done < <(find "$root" -mindepth 2 -maxdepth 2 -type d -print0 2>/dev/null)
+  echo "$n"
+}
+
 # count_validations log [since] [until]: how many `attestation recorded
 # ` lines (internal/node/validation.go) fall on or between the given
 # node.log timestamps (its own `YYYY/MM/DD HH:MM:SS`, fixed-width); with
@@ -241,6 +272,7 @@ main() {
     echo "new entries: $((after_count - before_count))"
     echo "new bytes: $((after_bytes - before_bytes))"
     echo "validations in window: $(count_validations "$dry_dir/node.log")"
+    echo "leftover work directories: $(leftover_work_dirs "$dry_dir/work")"
     exit 0
   fi
 
@@ -282,6 +314,7 @@ main() {
   echo "new entries: $((after_count - before_count))"
   echo "new bytes: $((after_bytes - before_bytes))"
   echo "validations in window: $(count_validations "$log" "$start_ts" "$end_ts")"
+  echo "leftover work directories: $(leftover_work_dirs "$home/work")"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
