@@ -487,3 +487,95 @@ func writeError(w http.ResponseWriter, status, code int, msg string) {
 	w.WriteHeader(status)
 	_, _ = w.Write(b)
 }
+
+// dpopRefusal reads a 401's WWW-Authenticate: a DPoP challenge whose
+// error is invalid_dpop_proof is runsheet refusing the proof, not the
+// token (runsheet ADR 064 §2), and the reason names it with its
+// error_description when one is given.
+func dpopRefusal(resp *http.Response) (reason string, refused bool) {
+	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		return "", false
+	}
+	for _, v := range resp.Header.Values("WWW-Authenticate") {
+		for _, c := range challenges(v) {
+			if !strings.EqualFold(c.scheme, "DPoP") || c.params["error"] != "invalid_dpop_proof" {
+				continue
+			}
+			if d := c.params["error_description"]; d != "" {
+				return "invalid_dpop_proof: " + d, true
+			}
+			return "invalid_dpop_proof", true
+		}
+	}
+	return "", false
+}
+
+// challenge is one auth-scheme of a WWW-Authenticate value and its
+// auth-params, names lower-cased.
+type challenge struct {
+	scheme string
+	params map[string]string
+}
+
+// challenges parses a WWW-Authenticate value (RFC 9110 §11.6.1): a
+// token not followed by `=` opens a challenge, `name=value` or
+// `name="quoted"` pairs are its params.
+func challenges(v string) []challenge {
+	var out []challenge
+	i := 0
+	skip := func() {
+		for i < len(v) && (v[i] == ' ' || v[i] == '\t' || v[i] == ',') {
+			i++
+		}
+	}
+	token := func() string {
+		j := i
+		for i < len(v) && !strings.ContainsRune(" \t,=\"", rune(v[i])) {
+			i++
+		}
+		return v[j:i]
+	}
+	for {
+		skip()
+		if i >= len(v) {
+			return out
+		}
+		t := token()
+		if t == "" {
+			i++
+			continue
+		}
+		j := i
+		for j < len(v) && (v[j] == ' ' || v[j] == '\t') {
+			j++
+		}
+		if j >= len(v) || v[j] != '=' {
+			out = append(out, challenge{scheme: t, params: map[string]string{}})
+			continue
+		}
+		// a param of the challenge open; one before any scheme is dropped
+		i = j + 1
+		for i < len(v) && (v[i] == ' ' || v[i] == '\t') {
+			i++
+		}
+		var val string
+		if i < len(v) && v[i] == '"' {
+			i++
+			var b strings.Builder
+			for i < len(v) && v[i] != '"' {
+				if v[i] == '\\' && i+1 < len(v) {
+					i++
+				}
+				b.WriteByte(v[i])
+				i++
+			}
+			i++
+			val = b.String()
+		} else {
+			val = token()
+		}
+		if len(out) > 0 {
+			out[len(out)-1].params[strings.ToLower(t)] = val
+		}
+	}
+}
