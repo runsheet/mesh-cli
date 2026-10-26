@@ -482,8 +482,10 @@ func (g *Git) addDetachedWorktree(ctx context.Context, repo, dir, branch, sha st
 	if _, _, ok := jobOf(dir); ok {
 		return g.addDetachedClone(ctx, repo, dir, branch, sha, check)
 	}
-	root, key := g.lockRoot("", dir), RepoLockKey(repo)
+	key := RepoLockKey(repo)
 	clone := SharedClonePath(g.reposRootFor(dir), repo)
+	// every write here is the shared clone's: locked under its root
+	root := g.sharedLockRoot(clone, repo)
 	if err := g.syncSharedClone(ctx, root, key, repo, clone); err != nil {
 		return err
 	}

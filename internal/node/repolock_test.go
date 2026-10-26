@@ -129,3 +129,37 @@ func TestLockRepoUncontendedLogsNothing(t *testing.T) {
 		t.Fatalf("uncontended lockRepo logged %q", got)
 	}
 }
+
+// Two items of one repo whose specs name different job roots share one
+// clone, so every write to it locks under the clone's own root — not
+// each spec's — and the two wait on one lock file (ADR-023).
+func TestSharedCloneLocksUnderItsOwnRoot(t *testing.T) {
+	ctx := context.Background()
+	reposRoot := filepath.Join(t.TempDir(), "repos")
+	g := &Git{}
+	a := WorkspaceSpec{Root: filepath.Join(t.TempDir(), "jobs", "a"), Repos: reposRoot, GoalSlug: "g", Seq: 1, Repo: "Acme/Widgets", Branch: "mesh/g-1", BaseRef: "main"}
+	b := WorkspaceSpec{Root: filepath.Join(t.TempDir(), "jobs", "b"), Repos: reposRoot, GoalSlug: "g", Seq: 2, Repo: "acme/widgets", Branch: "mesh/g-2", BaseRef: "main"}
+	if g.sharedClone(a) == "" || g.sharedClone(a) != g.sharedClone(b) {
+		t.Fatalf("shared clones %q and %q, want one", g.sharedClone(a), g.sharedClone(b))
+	}
+	ra, rb := g.specLockRoot(ctx, a), g.specLockRoot(ctx, b)
+	if ra != rb {
+		t.Fatalf("lock roots %q and %q for one shared clone, want one", ra, rb)
+	}
+	if ra != reposRoot {
+		t.Fatalf("lock root %q, want the clone's repos root %q", ra, reposRoot)
+	}
+	if ra == g.lockRoot(a.Root, a.Dir()) {
+		t.Fatalf("lock root %q is the spec's own root", ra)
+	}
+	if got := g.sharedLockRoot(g.sharedClone(a), a.Repo); got != reposRoot {
+		t.Fatalf("sharedLockRoot = %q, want %q", got, reposRoot)
+	}
+	// a path remote's clone is one directory under the root
+	if got := g.sharedLockRoot(SharedClonePath(reposRoot, "/tmp/x/origin.git"), "/tmp/x/origin.git"); got != reposRoot {
+		t.Fatalf("sharedLockRoot of a path remote = %q, want %q", got, reposRoot)
+	}
+	if got := (&Git{LockRoot: "/locks"}).specLockRoot(ctx, a); got != "/locks" {
+		t.Fatalf("LockRoot set: %q, want /locks", got)
+	}
+}
