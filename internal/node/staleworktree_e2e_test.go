@@ -89,7 +89,12 @@ func TestStaleWorktreeIsMadeAgainE2E(t *testing.T) {
 	r := &Runner{GW: gw, Harness: h, WS: g, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: work, ProgressEvery: time.Hour, Log: lg,
 		Credentials: &Credentials{GW: gw, Log: lg}}
 
-	// attempt 1: built as a worktree of the shared clone, pushed, finished
+	// attempt 1: built as a worktree of the shared clone — as checkouts
+	// were made before each was a clone of its own — pushed, finished
+	spec1 := WorkspaceSpec{Root: work, GoalSlug: "ship-it", Seq: 1, Repo: "acme/widgets", Branch: BranchName("ship-it", 1), BaseRef: "main"}
+	if _, err := prepareWorktree(withGitToken(context.Background(), g.GitHubURL, &gateway.GitHubToken{Token: "ghs_build"}), g, spec1); err != nil {
+		t.Fatalf("worktree item 1: %v", err)
+	}
 	item, err := gw.WorkItem(context.Background(), item1)
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +116,7 @@ func TestStaleWorktreeIsMadeAgainE2E(t *testing.T) {
 	// a second item's worktree, locked while its item is live, survives
 	// a prune run while its directory is out of view
 	spec2 := WorkspaceSpec{Root: work, GoalSlug: "ship-it", Seq: 2, Repo: "acme/widgets", Branch: BranchName("ship-it", 2), BaseRef: "main"}
-	dir2, err := g.Prepare(context.Background(), spec2)
+	dir2, err := prepareWorktree(withGitToken(context.Background(), g.GitHubURL, &gateway.GitHubToken{Token: "ghs_build"}), g, spec2)
 	if err != nil {
 		t.Fatalf("Prepare item 2: %v\n%s", err, logs.String())
 	}

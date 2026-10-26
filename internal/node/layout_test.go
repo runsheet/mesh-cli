@@ -89,8 +89,8 @@ func TestItemSpecIsInItsJob(t *testing.T) {
 		t.Fatalf("spec = %+v (dir %s)", spec, spec.Dir())
 	}
 	g := &Git{}
-	if clone := g.sharedClone(spec); clone != "" {
-		t.Fatalf("a job's checkout is a worktree of %s", clone)
+	if clone := g.seedClone(spec); clone != "" {
+		t.Fatalf("a job's checkout is seeded from %s", clone)
 	}
 	if r := RebaseWorkspaceSpec(spec); r.Dir() != j.Rebase() || !isRebaseDir(r.Dir()) {
 		t.Fatalf("rebase dir %s", r.Dir())

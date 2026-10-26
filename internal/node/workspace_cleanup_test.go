@@ -35,7 +35,7 @@ func TestWorkspaceCleanupNeverRemovesALiveWorktree(t *testing.T) {
 	prepare := func(item gateway.WorkItem) string {
 		t.Helper()
 		spec := WorkspaceSpec{Root: work, GoalSlug: "g", Seq: item.Seq, Repo: origin, Branch: BranchName("g", item.Seq), BaseRef: "main"}
-		dir, err := g.Prepare(ctx, spec)
+		dir, err := prepareWorktree(ctx, g, spec)
 		if err != nil {
 			t.Fatalf("prepare seq %d: %v", item.Seq, err)
 		}
@@ -140,7 +140,7 @@ func TestWorkspaceCleanupNeverRemovesALiveWorktree(t *testing.T) {
 	}
 }
 
-// Prepare locks each worktree it makes (lockWorktree, from addWorktree and
+// Prepare locks each worktree it makes (lockWorktree, from RebuildWorktree and
 // from Prepare's reuse branch) before its directory is ever moved: a bare
 // `git worktree prune` run in the shared clone, as a session's pod runs it,
 // with one item's directory out of its view, leaves that registration in
@@ -155,7 +155,7 @@ func TestPreparedWorktreeSurvivesAPruneWithItsDirOutOfView(t *testing.T) {
 	prepare := func(seq int) string {
 		t.Helper()
 		spec := WorkspaceSpec{Root: work, GoalSlug: "g", Seq: seq, Repo: origin, Branch: BranchName("g", seq), BaseRef: "main"}
-		dir, err := g.Prepare(ctx, spec)
+		dir, err := prepareWorktree(ctx, g, spec)
 		if err != nil {
 			t.Fatalf("prepare seq %d: %v", seq, err)
 		}

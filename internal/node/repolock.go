@@ -102,7 +102,7 @@ func (g *Git) specLockRoot(ctx context.Context, spec WorkspaceSpec) string {
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
 		return g.dirLockRoot(ctx, spec.Root, dir, spec.Repo)
 	}
-	if clone := g.sharedClone(spec); clone != "" {
+	if clone := g.seedClone(spec); clone != "" {
 		return g.sharedLockRoot(clone, spec.Repo)
 	}
 	return g.lockRoot(spec.Root, dir)

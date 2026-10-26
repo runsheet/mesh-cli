@@ -17,7 +17,8 @@ import (
 )
 
 // A sandboxed session cannot prune the shared clone's worktrees
-// (ADR-034): two items of one repo are two worktrees of one clone; item
+// (ADR-034): two items of one repo are two worktrees of one clone, as
+// checkouts were before each was a clone of its own (prepareWorktree); item
 // 1's session pod mounts the clone's common dir, `.git/worktrees`
 // read-only over it and item 1's own entry read-write over that. Item 2's
 // work tree is absent in the pod, so its entry's gitdir pointer dangles
@@ -38,7 +39,7 @@ func TestPodCannotPruneWorktrees(t *testing.T) {
 	var dirs, entries []string
 	for seq := 1; seq <= 2; seq++ {
 		spec := WorkspaceSpec{Root: work, GoalSlug: "g", Seq: seq, Repo: origin, Branch: BranchName("g", seq), BaseRef: "main"}
-		dir, err := g.Prepare(ctx, spec)
+		dir, err := prepareWorktree(ctx, g, spec)
 		if err != nil {
 			t.Fatalf("prepare seq %d: %v", seq, err)
 		}

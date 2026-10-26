@@ -43,7 +43,7 @@ func TestPrepareLocksAReusedUnlockedWorktree(t *testing.T) {
 	repos := filepath.Join(root, "repos")
 	g, cmds := recordingGit(repos)
 	spec := WorkspaceSpec{Root: filepath.Join(root, "work"), GoalSlug: "g", Seq: 1, Repo: origin, Branch: "mesh/g-1", BaseRef: "main"}
-	dir, err := g.Prepare(context.Background(), spec)
+	dir, err := prepareWorktree(context.Background(), g, spec)
 	if err != nil {
 		t.Fatal(err)
 	}

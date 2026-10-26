@@ -130,8 +130,8 @@ func clearHelper(ctx context.Context, dir, base string) error {
 
 // ensureWorktreeConfig makes sure the shared clone of the worktree dir
 // has extensions.worktreeConfig, so `git config --worktree` writes the
-// worktree's own config.worktree. addWorktree enables it under the
-// repo's lock; a worktree made before it did gets it here, read first so
+// worktree's own config.worktree. A worktree made before a checkout
+// was a clone of its own may lack it, and gets it here, read first so
 // the steady state writes nothing to the clone's one .git/config.
 func ensureWorktreeConfig(ctx context.Context, dir string) error {
 	get := exec.CommandContext(ctx, "git", "config", "--local", "--type=bool", "--get", "extensions.worktreeConfig")
@@ -444,11 +444,11 @@ func WorkspaceErrorOf(err error) *WorkspaceError {
 }
 
 // RepoCachePath is where spec's checkout keeps its git config: the
-// repo's one shared clone for a worktree (ADR-028), else the checkout
-// itself (its own clone: an evaluation, a full clone from before).
+// checkout itself, a clone of its own (ADR-039), else — a worktree made
+// before checkouts were — its shared clone.
 func RepoCachePath(ws Workspacer, spec WorkspaceSpec) string {
-	if g, ok := ws.(*Git); ok {
-		if p := g.sharedClone(spec); p != "" {
+	if isWorktree(spec.Dir()) {
+		if p := worktreeClone(spec.Dir()); p != "" {
 			return p
 		}
 	}

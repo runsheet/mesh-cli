@@ -11,13 +11,15 @@ import (
 	"testing"
 )
 
-// Two items of one repo on a node open one clone and two worktrees, and
-// both build and push (ADR-028, mesh-specs ADR 017): against a local bare
-// origin, with gh's clone substituted by git's (lockTestOrigin), the node's
-// Git prepares both items — one `gh repo clone`, two `git worktree add` —
-// each commits a change on its own branch and pushes it, both branches are
-// on the origin, and RemoveWorkspace on both leaves the shared clone.
-func TestOneCloneTwoWorktreesBuildAndPushE2E(t *testing.T) {
+// Two items of one repo on a node open one shared clone, which seeds a
+// clone of its own for each, and both build and push (ADR-028, ADR-039):
+// against a local bare origin, with gh's clone substituted by git's
+// (lockTestOrigin), the node's Git prepares both items — the shared
+// clone's `gh repo clone`, then one seeded `gh repo clone` per item and no
+// `git worktree add` — each commits a change on its own branch and pushes
+// it, both branches are on the origin, and RemoveWorkspace on both leaves
+// the shared clone.
+func TestOneCloneSeedsTwoCheckoutsBuildAndPushE2E(t *testing.T) {
 	root, origin := lockTestOrigin(t)
 	work, repos := filepath.Join(root, "work"), filepath.Join(root, "repos")
 	g, cmds := recordingGit(repos)
@@ -32,8 +34,8 @@ func TestOneCloneTwoWorktreesBuildAndPushE2E(t *testing.T) {
 		if err != nil {
 			t.Fatalf("prepare seq %d: %v", seq, err)
 		}
-		if !isWorktree(dir) {
-			t.Fatalf("seq %d: %s is not a worktree", seq, dir)
+		if fi, err := os.Stat(filepath.Join(dir, ".git")); err != nil || !fi.IsDir() {
+			t.Fatalf("seq %d: %s is not a clone of its own: %v", seq, dir, err)
 		}
 		// the item's build: one change, committed on its branch
 		name := "item-" + spec.Branch[strings.LastIndex(spec.Branch, "-")+1:]
@@ -50,7 +52,7 @@ func TestOneCloneTwoWorktreesBuildAndPushE2E(t *testing.T) {
 		if pushed != head {
 			t.Fatalf("seq %d pushed %s, committed %s", seq, pushed, head)
 		}
-		t.Logf("seq %d: worktree %s on %s, pushed %s", seq, dir, spec.Branch, pushed)
+		t.Logf("seq %d: clone %s on %s, pushed %s", seq, dir, spec.Branch, pushed)
 		dirs = append(dirs, dir)
 		branches = append(branches, spec.Branch)
 	}
@@ -66,8 +68,8 @@ func TestOneCloneTwoWorktreesBuildAndPushE2E(t *testing.T) {
 			t.Logf("$ %s", c)
 		}
 	}
-	if clones != 1 || adds != 2 {
-		t.Fatalf("%d gh repo clone(s) and %d git worktree add(s), want 1 and 2:\n%s", clones, adds, strings.Join(cmds(), "\n"))
+	if clones != 3 || adds != 0 {
+		t.Fatalf("%d gh repo clone(s) and %d git worktree add(s), want 3 and 0:\n%s", clones, adds, strings.Join(cmds(), "\n"))
 	}
 
 	remote, err := exec.Command("git", "ls-remote", "--heads", origin).Output()

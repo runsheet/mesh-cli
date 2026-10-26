@@ -83,14 +83,16 @@ func TestConcurrentSessionsOnOneRepoE2E(t *testing.T) {
 			pair(t, g, r, func(seq int) WorkspaceSpec {
 				return WorkspaceSpec{Root: work, GoalSlug: "g", Seq: seq, Repo: repo, Branch: BranchName("g", seq), BaseRef: "main"}
 			})
-			clones := 0
+			// the shared clone cloned once; each item's checkout a clone of
+			// its own seeded from it
+			clones, shared := 0, SharedClonePath(repos, repo)
 			for _, line := range strings.Split(gitOut(), "\n") {
-				if strings.HasPrefix(line, "$ git clone ") {
+				if strings.HasPrefix(line, "$ git clone ") && strings.HasSuffix(line, " "+shared) {
 					clones++
 				}
 			}
 			if clones != 1 {
-				t.Fatalf("round %d: %d clones of the repo, want 1:\n%s", r, clones, gitOut())
+				t.Fatalf("round %d: %d clones of the shared clone, want 1:\n%s", r, clones, gitOut())
 			}
 			// every fresh clone's config is the same file: nothing a
 			// session wrote, only what the clone and its one set-up hold
@@ -181,8 +183,8 @@ func runSession(g *Git, spec WorkspaceSpec) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("prepare: %w", err)
 	}
-	if !isWorktree(dir) {
-		return "", fmt.Errorf("%s is not a worktree", dir)
+	if fi, err := os.Stat(filepath.Join(dir, ".git")); err != nil || !fi.IsDir() {
+		return "", fmt.Errorf("%s is not a clone of its own: %v", dir, err)
 	}
 	name, email := AgentIdentity("builder", "e2e")
 	if err := g.Identify(ctx, dir, Identity{Name: name, Email: email}); err != nil {
