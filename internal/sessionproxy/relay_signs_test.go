@@ -137,6 +137,54 @@ func TestRelaySignsEachRequest(t *testing.T) {
 			}
 		})
 	})
+
+	// A 401 invalid_dpop_proof is runsheet refusing the proof, not the
+	// token: no retry, and the client reads -32603 naming the reason.
+	t.Run("proof_refusal", func(t *testing.T) {
+		t.Run("reads_32603", func(t *testing.T) {
+			key, err := dpop.NewKey()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var s seen
+			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				s.add(r)
+				w.Header().Set("WWW-Authenticate", `DPoP error="invalid_dpop_proof", error_description="jti replayed"`)
+				http.Error(w, "invalid_dpop_proof", http.StatusUnauthorized)
+			}))
+			defer up.Close()
+
+			p := New(map[string]Upstream{"runsheet": Runsheet{URL: up.URL + "/mcp", Key: key,
+				Bearer: func(context.Context) (string, error) { return bearerNew, nil }}})
+			c, _ := listen(t, p)
+			resp, body := post(t, c, "runsheet", nil, initialize)
+			if resp.StatusCode != http.StatusBadGateway {
+				t.Fatalf("client got %d, want 502: %s", resp.StatusCode, body)
+			}
+			var answer struct {
+				Error struct {
+					Code    int    `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal([]byte(body), &answer); err != nil {
+				t.Fatalf("answer %q: %v", body, err)
+			}
+			if answer.Error.Code != -32603 {
+				t.Errorf("error code %d, want -32603: %s", answer.Error.Code, body)
+			}
+			if !strings.Contains(answer.Error.Message, "invalid_dpop_proof") ||
+				!strings.Contains(answer.Error.Message, "DPoP proof refused") {
+				t.Errorf("error message %q names no invalid_dpop_proof refusal", answer.Error.Message)
+			}
+			if n := len(s.all()); n != 1 {
+				t.Errorf("upstream saw %d requests, want 1: a proof refusal is not retried", n)
+			}
+			if got := p.FirstError("runsheet"); !strings.Contains(got, "invalid_dpop_proof") {
+				t.Errorf("FirstError %q names no invalid_dpop_proof", got)
+			}
+		})
+	})
 }
 
 // proofJTI reads a DPoP proof's jti from its JWT payload.
