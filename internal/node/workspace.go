@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,10 +32,6 @@ type WorkspaceSpec struct {
 	// read-only checkout under PlanDir/repos/<name> (PlanRepoSpec),
 	// which no goal and seq name.
 	Path string
-	// Head, when set, is the head the item recorded for Branch: the last
-	// place RebuildWorktree looks when neither the shared clone's
-	// refs/heads/<branch> nor origin/<branch> is there.
-	Head string
 	// Repos, when set, is a repos root: the shared clone a new checkout
 	// is seeded from is <Repos>/<owner>/<name>, whatever Git.ReposRoot
 	// says (the tests' work-root layout; a job's checkout is a clone of
@@ -223,11 +218,8 @@ func (g *Git) Checkout(ctx context.Context, spec WorkspaceSpec, tok *gateway.Git
 func (g *Git) originOnToken(ctx context.Context, spec WorkspaceSpec, tok *gateway.GitHubToken) error {
 	dir := spec.Dir()
 	origin := g.githubURL() + "/" + spec.Repo + ".git"
-	// a worktree whose .git/worktrees/<n> is gone fails every git command
-	// below: rebuilt first, the set-url then runs as on any worktree
-	if err := g.RebuildWorktree(ctx, spec); err != nil {
-		return err
-	}
+	// a worktree whose gitdir is gone fails every git command below:
+	// removed first, and made again as a clone of its own
 	if err := g.removeStale(dir); err != nil {
 		return err
 	}
@@ -250,9 +242,6 @@ func (g *Git) originOnToken(ctx context.Context, spec WorkspaceSpec, tok *gatewa
 			return err
 		}
 	} else if isWorktree(dir) {
-		if err := g.lockWorktree(ctx, dir, spec); err != nil {
-			return err
-		}
 		// a worktree's origin is its shared clone's: one .git/config
 		// every item of the repo reads and writes, so it is changed only
 		// under the repo's lock, and only when it differs (sharedOrigin)
@@ -427,9 +416,6 @@ func (g *Git) cloneCommand(ctx context.Context, repo, dir string, flags ...strin
 func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 	dir := spec.Dir()
 	key := RepoLockKey(spec.Repo)
-	if err := g.RebuildWorktree(ctx, spec); err != nil {
-		return "", err
-	}
 	if err := g.removeStale(dir); err != nil {
 		return "", err
 	}
@@ -445,10 +431,6 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 			return "", err
 		}
 	} else if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--prune", "origin"); err != nil {
-		return "", err
-	} else if err := g.lockWorktree(ctx, dir, spec); err != nil {
-		// a worktree reused — a rework, an adopted item — is locked as a
-		// new one is: its item is live again
 		return "", err
 	}
 	base := spec.BaseRef
@@ -551,32 +533,6 @@ func (g *Git) syncSharedClone(ctx context.Context, root, key, repo, clone string
 	if _, err := g.fetchRetrying(ctx, key, filepath.Dir(clone), cloneCmd[0], cloneCmd[1:]...); err != nil {
 		os.RemoveAll(clone)
 		return err
-	}
-	return nil
-}
-
-// lockWorktree locks the worktree at dir with `git worktree lock
-// --reason 'mesh: item <goal>/<seq> live'`, unless it is locked already:
-// a locked worktree's registration is never pruned, by the node, by a
-// session's `git worktree prune` in a pod that mounts only its own
-// worktree beside the shared clone's git dir, or by `git gc`. Only
-// RemoveWorkspace, for a finished item, unlocks it. A full clone has
-// nothing to lock.
-func (g *Git) lockWorktree(ctx context.Context, dir string, spec WorkspaceSpec) error {
-	admin := worktreeAdmin(dir)
-	if admin == "" {
-		return nil
-	}
-	if _, err := os.Stat(filepath.Join(admin, "locked")); err == nil {
-		return nil
-	}
-	reason := fmt.Sprintf("mesh: item %s/%d live", spec.GoalSlug, spec.Seq)
-	if _, err := g.run(ctx, dir, "git", "worktree", "lock", "--reason", reason, dir); err != nil {
-		// locked between the stat and the lock: what was wanted
-		if _, serr := os.Stat(filepath.Join(admin, "locked")); serr == nil {
-			return nil
-		}
-		return fmt.Errorf("lock worktree %s: %w", dir, err)
 	}
 	return nil
 }
@@ -844,11 +800,10 @@ func staleWorktree(dir string) (gitdir string, ok bool) {
 }
 
 // removeStale removes the checkout at dir when it is a stale worktree
-// (staleWorktree), so the caller finds no `.git` and makes it again — a
-// clone of its own (Prepare). A stale worktree whose clone is still
-// there and whose admin dir alone is gone is RebuildWorktree's, which
-// keeps its files; what is left here has no clone, or no admin dir
-// shape, to rebuild from. Logged `workspace <dir>: worktree <gitdir> is
+// (staleWorktree) — its gitdir gone, its clone gone, or its admin dir
+// gone from a clone still there — so the caller finds no `.git` and makes
+// it again, a clone of its own (Prepare): a worktree is never rebuilt or
+// added (ADR-028's amendment 2026-10-26). Logged `workspace <dir>: worktree <gitdir> is
 // gone; made again`.
 func (g *Git) removeStale(dir string) error {
 	gitdir, ok := staleWorktree(dir)
@@ -886,132 +841,6 @@ func worktreeAdminGone(dir string) (clone, admin string, ok bool) {
 		return "", "", false
 	}
 	return clone, admin, true
-}
-
-// adminGoneRE is git's words for a worktree whose admin dir is gone.
-var adminGoneRE = regexp.MustCompile(`not a git repository: .*/\.git/worktrees/`)
-
-// IsWorktreeAdminGone reports whether err is git refusing a worktree
-// whose .git/worktrees/<n> is gone: what one RebuildWorktree and one
-// retry of the step answer (PrepareWithRetry, the validation run).
-func IsWorktreeAdminGone(err error) bool {
-	return err != nil && adminGoneRE.MatchString(err.Error())
-}
-
-// worktreeRebuilder is the Workspacer that can rebuild a worktree whose
-// admin dir is gone (*Git); a fake without it gets no retry.
-type worktreeRebuilder interface {
-	RebuildWorktree(ctx context.Context, spec WorkspaceSpec) error
-}
-
-// RebuildWorktree recreates spec's worktree when its `.git` file names a
-// .git/worktrees/<n> that is gone (worktreeAdminGone), and does nothing
-// otherwise. Under the repo's lock it adds, with --no-checkout, a
-// worktree for spec.Branch at its recorded head — the shared clone's
-// refs/heads/<branch>, which outlives the admin dir, else
-// origin/<branch>, else spec.Head — at a temporary path whose base name
-// is the lost admin dir's, so git registers it under the same
-// .git/worktrees/<n>; moves its `.git` file over the stale one, runs
-// `git worktree repair` and a mixed `git reset`, so the working tree's
-// files — committed or not — are left as they were and only the index
-// is rebuilt; and locks it (lockWorktree). A checkout that is no
-// worktree of the shared clone (an evaluation's <seq>-eval, a plan's) is
-// removed whole, for the Prepare after it to make again. Logged
-// `workspace <dir>: worktree <path> is gone; made again for <branch> at
-// <sha>`.
-func (g *Git) RebuildWorktree(ctx context.Context, spec WorkspaceSpec) error {
-	dir := spec.Dir()
-	clone, admin, ok := worktreeAdminGone(dir)
-	if !ok {
-		return nil
-	}
-	if g.seedClone(spec) == "" {
-		// no worktree spec: removed, and cloned again as a new checkout
-		return g.removeStale(dir)
-	}
-	key := RepoLockKey(spec.Repo)
-	if spec.Repo == "" {
-		key = g.repoKeyOf(ctx, clone)
-	}
-	unlock, err := lockRepo(ctx, g.sharedLockRoot(clone, key), key)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	if _, _, ok := worktreeAdminGone(dir); !ok {
-		// rebuilt by another caller while this one waited on the lock
-		return nil
-	}
-	branch := spec.Branch
-	if branch == "" {
-		return fmt.Errorf("workspace %s: worktree admin %s gone and no branch to rebuild it for", dir, admin)
-	}
-	tmpParent, err := os.MkdirTemp(filepath.Dir(dir), ".rebuild-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(tmpParent)
-	// the lost admin dir's own name, so the .git file's gitdir is the one
-	// it was, and a pod mounting that path finds it again
-	tmp := filepath.Join(tmpParent, filepath.Base(admin))
-	var sha string
-	var args []string
-	if out, err := g.run(ctx, clone, "git", "rev-parse", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
-		sha = strings.TrimSpace(out)
-		args = []string{"worktree", "add", "--quiet", "--no-checkout", tmp, branch}
-	} else if out, err := g.run(ctx, clone, "git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+branch); err == nil {
-		sha = strings.TrimSpace(out)
-		args = []string{"worktree", "add", "--quiet", "--no-checkout", "--track", "-B", branch, tmp, "origin/" + branch}
-	} else if spec.Head != "" {
-		sha = spec.Head
-		args = []string{"worktree", "add", "--quiet", "--no-checkout", "-B", branch, tmp, sha}
-	} else {
-		return fmt.Errorf("workspace %s: worktree admin %s gone and branch %s has no head to rebuild at", dir, admin, branch)
-	}
-	// a registration naming dir, or holding the branch with its directory
-	// gone, would refuse the add; dir's own is gone already
-	if err := forgetStaleRegistrations(clone, dir, branch); err != nil {
-		return err
-	}
-	if _, err := g.run(ctx, clone, "git", args...); err != nil {
-		return fmt.Errorf("workspace %s: rebuild worktree: %w", dir, err)
-	}
-	if err := os.Rename(filepath.Join(tmp, ".git"), filepath.Join(dir, ".git")); err != nil {
-		return fmt.Errorf("workspace %s: rebuild worktree: %w", dir, err)
-	}
-	if _, err := g.run(ctx, clone, "git", "worktree", "repair", dir); err != nil {
-		return fmt.Errorf("workspace %s: rebuild worktree: %w", dir, err)
-	}
-	if _, err := g.run(ctx, dir, "git", "reset", "--quiet"); err != nil {
-		return fmt.Errorf("workspace %s: rebuild worktree: %w", dir, err)
-	}
-	if err := g.lockWorktree(ctx, dir, spec); err != nil {
-		return err
-	}
-	if g.Logf != nil {
-		g.Logf("workspace %s: worktree %s is gone; made again for %s at %s", dir, admin, branch, sha)
-	}
-	return nil
-}
-
-// rebuildAndRetry runs step and, when it fails on a worktree whose admin
-// dir is gone and ws can rebuild one, rebuilds spec's worktree once and
-// runs step once more, retry true: the rebuilt worktree's own
-// config.worktree — its credential helper, its identity — went with the
-// admin dir, so a step on the item's token re-authorizes first.
-func rebuildAndRetry[T any](ctx context.Context, ws Workspacer, spec WorkspaceSpec, step func(retry bool) (T, error)) (T, error) {
-	v, err := step(false)
-	if !IsWorktreeAdminGone(err) || ctx.Err() != nil {
-		return v, err
-	}
-	rb, ok := ws.(worktreeRebuilder)
-	if !ok || (spec.Path == "" && spec.GoalSlug == "") {
-		return v, err
-	}
-	if rerr := rb.RebuildWorktree(ctx, spec); rerr != nil {
-		return v, fmt.Errorf("%w; rebuild: %v", err, rerr)
-	}
-	return step(true)
 }
 
 // registrationsNaming is, per shared clone under reposRoot —

@@ -1,5 +1,5 @@
 ---
-summary: A node keeps one clone per repo at ~/.mesh/repos/<owner>/<name>, cloned and fetched under the per-repo lock, and makes each new item's ~/.mesh/work/<goal>/<seq> a git worktree of it on its own per-worktree token; evaluation, goal-doc, plan and research checkouts stay clones of their own; a rebase gets a fresh detached worktree of its own at <goal>/<seq>-rebase, never the item's build checkout; sessions install against one pnpm store and one npm cache per node under ~/.mesh/store; every worktree is locked while its item is live and nothing runs a blanket `git worktree prune`, RemoveWorkspace refusing a live dir and removing only a finished worktree and its own registration, never the clone; a worktree whose .git/worktrees/<n> is gone is made again for its branch at its recorded head and the step retried, never failed or released, any other stale checkout removed and made again, scripts/stale-worktrees.sh the reading; a full clone from before is used until swept.
+summary: A node keeps one clone per repo at ~/.mesh/repos/<owner>/<name>, cloned and fetched under the per-repo lock, and makes each new item's ~/.mesh/work/<goal>/<seq> a git worktree of it on its own per-worktree token; evaluation, goal-doc, plan and research checkouts stay clones of their own; a rebase gets a fresh detached worktree of its own at <goal>/<seq>-rebase, never the item's build checkout; sessions install against one pnpm store and one npm cache per node under ~/.mesh/store; every worktree is locked while its item is live and nothing runs a blanket `git worktree prune`, RemoveWorkspace refusing a live dir and removing only a finished worktree and its own registration, never the clone; a worktree whose .git/worktrees/<n> is gone is made again for its branch at its recorded head and the step retried, never failed or released, any other stale checkout removed and made again, scripts/stale-worktrees.sh the reading; a full clone from before is used until swept. Amended 2026-10-26: an item's build, rebase and validation checkout is a clone of its own, registering no worktree in the shared clone, and the repo locks are keyed by lock root.
 status: accepted
 ---
 
@@ -371,3 +371,44 @@ clone per repo **per org**: each org's clones live under its own
 and a worktree of one org is never added from another org's clone
 (`docs/adr/adr-034-each-org-has-its-own-roots.md`). A node serving one org
 keeps the paths above unchanged.
+
+## Amendment 2026-10-26: an item's checkout is a clone of its own
+
+Goal `an-items-workspace-leaves-the-shared-clone`, after ADR-039's
+jobs. "One worktree per item" is retired: an item's build, rebase and
+validation checkout is **a clone of its own** and registers no worktree
+in the shared clone. Evidence: grapevine node.log 2026-10-17, `not a
+git repository … .git/worktrees/<n>` — a worktree's admin dir lives in a
+directory its job does not own, so anything that prunes the shared
+clone breaks a live item.
+
+- **Build.** `Git.Prepare` makes a new checkout by `cloneOwn`: the
+  shared clone, when there is one, synced (`syncSharedClone`) and passed
+  as `--reference <shared> --dissociate`, so the objects are copied and
+  nothing points back at it; origin is the remote URL. `addWorktree` and
+  `sharedClone` are gone (`seedClone` names the seed). A checkout
+  already there — a rework, an adopted item — is fetched in place.
+- **Rebase** ("A rebase gets its own worktree", above): its checkout
+  (`AddRebaseWorktree`) is always a clone of its own through
+  `addDetachedClone`, in a job or in the tests' work-root layout alike.
+- **Validation.** A candidate's and a main validation's fallback
+  checkout is a clone of its own (`addDetachedClone`); the served diff
+  (the 2026-10-17 amendment) is still tried first.
+- **Retired.** `lockWorktree` and `RebuildWorktree` (with
+  `rebuildAndRetry`, `IsWorktreeAdminGone`) are removed: there is no
+  live worktree to lock, and "Rebuilding a worktree whose admin dir is
+  gone" no longer applies. A worktree an older node left, whose gitdir
+  or admin dir is gone, is removed and made again as a clone of its own
+  (`removeStale`; `PrepareWithRetry` re-authorizes first on the item's
+  token), logged `workspace <dir>: worktree <gitdir> is gone; made
+  again`, never the item's failure. `RemoveWorkspace` and the
+  quartermaster's prune of gone, unlocked registrations stay for those
+  leftovers.
+- **Locks** are keyed by lock root and repo (ADR-023's amendment
+  2026-10-26): two jobs' clones never wait on each other.
+- **The reading.** `TestBuildRegistersNoWorktree` and
+  `TestRebaseRegistersNoWorktree` (`-tags e2e`) prove `git worktree
+  list` on the shared clone names only the clone;
+  `scripts/validation-residue-reading.sh` prints `shared-clone
+  worktrees: N` over every clone under `$MESH_HOME/repos` and `leftover
+  work directories: N`.

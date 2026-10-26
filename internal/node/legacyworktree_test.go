@@ -2,15 +2,17 @@ package node
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 )
 
 // prepareWorktree makes spec's checkout a worktree of its shared clone,
 // as Prepare did before a checkout was a clone of its own (ADR-039): the
-// worktree machinery — RebuildWorktree, lockWorktree, RemoveWorkspace,
-// the stale-worktree checks — still serves a worktree made then, and its
-// tests start from one. A checkout already there is left to Prepare.
+// worktree machinery — RemoveWorkspace, the quartermaster's prune, the
+// stale-worktree checks — still serves a worktree made then, and its
+// tests start from one, locked as a node of then locked it. A checkout
+// already there is left to Prepare.
 func prepareWorktree(ctx context.Context, g *Git, spec WorkspaceSpec) (string, error) {
 	dir := spec.Dir()
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
@@ -50,5 +52,9 @@ func prepareWorktree(ctx context.Context, g *Git, spec WorkspaceSpec) (string, e
 	if _, err := g.run(ctx, clone, "git", args...); err != nil {
 		return "", err
 	}
-	return dir, g.lockWorktree(ctx, dir, spec)
+	reason := fmt.Sprintf("mesh: item %s/%d live", spec.GoalSlug, spec.Seq)
+	if _, err := g.run(ctx, dir, "git", "worktree", "lock", "--reason", reason, dir); err != nil {
+		return "", err
+	}
+	return dir, nil
 }

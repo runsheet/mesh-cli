@@ -86,7 +86,7 @@ job works under $MESH_HOME/jobs/<id>/ (ADR-039), so a node reads 0.
 
 Then `shared-clone worktrees: N`: entries of `git worktree list`
 beyond the clone itself, summed over every clone under
-$MESH_HOME/clones — live, `git -C <clone> worktree list --porcelain`
+$MESH_HOME/repos (`Git.ReposRoot`, `<owner>/<name>`) — live, `git -C <clone> worktree list --porcelain`
 run directly on each clone found by its `.git` directory; under --dry,
 each clone's `worktree-list.txt` (one line per entry the real command
 would print, the clone's own always first) stands in for that same
@@ -314,7 +314,7 @@ main() {
     echo "new bytes: $((after_bytes - before_bytes))"
     echo "validations in window: $(count_validations "$dry_dir/node.log")"
     echo "leftover work directories: $(leftover_work_dirs "$dry_dir/work")"
-    echo "shared-clone worktrees: $(shared_clone_worktrees "$dry_dir/clones")"
+    echo "shared-clone worktrees: $(shared_clone_worktrees "$dry_dir/repos")"
     exit 0
   fi
 
@@ -357,7 +357,7 @@ main() {
   echo "new bytes: $((after_bytes - before_bytes))"
   echo "validations in window: $(count_validations "$log" "$start_ts" "$end_ts")"
   echo "leftover work directories: $(leftover_work_dirs "$home/work")"
-  echo "shared-clone worktrees: $(shared_clone_worktrees "$home/clones")"
+  echo "shared-clone worktrees: $(shared_clone_worktrees "$home/repos")"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

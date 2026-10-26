@@ -1,5 +1,5 @@
 ---
-summary: Every unit of work (an item, a goal's plan, a research direction, a merge batch) has its own ~/.mesh/jobs/<job-id>/, named by a job.json that says whose it is (connection, unit, item or goal or direction or batch), and its sessions mount only that: its own clones, package store, scratch and streams, nothing shared with another job; a thread keeps its state across sessions in ~/.mesh/threads/<thread-id>/ as a cache of what the product holds. Supersedes ADR-034's per-org roots; no single-org layout and no migration.
+summary: Every unit of work (an item, a goal's plan, a research direction, a merge batch) has its own ~/.mesh/jobs/<job-id>/, named by a job.json that says whose it is (connection, unit, item or goal or direction or batch), and its sessions mount only that: its own clones, package store, scratch and streams, nothing shared with another job; a thread keeps its state across sessions in ~/.mesh/threads/<thread-id>/ as a cache of what the product holds. Supersedes ADR-034's per-org roots; no single-org layout and no migration. Amended 2026-10-26: a checkout is a clone of its own and registers no worktree in any shared clone; locks are keyed by lock root.
 status: proposed
 ---
 
@@ -212,6 +212,25 @@ folder again?" — and it is gone.
 
 `job.json` still names the connection, so the sweep drops a job whose
 connection is gone; the node keeps nothing per connection.
+
+### A checkout registers no worktree (amended 2026-10-26)
+
+Goal `an-items-workspace-leaves-the-shared-clone`. An item's build,
+rebase and validation checkout is a clone of its own (`cloneOwn`,
+`addDetachedClone`) and registers no worktree in any shared clone: no
+code path of `internal/node/workspace.go` runs `git worktree add`, and
+`addWorktree`, `lockWorktree` and `RebuildWorktree` are retired (ADR-028's
+amendment 2026-10-26). A stale worktree an older node left is removed
+and made again as a clone. Locks are keyed by lock root and repo
+(`repoLockID`, ADR-023's amendment 2026-10-26), so two jobs never wait on
+each other's lock, and a command on a shared clone — the seed of the
+tests' work-root layout — locks under that clone's own root, never a
+job's. `TestBuildRegistersNoWorktree` and `TestRebaseRegistersNoWorktree`
+(`-tags e2e`) prove it; `scripts/validation-residue-reading.sh`'s
+`leftover work directories: N` (dirs under `$MESH_HOME/work/<goal>/<seq>`
+with no live `<seq>.session/state.json`) and `shared-clone worktrees: N`
+(over `$MESH_HOME/repos`) are the 24-hour reading that nothing is left
+under `~/.mesh/work`.
 
 ### The node is the relay, and signs
 

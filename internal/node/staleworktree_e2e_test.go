@@ -41,7 +41,8 @@ func staleWorktrees(t *testing.T, root string) string {
 // second item's worktree, locked while its item is live, has its
 // directory hidden while `git worktree prune` runs in the clone: its
 // registration survives. The rework is claimed and run: its checkout is
-// made again — the `made again` line — its session commits on top of the
+// made again as a clone of its own (ADR-028's amendment 2026-10-26) —
+// the `made again` line — its session commits on top of the
 // pushed head, the node pushes and finishes it, the evaluator passes it,
 // node.log carries no `not a git repository`, and the script lists
 // nothing.
@@ -193,7 +194,7 @@ func TestStaleWorktreeIsMadeAgainE2E(t *testing.T) {
 	}
 
 	out := logs.String()
-	if line := "workspace " + dir + ": worktree " + admin + " is gone; made again for " + branch + " at " + head1; !strings.Contains(out, line) {
+	if line := "workspace " + dir + ": worktree " + admin + " is gone; made again"; !strings.Contains(out, line) {
 		t.Fatalf("node.log lacks %q:\n%s", line, out)
 	}
 	if strings.Contains(out, "not a git repository") {

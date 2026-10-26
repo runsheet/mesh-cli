@@ -150,9 +150,7 @@ type validationTarget struct {
 	// at dir (serveddiff.go): no git there, so its changed paths are the
 	// compare's, its head and tree the ones read and checked.
 	served *servedTree
-	// spec, set, is the checkout's workspace: a run that fails on its
-	// worktree's gone admin dir rebuilds it by spec and runs once more
-	// (rebuildAndRetry); unset, there is no retry.
+	// spec, set, is the checkout's workspace.
 	spec WorkspaceSpec
 }
 
@@ -380,23 +378,6 @@ func (r *Runner) runValidation(ctx context.Context, b *buildRun, v *buildValidat
 }
 
 func (vr validator) run(ctx context.Context, t validationTarget, v *buildValidation) (validate.Attestation, error) {
-	if t.spec.Dir() != t.dir {
-		return vr.runOnce(ctx, t, v)
-	}
-	// the changed paths, the head or the attestation's `git rev-parse
-	// <sha>^{tree}` failing on a worktree whose admin dir is gone: rebuilt
-	// once and the run tried once more (ADR-028, Rebuilding a worktree)
-	return rebuildAndRetry(ctx, vr.WS, t.spec, func(retry bool) (validate.Attestation, error) {
-		if retry {
-			if err := t.cred.Reauthorize(ctx); err != nil {
-				return validate.Attestation{}, err
-			}
-		}
-		return vr.runOnce(ctx, t, v)
-	})
-}
-
-func (vr validator) runOnce(ctx context.Context, t validationTarget, v *buildValidation) (validate.Attestation, error) {
 	cfg, err := validate.Load(t.dir)
 	if err != nil {
 		return validate.Attestation{}, err

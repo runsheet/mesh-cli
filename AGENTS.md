@@ -322,18 +322,29 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `Git.RemoveWorkspace` — the sweep's remover — removes a clone by
   RemoveAll, refusing a dir held live on this node (`HoldWorkspace`/
   `WorkspaceLive`, `liveworkspaces.go`, held by the Runner, Evaluator
-  and Rebaser); the worktree paths (`addWorktree`, `lockWorktree`,
-  `RebuildWorktree`, `forgetStaleRegistrations`) serve only the tests'
-  work-root layout; the evaluation's own clone at `<job>/eval`
+  and Rebaser); a build's, rebase's and validation's checkout registers
+  no worktree in any shared clone, in a job or the tests' work-root
+  layout alike (`cloneOwn`: `git clone --reference <shared> --dissociate`
+  when a shared clone seeds it; `TestBuildRegistersNoWorktree`,
+  `TestRebaseRegistersNoWorktree`, `-tags e2e`) — `addWorktree`,
+  `lockWorktree` and `RebuildWorktree` are retired, and a stale worktree
+  an older node left is removed and cloned again (`removeStale`), never
+  rebuilt (ADR-028's, ADR-023's and ADR-039's amendments 2026-10-26;
+  the reading, `scripts/validation-residue-reading.sh [--dry DIR]`,
+  closes with `leftover work directories: N` and `shared-clone
+  worktrees: N` over `$MESH_HOME/repos`);
+  the evaluation's own clone at `<job>/eval`
   (`EvalWorkspaceSpec`, `evalSpec`, ADR-027) never rewrites the build's
   helper; every clone
   and `git fetch` `Git` runs going through `fetchLocked` under a
   per-repo fetch lock (`repolock.go`: a process-wide mutex keyed by
-  `RepoLockKey`, owner/name, and an exclusive flock on
+  lock root and `RepoLockKey` (`repoLockID`), so two jobs' clones of one
+  repo never wait on each other, and an exclusive flock on
   `<root>/.locks/<owner>--<name>.lock`, `Git.lockRoot`: `Git.LockRoot`
   else the spec's Root else the job the dir is in — each job's own
   `<job>/.locks`, since no clone is shared — else the checkout's
-  grandparent; released before any checkout, never held across a
+  grandparent, a command on a shared clone under that clone's own root
+  (`sharedLockRoot`), never a job's; released before any checkout, never held across a
   session or a push; ADR-023, fetches of one repo are serialised on the
   node) — a main validation takes none of it: it runs in a scratch dir
   under its job's `.scratch` from the served diff (ADR-034, Main
@@ -1343,10 +1354,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   then seq (`rebaseOrder`), and claims each with `ClaimWorkItemRebase`
   — a refusal is the ordinary answer, not an error. The session works
   in a fresh checkout of its own, never the item's build checkout
-  (ADR-028, A rebase gets its own worktree): `RebaseWorkspaceSpec`'s
+  (ADR-028, A rebase gets its own worktree, a clone of its own since the amendment 2026-10-26): `RebaseWorkspaceSpec`'s
   `<job>/rebase`, made by `Git.AddRebaseWorktree` — a clone of its own
-  checked out detached at `origin/<branch>`, by `addDetachedWorktree` →
-  `addDetachedClone` as a batch candidate's, a stale dir there
+  checked out detached at `origin/<branch>`, by `addDetachedClone` as a
+  batch candidate's (never `git worktree add`, in the work-root layout
+  too), a stale dir there
   removed first, nothing run in the item's checkout, deleted or
   dangling — on the item's token before `NewItemCredAt` `Authorize`s it
   there; a checkout that cannot be made is a `*WorkspaceError` released
@@ -2386,6 +2398,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `os.MkdirTemp("", …)`, which run past sun_path there), and a test
   that commits names its own identity (`git -c user.name=… -c
   user.email=…`, or the `GIT_AUTHOR_*`/`GIT_COMMITTER_*` variables).
+- A testdata fixture never names a path component literally `.git`:
+  `git add` (`-f` included) silently drops everything under it as a
+  nested repository; use a stand-in file (e.g. `worktree-list.txt`).
 - Tests that render the context index or the prompts assert exact rows
   and lines; update them with the change, not around it.
 - A commit's only Co-Authored-By trailer is the paired person the node

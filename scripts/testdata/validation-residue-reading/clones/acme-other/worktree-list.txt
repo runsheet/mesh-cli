@@ -1,1 +1,0 @@
-/home/mesh/.mesh/clones/acme-other  abcdef3 [main]

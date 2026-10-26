@@ -1,5 +1,5 @@
 ---
-summary: Every `gh repo clone` and `git fetch` the node's `Git` runs for one repo holds a per-repo lock — a process-wide mutex keyed by owner/name and an exclusive flock on `<root>/.locks/<owner>--<name>.lock` — for the fetch alone, never a checkout, a session or a push; each item keeps its own independent clone at `~/.mesh/work/<goal>/<seq>`, no shared mirror and no worktrees, because ADR-007's sandbox mounts the workspace alone.
+summary: Every `gh repo clone` and `git fetch` the node's `Git` runs for one repo holds a per-repo lock — a process-wide mutex keyed by owner/name and an exclusive flock on `<root>/.locks/<owner>--<name>.lock` — for the fetch alone, never a checkout, a session or a push; each item keeps its own independent clone at `~/.mesh/work/<goal>/<seq>`, no shared mirror and no worktrees, because ADR-007's sandbox mounts the workspace alone. Amended 2026-10-26: an item's build, rebase and validation checkout is a clone of its own, registering no worktree in the shared clone, and the repo locks are keyed by lock root.
 status: accepted
 ---
 
@@ -149,3 +149,34 @@ already holds, before it ever reaches the caller:
   `PrepareWithRetry` (ghcred.go) sits above this and is unchanged — a
   GitHub token GitHub has not yet honoured is a different failure from
   two gits racing one ref, and the two retries never interact.
+
+## Amendment 2026-10-26: a checkout is a clone of its own; locks are keyed by lock root
+
+Goal `an-items-workspace-leaves-the-shared-clone`. Evidence: dl360
+node.log 2026-10-24 01:36Z, `repo lock runsheet/runsheet: acquired
+after 7.492s` for each of twelve builds — twelve jobs, each with a clone
+of its own, queued on one process-wide mutex keyed by owner/name alone.
+
+- **An item's build, rebase and validation checkout is a clone of its
+  own** and registers no worktree in the shared clone. `Git.Prepare`
+  (and `Authorize`'s `originOnToken`) makes a new checkout by `cloneOwn`
+  — `git clone` over https on the item's token, `--reference <shared>
+  --dissociate` when a shared clone exists to seed from, origin the
+  remote URL; a rebase's checkout (`AddRebaseWorktree`) and a
+  candidate's or main validation's fallback (`addDetachedClone`) the
+  same. No code path of `internal/node/workspace.go` runs `git worktree
+  add`: `addWorktree`, `lockWorktree` and `RebuildWorktree` are retired.
+  A worktree an older node left, whose gitdir or admin dir is gone, is
+  removed and made again as a clone (`removeStale`), never rebuilt.
+  `TestBuildRegistersNoWorktree` and `TestRebaseRegistersNoWorktree`
+  (`-tags e2e`) check `git worktree list` on the shared clone names only
+  the clone.
+- **Locks are keyed by lock root.** Both halves of the per-repo lock —
+  the in-process mutex (`repoLocks`, `repoHolders`) and the flock on
+  `<root>/.locks/<owner>--<name>.lock` — are keyed by
+  `repoLockID(lock root, RepoLockKey)`. Two jobs' own clones of one repo
+  never wait on each other; one job's commands, and every command that
+  reads or writes one shared clone (its sync, a seed, a legacy
+  worktree's origin), still serialise — the latter under the shared
+  clone's own root (`sharedLockRoot`, `specLockRoot`), never the job's,
+  whatever job root the spec names.
