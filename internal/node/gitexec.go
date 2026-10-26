@@ -27,9 +27,18 @@ import (
 // environment's entries before the command line's, so a `-c` reset would
 // drop the token's helper too (TestHardenedGitKeepsItemTokenHelper).
 func hardenedGitCmd(ctx context.Context, base, dir string, args ...string) *exec.Cmd {
+	return hardenedGitCmdEnv(ctx, base, dir, nil, args...)
+}
+
+// hardenedGitCmdEnv is hardenedGitCmd with extra variables set on top of
+// the hardened environment, last wins — a commit's identity, an editor,
+// the served commit's fixed GIT_* — named by the caller, never
+// os.Environ(). Every git the node execs under internal/node is made
+// here (TestNoGitExecBypassesHardenedRunner).
+func hardenedGitCmdEnv(ctx context.Context, base, dir string, extra []string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", append(hardenedGitArgs(dir), args...)...)
 	cmd.Dir = dir
-	cmd.Env = hardenedGitEnv(ctx, base, dir)
+	cmd.Env = append(hardenedGitEnv(ctx, base, dir), extra...)
 	return cmd
 }
 

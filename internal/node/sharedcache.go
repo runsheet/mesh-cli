@@ -182,7 +182,7 @@ func (c *SharedCache) git(ctx context.Context, dir string, args ...string) ([]by
 	if c.Git != nil {
 		return c.Git(ctx, dir, args...)
 	}
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	cmd := hardenedGitCmd(ctx, "", dir, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -147,8 +146,7 @@ func (g *Git) Identify(ctx context.Context, dir string, id Identity) error {
 // output, not from err.
 func (g *Git) gitConfigWrite(ctx context.Context, dir, scope, key, value string) (string, error) {
 	run := func() (string, error) {
-		cmd := exec.CommandContext(ctx, "git", "config", scope, key, value)
-		cmd.Dir = dir
+		cmd := hardenedGitCmd(ctx, g.githubURL(), dir, "config", scope, key, value)
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}

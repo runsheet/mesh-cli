@@ -1108,7 +1108,7 @@ func HasCommitSince(dir, base string) func() bool {
 	return func() bool {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-list", "--count", "origin/"+base+"..HEAD").Output()
+		out, err := hardenedGitCmd(ctx, "", dir, "rev-list", "--count", "origin/"+base+"..HEAD").Output()
 		if err != nil {
 			return true
 		}

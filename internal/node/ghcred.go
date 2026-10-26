@@ -77,8 +77,7 @@ func writeHelper(ctx context.Context, dir, base, helper string) error {
 	}
 	// not through Git.run: its log would carry the token
 	gitConfig := func(args ...string) error {
-		cmd := exec.CommandContext(ctx, "git", append([]string{"config", scope}, args...)...)
-		cmd.Dir = dir
+		cmd := hardenedGitCmd(ctx, base, dir, append([]string{"config", scope}, args...)...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("git config %s: %w: %s", args[0], err, strings.TrimSpace(string(out)))
 		}
@@ -113,15 +112,13 @@ func clearHelper(ctx context.Context, dir, base string) error {
 		// a worktree's --local is the shared clone's config, where no
 		// helper is written; its own is config.worktree, there only with
 		// extensions.worktreeConfig
-		get := exec.CommandContext(ctx, "git", "config", "--local", "--type=bool", "--get", "extensions.worktreeConfig")
-		get.Dir = dir
+		get := hardenedGitCmd(ctx, base, dir, "config", "--local", "--type=bool", "--get", "extensions.worktreeConfig")
 		if out, err := get.Output(); err != nil || strings.TrimSpace(string(out)) != "true" {
 			return nil
 		}
 		scope = "--worktree"
 	}
-	cmd := exec.CommandContext(ctx, "git", "config", scope, "--unset-all", key)
-	cmd.Dir = dir
+	cmd := hardenedGitCmd(ctx, base, dir, "config", scope, "--unset-all", key)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		// exit 5: nothing set
 		var ee *exec.ExitError
@@ -139,13 +136,11 @@ func clearHelper(ctx context.Context, dir, base string) error {
 // was a clone of its own may lack it, and gets it here, read first so
 // the steady state writes nothing to the clone's one .git/config.
 func ensureWorktreeConfig(ctx context.Context, dir string) error {
-	get := exec.CommandContext(ctx, "git", "config", "--local", "--type=bool", "--get", "extensions.worktreeConfig")
-	get.Dir = dir
+	get := hardenedGitCmd(ctx, "", dir, "config", "--local", "--type=bool", "--get", "extensions.worktreeConfig")
 	if out, err := get.Output(); err == nil && strings.TrimSpace(string(out)) == "true" {
 		return nil
 	}
-	cmd := exec.CommandContext(ctx, "git", "config", "--local", "extensions.worktreeConfig", "true")
-	cmd.Dir = dir
+	cmd := hardenedGitCmd(ctx, "", dir, "config", "--local", "extensions.worktreeConfig", "true")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git config extensions.worktreeConfig: %w: %s", err, strings.TrimSpace(string(out)))
 	}

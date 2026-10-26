@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -706,8 +705,7 @@ func checkoutHead(ctx context.Context, dir, head string) error {
 	if at == head {
 		return nil
 	}
-	cmd := exec.CommandContext(ctx, "git", "checkout", "--quiet", "--detach", head)
-	cmd.Dir = dir
+	cmd := hardenedGitCmd(ctx, "", dir, "checkout", "--quiet", "--detach", head)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("checkout %s: %v: %s", short(head), err, strings.TrimSpace(string(out)))
 	}

@@ -36,7 +36,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -577,18 +576,10 @@ var servedGitArgs = []string{
 	"-c", "core.safecrlf=false", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false",
 }
 
-// servedGitEnv is the node's environment with every GIT_ variable that
-// could point git at another repository or config dropped, the prompt
-// off and the node's identity set.
+// servedGitEnv is what the scratch's git sets on top of the hardened
+// runner's environment (hardenedGitCmdEnv): the node's fixed identity.
 func servedGitEnv() []string {
-	var env []string
-	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "GIT_") {
-			continue
-		}
-		env = append(env, kv)
-	}
-	return append(append(env, "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1"), servedIdentity...)
+	return append([]string{}, servedIdentity...)
 }
 
 // commitServed makes dir, a commit materialised from the served diff, a
@@ -608,8 +599,7 @@ func servedGitEnv() []string {
 func commitServed(ctx context.Context, dir string, want CacheTree, h *servedHistory) (servedHead, error) {
 	env := servedGitEnv()
 	git := func(stdin string, extra []string, args ...string) (string, error) {
-		cmd := exec.CommandContext(ctx, "git", append(append([]string{}, servedGitArgs...), args...)...)
-		cmd.Dir, cmd.Env = dir, append(append([]string{}, env...), extra...)
+		cmd := hardenedGitCmdEnv(ctx, "", dir, append(append([]string{}, env...), extra...), append(append([]string{}, servedGitArgs...), args...)...)
 		if stdin != "" {
 			cmd.Stdin = strings.NewReader(stdin)
 		}
