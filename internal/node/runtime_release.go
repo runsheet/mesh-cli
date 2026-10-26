@@ -142,6 +142,7 @@ func (p *Planner) releaseRuntime(ctx context.Context, goal gateway.Goal, scope S
 	case gateway.IsUnsupported(rerr):
 		p.logf("goal %s: container runtime broken; the claim lapses: %s", goal.Slug, oneLine(reason))
 	default:
+		_ = handInRefused(p.logf, nil, goal.Slug, "ReleasePlan", rerr)
 		p.logf("goal %s: container runtime broken; plan release refused (%v): %s", goal.Slug, rerr, oneLine(reason))
 	}
 	holdRuntime(p.Declines, goal.ID, "goal "+goal.Slug, re, p.RuntimeBroken, p.logf)

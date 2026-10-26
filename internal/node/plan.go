@@ -226,6 +226,7 @@ func (p *Planner) Plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		case gateway.IsUnsupported(rerr):
 			p.logf("goal %s: %v; the claim lapses", goal.Slug, err)
 		default:
+			_ = handInRefused(p.logf, nil, goal.Slug, "ReleasePlan", rerr)
 			p.logf("goal %s: %v; plan release refused: %v", goal.Slug, err, rerr)
 		}
 		return err
@@ -266,6 +267,7 @@ func (p *Planner) Plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 				p.logf("goal %s: the platform takes no plan release; the claim lapses and the try counts (said once per run)", goal.Slug)
 			})
 		default:
+			_ = handInRefused(p.logf, nil, goal.Slug, "ReleasePlan", rerr)
 			p.logf("goal %s: fetch failed: %v; plan release refused: %v", goal.Slug, err, rerr)
 		}
 	}
