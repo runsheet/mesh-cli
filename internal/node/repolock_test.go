@@ -163,3 +163,70 @@ func TestSharedCloneLocksUnderItsOwnRoot(t *testing.T) {
 		t.Fatalf("LockRoot set: %q, want /locks", got)
 	}
 }
+
+// Two jobs of one repo each lock under their own root (ADR-039: no clone
+// is shared), so one job's held lock never holds the other's back: the
+// in-process mutex is keyed by root and repo, as the flock's file is.
+func TestRepoLockOfTwoJobsDoesNotWait(t *testing.T) {
+	logged := captureRepoLockLog(t)
+	jobs := t.TempDir()
+	rootA, rootB := filepath.Join(jobs, "job-a"), filepath.Join(jobs, "job-b")
+	key := "acme/two-jobs"
+
+	unlockA, err := lockRepo(WithLockHolder(context.Background(), "g/1"), rootA, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlockA()
+
+	acquired := make(chan func(), 1)
+	go func() {
+		unlockB, err := lockRepo(WithLockHolder(context.Background(), "g/2"), rootB, key)
+		if err != nil {
+			t.Error(err)
+		}
+		acquired <- unlockB
+	}()
+	select {
+	case unlockB := <-acquired:
+		unlockB()
+	case <-time.After(2 * time.Second):
+		t.Fatalf("job B waited on job A's lock of %s; log = %q", key, logged())
+	}
+	if got := logged(); got != "" {
+		t.Fatalf("two jobs' locks logged %q, want no wait", got)
+	}
+}
+
+// Under one job's root the lock still serialises: a second command of
+// the same repo waits until the first releases it.
+func TestRepoLockOfOneJobStillSerialises(t *testing.T) {
+	logged := captureRepoLockLog(t)
+	root := filepath.Join(t.TempDir(), "job-a")
+	key := "acme/one-job"
+
+	unlockA, err := lockRepo(WithLockHolder(context.Background(), "g/1"), root, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acquired := make(chan func(), 1)
+	go func() {
+		unlockB, err := lockRepo(WithLockHolder(context.Background(), "g/1"), root, key)
+		if err != nil {
+			t.Error(err)
+		}
+		acquired <- unlockB
+	}()
+	waitFor(t, func() bool { return strings.Contains(logged(), "repo lock "+key+": waiting on g/1") })
+	select {
+	case <-acquired:
+		t.Fatal("a second lock of one job's repo was acquired while the first was held")
+	case <-time.After(50 * time.Millisecond):
+	}
+	unlockA()
+	unlockB := <-acquired
+	unlockB()
+	if !strings.Contains(logged(), "repo lock "+key+": acquired after ") {
+		t.Fatalf("log = %q, want an acquired line", logged())
+	}
+}
