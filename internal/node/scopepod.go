@@ -102,6 +102,7 @@ func (p *Planner) releasePodFailure(ctx context.Context, goal gateway.Goal, scop
 	case gateway.IsUnsupported(rerr):
 		p.logf("goal %s: %s; the claim lapses", goal.Slug, oneLine(reason))
 	default:
+		_ = handInRefused(p.logf, nil, goal.Slug, "ReleasePlan", rerr)
 		p.logf("goal %s: %s; plan release refused: %v", goal.Slug, oneLine(reason), rerr)
 	}
 	p.Declines.HoldFor(goal.ID, reason, time.Now(), WorkspaceReleaseHold)
