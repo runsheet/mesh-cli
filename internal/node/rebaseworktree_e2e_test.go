@@ -14,7 +14,7 @@ import (
 // A rebase runs in a fresh checkout when the item's own is gone: against
 // a local bare origin (lockTestOrigin), an item's worktree is prepared,
 // built and pushed, then its directory deleted; AddRebaseWorktree makes a
-// detached worktree of the shared clone at origin/<branch>, and a commit
+// detached clone of its own at origin/<branch>, and a commit
 // made there pushes to the branch on the origin.
 func TestRebaseWorktreeDeletedCheckoutE2E(t *testing.T) {
 	root, origin := lockTestOrigin(t)
@@ -72,8 +72,7 @@ func TestRebaseWorktreeDeletedCheckoutE2E(t *testing.T) {
 }
 
 // A stale directory at the rebase path is replaced: a plain dir holding a
-// junk file, and a leftover rebase worktree whose registration in the
-// shared clone is gone, each give way to a working checkout at
+// junk file, and a leftover rebase clone, each give way to a working checkout at
 // origin/<branch>, the junk gone.
 func TestRebaseWorktreeReplacesStaleDirE2E(t *testing.T) {
 	root, origin := lockTestOrigin(t)
@@ -126,15 +125,12 @@ func TestRebaseWorktreeReplacesStaleDirE2E(t *testing.T) {
 		replaced(t)
 	})
 
-	t.Run("worktree whose registration is gone", func(t *testing.T) {
-		// rdir is a rebase worktree from the subtest above; its admin in
-		// the shared clone goes, and junk is left in its files
-		admin := worktreeAdmin(rdir)
-		if admin == "" {
-			t.Fatalf("%s names no worktree admin", rdir)
-		}
-		if err := os.RemoveAll(admin); err != nil {
-			t.Fatal(err)
+	t.Run("leftover clone", func(t *testing.T) {
+		// rdir is the rebase's clone of its own from the subtest above
+		// (ADR-039: no shared-clone worktree, so no registration to lose);
+		// junk is left in its files
+		if fi, err := os.Stat(filepath.Join(rdir, ".git")); err != nil || !fi.IsDir() {
+			t.Fatalf("%s is not a clone of its own (stat .git: %v)", rdir, err)
 		}
 		if err := os.WriteFile(filepath.Join(rdir, "junk"), []byte("stale\n"), 0o644); err != nil {
 			t.Fatal(err)

@@ -90,7 +90,7 @@ func TestToolMissingBatchCandidateNotAttested(t *testing.T) {
 	r.Sandbox = &sandbox.Sandbox{Runtime: rt, Config: sandbox.Config{Image: "ghcr.io/runsheet/mesh-node:dev"}, TempDir: t.TempDir()}
 	r.Inspect = func(context.Context, string, ...string) ([]byte, error) { return []byte("sha256:feedface\n"), nil }
 
-	_, err := r.validateCandidate(context.Background(), batch, nil)
+	_, err := r.validateCandidate(onBatchToken(r), batch, nil)
 	if err == nil {
 		t.Fatal("want the step's failure")
 	}
