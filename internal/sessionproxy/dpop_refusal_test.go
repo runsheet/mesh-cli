@@ -53,4 +53,22 @@ func TestDPoPRefusal(t *testing.T) {
 			})
 		}
 	})
+	t.Run("not_a_refusal", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			resp *http.Response
+		}{
+			{"invalid_token", answer(http.StatusUnauthorized, `DPoP error="invalid_token"`)},
+			{"bearer_scheme", answer(http.StatusUnauthorized, `Bearer error="invalid_dpop_proof"`)},
+			{"bearer_realm", answer(http.StatusUnauthorized, `Bearer realm="x"`)},
+			{"no_header", answer(http.StatusUnauthorized)},
+			{"not_401", answer(http.StatusForbidden, `DPoP error="invalid_dpop_proof"`)},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if reason, refused := dpopRefusal(tc.resp); refused {
+					t.Fatalf("dpopRefusal = %q, true; want no refusal", reason)
+				}
+			})
+		}
+	})
 }
