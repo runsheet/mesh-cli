@@ -12,10 +12,10 @@ import (
 )
 
 // A rebase runs in a fresh checkout when the item's own is gone: against
-// a local bare origin (lockTestOrigin), an item's worktree is prepared,
+// a local bare origin (lockTestOrigin), an item's checkout is prepared,
 // built and pushed, then its directory deleted; AddRebaseWorktree makes a
-// detached clone of its own at origin/<branch>, and a commit
-// made there pushes to the branch on the origin.
+// detached clone of its own at origin/<branch>, and a commit made there
+// pushes to the branch on the origin.
 func TestRebaseWorktreeDeletedCheckoutE2E(t *testing.T) {
 	root, origin := lockTestOrigin(t)
 	work, repos := filepath.Join(root, "work"), filepath.Join(root, "repos")
@@ -72,7 +72,8 @@ func TestRebaseWorktreeDeletedCheckoutE2E(t *testing.T) {
 }
 
 // A stale directory at the rebase path is replaced: a plain dir holding a
-// junk file, and a leftover rebase clone, each give way to a working checkout at
+// junk file, and a leftover rebase worktree whose registration in the
+// shared clone is gone, each give way to a working checkout at
 // origin/<branch>, the junk gone.
 func TestRebaseWorktreeReplacesStaleDirE2E(t *testing.T) {
 	root, origin := lockTestOrigin(t)
@@ -125,12 +126,17 @@ func TestRebaseWorktreeReplacesStaleDirE2E(t *testing.T) {
 		replaced(t)
 	})
 
-	t.Run("leftover clone", func(t *testing.T) {
-		// rdir is the rebase's clone of its own from the subtest above
-		// (ADR-039: no shared-clone worktree, so no registration to lose);
-		// junk is left in its files
-		if fi, err := os.Stat(filepath.Join(rdir, ".git")); err != nil || !fi.IsDir() {
-			t.Fatalf("%s is not a clone of its own (stat .git: %v)", rdir, err)
+	t.Run("worktree whose registration is gone", func(t *testing.T) {
+		// rdir, the clone of the subtest above, is left as a rebase
+		// worktree made before rebases were clones of their own: its
+		// `.git` a file naming an admin in the shared clone that is gone,
+		// and junk in its files
+		admin := filepath.Join(SharedClonePath(repos, origin), ".git", "worktrees", "1-rebase")
+		if err := os.RemoveAll(filepath.Join(rdir, ".git")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(rdir, ".git"), []byte("gitdir: "+admin+"\n"), 0o644); err != nil {
+			t.Fatal(err)
 		}
 		if err := os.WriteFile(filepath.Join(rdir, "junk"), []byte("stale\n"), 0o644); err != nil {
 			t.Fatal(err)
