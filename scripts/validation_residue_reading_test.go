@@ -90,6 +90,7 @@ func TestValidationResidueReadingDry(t *testing.T) {
 			"new bytes: 9",
 			"validations in window: 2",
 			"leftover work directories: 3",
+			"shared-clone worktrees: 2",
 		}},
 	} {
 		got := block(out, c.from, c.to)
@@ -99,6 +100,27 @@ func TestValidationResidueReadingDry(t *testing.T) {
 		if strings.Join(got, "\n") != strings.Join(c.want, "\n") {
 			t.Errorf("%s block:\nwant:\n%s\ngot:\n%s\nfull output:\n%s",
 				c.from, strings.Join(c.want, "\n"), strings.Join(got, "\n"), out)
+		}
+	}
+}
+
+// TestValidationResidueReadingCountsLeftoverWork asserts the --dry
+// fixture's two residue counts together: leftover work directories
+// (work/goal-a/1 and goal-b/3 have no session, goal-b/4's session pid
+// is dead, goal-a/2's state.json names pid 0 — a sandboxed session's —
+// so 3 are leftover) and shared-clone worktrees (clones/acme-widgets'
+// worktree-list.txt names 3 entries, 2 beyond the clone itself;
+// clones/acme-other's names 1, none beyond its own; 2 total).
+func TestValidationResidueReadingCountsLeftoverWork(t *testing.T) {
+	out := runValidationResidue(t, "validation-residue-reading.sh", "--dry", "testdata/validation-residue-reading")
+
+	diff := strings.Join(block(out, "== difference", ""), "\n")
+	for _, want := range []string{
+		"leftover work directories: 3",
+		"shared-clone worktrees: 2",
+	} {
+		if !strings.Contains(diff, want) {
+			t.Errorf("== difference block missing %q:\n%s", want, diff)
 		}
 	}
 }

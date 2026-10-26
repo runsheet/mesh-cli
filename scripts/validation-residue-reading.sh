@@ -82,7 +82,18 @@ $MESH_HOME/work.
 Both runs close with `leftover work directories: N`: the directories
 under $MESH_HOME/work/<goal>/<seq> with no live job (no
 `<seq>.session/state.json` beside them whose pid is alive or 0). Every
-job works under $MESH_HOME/jobs/<id>/ (ADR-039), so a node reads 0. The fixture this repository carries is read by
+job works under $MESH_HOME/jobs/<id>/ (ADR-039), so a node reads 0.
+
+Then `shared-clone worktrees: N`: entries of `git worktree list`
+beyond the clone itself, summed over every clone under
+$MESH_HOME/clones — live, `git -C <clone> worktree list --porcelain`
+run directly on each clone found by its `.git` directory; under --dry,
+each clone's `worktree-list.txt` (one line per entry the real command
+would print, the clone's own always first) stands in for that same
+output, so the fixture takes no git repository at all. A clone with
+only its own entry, or no clones at all, counts 0.
+
+The fixture this repository carries is read by
 
   bash scripts/validation-residue-reading.sh --dry scripts/testdata/validation-residue-reading
 
@@ -195,6 +206,36 @@ leftover_work_dirs() {
   echo "$n"
 }
 
+# shared_clone_worktrees root: entries of `git worktree list` beyond
+# the clone itself (its own first entry, never counted), summed over
+# every shared clone under root — a node's builds and rebases that
+# register a worktree on a shared clone instead of cloning their own
+# (the goal this item measures towards; mesh ADR-058 §6, ADR-039). A
+# live clone is found by its `.git` directory and read with `git -C
+# <clone> worktree list --porcelain`'s `^worktree ` lines; a fixture
+# clone (--dry, no real git repository at all) is found by its
+# `worktree-list.txt`, read the same way — one entry per non-empty
+# line, so a fixture can stand in for the real command's output
+# byte-for-byte. A missing root, a clone with only its own entry, or
+# one git cannot read, counts 0 for it; never a `git worktree prune`,
+# a read only.
+shared_clone_worktrees() {
+  local root="$1" n=0 dir f count
+  [ -d "$root" ] || { echo 0; return 0; }
+  while IFS= read -r -d '' dir; do
+    dir="$(dirname "$dir")"
+    count="$(git -C "$dir" worktree list --porcelain 2>/dev/null | grep -c '^worktree ' || true)"
+    count="${count:-0}"
+    [ "$count" -gt 0 ] && n=$((n + count - 1))
+  done < <(find "$root" -type d -name '.git' -print0 2>/dev/null)
+  while IFS= read -r -d '' f; do
+    count="$(grep -c '[^[:space:]]' "$f" || true)"
+    count="${count:-0}"
+    [ "$count" -gt 0 ] && n=$((n + count - 1))
+  done < <(find "$root" -type f -name 'worktree-list.txt' -print0 2>/dev/null)
+  echo "$n"
+}
+
 # count_validations log [since] [until]: how many `attestation recorded
 # ` lines (internal/node/validation.go) fall on or between the given
 # node.log timestamps (its own `YYYY/MM/DD HH:MM:SS`, fixed-width); with
@@ -273,6 +314,7 @@ main() {
     echo "new bytes: $((after_bytes - before_bytes))"
     echo "validations in window: $(count_validations "$dry_dir/node.log")"
     echo "leftover work directories: $(leftover_work_dirs "$dry_dir/work")"
+    echo "shared-clone worktrees: $(shared_clone_worktrees "$dry_dir/clones")"
     exit 0
   fi
 
@@ -315,6 +357,7 @@ main() {
   echo "new bytes: $((after_bytes - before_bytes))"
   echo "validations in window: $(count_validations "$log" "$start_ts" "$end_ts")"
   echo "leftover work directories: $(leftover_work_dirs "$home/work")"
+  echo "shared-clone worktrees: $(shared_clone_worktrees "$home/clones")"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
