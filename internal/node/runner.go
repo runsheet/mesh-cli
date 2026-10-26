@@ -569,7 +569,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 			// machine's own login; the reason is said once for the goal
 			// (NoCredentials.Say), not on every release
 			r.logf("item %s: no credential for %s; released", label, nc.Adapter)
-			_ = handInRefused(r.logf, nil, label, "ReleaseWorkItem", r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, "accounts: "+nc.Error()))
+			handInRefused(r.logf, nil, label, "ReleaseWorkItem", r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, "accounts: "+nc.Error()))
 			return end(nil)
 		}
 		if errors.Is(err, ErrNoAccount) {
@@ -581,7 +581,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 			} else {
 				r.logf("item %s: %v; released", label, err)
 			}
-			_ = handInRefused(r.logf, nil, label, "ReleaseWorkItem", r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, "accounts: "+err.Error()))
+			handInRefused(r.logf, nil, label, "ReleaseWorkItem", r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, "accounts: "+err.Error()))
 			return end(nil)
 		}
 		if err != nil {
@@ -599,7 +599,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		if err != nil {
 			reason := err.Error()
 			r.logf("item %s: %s; released", label, reason)
-			_ = handInRefused(r.logf, nil, label, "ReleaseWorkItem", r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason))
+			handInRefused(r.logf, nil, label, "ReleaseWorkItem", r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason))
 			return end(nil)
 		}
 		hold(unbind)
@@ -615,7 +615,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 			reason := st.DeclineReason()
 			r.Declines.Record(item.ID, st.Missing, runtimes, time.Now())
 			r.logf("item %s: declined, %s; released", label, reason)
-			_ = handInRefused(r.logf, nil, label, "ReleaseWorkItem", r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason))
+			handInRefused(r.logf, nil, label, "ReleaseWorkItem", r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason))
 			return end(nil)
 		}
 		closeProxy, err := st.UseVia(r.Proxies, mcpRootFor(r.Layout, item.ID), &job, mcp, acct)
@@ -652,7 +652,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 			reason := pod.ReleaseReason()
 			r.Declines.Record(item.ID, pod.Declined(), runtimes, time.Now())
 			r.logf("item %s: %s; released", label, reason)
-			_ = handInRefused(r.logf, nil, label, "ReleaseWorkItem", r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason))
+			handInRefused(r.logf, nil, label, "ReleaseWorkItem", r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason))
 			return end(nil)
 		}
 		pod.Apply(&job)
@@ -1076,7 +1076,7 @@ func (t *buildTail) end(ctx context.Context) error {
 		}
 		r.logf("item %s: %s", label, reason)
 		bsc, _ := r.Scopes.ByOrg(b.item.OrgID)
-		_ = handInRefused(r.logf, nil, label, "ReleaseWorkItem", r.GW.ReleaseWorkItem(ctx, b.item.ID, bsc.NodeID, reason))
+		handInRefused(r.logf, nil, label, "ReleaseWorkItem", r.GW.ReleaseWorkItem(ctx, b.item.ID, bsc.NodeID, reason))
 		return t.stop(nil)
 	}
 	if re := RuntimeErrorOf(runErr); re != nil {

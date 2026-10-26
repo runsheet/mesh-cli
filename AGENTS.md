@@ -731,6 +731,33 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   failure; a resumed turn gets neither; logged `item <label>: fresh
   session with the item's record (N entries, M commits)` or `fresh
   session with no record (<why>)` (ADR-030's amendment 2026-10).
+- **A session that ends says so** (ADR-042,
+  `docs/adr/adr-042-a-session-that-ends-says-so.md`): a build session
+  that exits at once is failed with its reason, or released for the
+  runtime, inside a minute (`sendReport` within `ReportRetryFor`, a
+  refused fail releasing the claim by `releaseNaming`;
+  `session_exits_e2e_test.go`'s `TestSessionThatExitsAtOnceIsReportedE2E`,
+  `-tags e2e`); an evaluation heartbeats its item from claim to verdict
+  (`evaluate_heartbeat.go`, `evaluate.heartbeat_every`, default 5m,
+  refused at or past the 15-minute stall window;
+  `TestEvaluationOutlivesTheStallWindowE2E` and its `…Control`, `-tags
+  e2e`); and every hand-in — `FinishWorkItem`,
+  `FinishWorkItemAlreadyDone`, `FinishWorkItemChangeset`,
+  `FailWorkItem`, `ReleaseWorkItem`, `ReleasePlan`, `EvaluateWorkItem`,
+  `EvaluateWorkItemNoVerdict` — hands its error to `handInRefused`
+  (`handin.go`), logged `item <label>: <call> refused: <the gateway's
+  answer>` and returned unchanged (`TestHandInRefusalIsLogged`,
+  `TestHandInRefusalIsLoggedByThePlanner`,
+  `TestHandInRefusalIsLoggedByTheEvaluator`).
+  `handin_guard_test.go`'s `TestEveryHandInErrorGoesThroughTheHelper`
+  parses the package's non-test files and fails, naming file:line, on a
+  hand-in whose error neither sits inside a `handInRefused` argument
+  (directly, or through `acct.Carried`/`validationUsage`/`c.carried`)
+  nor is assigned to a variable a later `handInRefused` takes: a new
+  hand-in method goes in its `handInMethods`, a new usage wrapper in
+  `handInWrappers`. gatewaytest's `Fake` records no `Calls` entry for a
+  mutation it answers by `Refuse`, so a refusal test reads the log line,
+  never `CallsNamed`.
 - **A death names itself** (`internal/crash/`): `defer crash.Guard()`
   at the top of `mesh node start` and of every goroutine the node
   starts turns a panic into one node.log line, `mesh node: fatal:
