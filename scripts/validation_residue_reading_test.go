@@ -108,9 +108,9 @@ func TestValidationResidueReadingDry(t *testing.T) {
 // fixture's two residue counts together: leftover work directories
 // (work/goal-a/1 and goal-b/3 have no session, goal-b/4's session pid
 // is dead, goal-a/2's state.json names pid 0 — a sandboxed session's —
-// so 3 are leftover) and shared-clone worktrees (clones/acme-widgets'
+// so 3 are leftover) and shared-clone worktrees (repos/acme/widgets'
 // worktree-list.txt names 3 entries, 2 beyond the clone itself;
-// clones/acme-other's names 1, none beyond its own; 2 total).
+// repos/acme/other's names 1, none beyond its own; 2 total).
 func TestValidationResidueReadingCountsLeftoverWork(t *testing.T) {
 	out := runValidationResidue(t, "validation-residue-reading.sh", "--dry", "testdata/validation-residue-reading")
 

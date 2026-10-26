@@ -335,10 +335,12 @@ func dirBytes(dir string) int64 {
 }
 
 // pruneGoneWorktrees forgets each shared clone's registrations whose
-// directory is gone and that are neither locked (lockWorktree) nor live
-// on this node (WorkspaceLive) — never a blanket `git worktree prune`
-// (ADR-028, What RemoveWorkspace removes) — under the repo's lock; it
-// returns the count and a note per clone it could not clean.
+// directory is gone and that are neither locked (an older node locked
+// each worktree it made; none is made now, ADR-028's amendment
+// 2026-10-26) nor live on this node (WorkspaceLive) — never a blanket
+// `git worktree prune` (ADR-028, What RemoveWorkspace removes) — under
+// the repo's lock; it returns the count and a note per clone it could
+// not clean.
 func pruneGoneWorktrees(ctx context.Context, git *Git, reposRoot, lockRoot string) (int, []string) {
 	var n int
 	var notes []string

@@ -13,13 +13,12 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
-	"projectmesh.io/mesh-cli/internal/validate"
 )
 
 const rebuildValidateYML = `suites:
   - name: item
     kind: unit
-    command: "test -f item.txt"
+    command: "true"
 `
 
 // rebuildCase is one item's worktree, built on its branch with a commit,
@@ -113,34 +112,30 @@ func missingAdminWorkspace(t *testing.T) *rebuildCase {
 	if err := os.RemoveAll(admin); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("git", "-C", dir, "status").CombinedOutput(); err == nil || !IsWorktreeAdminGone(fmt.Errorf("%s", out)) {
+	if out, err := exec.Command("git", "-C", dir, "status").CombinedOutput(); err == nil || !strings.Contains(string(out), "not a git repository") {
 		t.Fatalf("git status with the admin dir gone: %v: %s", err, out)
 	}
 	return &rebuildCase{f: f, r: r, g: g, item: item, spec: spec, cred: cred, tok: cred.Token(), dir: dir, admin: admin, head: head,
 		logged: func() string { mu.Lock(); defer mu.Unlock(); return strings.Join(lines, "\n") }}
 }
 
-// rebuilt checks the worktree is back for its branch at the recorded
-// head, its files left as they were, the rebuild logged, and nothing
-// failed or released against the item.
-func (c *rebuildCase) rebuilt(t *testing.T) {
+// madeAgain checks the checkout is back as a clone of its own on its
+// branch — never a worktree of the shared clone, which gains no
+// registration — the removal logged, and nothing failed or released
+// against the item.
+func (c *rebuildCase) madeAgain(t *testing.T) {
 	t.Helper()
-	if _, _, gone := worktreeAdminGone(c.dir); gone {
-		t.Fatalf("%s still names a gone admin dir", c.dir)
+	if fi, err := os.Stat(filepath.Join(c.dir, ".git")); err != nil || !fi.IsDir() {
+		t.Fatalf("%s/.git is not a clone's own git dir: %v", c.dir, err)
 	}
 	if got := gitOut(t, c.dir, "symbolic-ref", "--short", "HEAD"); got != c.spec.Branch {
 		t.Fatalf("HEAD is on %q, want %s", got, c.spec.Branch)
 	}
-	if got := gitOut(t, c.dir, "rev-parse", "HEAD"); got != c.head {
-		t.Fatalf("HEAD is %s, want the recorded head %s", got, c.head)
+	clone := c.g.seedClone(c.spec)
+	if list := gitOut(t, clone, "worktree", "list"); strings.Contains(list, c.dir) {
+		t.Fatalf("the shared clone registers %s again:\n%s", c.dir, list)
 	}
-	if st := gitOut(t, c.dir, "status", "--porcelain"); st != "?? wip.txt" {
-		t.Fatalf("status after the rebuild = %q, want only the untracked wip.txt", st)
-	}
-	if b, err := os.ReadFile(filepath.Join(worktreeAdmin(c.dir), "locked")); err != nil || !strings.Contains(string(b), "mesh: item g/3 live") {
-		t.Fatalf("the rebuilt worktree's lock: %q (%v)", b, err)
-	}
-	line := fmt.Sprintf("workspace %s: worktree %s is gone; made again for %s at %s", c.dir, c.admin, c.spec.Branch, c.head)
+	line := fmt.Sprintf("workspace %s: worktree %s is gone; made again", c.dir, c.admin)
 	if !strings.Contains(c.logged(), line) {
 		t.Fatalf("log lacks %q:\n%s", line, c.logged())
 	}
@@ -151,24 +146,25 @@ func (c *rebuildCase) rebuilt(t *testing.T) {
 	}
 }
 
-// A workspace whose .git file names a deleted .git/worktrees/<n> is
-// recreated for its branch at its recorded head, and the step that found
-// it succeeds — with no failure or release recorded against the item.
-func TestWorkspaceWithMissingWorktreeAdminIsRebuilt(t *testing.T) {
+// A workspace left by an older node as a worktree whose .git file names a
+// deleted .git/worktrees/<n> is never rebuilt as a worktree: it is
+// removed and made again as a clone of its own (ADR-028's amendment
+// 2026-10-26), with no failure or release recorded against the item.
+func TestWorkspaceWithMissingWorktreeAdminIsClonedAgain(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("remote set-url (Authorize)", func(t *testing.T) {
+	t.Run("authorize", func(t *testing.T) {
 		c := missingAdminWorkspace(t)
-		// the shared clone's origin moved, so the authorize must set it again
-		clone := worktreeClone(c.dir)
-		gitOut(t, clone, "remote", "set-url", "origin", "https://example.invalid/acme/widgets.git")
 		if err := c.g.Authorize(ctx, c.spec, c.tok); err != nil {
 			t.Fatalf("authorize: %v\n%s", err, c.logged())
 		}
 		if got := gitOut(t, c.dir, "remote", "get-url", "origin"); got != c.g.githubURL()+"/acme/widgets.git" {
 			t.Fatalf("origin = %q after the authorize", got)
 		}
-		c.rebuilt(t)
+		if _, err := c.g.Prepare(withGitToken(ctx, c.g.githubURL(), c.tok), c.spec); err != nil {
+			t.Fatalf("prepare: %v\n%s", err, c.logged())
+		}
+		c.madeAgain(t)
 	})
 
 	t.Run("prepare (PrepareWithRetry)", func(t *testing.T) {
@@ -177,40 +173,6 @@ func TestWorkspaceWithMissingWorktreeAdminIsRebuilt(t *testing.T) {
 		if err != nil || dir != c.dir {
 			t.Fatalf("prepare: %q, %v\n%s", dir, err, c.logged())
 		}
-		c.rebuilt(t)
-	})
-
-	t.Run("rev-parse", func(t *testing.T) {
-		c := missingAdminWorkspace(t)
-		tries := 0
-		tree, err := rebuildAndRetry(ctx, c.g, c.spec, func(bool) (string, error) {
-			tries++
-			return c.g.run(ctx, c.dir, "git", "rev-parse", c.head+"^{tree}")
-		})
-		if err != nil || tries != 2 || tree == "" {
-			t.Fatalf("rev-parse: %q, %v after %d tries, want one rebuild and one retry\n%s", tree, err, tries, c.logged())
-		}
-		c.rebuilt(t)
-	})
-
-	t.Run("validate", func(t *testing.T) {
-		c := missingAdminWorkspace(t)
-		vr := c.r.validator()
-		var notes []string
-		tg := validationTarget{item: c.item, dir: c.dir, base: "main", defaultBranch: "main", prefix: "item g/3", label: "g/3",
-			session: func() string { return "s" }, cred: c.cred, spec: c.spec,
-			report: func(_ context.Context, note string) { notes = append(notes, note) }}
-		v := &buildValidation{runner: validate.HostRunner{Dir: c.dir}, close: func() {}}
-		att, err := vr.run(ctx, tg, v)
-		if err != nil {
-			t.Fatalf("validate: %v\n%s", err, c.logged())
-		}
-		if att.Commit != c.head {
-			t.Fatalf("attested %s, want the recorded head %s", att.Commit, c.head)
-		}
-		if step, failed := att.Failed(); failed {
-			t.Fatalf("validation step %s failed", step)
-		}
-		c.rebuilt(t)
+		c.madeAgain(t)
 	})
 }

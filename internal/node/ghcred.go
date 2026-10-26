@@ -498,10 +498,10 @@ func (c *ItemCred) Refresh(ctx context.Context) error {
 	return nil
 }
 
-// Reauthorize writes the token held on the workspace's credential helper
-// again — Authorize, which rebuilds a worktree whose admin dir is gone
-// first: what a rebuilt worktree, whose helper went with its
-// config.worktree, needs before its next fetch. Nil does nothing.
+// Reauthorize writes the token held on the workspace again — Authorize,
+// which removes a stale worktree (removeStale) and makes the checkout
+// again as a clone of its own on the token — then clears the helper of
+// an env-only cred. Nil does nothing.
 func (c *ItemCred) Reauthorize(ctx context.Context) error {
 	if c == nil {
 		return nil
@@ -512,7 +512,6 @@ func (c *ItemCred) Reauthorize(ctx context.Context) error {
 		return err
 	}
 	if c.envOnly {
-		// Authorize rebuilt the worktree and wrote its helper again
 		return clearCheckoutHelper(ctx, c.ws, c.spec)
 	}
 	return nil
@@ -772,24 +771,15 @@ func scrubbed(err error, tokens []string) error {
 // login's fallback (cred == nil), is not retried. The log names the
 // token's repo and expiry, never the token.
 func PrepareWithRetry(ctx context.Context, ws Workspacer, spec WorkspaceSpec, cred *ItemCred, logf func(string, ...any)) (string, error) {
-	// a worktree whose .git/worktrees/<n> went from under it is rebuilt
-	// once and the prepare tried once more (ADR-028, Rebuilding a
-	// worktree): never the item's failure, never a release
-	if _, _, gone := worktreeAdminGone(spec.Dir()); gone && cred != nil {
-		// Authorize rebuilds it and writes its helper again, which lived
-		// in the lost admin dir's config.worktree
+	// an older node's worktree gone stale since the cred authorized it is
+	// made again, a clone of its own, on the item's token (ADR-028's
+	// amendment 2026-10-26): never rebuilt as a worktree, never a failure
+	if _, stale := staleWorktree(spec.Dir()); stale && cred != nil {
 		if err := cred.Reauthorize(ctx); err != nil {
 			return "", err
 		}
 	}
-	return rebuildAndRetry(ctx, ws, spec, func(retry bool) (string, error) {
-		if retry {
-			if err := cred.Reauthorize(ctx); err != nil {
-				return "", err
-			}
-		}
-		return prepareWithRetry(ctx, ws, spec, cred, logf)
-	})
+	return prepareWithRetry(ctx, ws, spec, cred, logf)
 }
 
 func prepareWithRetry(ctx context.Context, ws Workspacer, spec WorkspaceSpec, cred *ItemCred, logf func(string, ...any)) (string, error) {
