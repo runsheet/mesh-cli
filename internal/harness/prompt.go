@@ -2,6 +2,7 @@ package harness
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -106,7 +107,7 @@ func contextRule(contextDir, project string) string {
 	if contextDir != "" {
 		where = "`" + contextDir + "/INDEX.md`"
 	}
-	return fmt.Sprintf("%s says what is on disk — just this session's repos' instructions and its own goal — and how to find the rest: search before you read, with the runsheet server's tools: `mesh_search` (query → slug, title, kind, summary); read a document only when the work touches it, with `mesh_document` (project %q, the document's slug — never a context file's name: a file name is not a slug, `instructions-acme-widgets-agents.md` is slug `agents`). Reach another project with `mesh_projects` and `mesh_documents`, live state with `mesh_items`. The ADRs and the TRD are binding and are searched before any design decision. A build fetches two or three documents, not forty.", where, project)
+	return fmt.Sprintf("%s says what is on disk — just this session's repos' instructions and its own goal — and how to find the rest: search before you read, with the runsheet server's tools: `mesh_search` (query → slug, title, kind, summary); read a document only when the work touches it, with `mesh_document` (project %q, the document's slug — never a context file's name: a file name is not a slug, `instructions-acme-widgets-agents.md` is slug `agents`). Reach another project with `mesh_projects` and `mesh_documents`, live state with `mesh_items`. A tool's `fields` names only fields its description lists — an unknown one fails the call — so leave `fields` out when unsure. The ADRs and the TRD are binding and are searched before any design decision. A build fetches two or three documents, not forty.", where, project)
 }
 
 // BuildPrompt renders the session's whole prompt for a build job: the item
@@ -1365,6 +1366,10 @@ func planGraph(graph map[string]any, key string, v any) (ok bool, err error) {
 	return true, json.Unmarshal(b, v)
 }
 
+// ErrNoPlanItems is a plan graph with no items: the planner answered,
+// and planned nothing.
+var ErrNoPlanItems = errors.New("no items in the plan")
+
 // DecodePlan reads the planner's graph — the `plan` object its session
 // handed mesh_result (ADR-041) — as its items, {"items": [...]}. It
 // checks the graph's shape — seqs, titles, dependencies on other items
@@ -1375,7 +1380,7 @@ func DecodePlan(graph map[string]any, merged ...int) ([]PlannedSpec, error) {
 	if ok, err := planGraph(graph, "items", &items); err != nil {
 		return nil, fmt.Errorf("the plan's items: %w", err)
 	} else if !ok || len(items) == 0 {
-		return nil, fmt.Errorf("no items in the plan")
+		return nil, ErrNoPlanItems
 	}
 	seqs := map[int]bool{}
 	for _, it := range items {
