@@ -100,7 +100,10 @@ type Planner struct {
 	// the work root too (PlanRefusalsPath), so a fresh Planner and a
 	// restarted node read the same.
 	lastRefusal map[string]string
-	released    map[string]releasedPlan
+	// streak counts each goal's refusals running, whatever their text:
+	// MaxPlanRefusals of them release the claim as two identical ones do
+	streak   map[string]int
+	released map[string]releasedPlan
 	// noGoalRelease says once that the platform takes no releaseGoalPlan.
 	noGoalRelease sync.Once
 }
@@ -197,9 +200,12 @@ func (p *Planner) Plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		return nil // said so already
 	}
 	err := p.plan(ctx, goal, scope)
+	if err == nil {
+		p.handedIn(goal)
+	}
 	if pr, ok := PlanRefusedOf(err); ok && ctx.Err() == nil {
-		// the same refusal twice running releases the claim: no third
-		// session, no further try counted
+		// the same refusal twice running, or MaxPlanRefusals of any,
+		// releases the claim: no further session, no further try counted
 		if rel := p.refused(ctx, goal, scope, pr); rel.Released {
 			return rel
 		}
@@ -999,20 +1005,30 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 	recoverResult(holder, result, "goal "+goal.Slug, p.logf)
 	graph, err := planGraphOf(holder, acct.Redact)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, 0, fmt.Errorf("planner session (%s): %w", result.SessionID, err)
+		err = fmt.Errorf("planner session (%s): %w", result.SessionID, err)
+		if errors.Is(err, errGaveUp) {
+			// the planner's own word that the goal cannot be planned as it
+			// stands: a refusal, so it counts toward the release
+			return nil, nil, nil, nil, nil, nil, nil, 0, &PlanRefused{Goal: goal.Slug, Reason: err.Error()}
+		}
+		return nil, nil, nil, nil, nil, nil, nil, 0, err
 	}
 	// a `split` answer — goal drafts in place of a graph over the
 	// project's cap (ADR-023 (a)) — is read first: it has no items
 	if drafts, ok := harness.DecodePlanSplit(graph); ok {
 		gd, err := splitDrafts(drafts, repos, cap)
 		if err != nil {
-			return nil, nil, nil, nil, nil, nil, nil, 0, err
+			return nil, nil, nil, nil, nil, nil, nil, 0, &PlanRefused{Goal: goal.Slug, Reason: err.Error()}
 		}
 		return nil, nil, nil, nil, nil, gd, nil, result.CostUSD, nil
 	}
 	specs, err := harness.DecodePlan(graph, merged...)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, 0, fmt.Errorf("planner session (%s): %w", result.SessionID, err)
+		err = fmt.Errorf("planner session (%s): %w", result.SessionID, err)
+		if errors.Is(err, harness.ErrNoPlanItems) {
+			return nil, nil, nil, nil, nil, nil, nil, 0, &PlanRefused{Goal: goal.Slug, Reason: err.Error()}
+		}
+		return nil, nil, nil, nil, nil, nil, nil, 0, err
 	}
 	items := make([]gateway.PlannedItem, 0, len(specs))
 	itemRepo := map[int]gateway.Repo{}
@@ -1136,6 +1152,9 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 	return items, reasons, flags, harness.DecodePlanQuestions(graph), harness.DecodePlanCheckpoints(graph), nil, added, result.CostUSD, nil
 }
 
+// errGaveUp is a planner session that gave the plan up (mesh_fail).
+var errGaveUp = errors.New("the session gave the plan up")
+
 // planGraphOf is the `plan` object the session handed mesh_result, its
 // strings redacted; an error names why there is none — the session gave
 // the plan up (mesh_fail) or made no call.
@@ -1144,7 +1163,7 @@ func planGraphOf(holder *jobresult.Holder, redact func(string) string) (map[stri
 		return nil, errors.New("no result holder for the session")
 	}
 	if why, failed := holder.Failed(); failed {
-		return nil, errors.New("the session gave the plan up: " + redact(truncate(why, 300)))
+		return nil, fmt.Errorf("%w: %s", errGaveUp, redact(truncate(why, 300)))
 	}
 	res, ok := holder.Result()
 	if !ok {
