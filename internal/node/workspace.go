@@ -38,7 +38,7 @@ type WorkspaceSpec struct {
 	// refs/heads/<branch> nor origin/<branch> is there.
 	Head string
 	// Repos, when set, is a repos root: the shared clone a new checkout
-	// is a worktree of is <Repos>/<owner>/<name>, whatever Git.ReposRoot
+	// is seeded from is <Repos>/<owner>/<name>, whatever Git.ReposRoot
 	// says (the tests' work-root layout; a job's checkout is a clone of
 	// its own).
 	Repos string
@@ -155,7 +155,7 @@ type Git struct {
 	LockRoot string
 	// ReposRoot is where the node's one clone per repo lives, as
 	// <ReposRoot>/<owner>/<name> (mesh ADR 017): a new item's checkout
-	// is a `git worktree add` on it. Empty, it is "repos" beside the
+	// is a clone of its own seeded from it (seedClone). Empty, it is "repos" beside the
 	// spec's Root — ~/.mesh/repos for ~/.mesh/work (ReposRoot()).
 	ReposRoot string
 	// exec, when set, replaces the real git/gh invocation: tests wrap it
@@ -216,8 +216,9 @@ func (g *Git) Checkout(ctx context.Context, spec WorkspaceSpec, tok *gateway.Git
 }
 
 // originOnToken is Authorize's half that writes no credential: spec's
-// checkout made when Prepare would make it a worktree (the shared clone
-// cloned or fetched on tok by the environment) or an empty clone, and
+// checkout made when Prepare would seed it from the shared clone (the
+// shared clone cloned or fetched on tok by the environment, then the
+// checkout's own clone) or an empty clone, and
 // origin set to the repo's https URL.
 func (g *Git) originOnToken(ctx context.Context, spec WorkspaceSpec, tok *gateway.GitHubToken) error {
 	dir := spec.Dir()
@@ -230,10 +231,8 @@ func (g *Git) originOnToken(ctx context.Context, spec WorkspaceSpec, tok *gatewa
 	if err := g.removeStale(dir); err != nil {
 		return err
 	}
-	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil && g.sharedClone(spec) != "" {
-		tctx := withGitToken(ctx, g.githubURL(), tok)
-		clone := g.sharedClone(spec)
-		if _, err := g.addWorktree(tctx, g.sharedLockRoot(clone, spec.Repo), RepoLockKey(spec.Repo), clone, spec); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil && g.seedClone(spec) != "" {
+		if err := g.seededClone(withGitToken(ctx, g.githubURL(), tok), spec); err != nil {
 			return err
 		}
 	}
@@ -342,21 +341,15 @@ func SharedClonePath(reposRoot, repo string) string {
 	return filepath.Join(reposRoot, repoFileName(key))
 }
 
-// sharedClone is the clone spec's new checkout is a worktree of, or ""
-// when spec takes a clone of its own: a checkout named outright (a plan,
-// research or evaluation checkout, Path set), one with no branch, the
-// goal doc's <goal>/0 on the base branch itself (Seq 0, Branch ==
-// BaseRef: the shared clone has the default branch checked out, and git
-// checks a branch out in one worktree only), or one with no repos root
-// to keep the clone under.
-//
-// Those stay full clones, never worktrees, so none of them asks git to
-// check out a branch another worktree holds: an evaluation's <seq>-eval
-// checks out the build's branch in a clone of its own (ADR-027), the
-// goal doc and a no-branch spec (CheckoutBase, detached) the base, and
-// a plan or research checkout stays a clone as ADR 017 §6 decides.
-func (g *Git) sharedClone(spec WorkspaceSpec) string {
-	if spec.Path != "" || spec.Branch == "" || spec.Repo == "" || spec.Seq == 0 || spec.Branch == spec.BaseRef {
+// seedClone is the shared clone spec's new checkout is seeded from, or
+// "" when spec takes a clone of nothing but its remote: a checkout named
+// outright (a job's, a plan, research or evaluation checkout, Path set),
+// one with no repo, or one with no repos root to keep the clone under.
+// Seeded or not, the checkout is a clone of its own: the shared clone
+// lends its objects for the clone and registers nothing of it (ADR-039,
+// Nothing is shared between jobs).
+func (g *Git) seedClone(spec WorkspaceSpec) string {
+	if spec.Path != "" || spec.Repo == "" {
 		return ""
 	}
 	reposRoot := spec.Repos
@@ -370,6 +363,46 @@ func (g *Git) sharedClone(spec WorkspaceSpec) string {
 		reposRoot = filepath.Join(filepath.Dir(spec.Root), "repos")
 	}
 	return SharedClonePath(reposRoot, spec.Repo)
+}
+
+// seededClone makes spec's new checkout a clone of its own seeded from
+// its shared clone (seedClone): the shared clone cloned or fetched under
+// its lock (syncSharedClone), then cloned from the remote into the
+// checkout with --reference on it and --dissociate (cloneOwn), so the
+// checkout's objects are its own, its origin the remote's URL, and the
+// shared clone's `git worktree list` names the clone alone.
+func (g *Git) seededClone(ctx context.Context, spec WorkspaceSpec) error {
+	seed := g.seedClone(spec)
+	key := RepoLockKey(spec.Repo)
+	root := g.sharedLockRoot(seed, spec.Repo)
+	if err := g.syncSharedClone(ctx, root, key, spec.Repo, seed); err != nil {
+		return err
+	}
+	return g.cloneOwn(ctx, root, key, spec.Repo, spec.Dir(), seed)
+}
+
+// cloneOwn clones repo into dir, a clone of its own, under the per-repo
+// fetch lock of key at root: from the remote by cloneCommand, its origin
+// the remote's URL; when seed is a clone, with `--reference <seed>
+// --dissociate`, so what seed already holds is copied rather than
+// fetched and dir keeps no alternates of it. flags go to git clone
+// before them. A clone that fails is removed, so the next one starts
+// clean.
+func (g *Git) cloneOwn(ctx context.Context, root, key, repo, dir, seed string, flags ...string) error {
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		return err
+	}
+	if seed != "" {
+		if _, err := os.Stat(filepath.Join(seed, ".git")); err == nil {
+			flags = append(append([]string(nil), flags...), "--reference", seed, "--dissociate")
+		}
+	}
+	clone := g.cloneCommand(ctx, repo, dir, flags...)
+	if _, err := g.fetchLocked(ctx, root, key, filepath.Dir(dir), clone[0], clone[1:]...); err != nil {
+		os.RemoveAll(dir)
+		return err
+	}
+	return nil
 }
 
 // cloneCommand is the command that clones repo into dir: git over https
@@ -387,10 +420,10 @@ func (g *Git) cloneCommand(ctx context.Context, repo, dir string, flags ...strin
 	return cmd
 }
 
-// Prepare implements Workspacer. A new item's checkout is a worktree of
-// the repo's one clone on the node (addWorktree, mesh ADR 017); a
-// checkout already there — a worktree, or a full clone from before the
-// shared clone — is fetched and checked out in place.
+// Prepare implements Workspacer. A new item's checkout is a clone of its
+// own, seeded from the repo's one clone on the node when it has one
+// (seededClone) — never a worktree of it; a checkout already there — a
+// clone, or a worktree from before — is fetched and checked out in place.
 func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 	dir := spec.Dir()
 	key := RepoLockKey(spec.Repo)
@@ -400,18 +433,15 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 	if err := g.removeStale(dir); err != nil {
 		return "", err
 	}
-	// a worktree's fetch, add or clone writes its shared clone: locked
+	// a seeded clone reads, and its sync writes, the shared clone: locked
 	// under that clone's root, whatever job root the spec names
 	root := g.specLockRoot(ctx, spec)
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
-		if clone := g.sharedClone(spec); clone != "" {
-			return g.addWorktree(ctx, root, key, clone, spec)
-		}
-		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
-			return "", err
-		}
-		clone := g.cloneCommand(ctx, spec.Repo, dir)
-		if _, err := g.fetchLocked(ctx, root, key, filepath.Dir(dir), clone[0], clone[1:]...); err != nil {
+		if g.seedClone(spec) != "" {
+			if err := g.seededClone(ctx, spec); err != nil {
+				return "", err
+			}
+		} else if err := g.cloneOwn(ctx, root, key, spec.Repo, dir, ""); err != nil {
 			return "", err
 		}
 	} else if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--prune", "origin"); err != nil {
@@ -473,9 +503,8 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 		}
 		return dir, nil
 	}
-	// --no-track from the base, here and in addWorktree: tracking is
-	// branch.<b>.* in a worktree's shared .git/config, so it is left to
-	// Push, which sets it once (the base is never the branch's upstream)
+	// --no-track from the base: tracking is left to Push, which sets it
+	// once (the base is never the branch's upstream)
 	if _, err := g.run(ctx, dir, "git", "checkout", "--quiet", "--no-track", "-B", spec.Branch, "origin/"+base); err != nil {
 		return "", err
 	}
@@ -524,80 +553,6 @@ func (g *Git) syncSharedClone(ctx context.Context, root, key, repo, clone string
 		return err
 	}
 	return nil
-}
-
-// addWorktree makes spec's new checkout a worktree of clone (mesh ADR
-// 017): the clone fetched under the lock, then — under it again, so no
-// other item's prune lands mid-add — `git worktree add` on the item's
-// branch, extensions.worktreeConfig enabled for its credential helper,
-// continued as Prepare continues a checkout's: origin/<branch> when it was pushed, else a
-// local branch an interrupted attempt left in the clone, else a new one
-// from origin/<base>. A registration whose directory is gone (a sweep
-// interrupted, a directory removed by hand) that names dir, or holds the
-// branch and is neither locked nor live, is forgotten first
-// (forgetStaleRegistrations), so git does not refuse the path or the
-// branch — never a blanket `git worktree prune`, which drops every
-// registration whose directory it cannot see. The worktree added is
-// locked (lockWorktree), so no prune, inside a pod or out, takes it
-// while its item is live.
-func (g *Git) addWorktree(ctx context.Context, root, key, clone string, spec WorkspaceSpec) (string, error) {
-	dir := spec.Dir()
-	if err := g.syncSharedClone(ctx, root, key, spec.Repo, clone); err != nil {
-		return "", err
-	}
-	base := spec.BaseRef
-	if base == "" {
-		out, err := g.run(ctx, clone, "git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
-		if err != nil {
-			return "", fmt.Errorf("no base ref and no origin default branch: %w", err)
-		}
-		base = strings.TrimPrefix(out, "origin/")
-	}
-	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
-		return "", err
-	}
-	// the prune and the add under the repo's lock: another item's prune
-	// while this add is half done removes its .git/worktrees/<name>, and
-	// git config writes to the clone's one config file collide
-	unlock, err := lockRepo(ctx, root, key)
-	if err != nil {
-		return "", err
-	}
-	defer unlock()
-	// enabled once per clone: read first, so a clone that has it writes
-	// nothing to its .git/config
-	if out, err := g.run(ctx, clone, "git", "config", "--local", "--type=bool", "--get", "extensions.worktreeConfig"); err != nil || strings.TrimSpace(out) != "true" {
-		if _, err := g.withStaleLockRetry(clone, func() (string, error) {
-			return g.run(ctx, clone, "git", "config", "--local", "extensions.worktreeConfig", "true")
-		}); err != nil {
-			return "", err
-		}
-	}
-	// and gc's own prune of worktrees off for good: a `git gc` in a pod,
-	// which sees no other item's worktree, must not drop them
-	if out, err := g.run(ctx, clone, "git", "config", "--local", "--get", "gc.worktreePruneExpire"); err != nil || strings.TrimSpace(out) != "never" {
-		if _, err := g.withStaleLockRetry(clone, func() (string, error) {
-			return g.run(ctx, clone, "git", "config", "--local", "gc.worktreePruneExpire", "never")
-		}); err != nil {
-			return "", err
-		}
-	}
-	if err := forgetStaleRegistrations(clone, dir, spec.Branch); err != nil {
-		return "", err
-	}
-	args := []string{"worktree", "add", "--quiet", "--no-track", "-B", spec.Branch, dir, "origin/" + base}
-	if _, err := g.run(ctx, clone, "git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+spec.Branch); err == nil {
-		args = []string{"worktree", "add", "--quiet", "--track", "-B", spec.Branch, dir, "origin/" + spec.Branch}
-	} else if _, err := g.run(ctx, clone, "git", "rev-parse", "--verify", "--quiet", "refs/heads/"+spec.Branch); err == nil {
-		args = []string{"worktree", "add", "--quiet", dir, spec.Branch}
-	}
-	if _, err := g.run(ctx, clone, "git", args...); err != nil {
-		return "", err
-	}
-	if err := g.lockWorktree(ctx, dir, spec); err != nil {
-		return "", err
-	}
-	return dir, nil
 }
 
 // lockWorktree locks the worktree at dir with `git worktree lock
@@ -682,7 +637,7 @@ func registeredDir(admin string) (string, bool) {
 // for a checkout in a job, which is a clone of its own (ADR-039), else
 // ReposRoot when set, else "repos" beside dir's work root (its
 // grandparent's parent: <root>/../repos for <root>/<goal>/<seq>), as
-// sharedClone derives it from a spec's Root.
+// seedClone derives it from a spec's Root.
 func (g *Git) reposRootFor(dir string) string {
 	if _, _, ok := jobOf(dir); ok {
 		return ""
@@ -890,8 +845,7 @@ func staleWorktree(dir string) (gitdir string, ok bool) {
 
 // removeStale removes the checkout at dir when it is a stale worktree
 // (staleWorktree), so the caller finds no `.git` and makes it again — a
-// worktree by addWorktree, which forgets any registration still naming
-// dir, else a clone of its own. A stale worktree whose clone is still
+// clone of its own (Prepare). A stale worktree whose clone is still
 // there and whose admin dir alone is gone is RebuildWorktree's, which
 // keeps its files; what is left here has no clone, or no admin dir
 // shape, to rebuild from. Logged `workspace <dir>: worktree <gitdir> is
@@ -960,7 +914,7 @@ type worktreeRebuilder interface {
 // .git/worktrees/<n>; moves its `.git` file over the stale one, runs
 // `git worktree repair` and a mixed `git reset`, so the working tree's
 // files — committed or not — are left as they were and only the index
-// is rebuilt; and locks it as addWorktree does. A checkout that is no
+// is rebuilt; and locks it (lockWorktree). A checkout that is no
 // worktree of the shared clone (an evaluation's <seq>-eval, a plan's) is
 // removed whole, for the Prepare after it to make again. Logged
 // `workspace <dir>: worktree <path> is gone; made again for <branch> at
@@ -971,7 +925,7 @@ func (g *Git) RebuildWorktree(ctx context.Context, spec WorkspaceSpec) error {
 	if !ok {
 		return nil
 	}
-	if g.sharedClone(spec) == "" {
+	if g.seedClone(spec) == "" {
 		// no worktree spec: removed, and cloned again as a new checkout
 		return g.removeStale(dir)
 	}

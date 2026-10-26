@@ -37,7 +37,7 @@ func preparedLocked(t *testing.T) (*Git, WorkspaceSpec, string, string) {
 	work, repos := filepath.Join(root, "work"), filepath.Join(root, "repos")
 	g, _ := recordingGit(repos)
 	spec := WorkspaceSpec{Root: work, GoalSlug: "g", Seq: 1, Repo: origin, Branch: BranchName("g", 1), BaseRef: "main"}
-	dir, err := g.Prepare(context.Background(), spec)
+	dir, err := prepareWorktree(context.Background(), g, spec)
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 )
 
@@ -73,6 +74,10 @@ func TestValidatorFetchAndBuilderPushRunOnTheBrokersItemToken(t *testing.T) {
 	r.WS = g
 	ctx := context.Background()
 	spec := WorkspaceSpec{Root: filepath.Join(root, "work"), GoalSlug: "g", Seq: 1, Repo: "acme/widgets", Branch: BranchName("g", 1), BaseRef: "main"}
+	// a worktree made before checkouts were clones of their own
+	if _, err := prepareWorktree(withGitToken(ctx, srv.URL, &gateway.GitHubToken{Token: "ghs_claim"}), g, spec); err != nil {
+		t.Fatalf("worktree: %v", err)
+	}
 	cred, err := NewItemCred(ctx, r.GW, g, r.Scopes, item, spec, nil, r.logf)
 	if err != nil {
 		t.Fatalf("item cred: %v", err)

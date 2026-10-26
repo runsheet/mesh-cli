@@ -342,7 +342,7 @@ func dirBytes(dir string) int64 {
 func pruneGoneWorktrees(ctx context.Context, git *Git, reposRoot, lockRoot string) (int, []string) {
 	var n int
 	var notes []string
-	for _, clone := range sharedClones(reposRoot) {
+	for _, clone := range clonesUnder(reposRoot) {
 		admins := goneRegistrations(clone)
 		if len(admins) == 0 {
 			continue
@@ -382,9 +382,9 @@ func goneRegistrations(clone string) []string {
 	return out
 }
 
-// sharedClones is every clone under reposRoot — <owner>/<name>, or one
+// clonesUnder is every clone under reposRoot — <owner>/<name>, or one
 // directory for a repo named by path — that has a `.git` directory.
-func sharedClones(reposRoot string) []string {
+func clonesUnder(reposRoot string) []string {
 	isClone := func(p string) bool {
 		fi, err := os.Stat(filepath.Join(p, ".git"))
 		return err == nil && fi.IsDir()

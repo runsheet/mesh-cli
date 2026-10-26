@@ -516,15 +516,10 @@ func (g *Git) addDetachedWorktree(ctx context.Context, repo, dir, branch, sha st
 // addDetachedClone is addDetachedWorktree for a dir in a job (ADR-039):
 // repo cloned into dir alone, branch fetched into it, check asked of
 // it, sha checked out detached — no shared clone, no other job's
-// objects.
+// objects. The clone is cloneOwn's, as a build's checkout is.
 func (g *Git) addDetachedClone(ctx context.Context, repo, dir, branch, sha string, check func(clone, ref string) error) error {
 	root, key := g.lockRoot("", dir), RepoLockKey(repo)
-	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
-		return err
-	}
-	clone := g.cloneCommand(ctx, repo, dir, "--no-checkout")
-	if _, err := g.fetchLocked(ctx, root, key, filepath.Dir(dir), clone[0], clone[1:]...); err != nil {
-		os.RemoveAll(dir)
+	if err := g.cloneOwn(ctx, root, key, repo, dir, "", "--no-checkout"); err != nil {
 		return err
 	}
 	spec, ref := fetchRefspec(branch)

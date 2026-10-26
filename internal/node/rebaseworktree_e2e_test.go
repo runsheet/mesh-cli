@@ -210,6 +210,10 @@ func TestRebaseWorktreeDanglingGitFileE2E(t *testing.T) {
 	ctx := context.Background()
 
 	spec := WorkspaceSpec{Root: work, GoalSlug: "g", Seq: 1, Repo: origin, Branch: BranchName("g", 1), BaseRef: "main"}
+	// a worktree made before checkouts were clones of their own
+	if _, err := prepareWorktree(ctx, g, spec); err != nil {
+		t.Fatal(err)
+	}
 	dir, built := buildAndPush(t, g, spec)
 
 	admin := worktreeAdmin(dir)

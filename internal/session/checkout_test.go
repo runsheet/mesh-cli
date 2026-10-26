@@ -20,10 +20,12 @@ const fakeToken = "ghs_fakeItemToken0123456789"
 
 // TestWorkspaceLeavesNoCredential prepares an item's workspace by the
 // checkout step against a local bare repo behind a stand-in GitHub that
-// answers only the item's ghs_ token — a worktree of the shared clone, a
-// full clone (an evaluation's), and a rework whose checkout an earlier
-// Authorize left a helper in — and walks every file under the workspace
-// and its git dirs: neither the token nor ghs_ appears, origin is the
+// answers only the item's ghs_ token — a build's clone of its own seeded
+// from the shared clone, a full clone (an evaluation's), and a rework
+// whose checkout an earlier Authorize left a helper in — and walks every
+// file under the workspace and its git dir, and the shared clone's
+// config: neither the token nor ghs_ appears, each checkout's git dir is
+// its own (no worktree), origin is the
 // plain https URL, and the node's push still goes out on the token per
 // command.
 func TestWorkspaceLeavesNoCredential(t *testing.T) {
@@ -57,7 +59,7 @@ func TestWorkspaceLeavesNoCredential(t *testing.T) {
 	origin := srv.URL + "/acme/widgets.git"
 	ctx := context.Background()
 
-	worktree := node.WorkspaceSpec{Root: work, GoalSlug: "g", Seq: 1, Repo: "acme/widgets", Branch: node.BranchName("g", 1), BaseRef: "main"}
+	build := node.WorkspaceSpec{Root: work, GoalSlug: "g", Seq: 1, Repo: "acme/widgets", Branch: node.BranchName("g", 1), BaseRef: "main"}
 	clone := node.EvalWorkspaceSpec(work, "g", 2, "acme/widgets", "main-copy", "main")
 	clone.Branch = ""
 	rework := node.WorkspaceSpec{Root: work, GoalSlug: "g", Seq: 3, Repo: "acme/widgets", Branch: node.BranchName("g", 3), BaseRef: "main"}
@@ -69,10 +71,10 @@ func TestWorkspaceLeavesNoCredential(t *testing.T) {
 	}
 
 	for _, c := range []struct {
-		name     string
-		spec     node.WorkspaceSpec
-		worktree bool
-	}{{"worktree", worktree, true}, {"full clone", clone, false}, {"rework", rework, true}} {
+		name  string
+		spec  node.WorkspaceSpec
+		build bool
+	}{{"build", build, true}, {"full clone", clone, false}, {"rework", rework, true}} {
 		t.Run(c.name, func(t *testing.T) {
 			spec := c.spec
 			state := &session.State{}
@@ -91,16 +93,19 @@ func TestWorkspaceLeavesNoCredential(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if c.worktree == (gitDir == common) {
-				t.Fatalf("worktree %v, but git dir %s common %s", c.worktree, gitDir, common)
+			if gitDir != common {
+				t.Fatalf("git dir %s, common %s: the checkout is a worktree, not a clone of its own", gitDir, common)
 			}
-			// the workspace, its git dir and — for a worktree — the
-			// shared clone's config: nothing names the token or ghs_
+			// the workspace, its git dir and the shared clone's config:
+			// nothing names the token or ghs_
 			roots := []string{dir, gitDir}
 			for _, r := range roots {
 				walkNoSecret(t, r)
 			}
 			noSecret(t, filepath.Join(common, "config"))
+			if shared := filepath.Join(node.SharedClonePath(g.ReposRoot, "acme/widgets"), ".git", "config"); c.build {
+				noSecret(t, shared)
+			}
 
 			if got := gitOut(t, dir, "remote", "get-url", "origin"); got != origin {
 				t.Fatalf("origin %q, want the plain https URL %q", got, origin)
@@ -111,7 +116,7 @@ func TestWorkspaceLeavesNoCredential(t *testing.T) {
 			if gitOut(t, dir, "rev-parse", "HEAD") == "" {
 				t.Fatal("nothing checked out")
 			}
-			if !c.worktree {
+			if !c.build {
 				return
 			}
 			// the node's push still goes out, on the token per command

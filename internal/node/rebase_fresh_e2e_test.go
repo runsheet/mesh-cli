@@ -92,11 +92,15 @@ func TestRebaseRunsInAFreshCheckout(t *testing.T) {
 			}
 		}, false},
 		{"dangling .git", func(t *testing.T, dir string) {
-			admin := worktreeAdmin(dir)
-			if admin == "" {
-				t.Fatalf("%s names no worktree admin", dir)
+			// the build's checkout is a clone of its own: left with the
+			// `.git` file of a worktree made before checkouts were, whose
+			// registration in the shared clone is gone
+			clone := SharedClonePath(filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(dir))), "repos"), "acme/widgets")
+			admin := filepath.Join(clone, ".git", "worktrees", "1")
+			if err := os.RemoveAll(filepath.Join(dir, ".git")); err != nil {
+				t.Fatal(err)
 			}
-			if err := os.RemoveAll(admin); err != nil {
+			if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: "+admin+"\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			if _, _, gone := worktreeAdminGone(dir); !gone {
@@ -139,7 +143,7 @@ func rebaseInAFreshCheckout(t *testing.T, breakCheckout func(*testing.T, string)
 	g := &Git{GitHubURL: "file://" + base, ReposRoot: filepath.Join(root, "repos"), Log: logs}
 	work := filepath.Join(root, "work")
 
-	// item 1 built in its own worktree and pushed
+	// item 1 built in its own checkout and pushed
 	branch := BranchName("ship-it", 1)
 	spec := WorkspaceSpec{Root: work, GoalSlug: "ship-it", Seq: 1, Repo: "acme/widgets", Branch: branch, BaseRef: "main"}
 	if err := g.Authorize(ctx, spec, &gateway.GitHubToken{Token: "ghs_build"}); err != nil {
@@ -149,8 +153,8 @@ func rebaseInAFreshCheckout(t *testing.T, breakCheckout func(*testing.T, string)
 	if err != nil {
 		t.Fatalf("prepare the build: %v", err)
 	}
-	if dir != spec.Dir() || !isWorktree(dir) {
-		t.Fatalf("the build's checkout %s is not a worktree at %s", dir, spec.Dir())
+	if dir != spec.Dir() {
+		t.Fatalf("the build's checkout %s is not at %s", dir, spec.Dir())
 	}
 	writeFiles(t, dir, map[string]string{"api/item.go": "package api\n\nconst Item = 1\n"})
 	gitRun(t, dir, "add", "-A")
