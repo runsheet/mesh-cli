@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -818,8 +817,7 @@ func (vr validator) changedPaths(ctx context.Context, t validationTarget) ([]str
 
 // diffNames are the files HEAD changed since from, in dir.
 func diffNames(ctx context.Context, dir, from string) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", from, "HEAD")
-	cmd.Dir = dir
+	cmd := hardenedGitCmd(ctx, "", dir, "diff", "--no-ext-diff", "--no-textconv", "--name-only", from, "HEAD")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git diff %s: %w", from, err)
@@ -905,8 +903,7 @@ func (vr validator) onFreshItemToken(ctx context.Context, t validationTarget) (c
 // gitPosition is where the checkout is: its branch's name, else (a
 // detached HEAD) its commit.
 func gitPosition(ctx context.Context, dir string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "--quiet", "--short", "HEAD")
-	cmd.Dir = dir
+	cmd := hardenedGitCmd(ctx, "", dir, "symbolic-ref", "--quiet", "--short", "HEAD")
 	if out, err := cmd.Output(); err == nil {
 		return strings.TrimSpace(string(out)), nil
 	}
@@ -1193,8 +1190,7 @@ func writeAttestationAt(path string, att validate.Attestation) error {
 
 // gitHead is the checkout's HEAD commit.
 func gitHead(ctx context.Context, dir string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
-	cmd.Dir = dir
+	cmd := hardenedGitCmd(ctx, "", dir, "rev-parse", "HEAD")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse HEAD: %w", err)

@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -32,9 +31,7 @@ const LeftoverCommitMessage = "leftover changes from the build session"
 // session left, not record its work.
 func commitLeftovers(ctx context.Context, dir string, ident Identity) ([]string, error) {
 	git := func(stdin string, args ...string) (string, error) {
-		cmd := exec.CommandContext(ctx, "git", args...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), ident.Env()...)
+		cmd := hardenedGitCmdEnv(ctx, "", dir, ident.Env(), args...)
 		if stdin != "" {
 			cmd.Stdin = strings.NewReader(stdin)
 		}

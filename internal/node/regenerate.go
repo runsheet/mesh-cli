@@ -255,9 +255,7 @@ func regenRebaseInProgress(ctx context.Context, dir string) bool {
 // regenGit runs git in dir with no editor, so a `rebase --continue`
 // keeps the replayed commit's message.
 func regenGit(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_EDITOR=true", "GIT_SEQUENCE_EDITOR=true")
+	cmd := hardenedGitCmdEnv(ctx, "", dir, []string{"GIT_EDITOR=true", "GIT_SEQUENCE_EDITOR=true"}, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
