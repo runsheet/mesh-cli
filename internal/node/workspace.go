@@ -232,7 +232,8 @@ func (g *Git) originOnToken(ctx context.Context, spec WorkspaceSpec, tok *gatewa
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil && g.sharedClone(spec) != "" {
 		tctx := withGitToken(ctx, g.githubURL(), tok)
-		if _, err := g.addWorktree(tctx, g.lockRoot(spec.Root, dir), RepoLockKey(spec.Repo), g.sharedClone(spec), spec); err != nil {
+		clone := g.sharedClone(spec)
+		if _, err := g.addWorktree(tctx, g.sharedLockRoot(clone, spec.Repo), RepoLockKey(spec.Repo), clone, spec); err != nil {
 			return err
 		}
 	}
@@ -256,7 +257,7 @@ func (g *Git) originOnToken(ctx context.Context, spec WorkspaceSpec, tok *gatewa
 		// a worktree's origin is its shared clone's: one .git/config
 		// every item of the repo reads and writes, so it is changed only
 		// under the repo's lock, and only when it differs (sharedOrigin)
-		if err := g.sharedOrigin(ctx, g.lockRoot(spec.Root, dir), RepoLockKey(spec.Repo), dir, origin); err != nil {
+		if err := g.sharedOrigin(ctx, g.dirLockRoot(ctx, spec.Root, dir, spec.Repo), RepoLockKey(spec.Repo), dir, origin); err != nil {
 			return err
 		}
 	} else if _, err := g.withStaleLockRetry(dir, func() (string, error) {
@@ -392,13 +393,16 @@ func (g *Git) cloneCommand(ctx context.Context, repo, dir string, flags ...strin
 // shared clone — is fetched and checked out in place.
 func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 	dir := spec.Dir()
-	root, key := g.lockRoot(spec.Root, dir), RepoLockKey(spec.Repo)
+	key := RepoLockKey(spec.Repo)
 	if err := g.RebuildWorktree(ctx, spec); err != nil {
 		return "", err
 	}
 	if err := g.removeStale(dir); err != nil {
 		return "", err
 	}
+	// a worktree's fetch, add or clone writes its shared clone: locked
+	// under that clone's root, whatever job root the spec names
+	root := g.specLockRoot(ctx, spec)
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 		if clone := g.sharedClone(spec); clone != "" {
 			return g.addWorktree(ctx, root, key, clone, spec)
@@ -714,14 +718,13 @@ func (g *Git) RemoveWorkspace(ctx context.Context, dir string) error {
 	if WorkspaceLive(dir) {
 		return fmt.Errorf("remove workspace %s: its item is live on this node; left alone", dir)
 	}
-	root := g.lockRoot("", dir)
 	fi, err := os.Stat(filepath.Join(dir, ".git"))
 	switch {
 	case err == nil && fi.IsDir():
 		return os.RemoveAll(dir)
 	case err == nil:
 		if clone := worktreeClone(dir); clone != "" {
-			return g.removeWorktree(ctx, root, clone, dir)
+			return g.removeWorktree(ctx, g.sharedLockRoot(clone, g.repoKeyOf(ctx, clone)), clone, dir)
 		}
 		// a worktree whose clone is gone: nothing left to prune
 		return os.RemoveAll(dir)
@@ -734,7 +737,7 @@ func (g *Git) RemoveWorkspace(ctx context.Context, dir string) error {
 		return err
 	}
 	for clone, admins := range registrationsNaming(reposRoot, dir) {
-		if err := g.forgetRegistrations(ctx, root, clone, admins); err != nil {
+		if err := g.forgetRegistrations(ctx, g.sharedLockRoot(clone, g.repoKeyOf(ctx, clone)), clone, admins); err != nil {
 			return err
 		}
 	}
@@ -976,7 +979,7 @@ func (g *Git) RebuildWorktree(ctx context.Context, spec WorkspaceSpec) error {
 	if spec.Repo == "" {
 		key = g.repoKeyOf(ctx, clone)
 	}
-	unlock, err := lockRepo(ctx, g.lockRoot(spec.Root, dir), key)
+	unlock, err := lockRepo(ctx, g.sharedLockRoot(clone, key), key)
 	if err != nil {
 		return err
 	}
@@ -1102,7 +1105,7 @@ func registrationsNaming(reposRoot, dir string) map[string][]string {
 // fetched the base explicitly and a shallow one unshallowed, so every
 // cited SHA can be looked up.
 func (g *Git) CheckoutBase(ctx context.Context, dir, base string) error {
-	return g.checkoutBase(ctx, g.lockRoot("", dir), g.repoKeyOf(ctx, dir), dir, base)
+	return g.checkoutBase(ctx, g.dirLockRoot(ctx, "", dir, ""), g.repoKeyOf(ctx, dir), dir, base)
 }
 
 func (g *Git) checkoutBase(ctx context.Context, root, key, dir, base string) error {
@@ -1229,7 +1232,7 @@ const deepenRounds = 3
 // still shares none yields a *NoMergeBaseError; a base origin no longer
 // has, a *BaseGoneError.
 func (g *Git) EnsureMergeBase(ctx context.Context, dir, base string) error {
-	root, key := g.lockRoot("", dir), g.repoKeyOf(ctx, dir)
+	root, key := g.dirLockRoot(ctx, "", dir, ""), g.repoKeyOf(ctx, dir)
 	remote := "refs/remotes/origin/" + base
 	if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--quiet", "origin", "+refs/heads/"+base+":"+remote); err != nil {
 		if g.baseGone(ctx, dir, base) {
@@ -1273,7 +1276,7 @@ func (g *Git) EnsureMergeBase(ctx context.Context, dir, base string) error {
 
 // Fetch implements Workspacer.
 func (g *Git) Fetch(ctx context.Context, repo, dir string) error {
-	root, key := g.lockRoot("", dir), RepoLockKey(repo)
+	root, key := g.dirLockRoot(ctx, "", dir, repo), RepoLockKey(repo)
 	if err := g.removeStale(dir); err != nil {
 		return err
 	}
@@ -1384,7 +1387,7 @@ func PushRefusal(out string) bool {
 
 // PushedHead implements Workspacer.
 func (g *Git) PushedHead(ctx context.Context, dir, branch, base string) (string, error) {
-	if _, err := g.fetchLocked(ctx, g.lockRoot("", dir), g.repoKeyOf(ctx, dir), dir, "git", "fetch", "--prune", "origin"); err != nil {
+	if _, err := g.fetchLocked(ctx, g.dirLockRoot(ctx, "", dir, ""), g.repoKeyOf(ctx, dir), dir, "git", "fetch", "--prune", "origin"); err != nil {
 		return "", err
 	}
 	head, err := g.run(ctx, dir, "git", "rev-parse", "refs/remotes/origin/"+branch)
@@ -1403,7 +1406,7 @@ func (g *Git) PushedHead(ctx context.Context, dir, branch, base string) (string,
 // A head the branch no longer leads to is asked for by its sha; one origin
 // does not have is an error.
 func (g *Git) FetchHead(ctx context.Context, dir, branch, head string) error {
-	root, key := g.lockRoot("", dir), g.repoKeyOf(ctx, dir)
+	root, key := g.dirLockRoot(ctx, "", dir, ""), g.repoKeyOf(ctx, dir)
 	refspec := "+refs/heads/" + branch + ":refs/remotes/origin/" + branch
 	if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--quiet", "origin", refspec); err != nil {
 		return err

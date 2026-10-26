@@ -76,6 +76,54 @@ func (g *Git) lockRoot(root, dir string) string {
 	return filepath.Dir(filepath.Dir(dir))
 }
 
+// sharedLockRoot is the root the lock files of a shared clone's repo
+// live under: LockRoot when set, else the repos root the clone is kept
+// in (SharedClonePath's reposRoot), never a job's or an item's root.
+// Every git command that writes the shared clone — its clone and
+// fetches, a worktree's add, prune or removal, its origin's set-url —
+// locks here, so two jobs of one repo on different roots wait on one
+// lock file rather than each on its own (ADR-023).
+func (g *Git) sharedLockRoot(clone, repo string) string {
+	if g.LockRoot != "" {
+		return g.LockRoot
+	}
+	clone = filepath.Clean(clone)
+	if rel := SharedClonePath("", repo); strings.HasSuffix(clone, string(filepath.Separator)+rel) {
+		return strings.TrimSuffix(clone, string(filepath.Separator)+rel)
+	}
+	return filepath.Dir(clone)
+}
+
+// specLockRoot is the lock root of spec's checkout: its shared clone's
+// (sharedLockRoot) when it is or becomes a worktree of one, else
+// lockRoot's — a full clone already at the dir keeps its own.
+func (g *Git) specLockRoot(ctx context.Context, spec WorkspaceSpec) string {
+	dir := spec.Dir()
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+		return g.dirLockRoot(ctx, spec.Root, dir, spec.Repo)
+	}
+	if clone := g.sharedClone(spec); clone != "" {
+		return g.sharedLockRoot(clone, spec.Repo)
+	}
+	return g.lockRoot(spec.Root, dir)
+}
+
+// dirLockRoot is the lock root of a git command run in dir: a
+// worktree's writes land in its shared clone, so it locks under that
+// clone's root (sharedLockRoot); any other checkout under lockRoot's.
+// repo names the repo, else it is read from the clone's origin.
+func (g *Git) dirLockRoot(ctx context.Context, root, dir, repo string) string {
+	if isWorktree(dir) {
+		if clone := worktreeClone(dir); clone != "" {
+			if repo == "" {
+				repo = g.repoKeyOf(ctx, clone)
+			}
+			return g.sharedLockRoot(clone, repo)
+		}
+	}
+	return g.lockRoot(root, dir)
+}
+
 // lockHolderKey carries on a ctx the label of the item a lockRepo call
 // holds the lock for.
 type lockHolderKey struct{}

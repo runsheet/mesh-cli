@@ -670,17 +670,19 @@ func TestPrepareOneSpecFourTimesAtOnce(t *testing.T) {
 	}
 }
 
-// Prepare leaves the repo's lock file under <root>/.locks/ and lets it
-// go: a non-blocking exclusive flock on it succeeds once Prepare returns.
+// Prepare leaves the repo's lock file under the shared clone's repos
+// root, <reposRoot>/.locks/, and lets it go: a non-blocking exclusive
+// flock on it succeeds once Prepare returns.
 func TestPrepareReleasesTheRepoLock(t *testing.T) {
 	root, origin := lockTestOrigin(t)
 	spec := WorkspaceSpec{Root: root, GoalSlug: "g", Seq: 1, Repo: origin, Branch: "mesh/g-1", BaseRef: "main"}
 	if _, err := (&Git{}).Prepare(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
-	path := RepoLockPath(root, RepoLockKey(origin))
-	if filepath.Dir(path) != filepath.Join(root, LocksDir) {
-		t.Fatalf("lock file %s is not under %s", path, filepath.Join(root, LocksDir))
+	reposRoot := filepath.Join(filepath.Dir(root), "repos")
+	path := RepoLockPath(reposRoot, RepoLockKey(origin))
+	if filepath.Dir(path) != filepath.Join(reposRoot, LocksDir) {
+		t.Fatalf("lock file %s is not under %s", path, filepath.Join(reposRoot, LocksDir))
 	}
 	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
@@ -1038,8 +1040,14 @@ func TestPrepareTwoItemsOfOneRepoAreWorktreesOfOneClone(t *testing.T) {
 		}
 	}
 	entries, err := os.ReadDir(repos)
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("clones under ReposRoot: %v %v, want one", entries, err)
+	var clonesUnder []os.DirEntry
+	for _, e := range entries {
+		if e.Name() != LocksDir { // the shared clone's own lock files
+			clonesUnder = append(clonesUnder, e)
+		}
+	}
+	if err != nil || len(clonesUnder) != 1 {
+		t.Fatalf("clones under ReposRoot: %v %v, want one", clonesUnder, err)
 	}
 	if fi, err := os.Stat(filepath.Join(clone, ".git")); err != nil || !fi.IsDir() {
 		t.Fatalf("the shared clone %s: %v", clone, err)
@@ -1085,13 +1093,14 @@ func TestPrepareWorktreeContinuesAPushedBranch(t *testing.T) {
 
 // Every clone and fetch of the shared clone runs while the repo's lock
 // is held: both halves of it — the process's mutex and the flock on
-// <root>/.locks/<key>.lock — are taken when the command starts.
+// <reposRoot>/.locks/<key>.lock, the clone's own root and not the
+// item's — are taken when the command starts.
 func TestSharedCloneIsClonedAndFetchedUnderTheRepoLock(t *testing.T) {
 	root, origin := lockTestOrigin(t)
 	work, repos := filepath.Join(root, "work"), filepath.Join(root, "repos")
 	clone := SharedClonePath(repos, origin)
 	key := RepoLockKey(origin)
-	lockPath := RepoLockPath(work, key)
+	lockPath := RepoLockPath(repos, key)
 	g := &Git{ReposRoot: repos}
 	var onClone []string
 	g.exec = func(ctx context.Context, dir, name string, args ...string) (string, error) {
