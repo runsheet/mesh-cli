@@ -94,7 +94,11 @@ func writeHelper(ctx context.Context, dir, base, helper string) error {
 	if err := gitConfig("--add", key, ""); err != nil {
 		return err
 	}
-	return gitConfig("--add", key, helper)
+	if err := gitConfig("--add", key, helper); err != nil {
+		return err
+	}
+	rememberHelper(dir, base, helper)
+	return nil
 }
 
 // clearHelper removes every credential helper the checkout in dir set
@@ -102,6 +106,7 @@ func writeHelper(ctx context.Context, dir, base, helper string) error {
 // config.worktree — as writeHelper wrote it; nothing set is nothing to
 // do. The shared clone's config is never touched: no helper goes there.
 func clearHelper(ctx context.Context, dir, base string) error {
+	forgetHelper(dir)
 	key := "credential." + strings.TrimRight(base, "/") + ".helper"
 	scope := "--local"
 	if isWorktree(dir) {
@@ -215,10 +220,11 @@ func (g *Git) AuthorizeOperator(ctx context.Context, dir string) error {
 	if err != nil {
 		return err
 	}
-	if strings.ContainsAny(ghDir, "'\n") {
+	h, ok := operatorHelper(g.githubURL())
+	if !ok {
 		return fmt.Errorf("gh config dir %q cannot be quoted for a credential helper", ghDir)
 	}
-	return writeHelper(ctx, dir, g.githubURL(), "!GH_CONFIG_DIR='"+ghDir+"' gh auth git-credential")
+	return writeHelper(ctx, dir, h.base, h.helper)
 }
 
 // NewGHConfigDir is a fresh, empty directory for a session's
