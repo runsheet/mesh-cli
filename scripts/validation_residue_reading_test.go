@@ -89,6 +89,7 @@ func TestValidationResidueReadingDry(t *testing.T) {
 			"new entries: 1",
 			"new bytes: 9",
 			"validations in window: 2",
+			"leftover work directories: 3",
 		}},
 	} {
 		got := block(out, c.from, c.to)

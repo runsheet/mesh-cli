@@ -61,6 +61,9 @@ diff_block="$(awk '/^== difference$/{f=1; next} f' <<<"$out")"
 check_contains "new entries" "$diff_block" "new entries: 1"
 check_contains "new bytes" "$diff_block" "new bytes: 9"
 check_contains "validations in window" "$diff_block" "validations in window: 2"
+# work/goal-a/1 and goal-b/3 have no session, goal-b/4's session pid is
+# dead, goal-a/2's state.json names pid 0 (a sandboxed session): live.
+check_contains "leftover work directories" "$diff_block" "leftover work directories: 3"
 
 help_out="$(bash "$script" --help)"
 check_contains "--help names the --dry fixture invocation" "$help_out" \
@@ -98,6 +101,16 @@ check "count_validations skips lines outside the window" \
 
 check "count_validations on a missing log gives 0" \
   "0" "$(count_validations "$here/no-such-node.log")"
+
+check "leftover_work_dirs on a missing root gives 0" \
+  "0" "$(leftover_work_dirs "$here/no-such-work")"
+
+tmp_work="$(mktemp -d)"
+trap 'rm -f "$tmp_log"; rm -rf "$tmp_work"' EXIT
+mkdir -p "$tmp_work/g/1" "$tmp_work/g/1.session"
+printf '{"pid": %d}\n' "$$" >"$tmp_work/g/1.session/state.json"
+check "leftover_work_dirs counts no dir whose session's pid is alive" \
+  "0" "$(leftover_work_dirs "$tmp_work")"
 
 set +e
 window_out="$(bash "$script" --window not-a-number 2>&1)"
