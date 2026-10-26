@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -13,12 +14,13 @@ import (
 const RebaseSuffix = "-rebase"
 
 // RebaseWorkspaceSpec is a rebase's own checkout of the item item names:
-// a fresh detached worktree at <root>/<goal>/<seq>-rebase beside the
-// build's <root>/<goal>/<seq> (ADR-028, A rebase gets its own worktree),
+// a fresh detached clone of its own at <job>/rebase, or
+// <root>/<goal>/<seq>-rebase beside the build's <root>/<goal>/<seq>
+// outside a job (ADR-028, A rebase gets its own worktree; ADR-039),
 // so a build checkout deleted, swept or left pointing at a pruned
 // worktree registration is never read, written or authorized by the
-// rebase. Root and Repos stay the item's, so the repo lock and the
-// shared clone are the build's.
+// rebase. Root and Repos stay the item's, so the repo lock is the
+// build's; no shared clone is read or written.
 func RebaseWorkspaceSpec(item WorkspaceSpec) WorkspaceSpec {
 	s := item
 	if item.Job != "" {
@@ -50,16 +52,23 @@ type rebaseWorktrees interface {
 // rebase's worktree.
 var ErrNoRebaseWorktrees = errors.New("the node's workspace makes no rebase worktrees")
 
-// AddRebaseWorktree checks branch out at dir as a fresh detached worktree
-// of the repo's shared clone at origin/<branch>, as AddCandidateWorktree
-// checks a candidate out: the branch fetched into the shared clone, the
-// ref checked, `git worktree add --detach`. It reads nothing of the
-// item's own checkout, so a rebase runs whether that directory is there,
-// gone, or its worktree admin lost. The session pushes HEAD to
-// refs/heads/<branch>.
+// AddRebaseWorktree checks branch out at dir as a fresh detached clone
+// of its own at origin/<branch>, as a candidate's is checked out in a
+// job: a stale dir there removed first, then addDetachedClone — repo
+// cloned into dir by cloneOwn, the branch fetched into it, the ref
+// checked, `git checkout --detach` — in a job or outside one alike, so
+// no shared clone is written and no worktree registered (ADR-039,
+// Nothing is shared between jobs). It reads nothing of the item's own
+// checkout, so a rebase runs whether that directory is there, gone, or
+// its worktree admin lost. The session pushes HEAD to refs/heads/<branch>.
 func (g *Git) AddRebaseWorktree(ctx context.Context, repo, dir, branch string) error {
+	if _, err := os.Stat(dir); err == nil {
+		if err := g.RemoveWorkspace(ctx, dir); err != nil {
+			return err
+		}
+	}
 	ref := "refs/remotes/origin/" + branch
-	return g.addDetachedWorktree(ctx, repo, dir, branch, ref, func(clone, ref string) error {
+	return g.addDetachedClone(ctx, repo, dir, branch, ref, func(clone, ref string) error {
 		_, err := g.run(ctx, clone, "git", "rev-parse", "--verify", "--quiet", ref+"^{commit}")
 		return err
 	})
