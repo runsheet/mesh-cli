@@ -48,7 +48,7 @@ func TestLoopPlansRequestedGoals(t *testing.T) {
 		t.Fatalf("claim calls: %+v", claims)
 	}
 	calls := f.CallsNamed("planGoal")
-	if len(calls) != 1 || calls[0].Input["aggregateId"] != goal2 || calls[0].Input["by"] != f.UserID || calls[0].Input["costCents"] != float64(125) {
+	if len(calls) != 1 || calls[0].Input["aggregateId"] != goal2 || calls[0].Input["by"] != nil || calls[0].Input["costCents"] != float64(125) {
 		t.Fatalf("plan calls: %+v", calls)
 	}
 	items := calls[0].Input["items"].([]any)
