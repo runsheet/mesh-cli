@@ -1109,7 +1109,7 @@ func TestSharedCloneIsClonedAndFetchedUnderTheRepoLock(t *testing.T) {
 		fetching := name == "git" && len(args) > 0 && args[0] == "fetch" && dir == clone
 		if cloning || fetching {
 			onClone = append(onClone, cmd)
-			v, ok := repoLocks.Load(key)
+			v, ok := repoLocks.Load(repoLockID(repos, key))
 			if !ok || v.(*sync.Mutex).TryLock() {
 				t.Errorf("%s ran without the process's repo mutex", cmd)
 				if ok {

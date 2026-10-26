@@ -21,9 +21,18 @@ import (
 const LocksDir = ".locks"
 
 // repoLocks is the in-process half of the per-repo lock: one mutex per
-// key, shared by every Git of the process, since the runner, evaluator,
-// rebaser, planner and director each hold their own.
-var repoLocks sync.Map // key → *sync.Mutex
+// lock root and key (repoLockID), shared by every Git of the process,
+// since the runner, evaluator, rebaser, planner and director each hold
+// their own. Keyed by the root as the flock's file is, so two jobs'
+// own clones of one repo never wait on each other while one job's — or
+// one shared clone's — commands still do (ADR-023, ADR-039).
+var repoLocks sync.Map // repoLockID(root, key) → *sync.Mutex
+
+// repoLockID is the in-process lock's key for key's lock under root:
+// the cleaned root and the key, as RepoLockPath names one file.
+func repoLockID(root, key string) string {
+	return filepath.Clean(root) + "\x00" + key
+}
 
 // flockPoll is how often a waiting fetch tries the file lock again.
 const flockPoll = 50 * time.Millisecond
@@ -216,8 +225,9 @@ func (h lockHolder) waitingLine(now time.Time) string {
 	return fmt.Sprintf("waiting on %s (pid %d, held %s)", h.Label, h.PID, held)
 }
 
-// repoHolders is who holds each in-process mutex of repoLocks, by key.
-var repoHolders sync.Map // key → lockHolder
+// repoHolders is who holds each in-process mutex of repoLocks, by the
+// same repoLockID.
+var repoHolders sync.Map // repoLockID(root, key) → lockHolder
 
 // repoLockLogf is the package's logger for the lock's waits: a lockRepo
 // that has to wait logs whom it waits on and, once it has the lock, how
@@ -240,7 +250,7 @@ func lockLogf(format string, args ...any) {
 	}
 }
 
-// lockRepo takes the per-repo lock: the process's mutex for key, then an
+// lockRepo takes the per-repo lock: the process's mutex for root and key, then an
 // exclusive flock on its file under root, so two node processes on one
 // machine are serialised too. The returned func releases both. Once both
 // are held the holder — ctx's WithLockHolder label, its actor's role,
@@ -252,11 +262,12 @@ func lockLogf(format string, args ...any) {
 func lockRepo(ctx context.Context, root, key string) (func(), error) {
 	start := time.Now()
 	waited := false
-	v, _ := repoLocks.LoadOrStore(key, &sync.Mutex{})
+	id := repoLockID(root, key)
+	v, _ := repoLocks.LoadOrStore(id, &sync.Mutex{})
 	mu := v.(*sync.Mutex)
 	if !mu.TryLock() {
 		waited = true
-		h, ok := repoHolders.Load(key)
+		h, ok := repoHolders.Load(id)
 		if !ok {
 			h = lockHolder{Label: "unknown", PID: os.Getpid()}
 		}
@@ -293,7 +304,7 @@ func lockRepo(ctx context.Context, root, key string) (func(), error) {
 		}
 	}
 	holder := lockHolder{Label: lockHolderOf(ctx), Role: lockRoleOf(ctx), PID: os.Getpid(), Since: time.Now()}
-	repoHolders.Store(key, holder)
+	repoHolders.Store(id, holder)
 	if err := f.Truncate(0); err == nil {
 		f.WriteAt([]byte(holder.line()), 0)
 	}
@@ -301,7 +312,7 @@ func lockRepo(ctx context.Context, root, key string) (func(), error) {
 		lockLogf("repo lock %s: acquired after %s", key, time.Since(start).Round(time.Millisecond))
 	}
 	return func() {
-		repoHolders.Delete(key)
+		repoHolders.Delete(id)
 		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		f.Close()
 		mu.Unlock()
