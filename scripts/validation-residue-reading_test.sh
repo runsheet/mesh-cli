@@ -64,6 +64,9 @@ check_contains "validations in window" "$diff_block" "validations in window: 2"
 # work/goal-a/1 and goal-b/3 have no session, goal-b/4's session pid is
 # dead, goal-a/2's state.json names pid 0 (a sandboxed session): live.
 check_contains "leftover work directories" "$diff_block" "leftover work directories: 3"
+# clones/acme-widgets' worktree-list.txt names 3 entries (2 beyond its
+# own); clones/acme-other's names 1 (none beyond its own).
+check_contains "shared-clone worktrees" "$diff_block" "shared-clone worktrees: 2"
 
 help_out="$(bash "$script" --help)"
 check_contains "--help names the --dry fixture invocation" "$help_out" \
@@ -111,6 +114,16 @@ mkdir -p "$tmp_work/g/1" "$tmp_work/g/1.session"
 printf '{"pid": %d}\n' "$$" >"$tmp_work/g/1.session/state.json"
 check "leftover_work_dirs counts no dir whose session's pid is alive" \
   "0" "$(leftover_work_dirs "$tmp_work")"
+
+check "shared_clone_worktrees on a missing root gives 0" \
+  "0" "$(shared_clone_worktrees "$here/no-such-clones")"
+
+tmp_clone="$(mktemp -d)"
+trap 'rm -f "$tmp_log"; rm -rf "$tmp_work" "$tmp_clone"' EXIT
+mkdir -p "$tmp_clone/only-itself"
+printf '%s\n' "/x/only-itself abc [main]" >"$tmp_clone/only-itself/worktree-list.txt"
+check "shared_clone_worktrees counts none for a clone with only its own entry" \
+  "0" "$(shared_clone_worktrees "$tmp_clone")"
 
 set +e
 window_out="$(bash "$script" --window not-a-number 2>&1)"

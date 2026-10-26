@@ -1,0 +1,3 @@
+/home/mesh/.mesh/clones/acme-widgets  abcdef1 [main]
+/home/mesh/.mesh/work/goal-a/1        abcdef1 [goal-a-1]
+/home/mesh/.mesh/work/goal-b/4        abcdef2 [goal-b-4]
