@@ -290,11 +290,15 @@ func (g *Git) run(ctx context.Context, dir string, name string, args ...string) 
 }
 
 // realRun is the real git/gh invocation: run dispatches to it, or to
-// g.exec when a test has set one.
+// g.exec when a test has set one. git runs hardened (hardenedGitCmd,
+// gitexec.go): a session may have written the workspace's .git.
 func (g *Git) realRun(ctx context.Context, dir string, name string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Dir = dir
-	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), gitTokenEnv(ctx)...)
+	var cmd *exec.Cmd
+	if name == "git" {
+		cmd = hardenedGitCmd(ctx, g.githubURL(), dir, args...)
+	} else {
+		cmd = ghCmd(ctx, dir, name, args...)
+	}
 	out, err := cmd.CombinedOutput()
 	if g.Log != nil {
 		fmt.Fprintf(g.Log, "$ %s %s\n%s", name, strings.Join(args, " "), out)
@@ -629,6 +633,7 @@ func (g *Git) RemoveWorkspace(ctx context.Context, dir string) error {
 	if WorkspaceLive(dir) {
 		return fmt.Errorf("remove workspace %s: its item is live on this node; left alone", dir)
 	}
+	forgetHelper(dir)
 	fi, err := os.Stat(filepath.Join(dir, ".git"))
 	switch {
 	case err == nil && fi.IsDir():
@@ -933,11 +938,11 @@ func (g *Git) Diff(ctx context.Context, dir, base string) (string, error) {
 		return "", err
 	}
 	ref := "origin/" + base + "...HEAD"
-	stat, err := g.run(ctx, dir, "git", "diff", "--stat", ref)
+	stat, err := g.run(ctx, dir, "git", "diff", "--no-ext-diff", "--no-textconv", "--stat", ref)
 	if err != nil {
 		return "", err
 	}
-	patch, err := g.run(ctx, dir, "git", "diff", ref)
+	patch, err := g.run(ctx, dir, "git", "diff", "--no-ext-diff", "--no-textconv", ref)
 	if err != nil {
 		return "", err
 	}
@@ -952,7 +957,7 @@ func (g *Git) ChangedPaths(ctx context.Context, dir, base string) ([]string, err
 	if err := g.EnsureMergeBase(ctx, dir, base); err != nil {
 		return nil, err
 	}
-	out, err := g.run(ctx, dir, "git", "diff", "--name-only", "origin/"+base+"...HEAD")
+	out, err := g.run(ctx, dir, "git", "diff", "--no-ext-diff", "--no-textconv", "--name-only", "origin/"+base+"...HEAD")
 	if err != nil {
 		return nil, err
 	}
