@@ -41,13 +41,8 @@ func candidateRunner(t *testing.T, files map[string]string) (*Runner, *gatewayte
 	gitRun(t, seedDir, "push", "--quiet", "origin", "mesh/batch-7")
 	sha := gitRun(t, seedDir, "rev-parse", "HEAD")
 
-	repos := filepath.Join(root, "repos")
-	clone := SharedClonePath(repos, "acme/widgets")
-	if err := os.MkdirAll(filepath.Dir(clone), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	gitRun(t, root, "clone", "--quiet", origin, clone)
-	// a fetch on a token goes to GitHub's URL for the repo: origin, here
+	// the candidate is a clone of its own, no shared clone (ADR-039): a
+	// clone on a token goes to GitHub's URL for the repo: origin, here
 	github := filepath.Join(root, "github")
 	if err := os.MkdirAll(filepath.Join(github, "acme"), 0o755); err != nil {
 		t.Fatal(err)
@@ -75,12 +70,19 @@ func candidateRunner(t *testing.T, files map[string]string) (*Runner, *gatewayte
 	}}
 	logs := &syncBuf{}
 	r := &Runner{
-		GW: gateway.New(f.URL(), "rs_test"), WS: &Git{ReposRoot: repos, GitHubURL: "file://" + github}, WorkRoot: filepath.Join(root, "work"),
+		GW: gateway.New(f.URL(), "rs_test"), WS: &Git{GitHubURL: "file://" + github}, WorkRoot: filepath.Join(root, "work"),
 		Log:     log.New(logs, "", 0),
 		Sandbox: &sandbox.Sandbox{Runtime: rt, Config: sandbox.Config{Image: "ghcr.io/runsheet/mesh-node:dev"}, TempDir: t.TempDir()},
 		Inspect: func(context.Context, string, ...string) ([]byte, error) { return []byte("sha256:feedface\n"), nil },
 	}
 	return r, f, batch, origin, logs
+}
+
+// onBatchToken is a context carrying the batch's token, as a minted
+// one rides every fetch of the run (OnItemToken): the candidate's clone
+// goes to the runner's GitHubURL over git, never the operator's gh.
+func onBatchToken(r *Runner) context.Context {
+	return OnItemToken(context.Background(), r.WS, &gateway.GitHubToken{Token: "ghs_batch7"})
 }
 
 // batchAttestations are the batch-candidate recordValidationAttestation
@@ -107,7 +109,7 @@ func assertWorktreeGone(t *testing.T, r *Runner, batch gateway.MainValidationBat
 // the commit the batch's sha.
 func TestCandidateGreenIsAttestedWithMergeBatchID(t *testing.T) {
 	r, f, batch, _, logs := candidateRunner(t, oneStepYML("true"))
-	att, err := handedBack(t, r, "candidate", batch.MergeBatchID)(r.validateCandidate(context.Background(), batch, nil))
+	att, err := handedBack(t, r, "candidate", batch.MergeBatchID)(r.validateCandidate(onBatchToken(r), batch, nil))
 	if err != nil {
 		t.Fatalf("validateCandidate: %v\n%s", err, logs.String())
 	}
@@ -139,7 +141,7 @@ func TestCandidateGreenIsAttestedWithMergeBatchID(t *testing.T) {
 // verdict, and the run is no error.
 func TestCandidateRedSuiteIsARedAttestation(t *testing.T) {
 	r, f, batch, _, logs := candidateRunner(t, oneStepYML("exit 1"))
-	att, err := handedBack(t, r, "candidate", batch.MergeBatchID)(r.validateCandidate(context.Background(), batch, nil))
+	att, err := handedBack(t, r, "candidate", batch.MergeBatchID)(r.validateCandidate(onBatchToken(r), batch, nil))
 	if err != nil {
 		t.Fatalf("validateCandidate: %v\n%s", err, logs.String())
 	}
@@ -173,7 +175,7 @@ func TestCandidateHeadOtherThanBatchSHAIsRefused(t *testing.T) {
 	gitRun(t, moved, "commit", "--quiet", "-m", "later")
 	gitRun(t, moved, "push", "--quiet", "origin", batch.CandidateBranch)
 
-	_, err := handedBack(t, r, "candidate", batch.MergeBatchID)(r.validateCandidate(context.Background(), batch, nil))
+	_, err := handedBack(t, r, "candidate", batch.MergeBatchID)(r.validateCandidate(onBatchToken(r), batch, nil))
 	var he *CandidateHeadError
 	if !errors.As(err, &he) {
 		t.Fatalf("err = %v, want a *CandidateHeadError", err)
@@ -195,7 +197,7 @@ func TestCandidateHeadOtherThanBatchSHAIsRefused(t *testing.T) {
 // caller fails the batch's validation and never calls it red.
 func TestCandidateEnvironmentFailureIsReturnedWithItsKind(t *testing.T) {
 	r, f, batch, _, _ := candidateRunner(t, oneStepYML("exit 124"))
-	_, err := handedBack(t, r, "candidate", batch.MergeBatchID)(r.validateCandidate(context.Background(), batch, nil))
+	_, err := handedBack(t, r, "candidate", batch.MergeBatchID)(r.validateCandidate(onBatchToken(r), batch, nil))
 	if err == nil {
 		t.Fatal("want the environment failure")
 	}

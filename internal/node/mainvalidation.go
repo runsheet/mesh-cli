@@ -307,8 +307,8 @@ func (r *Runner) validateCommitIn(ctx context.Context, t validationTarget, c mai
 	return r.validateCheckout(ctx, t, c)
 }
 
-// checkoutWorktree checks c out at t.dir, a detached worktree of the
-// shared clone fetched on t's token; its cleanup, never nil, removes it.
+// checkoutWorktree checks c out at t.dir, a detached clone of its own
+// fetched on t's token (addDetachedClone); its cleanup, never nil, removes it.
 func (r *Runner) checkoutWorktree(ctx context.Context, t validationTarget, c mainCommit) (func(), error) {
 	wt, ok := r.WS.(candidateWorktrees)
 	if !ok {
@@ -406,15 +406,15 @@ func (r *Runner) validateCheckout(ctx context.Context, t validationTarget, c mai
 	return att, nil
 }
 
-// AddCandidateWorktree checks a merge batch candidate out at dir: the
-// repo's shared clone made current (syncSharedClone), branch fetched
-// into refs/remotes/origin/<branch> under the per-repo fetch lock, its
-// head compared with sha — another is a *CandidateHeadError and nothing
-// is added — and a detached worktree of sha added at dir under the
-// repo's lock. A checkout a crashed run left at dir is removed first.
+// AddCandidateWorktree checks a merge batch candidate out at dir, a
+// clone of its own (addDetachedClone): branch fetched into
+// refs/remotes/origin/<branch> under the per-repo fetch lock, its head
+// compared with sha — another is a *CandidateHeadError and nothing is
+// checked out — and sha checked out detached. A checkout a crashed run
+// left at dir is removed first.
 // Its fetches go out on whatever token ctx carries (OnItemToken).
 func (g *Git) AddCandidateWorktree(ctx context.Context, repo, dir, branch, sha string) error {
-	return g.addDetachedWorktree(ctx, repo, dir, branch, sha, func(clone, ref string) error {
+	return g.addDetachedClone(ctx, repo, dir, branch, sha, func(clone, ref string) error {
 		head, err := g.run(ctx, clone, "git", "rev-parse", "--verify", ref+"^{commit}")
 		if err != nil {
 			return err
@@ -431,7 +431,7 @@ func (g *Git) AddCandidateWorktree(ctx context.Context, repo, dir, branch, sha s
 // need only hold sha, not end on it: main moves on past a merge. A
 // branch that does not hold it is a *CommitNotOnBranchError.
 func (g *Git) AddCommitWorktree(ctx context.Context, repo, dir, branch, sha string) error {
-	return g.addDetachedWorktree(ctx, repo, dir, branch, sha, func(clone, ref string) error {
+	return g.addDetachedClone(ctx, repo, dir, branch, sha, func(clone, ref string) error {
 		if _, err := g.run(ctx, clone, "git", "merge-base", "--is-ancestor", sha, ref); err != nil {
 			return &CommitNotOnBranchError{Branch: branch, SHA: sha}
 		}
@@ -445,7 +445,7 @@ func (g *Git) AddCommitWorktree(ctx context.Context, repo, dir, branch, sha stri
 // refs/remotes/origin/pull/<n>/head, so a head on a fork comes the same
 // way. A head other than sha is a *PullRequestHeadError.
 func (g *Git) AddPullRequestWorktree(ctx context.Context, repo, dir, ref, sha string) error {
-	return g.addDetachedWorktree(ctx, repo, dir, ref, sha, func(clone, local string) error {
+	return g.addDetachedClone(ctx, repo, dir, ref, sha, func(clone, local string) error {
 		head, err := g.run(ctx, clone, "git", "rev-parse", "--verify", local+"^{commit}")
 		if err != nil {
 			return err
@@ -457,7 +457,7 @@ func (g *Git) AddPullRequestWorktree(ctx context.Context, repo, dir, ref, sha st
 	})
 }
 
-// fetchRefspec is the refspec addDetachedWorktree fetches branch by, and
+// fetchRefspec is the refspec addDetachedClone fetches branch by, and
 // the local ref it lands in: a branch name is refs/heads/<branch> into
 // refs/remotes/origin/<branch>; a full ref (refs/pull/<n>/head) is
 // fetched as it is into refs/remotes/origin/<ref less refs/>.
@@ -470,54 +470,17 @@ func fetchRefspec(branch string) (spec, local string) {
 	return "+refs/heads/" + branch + ":" + local, local
 }
 
-// addDetachedWorktree fetches branch into the shared clone, asks check
-// of it, and adds a detached worktree of sha at dir. A dir in a job is a
-// clone of its own instead (addDetachedClone, ADR-039).
-func (g *Git) addDetachedWorktree(ctx context.Context, repo, dir, branch, sha string, check func(clone, ref string) error) error {
+// addDetachedClone checks sha out detached at dir in a clone of its own
+// (ADR-039): a checkout a crashed run left at dir removed first, repo
+// cloned into dir alone, branch fetched into it, check asked of it, sha
+// checked out — no shared clone, no worktree, no other job's objects.
+// The clone is cloneOwn's, as a build's checkout is.
+func (g *Git) addDetachedClone(ctx context.Context, repo, dir, branch, sha string, check func(clone, ref string) error) error {
 	if _, err := os.Stat(dir); err == nil {
 		if err := g.RemoveWorkspace(ctx, dir); err != nil {
 			return err
 		}
 	}
-	if _, _, ok := jobOf(dir); ok {
-		return g.addDetachedClone(ctx, repo, dir, branch, sha, check)
-	}
-	key := RepoLockKey(repo)
-	clone := SharedClonePath(g.reposRootFor(dir), repo)
-	// every write here is the shared clone's: locked under its root
-	root := g.sharedLockRoot(clone, repo)
-	if err := g.syncSharedClone(ctx, root, key, repo, clone); err != nil {
-		return err
-	}
-	spec, ref := fetchRefspec(branch)
-	if _, err := g.fetchLocked(ctx, root, key, clone, "git", "fetch", "--quiet", "origin", spec); err != nil {
-		return err
-	}
-	if err := check(clone, ref); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
-		return err
-	}
-	unlock, err := lockRepo(ctx, root, key)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	// only dir's own stale registration goes: a blanket prune would take
-	// a live item's worktree a pod's mounts had hidden (forgetStaleRegistrations)
-	if err := forgetStaleRegistrations(clone, dir, ""); err != nil {
-		return err
-	}
-	_, err = g.run(ctx, clone, "git", "worktree", "add", "--quiet", "--detach", dir, sha)
-	return err
-}
-
-// addDetachedClone is addDetachedWorktree for a dir in a job (ADR-039):
-// repo cloned into dir alone, branch fetched into it, check asked of
-// it, sha checked out detached — no shared clone, no other job's
-// objects. The clone is cloneOwn's, as a build's checkout is.
-func (g *Git) addDetachedClone(ctx context.Context, repo, dir, branch, sha string, check func(clone, ref string) error) error {
 	root, key := g.lockRoot("", dir), RepoLockKey(repo)
 	if err := g.cloneOwn(ctx, root, key, repo, dir, "", "--no-checkout"); err != nil {
 		return err

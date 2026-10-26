@@ -580,7 +580,7 @@ func TestServedDiffAppliesEveryChangeAndMatchesTheTree(t *testing.T) {
 	}
 }
 
-// A diff past GitHub's cap falls back to the worktree — said once per
+// A diff past GitHub's cap falls back to a clone — said once per
 // run — and the candidate is still validated and attested.
 func TestServedDiffTooLargeFallsBackToTheWorktree(t *testing.T) {
 	s := newServedFixture(t)
@@ -598,8 +598,10 @@ func TestServedDiffTooLargeFallsBackToTheWorktree(t *testing.T) {
 	if n := len(batchAttestations(s.f)); n != 2 {
 		t.Fatalf("batch attestations = %d, want 2\n%s", n, s.logs.String())
 	}
-	if !strings.Contains(s.gitLog.String(), "worktree add") {
-		t.Fatalf("no worktree added on the fallback:\n%s", s.gitLog.String())
+	// the fallback checkout is a clone of its own, never a shared-clone
+	// worktree (ADR-039)
+	if gl := s.gitLog.String(); !strings.Contains(gl, "clone") || strings.Contains(gl, "worktree add") {
+		t.Fatalf("the fallback did not check out a clone of its own:\n%s", gl)
 	}
 	if n := strings.Count(s.logs.String(), "served diff: diff too large"); n != 1 {
 		t.Fatalf("fallback said %d times, want once per run:\n%s", n, s.logs.String())

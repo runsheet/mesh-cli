@@ -300,8 +300,8 @@ func operatorLogin(t *testing.T) {
 
 // tokenRemoteNode is mergeBatchNode with the candidate on a branch named
 // as the platform names it, mesh/batch/acme/widgets/7, and its repo
-// served by a credentialRemote taking accept alone — the runner's GitHub
-// and the shared clone's origin both — under the operator's login.
+// served by a credentialRemote taking accept alone — the runner's GitHub,
+// which the candidate's own clone comes from — under the operator's login.
 func tokenRemoteNode(t *testing.T, accept string) (*Loop, *Runner, *gatewaytest.Fake, gateway.MainValidationBatch, *syncBuf, *e2eHeads, *credentialRemote) {
 	t.Helper()
 	r, f, batch, origin, logs := candidateRunner(t, oneStepYML("true"))
@@ -312,7 +312,6 @@ func tokenRemoteNode(t *testing.T, accept string) (*Loop, *Runner, *gatewaytest.
 	github := strings.TrimPrefix(g.GitHubURL, "file://")
 	remote := newCredentialRemote(t, github, accept)
 	g.GitHubURL = remote.URL
-	gitRun(t, SharedClonePath(g.ReposRoot, "acme/widgets"), "remote", "set-url", "origin", remote.URL+"/acme/widgets.git")
 	operatorLogin(t)
 	loop, heads := mergeBatchLoop(t, r, f)
 	return loop, r, f, batch, logs, heads, remote

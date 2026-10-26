@@ -12,10 +12,10 @@ import (
 )
 
 // A rebase runs in a fresh checkout when the item's own is gone: against
-// a local bare origin (lockTestOrigin), an item's worktree is prepared,
+// a local bare origin (lockTestOrigin), an item's checkout is prepared,
 // built and pushed, then its directory deleted; AddRebaseWorktree makes a
-// detached worktree of the shared clone at origin/<branch>, and a commit
-// made there pushes to the branch on the origin.
+// detached clone of its own at origin/<branch>, and a commit made there
+// pushes to the branch on the origin.
 func TestRebaseWorktreeDeletedCheckoutE2E(t *testing.T) {
 	root, origin := lockTestOrigin(t)
 	work, repos := filepath.Join(root, "work"), filepath.Join(root, "repos")
@@ -127,13 +127,15 @@ func TestRebaseWorktreeReplacesStaleDirE2E(t *testing.T) {
 	})
 
 	t.Run("worktree whose registration is gone", func(t *testing.T) {
-		// rdir is a rebase worktree from the subtest above; its admin in
-		// the shared clone goes, and junk is left in its files
-		admin := worktreeAdmin(rdir)
-		if admin == "" {
-			t.Fatalf("%s names no worktree admin", rdir)
+		// rdir, the clone of the subtest above, is left as a rebase
+		// worktree made before rebases were clones of their own: its
+		// `.git` a file naming an admin in the shared clone that is gone,
+		// and junk in its files
+		admin := filepath.Join(SharedClonePath(repos, origin), ".git", "worktrees", "1-rebase")
+		if err := os.RemoveAll(filepath.Join(rdir, ".git")); err != nil {
+			t.Fatal(err)
 		}
-		if err := os.RemoveAll(admin); err != nil {
+		if err := os.WriteFile(filepath.Join(rdir, ".git"), []byte("gitdir: "+admin+"\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(filepath.Join(rdir, "junk"), []byte("stale\n"), 0o644); err != nil {
