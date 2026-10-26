@@ -1639,7 +1639,8 @@ func (f *Fake) BearerKind(bearer string) string {
 	return "person"
 }
 
-// ruleRefusal checks a registerNode, heartbeatNode or claimWorkItem input
+// ruleRefusal refuses a machine bearer's mutation naming a `by` (runsheet
+// ADR 070), then checks a registerNode, heartbeatNode or claimWorkItem input
 // against testdata/node-mutations.json's rule for the bearer's kind and
 // answers the refusal naming the field and the kind, "" when it passes
 // or the mutation has no rule. A field the fake's schema does not have
@@ -1647,6 +1648,11 @@ func (f *Fake) BearerKind(bearer string) string {
 // (schemaPredates) is left to the schema's "Unknown field", as a
 // platform before it answers.
 func (f *Fake) ruleRefusal(name string, in map[string]any, bearer string) string {
+	// runsheet ADR 070, the by-check: a machine bearer names no person
+	// as `by`, not even its operator — every mutation, before its rule
+	if by, _ := in["by"].(string); by != "" && f.BearerKind(bearer) == "machine" {
+		return name + ": a machine names no person as by: not yours"
+	}
 	switch name {
 	case "registerNode", "heartbeatNode", "claimWorkItem":
 	default:

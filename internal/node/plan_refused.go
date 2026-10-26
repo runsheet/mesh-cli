@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +35,19 @@ func PlanRefusedOf(err error) (*PlanRefused, bool) {
 		return pr, true
 	}
 	return nil, false
+}
+
+// planHandInRefused is a plan hand-in the platform answered with err, as the plan
+// path returns it: a refusal (the gateway's own answer, not a transport
+// failure) is a *PlanRefused, so the same refusal twice running releases
+// the claim and holds the goal off this node until its row changes —
+// persisted, so a fresh Planner per job does not plan it again; anything
+// else stays an error, a try counted.
+func planHandInRefused(goal gateway.Goal, what string, err error) error {
+	if gateway.IsRefusal(err) && !gateway.IsUnsupported(err) {
+		return &PlanRefused{Goal: goal.Slug, Reason: fmt.Sprintf("%s: %v", what, err)}
+	}
+	return fmt.Errorf("%s: %w", what, err)
 }
 
 // normaliseRefusal is a refusal as the plan path compares two of them:

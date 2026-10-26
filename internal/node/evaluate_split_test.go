@@ -58,12 +58,13 @@ func failItem1(t *testing.T, f *gatewaytest.Fake, ev *Evaluator) {
 
 // An item with one failed verdict already recorded that fails again asks
 // for a split after the verdict is handed in: one requestPlan replacing
-// the item (ADR-021's amendment 2026-10-02).
+// the item (ADR-021's amendment 2026-10-02), naming no one as `by`
+// (runsheet ADR 070).
 func TestSecondFailedEvaluationAsksForASplit(t *testing.T) {
 	f, ev, logs := splitFixture(t, 1, "the aggregate id is not NodeID(owner, slug)\n\n(evaluated on Claude opus)")
 	failItem1(t, f, ev)
 	reqs := f.RequestPlans()
-	if len(reqs) != 1 || reqs[0].ReplaceItem != item1 || reqs[0].GoalID != goalID || reqs[0].By == "" {
+	if len(reqs) != 1 || reqs[0].ReplaceItem != item1 || reqs[0].GoalID != goalID || reqs[0].By != "" {
 		t.Fatalf("requestPlan calls = %+v, want one replacing %s", reqs, item1)
 	}
 	if got := f.Goals[goalID]["replacingItemId"]; got != item1 {

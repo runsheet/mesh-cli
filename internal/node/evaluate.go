@@ -913,8 +913,9 @@ func (e *Evaluator) askSplit(ctx context.Context, item gateway.WorkItem, label s
 	if failedVerdicts(prior) != splitAt || item.GoalID == "" {
 		return
 	}
-	sc, _ := e.Scopes.ByOrg(item.OrgID)
-	err := e.GW.RequestPlanReplacing(ctx, item.GoalID, sc.NodeID, item.ID)
+	// no `by`: a node names no one as the asker, not even itself — its
+	// act is on record as the node's (runsheet ADR 070)
+	err := e.GW.RequestPlanReplacing(ctx, item.GoalID, "", item.ID)
 	switch {
 	case errors.Is(err, gateway.ErrNoReplaceItem):
 		return

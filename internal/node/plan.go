@@ -731,10 +731,9 @@ func (p *Planner) failedClauses(ctx context.Context, goalSlug string, it gateway
 // session's usage report (acct's, built as it ended; none for an adopted
 // one), and logs each item's model.
 func (p *Planner) handIn(ctx context.Context, goal gateway.Goal, items []gateway.PlannedItem, reasons map[int]string, questions []harness.PlanQuestion, checkpoints []string, added []addedDep, cost float64, acct *SessionAccount) error {
-	by := ""
-	if p.Cfg != nil {
-		by = p.Cfg.OwnerID
-	}
+	// a node names no person as `by`, not even its operator: its act is
+	// on record as the node's (runsheet ADR 070)
+	const by = ""
 	// ADR-020: the planner's questions for the person ride the plan on a
 	// platform that takes them; else each is said once here, and the
 	// person reads them in node.log until the platform half lands
@@ -762,7 +761,7 @@ func (p *Planner) handIn(ctx context.Context, goal gateway.Goal, items []gateway
 		}
 	}
 	if err := acct.Carried(p.GW.PlanGoal(ctx, goal.ID, by, items, Cents(cost), acct.Report(harness.Result{}), sent...)); err != nil {
-		return fmt.Errorf("hand in the plan: %w", err)
+		return planHandInRefused(goal, "hand in the plan", err)
 	}
 	// the plan check's added dependencies, so a person reading node.log
 	// sees a plan that was parallel on paper and serial in fact
@@ -825,10 +824,7 @@ func (p *Planner) wantsPRCheckpoint(goal gateway.Goal, checkpoints []string) boo
 // logged and the error leaves the goal in planning and says so, as an
 // unreadable plan does.
 func (p *Planner) handInSplit(ctx context.Context, goal gateway.Goal, drafts []gateway.GoalDraft, n, cap int, cost float64, acct *SessionAccount) error {
-	by := ""
-	if p.Cfg != nil {
-		by = p.Cfg.OwnerID
-	}
+	const by = "" // a node names no person as `by` (runsheet ADR 070)
 	slugs := make([]string, 0, len(drafts))
 	for _, d := range drafts {
 		slugs = append(slugs, d.Slug)
@@ -847,7 +843,7 @@ func (p *Planner) handInSplit(ctx context.Context, goal gateway.Goal, drafts []g
 		return fmt.Errorf("plan answered over the cap of %d; split into %d goals proposed, which this platform cannot take", cap, len(drafts))
 	}
 	if err := acct.Carried(p.GW.ProposeGoalSplit(ctx, goal.ID, by, drafts, Cents(cost), acct.Report(harness.Result{}))); err != nil {
-		return fmt.Errorf("propose the split: %w", err)
+		return planHandInRefused(goal, "propose the split", err)
 	}
 	p.logf("goal %s: %s; proposed a split into %d goals: %s", goal.Slug, over, len(drafts), strings.Join(slugs, ", "))
 	return nil
