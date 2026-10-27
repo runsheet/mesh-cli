@@ -153,6 +153,26 @@ var projectFields = strings.Join(projectRequired, " ")
 // projectOptionalFields is the selection of projectOptional.
 var projectOptionalFields = strings.Join(projectOptional, " ")
 
+// threadSessionRequired are the ThreadSessionIndex fields every supported platform serves (fields/ThreadSessionIndex.txt).
+var threadSessionRequired = []string{
+	"id",
+	"orgId",
+	"product",
+	"projectId",
+	"role",
+	"status",
+	"threadKey",
+}
+
+// threadSessionOptional are the ThreadSessionIndex fields an older platform may lack (a `?` in fields/ThreadSessionIndex.txt).
+var threadSessionOptional = []string{}
+
+// threadSessionFields is the selection of threadSessionRequired.
+var threadSessionFields = strings.Join(threadSessionRequired, " ")
+
+// threadSessionOptionalFields is the selection of threadSessionOptional.
+var threadSessionOptionalFields = strings.Join(threadSessionOptional, " ")
+
 // workItemRequired are the WorkItemIndex fields every supported platform serves (fields/WorkItemIndex.txt).
 var workItemRequired = []string{
 	"acceptance",
