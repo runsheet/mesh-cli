@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"projectmesh.io/mesh-cli/internal/crash"
+	"projectmesh.io/mesh-cli/internal/nodecaps"
 	"regexp"
 	"slices"
 	"sort"
@@ -225,6 +226,9 @@ type Loop struct {
 	// them, so one installed while the node runs is reported without a
 	// restart. Nil probes nothing and reports neither.
 	LookPath func(file string) (string, error)
+	// ManifestRun runs a toolchain's version command for the node's
+	// manifest (nodecaps.Probe); nil runs it for real (nodecaps.ExecRunner).
+	ManifestRun nodecaps.Runner
 	// Declines are the items, goals and directions a session here
 	// declined for a required tool whose runtime the node lacks (trd §3
 	// Tools): neither claimed, evaluated, planned nor researched again
@@ -478,6 +482,11 @@ type Loop struct {
 	runtimes []string
 	adapters []string
 	probed   bool
+	// manifest is the node's last probed manifest and manifestAt when,
+	// probed again every ManifestEvery (versions change rarely, and each
+	// probe runs a dozen commands).
+	manifest   *nodecaps.Manifest
+	manifestAt time.Time
 }
 
 type goalsRead struct {
@@ -1215,6 +1224,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	l.diskFloor()
 	l.memFloor()
 	runtimes, adapters := l.Runtimes()
+	manifest := l.Manifest(ctx, runtimes, adapters)
 	// the platform's word on standing first, so a withdrawn account is
 	// gone from this heartbeat's limits and holding
 	l.reconcileCredentials(ctx)
@@ -1222,7 +1232,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	// the heartbeat goes out before this tick's pass, so its holding is
 	// the last pass's decision (nil before the first; a draining node,
 	// which makes no pass, keeps sending its last one unchanged)
-	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(l.Known.Accounts(l.now()), l.now(), l.Thresholds()), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Reason: l.Condition(), Adopted: l.Adopted(), Resumed: l.Resumed(), Holding: l.Holding(), Commit: l.Commit, Findings: l.heartbeatFindings(ctx), Sessions: l.Sessions()}
+	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(l.Known.Accounts(l.now()), l.now(), l.Thresholds()), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Manifest: manifest, Reason: l.Condition(), Adopted: l.Adopted(), Resumed: l.Resumed(), Holding: l.Holding(), Commit: l.Commit, Findings: l.heartbeatFindings(ctx), Sessions: l.Sessions()}
 	rt := l.RuntimeBroken()
 	l.runtimeHeartbeat(ctx, &extras, rt)
 	scaling, ranged := l.Scaling()
@@ -2113,6 +2123,49 @@ func (l *Loop) probe() {
 	if !slices.Equal(wasR, runtimes) || !slices.Equal(wasA, adapters) {
 		l.logf("tools: runtimes [%s], adapters [%s]", strings.Join(runtimes, " "), strings.Join(adapters, " "))
 	}
+}
+
+// ManifestEvery is how often the node probes its toolchains again.
+const ManifestEvery = time.Hour
+
+// Manifest is what the heartbeat says the node has to run work on: its
+// os, arch and toolchains (nodecaps.Probe, every ManifestEvery), with
+// this tick's runtimes, adapters and sandbox beside them. nil when the
+// node has no LookPath to probe with.
+func (l *Loop) Manifest(ctx context.Context, runtimes, adapters []string) *gateway.NodeManifest {
+	if l.LookPath == nil {
+		return nil
+	}
+	l.mu.Lock()
+	m, at := l.manifest, l.manifestAt
+	l.mu.Unlock()
+	if m == nil || l.now().Sub(at) >= ManifestEvery {
+		run := l.ManifestRun
+		if run == nil {
+			run = nodecaps.ExecRunner
+		}
+		probed := nodecaps.Probe(ctx, l.LookPath, run)
+		if m == nil || !slices.Equal(m.Tools, probed.Tools) {
+			names := make([]string, 0, len(probed.Tools))
+			for _, t := range probed.Tools {
+				names = append(names, strings.TrimSpace(t.Name+" "+t.Version))
+			}
+			l.logf("manifest: %s/%s, tools [%s]", probed.OS, probed.Arch, strings.Join(names, ", "))
+		}
+		m = &probed
+		l.mu.Lock()
+		l.manifest, l.manifestAt = m, l.now()
+		l.mu.Unlock()
+	}
+	out := &gateway.NodeManifest{OS: m.OS, Arch: m.Arch, Tools: make([]gateway.NodeTool, 0, len(m.Tools)), Runtimes: runtimes, Harnesses: adapters}
+	for _, t := range m.Tools {
+		out.Tools = append(out.Tools, gateway.NodeTool{Name: t.Name, Version: t.Version})
+	}
+	if l.Sandbox != nil {
+		sb := *l.Sandbox
+		out.Sandbox = &sb
+	}
+	return out
 }
 
 // Runtimes returns the tool runtimes (npx, uvx, docker) and the agent

@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -1763,5 +1765,65 @@ func TestLoopReleasesThePlanClaimWhenThePodDoesNotStart(t *testing.T) {
 	}
 	if len(f.CallsNamed("planGoal")) != 0 {
 		t.Fatal("a plan was handed in")
+	}
+}
+
+// The heartbeat carries the node's manifest — os, arch, the toolchains
+// it found with their versions, beside its runtimes and harnesses — so
+// the platform can offer it only work it can run; the toolchains are
+// probed once and again only after ManifestEvery, and a platform whose
+// HeartbeatNodeInput has no `manifest` is sent none.
+func TestHeartbeatCarriesTheManifest(t *testing.T) {
+	p := newPriorityFake(t)
+	p.register()
+	loop, logs := p.loop(1)
+	onPath := map[string]bool{"go": true, "claude": true}
+	loop.LookPath = func(file string) (string, error) {
+		if onPath[file] {
+			return "/usr/bin/" + file, nil
+		}
+		return "", errors.New("not found")
+	}
+	ran := 0
+	loop.ManifestRun = func(_ context.Context, bin string, _ ...string) (string, error) {
+		ran++
+		return "go1.26.10", nil
+	}
+	ctx := context.Background()
+	loop.Tick(ctx)
+	loop.Tick(ctx)
+	hb := p.CallsNamed("heartbeatNode")
+	if len(hb) == 0 {
+		t.Fatal("no heartbeat")
+	}
+	raw, _ := json.Marshal(hb[0].Input["manifest"])
+	var m struct {
+		OS, Arch  string
+		Tools     []struct{ Name, Version string }
+		Harnesses []string
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("manifest %s: %v", raw, err)
+	}
+	if m.OS != runtime.GOOS || m.Arch != runtime.GOARCH || len(m.Tools) != 1 || m.Tools[0].Name != "go" || m.Tools[0].Version != "1.26.10" || !reflect.DeepEqual(m.Harnesses, []string{"claude-code"}) {
+		t.Fatalf("manifest: %s", raw)
+	}
+	if ran != 1 {
+		t.Fatalf("probed the toolchains %d times in two ticks, want once", ran)
+	}
+	if !strings.Contains(logs.String(), "manifest: "+runtime.GOOS+"/"+runtime.GOARCH+", tools [go 1.26.10]") {
+		t.Fatalf("no manifest line:\n%s", logs)
+	}
+
+	old := newPriorityFake(t)
+	old.UnknownFields = map[string]bool{"manifest": true}
+	old.register()
+	ol, _ := old.loop(1)
+	ol.LookPath, ol.ManifestRun = loop.LookPath, loop.ManifestRun
+	ol.Tick(ctx)
+	for _, c := range old.CallsNamed("heartbeatNode") {
+		if _, ok := c.Input["manifest"]; ok {
+			t.Fatalf("a platform without `manifest` was sent one: %+v", c.Input)
+		}
 	}
 }
