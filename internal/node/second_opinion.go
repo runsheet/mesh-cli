@@ -1,7 +1,6 @@
 package node
 
 import (
-	"fmt"
 	"os"
 	"path"
 	"path/filepath"
@@ -9,28 +8,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
-
-// evaluatorsLine is the notes' and node.log's record of the choice.
-func evaluatorsLine(n int, reason string) string {
-	count := "one"
-	if n > 1 {
-		count = "two"
-	}
-	return fmt.Sprintf("evaluators: %s — %s", count, reason)
-}
-
-// hostReadingClause says whether a failed clause — its words and what
-// would satisfy it — states a threshold on a reading of the host — load,
-// a p90, wall time — which no pull request can change (ADR-020): the
-// planner's lexical test (hostReadingPhrase).
-func hostReadingClause(clause string) bool {
-	for _, sentence := range sentenceEnd.Split(clause, -1) {
-		if hostReadingPhrase(sentence) != "" {
-			return true
-		}
-	}
-	return false
-}
 
 // globMatch matches a slash-separated path against a protected-path glob
 // as the platform's rule paths are written: each segment by path.Match,
@@ -89,19 +66,3 @@ func readCheckoutConfig(dir string) checkoutConfig {
 	return cfg
 }
 
-// setting is the checkout's second_opinion: "always", else the rule.
-// TODO: read ProjectIndex.secondOpinion once the platform serves it
-// (goal one-evaluator-for-ordinary-work).
-func (c checkoutConfig) setting() string {
-	if strings.TrimSpace(c.SecondOpinion) == secondOpinionAlways {
-		return secondOpinionAlways
-	}
-	return "rule"
-}
-
-// secondOpinionSetting reads the checkout's `.mesh/config.yml` top-level
-// `second_opinion: always|rule`; absent, unreadable or anything else is
-// the rule.
-func secondOpinionSetting(dir string) string {
-	return readCheckoutConfig(dir).setting()
-}

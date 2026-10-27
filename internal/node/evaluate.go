@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"maps"
 	"math"
 	"os"
 	"slices"
@@ -105,18 +104,10 @@ type Evaluator struct {
 	// Waits says once per item that an item pinned to a family with no
 	// headroom waits in evaluating (nil: every time).
 	Waits *OncePer
-	// Blind says once per item that an evaluation which saw no context
-	// (toolBroken) could not run on the other family either, and the item
-	// waits in evaluating (nil: every time).
-	Blind *OncePer
 	// NoVerdict says once per run that the platform takes no no-verdict
 	// outcome, so an evaluation that reached none waits in evaluating
 	// (nil: every time).
 	NoVerdict *OncePer
-	// Splits says once per item that the platform refused the split an
-	// item's second failed evaluation asked for (askSplit; nil: every
-	// time).
-	Splits *OncePer
 	// LeftRunning holds, per item, what an evaluation that recorded no
 	// verdict left running, for the notes of the item's next verdict
 	// (nil: only the session's own).
@@ -334,7 +325,6 @@ func (e *Evaluator) evaluate(ctx context.Context, item gateway.WorkItem, res *Re
 			return e.failDiff(ctx, item, label, diffBase, branch, err)
 		}
 	}
-	changed, cfg := e.touched(ctx, label, dir, diffBase, defaultBranchOf(res), alreadyDone)
 	// the same context the builder had: its repo's instructions and its goal
 	orgName := e.Scopes.NameOf(item.OrgID)
 	cx, err := FetchContext(ctx, e.GW, orgName, res.Project.Slug, ContextOptions{Budget: e.contextBudget(), Repos: []string{res.Repo.FullName()}, Checkouts: map[string]string{res.Repo.FullName(): dir}, Goal: res.Goal, Logf: e.logf})
@@ -355,13 +345,11 @@ func (e *Evaluator) evaluate(ctx context.Context, item gateway.WorkItem, res *Re
 		contextDir = ContextDir
 	}
 	prior := e.priorAttempts(ctx, item, label)
-	// the session's result reaches the node by mesh_result (ADR-041): the
-	// holder for this job, on the brief's finish and schema, its finish
-	// section the prompt's last, and the brief's guidance its first
+	// the verdict goes to the product's own tool (runsheet ADR 077, the
+	// evaluation policy is runsheet's): the node hosts no verdict tool
 	brief := jobBriefOf(ctx, e.GW, EvaluateKind, item.ID)
-	holder, err := jobresult.New(EvaluateKind, cmp.Or(brief.Finish, jobresult.FinishVerdict), brief.FinishSchema)
-	if err != nil {
-		return err
+	if brief.FinishTool == "" {
+		return fmt.Errorf("the %s brief names no finish tool to hand the verdict to", EvaluateKind)
 	}
 	if brief.Guidance == "" {
 		e.noGuidance.Note(EvaluateKind, e.logf)
@@ -373,7 +361,7 @@ func (e *Evaluator) evaluate(ctx context.Context, item gateway.WorkItem, res *Re
 		ContextDir: contextDir, ContextFiles: files, Project: orgName + "/" + res.Project.Slug, MeshContext: len(e.MCP) > 0,
 		AlreadyDone: alreadyDone, Evidence: item.Evidence,
 		PriorAttempts: prior,
-		Guidance:      brief.ProductGuidance(false), Finish: holder.FinishSection(),
+		Guidance:      brief.ProductGuidance(false), Finish: brief.HandInSection(),
 	}
 	model := fam.model
 	budget, budgetSource := e.budgetWithSource(res.Goal, model)
@@ -452,7 +440,6 @@ func (e *Evaluator) evaluate(ctx context.Context, item gateway.WorkItem, res *Re
 	}
 	base := job
 	base.Env = slices.Clone(job.Env)
-	var second harness.Job
 	var st SessionTools
 	preflight := ""
 	for {
@@ -460,11 +447,6 @@ func (e *Evaluator) evaluate(ctx context.Context, item gateway.WorkItem, res *Re
 		job.Env = slices.Clone(base.Env)
 		model, job.Model = fam.model, fam.model
 		job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts, TempDirs: sessionTempDirs(job, acct), LoginCache: acct.loginCache()}
-		// the second opinion's job: the same brief, none of the first
-		// session's account and none of the pod's services (Codex runs on
-		// the host; a Claude second opinion opens its own account)
-		second = job
-		second.Env = slices.Clone(job.Env)
 		acct.Apply(&job)
 		// the evaluator's tools, beside the built-in runsheet. An item in
 		// evaluating cannot be released (the platform releases a claimed or
@@ -475,7 +457,6 @@ func (e *Evaluator) evaluate(ctx context.Context, item gateway.WorkItem, res *Re
 			e.Declines.Record(item.ID, st.Missing, runtimes, time.Now())
 			return fmt.Errorf("declined, %s", st.DeclineReason())
 		}
-		st.NodeTools = holder.Tools()
 		job.BriefServers = briefServers(ctx, e.GW, EvaluateKind, item.ID)
 		closeProxy, err := st.UseVia(e.Proxies, mcpRootFor(e.Layout, item.ID), &job, e.MCP, acct)
 		if err != nil {
@@ -540,7 +521,7 @@ func (e *Evaluator) evaluate(ctx context.Context, item gateway.WorkItem, res *Re
 	// the usage report rides the verdict (afterEvaluate); Finish logs it
 	// when nothing carried it
 	defer acct.Finish(ctx, result)
-	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: model, fam: fam, dir: dir, acct: acct, second: &second, preflight: preflight, omitted: st.OmittedNote(), missing: pod.MissingNote(), prior: prior, changed: changed, setting: cfg.setting(), protected: cfg.ProtectedPaths, result: holder}, result, err)
+	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: model, fam: fam, dir: dir, acct: acct, preflight: preflight, omitted: st.OmittedNote(), missing: pod.MissingNote(), prior: prior}, result, err)
 }
 
 // EvaluateKind is runsheet's evaluate kind, the job an evaluation is.
@@ -582,9 +563,6 @@ type evalRun struct {
 	fam  family
 	dir  string
 	acct *SessionAccount // nil for an adopted session
-	// second is the second opinion's job; nil for an adopted session,
-	// whose prompt is not kept
-	second *harness.Job
 	// preflight is why a Codex preflight failed and the session runs on
 	// Claude instead ("" when none did)
 	preflight        string
@@ -595,46 +573,21 @@ type evalRun struct {
 	// prior are the verdicts earlier attempts were given, for the
 	// same-clause first line (ADR-020)
 	prior []harness.PriorAttempt
-	// result holds what the session handed mesh_result (ADR-041): the
-	// verdict the node reads, or why the session gave up
-	result *jobresult.Holder
-	// changed are the files the evaluated diff changed, setting the
-	// checkout's second_opinion and protected its protected_paths, for
-	// secondOpinionWanted
-	changed   []string
-	setting   string
-	protected []string
-}
-
-// touched is what the evaluation's choice of evaluators reads from the
-// checkout: the files the branch changed since base (none for an
-// already_done item, which has no diff) and its .mesh/config.yml
-// second_opinion and protected_paths. A base gone from origin is read
-// against def, the repo's default branch. Unread changed paths are logged and read as none: the
-// item's own protectedFiles still hold.
-func (e *Evaluator) touched(ctx context.Context, label, dir, base, def string, alreadyDone bool) ([]string, checkoutConfig) {
-	var changed []string
-	if !alreadyDone && e.WS != nil {
-		var err error
-		if changed, _, err = changedPathsFrom(ctx, e.WS, dir, base, def); err != nil {
-			e.logf("item %s: changed paths unread, judging protected paths on protectedFiles alone: %v", label, err)
-		}
-	}
-	return changed, readCheckoutConfig(dir)
 }
 
 // afterEvaluate is what follows an evaluation session, however this
-// process came to hold it: the verdict read, the second opinion asked
-// when secondOpinionWanted says so, and the verdict recorded. An error
-// means none was recorded. A cancelled ctx leaves the session running
-// for the next node to adopt.
+// process came to hold it: the session handed its verdict (or that it
+// reached none) to the product's own tool, and the node closes the job
+// with finishJob's result, the node's own facts as its notes_tail, which
+// the product appends to the evaluation (runsheet ADR 077: the
+// evaluation policy — evaluators, the same-clause line, splits — is the
+// product's). The product refuses to close a job no verdict reached. A
+// cancelled ctx leaves the session running for the next node to adopt.
 func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harness.Result, err error) error {
 	item, label, acct := ev.item, ev.label, ev.acct
-	// what the agent left running goes in the verdict's notes; an end
-	// that records no verdict only logs it and holds it for the item's
-	// next one, since a progress note is the evaluation's heartbeat,
-	// not its record (ADR 008, The session's end). Logged before a done ctx
-	// returns: a deadline kills the unit too, and a detach kills nothing.
+	// what the agent left running goes in the notes tail; logged before a
+	// done ctx returns: a deadline kills the unit too, and a detach kills
+	// nothing
 	left := e.LeftRunning
 	if left == nil {
 		left = &LeftRunning{}
@@ -653,323 +606,50 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	if err != nil {
 		return fmt.Errorf("evaluator session: %w%s", acct.RedactErr(err), keptAt(result))
 	}
-	result.Text = acct.Redact(result.Text)
 	if ev.fam.codex && acct != nil {
 		acct.Model = ev.fam.model
 	}
-	usage := acct.Report(result)
-	// fam is the family whose verdict stands: the session's, or the other
-	// one's when the session saw no context (ADR 011, a tool failure is
-	// never a verdict); head then names the attempt that gave none
-	fam, head, blindOn := ev.fam, "", ""
-	var passed bool
-	var notes string
-	// the clauses the deciding session failed, for the retry to fix
-	var clauses []harness.FailedClause
-	cost := result.CostUSD
-	if blind, what, broken := e.unreadable(result, acct, ev.adopted); broken {
-		other := ev.fam.other(e)
-		saw := fmt.Sprintf("evaluation on %s %s; not a verdict", ev.fam.fullName(), what)
-		if why, ok := e.canRetry(ev, other); !ok {
-			reason := fmt.Sprintf("%s, and %s cannot evaluate it: %s", saw, other.name(), why)
-			return e.noVerdict(ctx, ev, reason, cost, usage, func() error { return e.blind(item.ID, "item "+label+": "+reason) })
-		}
-		e.logf("item %s: %s, evaluating on %s", label, saw, other.fullName())
-		op := e.secondOpinion(ctx, ev, other, *ev.second, "evaluation")
-		defer op.acct.Finish(ctx, op.result)
-		killed = left.Hold(item.ID, op.killed)
-		// one report for the whole evaluation, the attempt with no verdict
-		// in it too
-		if op.acct != nil {
-			acct.Carries(op.acct)
-		} else {
-			acct.Add(op.result)
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if op.unavailable != "" {
-			reason := fmt.Sprintf("%s, and the evaluation on %s is unavailable too: %s", saw, other.fullName(), op.unavailable)
-			return e.noVerdict(ctx, ev, reason, cost+op.cost, usage, func() error { return e.blind(item.ID, "item "+label+": "+reason) })
-		}
-		e.Blind.Forget(item.ID)
-		head = fmt.Sprintf("%s (first attempt, %s): no verdict — %s", ev.fam.name(), ev.fam.shortModel(), blind)
-		blindOn = blind
-		fam, passed, notes, clauses = other, op.passed, op.notes, op.clauses
-		cost += op.cost
-	} else {
-		recoverResult(ev.result, result, "item "+label, e.logf)
-		var why string
-		var ok bool
-		passed, notes, clauses, why, ok = verdictOf(ev.result, acct.Redact)
-		if !ok {
-			return e.noVerdict(ctx, ev, why, cost, usage, func() error {
-				return fmt.Errorf("evaluator session reached no verdict (%s): %s%s", result.SessionID, why, keptAt(result))
-			})
-		}
-		notes = strings.TrimSpace(notes)
-		if notes == "" {
-			notes = "(no notes)"
-		}
+	acct.Report(result)
+	// the node's own facts, which runsheet appends to the evaluation the
+	// session recorded: who judged, what it ran without, what it left
+	// running, and a Codex preflight that moved it to Claude
+	tail := "(evaluated on " + ev.fam.fullName() + ")"
+	if ev.preflight != "" {
+		tail = "(evaluated on " + ev.fam.fullName() + "; the Codex preflight failed: " + truncate(ev.preflight, 200) + ")"
 	}
-	// a host reading is recorded, not failed: it rides the notes, and
-	// node.log says so (ADR-020)
-	e.logReadings(label, notes)
-	// the notes say which tools and services the evaluator ran without
-	without := ""
 	if ev.omitted != "" {
-		without = "\n" + truncate(ev.omitted, 500)
+		tail += "\n" + truncate(ev.omitted, 500)
 	}
 	if ev.missing != "" {
-		without += "\n" + truncate(ev.missing, 500)
+		tail += "\n" + truncate(ev.missing, 500)
 	}
-	// and which served tools it never called, or called with errors
 	if note := acct.UseNote(result); note != "" {
 		e.logf("item %s: %s", label, note)
-		without += "\n" + truncate(note, 500)
+		tail += "\n" + truncate(note, 500)
+	}
+	if killed != "" {
+		tail += "\n" + truncate(killed, 500)
 	}
 	if result.KeptSessionDir != "" && hasToolError(result) {
 		e.logf("item %s: a tool errored%s", label, keptAt(result))
 	}
-	room := 4000
-	if head != "" {
-		room -= len(head) + 2
-	}
-	if len(ev.prior) > 0 {
-		// for the same-clause first line a failing retry may open with
-		room -= sameClauseRoom
-	}
-	// the item's events say which family and model judged it
-	evaluatedOn := fam.logName()
-	if ev.preflight != "" && head == "" {
-		// and why not on Codex, which the item might have expected
-		evaluatedOn = fam.fullName() + "; the Codex preflight failed: " + truncate(ev.preflight, 200)
-	}
-	// and what its sessions left running that their ends killed
-	if killed != "" {
-		without += "\n" + truncate(killed, 500)
-	}
-	// one evaluator or two, by the rule (goal one-evaluator-for-ordinary-work)
-	wanted, why := secondOpinionWanted(evalDecision{
-		Priority:       ev.res.Goal.Priority,
-		ProtectedFiles: item.ProtectedFiles, ProtectedRulePaths: item.ProtectedRulePaths,
-		ProtectedPaths: append(append([]string(nil), projectProtectedPaths(ev.res)...), ev.protected...), Changed: ev.changed,
-		FirstPassed: passed, FailedClauses: clauses, Setting: ev.setting,
-	})
-	firstPassed := passed
-	// evaluators is 1 or 2, for the usage record (adr-016's amendment
-	// 2026-10-02): 2 only where the notes below gain the "second opinion
-	// on" tail, never for a blind retry on the other family, whose
-	// verdict stands alone.
-	evaluators := 1
-	choice := evaluatorsLine(1, why)
-	if wanted && !(fam.codex || e.hasCodex()) {
-		choice += ", but no other family on this node"
-	} else if wanted {
-		choice = evaluatorsLine(2, why)
-	}
-	e.logf("item %s: %s", label, choice)
-	room -= len(choice) + 1
-	if wanted && (fam.codex || e.hasCodex()) {
-		// the second opinion is the other family — which, after a first
-		// attempt that saw no context, is the one that just could not reach
-		// it: it is not asked again, and the verdict reached stands (ADR
-		// 011's amendment 2026-09-29, the pass in the record)
-		other := fam.other(e)
-		if head != "" {
-			other = ev.fam
-		}
-		op := opinion{unavailable: "the evaluation was adopted after a restart, and its prompt is not kept"}
-		switch {
-		case blindOn != "":
-			op = opinion{unavailable: "it saw no context on the first attempt (" + blindOn + ")"}
-		case ev.preflight != "" && other.codex:
-			// the preflight that moved it to Claude has just failed
-			op = opinion{unavailable: "preflight " + ev.preflight}
-		case ev.second != nil:
-			op = e.secondOpinion(ctx, ev, other, *ev.second, "second opinion")
-		}
-		defer op.acct.Finish(ctx, op.result)
-		left.Hold(item.ID, op.killed)
-		if op.killed != "" {
-			without += "\n" + truncate(op.killed, 500)
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		cost += op.cost
-		// one report for the whole evaluation, as its cost is one
-		if op.acct != nil {
-			acct.Carries(op.acct)
-		} else {
-			acct.Add(op.result)
-		}
-		if op.unavailable != "" {
-			e.logf("item %s: %s second opinion unavailable: %s", label, other.name(), op.unavailable)
-			line := other.name() + " second opinion unavailable: " + op.unavailable
-			notes = truncateNotes(notes, room-200-len(line)-len(without)-len(ev.preflight)) + "\n\n" + line + "\n\n" + choice + "\n(evaluated on " + evaluatedOn + ")" + without
-		} else {
-			e.logReadings(label, op.notes)
-			// the second verdict decides: after a first PASS a second fail
-			// fails it; after a first FAIL a second fail fails it on the
-			// union of both clauses, and a second pass passes it (a wrong
-			// fail costs a rebuild)
-			switch {
-			case op.passed:
-				clauses = nil
-			case firstPassed:
-				clauses = op.clauses
-			default:
-				clauses = unionClauses(clauses, op.clauses)
-			}
-			passed = op.passed
-			notes = bothNotes(fam, notes, firstPassed, other, op.notes, op.passed, room-200-len(without)-len(ev.preflight)) + "\n\n" + choice + "\n(evaluated on " + evaluatedOn + "; second opinion on " + other.fullName() + ")" + without
-			evaluators = 2
-		}
-	} else {
-		notes = truncateNotes(notes, room-100-len(without)-len(ev.preflight)) + "\n\n" + choice + "\n(evaluated on " + evaluatedOn + ")" + without
-	}
-	if head != "" {
-		notes = head + "\n\n" + notes
-	}
-	verdict := "failed"
-	if passed {
-		verdict = "passed"
-	}
-	var failed []gateway.FailedClause
-	if !passed {
-		for _, c := range clauses {
-			failed = append(failed, gateway.FailedClause{Clause: c.Clause, Satisfy: c.Satisfy})
-		}
-		// a second failure on a clause an earlier attempt failed says so
-		// first, so the narrow re-plan changes the clause or escalates
-		// rather than rebuilding (ADR-020)
-		if attempt, _, ok := harness.SameClause(ev.prior, clauses); ok {
-			notes = truncateNotes(harness.NoteSameClause(notes, ev.prior, clauses), 4000)
-			e.logf("item %s: fails on the same clause as attempt %d", label, attempt)
-		}
-	}
-	acct.SetEvaluation(ev.res.Goal.Priority, evaluators)
 	// no heartbeat after the verdict
 	stopHeartbeat(ctx)
-	ctx = gateway.WithNodeID(ctx, nodeIDOf(e.Scopes, item.OrgID, e.Cfg))
-	if err := handInRefused(e.logf, acct.Redact, label, "EvaluateWorkItem", acct.Carried(e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, failed, Cents(cost), usage, gateway.EvaluateChoice{EvaluatedModel: fam.model}))); err != nil {
-		if evaluationNotYours(err) {
+	nodeID := nodeIDOf(e.Scopes, item.OrgID, e.Cfg)
+	ctx = gateway.WithNodeID(ctx, nodeID)
+	if _, ferr := e.GW.FinishJob(ctx, nodeID, EvaluateKind, gateway.JobSubject{Type: "item", ID: item.ID}, map[string]any{"result": map[string]any{"notes_tail": truncate(tail, 2000)}}); ferr != nil {
+		if evaluationNotYours(ferr) {
 			// another node converged on the evaluation while this session
-			// ran; its own verdict (or tool call) is the one of record, and
-			// retrying this one forever would never land it
+			// ran: its verdict is the one of record
 			left.Forget(item.ID)
-			e.logf("item %s: verdict refused: another node holds the evaluation", label)
+			e.logf("item %s: evaluation closed elsewhere: another node holds it", label)
 			return nil
 		}
-		return fmt.Errorf("record verdict: %w", err)
+		return fmt.Errorf("evaluator session (%s) ended; the product refused to close the job: %w", result.SessionID, ferr)
 	}
 	left.Forget(item.ID)
-	e.logf("item %s: evaluation %s on %s ($%.2f)", label, verdict, fam.fullName(), cost)
-	if !passed {
-		e.askSplit(ctx, item, label, ev.prior)
-	}
+	e.logf("item %s: evaluation handed in through the product's tool on %s; job closed ($%.2f)", label, ev.fam.fullName(), result.CostUSD)
 	return nil
-}
-
-// splitAt is the failed evaluation after which the evaluator asks for a
-// split rather than leave a third build to the platform (ADR-021's
-// amendment 2026-10-02). The third failure is the platform's own narrow
-// re-plan (runsheet ADR 023, rung 3), so the node asks at this one alone.
-const splitAt = 2
-
-// failedVerdicts counts the failed verdicts of an item: the earlier
-// attempts' records whose notes carry no `VERDICT: PASS` and are not a
-// no-verdict's reason (an unreached evaluation is not a failed one,
-// runsheet ADR 035), plus this failing one.
-func failedVerdicts(prior []harness.PriorAttempt) int {
-	n := 1
-	for _, p := range prior {
-		if strings.Contains(p.Notes, harness.VerdictPass) || noVerdictRecord(p.Notes) {
-			continue
-		}
-		n++
-	}
-	return n
-}
-
-// noVerdictRecord says whether a recorded evaluation's notes are the
-// reason an evaluation reached no verdict, as the evaluator writes it
-// (noVerdict): no VERDICT line, or a session whose tools or sandbox
-// failed — `…; not a verdict`. The platform keeps those out of
-// `evaluations` (runsheet ADR 023's amendment 2026-09-29); this keeps a
-// record that slipped in from counting.
-func noVerdictRecord(notes string) bool {
-	n := strings.TrimSpace(notes)
-	return strings.HasPrefix(n, "no VERDICT line:") || strings.HasPrefix(n, "no result:") || strings.HasPrefix(n, "the session gave the evaluation up:") || strings.Contains(n, "; not a verdict")
-}
-
-// askSplit is the evaluator's ask after an item's second failed
-// evaluation: a narrow re-plan replacing the item (RequestPlanReplacing),
-// which the planner answers with two or more smaller items (planSplitRule)
-// instead of a third build at the same size. A refusal is the
-// platform's ladder going on, said once per item and never an error; a
-// platform without replaceItem is sent nothing.
-func (e *Evaluator) askSplit(ctx context.Context, item gateway.WorkItem, label string, prior []harness.PriorAttempt) {
-	if failedVerdicts(prior) != splitAt || item.GoalID == "" {
-		return
-	}
-	// no `by`: a node names no one as the asker, not even itself — its
-	// act is on record as the node's (runsheet ADR 070)
-	err := e.GW.RequestPlanReplacing(ctx, item.GoalID, "", item.ID)
-	switch {
-	case errors.Is(err, gateway.ErrNoReplaceItem):
-		return
-	case err == nil:
-		e.logf("item %s: failed evaluation %d; asking for a split (narrow re-plan) instead of a third build", label, splitAt)
-	case gateway.IsRefusal(err):
-		if e.Splits.First(item.ID) {
-			e.logf("item %s: split refused by the platform: %v; the platform's ladder continues", label, err)
-		}
-	default:
-		e.logf("item %s: split not asked: %v; the platform's ladder continues", label, err)
-	}
-}
-
-// sameClauseRoom is what a failing retry's notes leave for the line
-// NoteSameClause may open them with.
-const sameClauseRoom = 400
-
-// truncateNotes cuts a verdict's notes to n as truncate does, but
-// never its READING lines: the review above them is cut and they follow
-// it, so a reading node.log says was recorded is in the recorded notes
-// (ADR-020).
-func truncateNotes(s string, n int) string {
-	s = strings.TrimSpace(s)
-	if len(s) <= n {
-		return s
-	}
-	var body, readings []string
-	for _, line := range strings.Split(s, "\n") {
-		if len(harness.ParseReadings(line)) > 0 {
-			readings = append(readings, strings.TrimSpace(line))
-		} else {
-			body = append(body, line)
-		}
-	}
-	if len(readings) == 0 {
-		return truncate(s, n)
-	}
-	keep := strings.Join(readings, "\n")
-	room := n - len(keep) - 3 // the newline, and truncate's "…" over the byte it replaces
-	if room < 2 {
-		return truncate(keep, n)
-	}
-	return truncate(strings.Join(body, "\n"), room) + "\n" + keep
-}
-
-// logReadings logs each READING line of a verdict's notes: the
-// evaluator's own reading of a host clause, recorded with the verdict
-// rather than failed (ADR-020).
-func (e *Evaluator) logReadings(label, notes string) {
-	for _, r := range harness.ParseReadings(notes) {
-		e.logf("item %s: reading recorded: %s", label, r.Clause)
-	}
 }
 
 // noVerdict records an evaluation that reached no verdict — the deciding
@@ -995,7 +675,6 @@ func (e *Evaluator) noVerdict(ctx context.Context, ev evalRun, reason string, co
 	if err := handInRefused(e.logf, ev.acct.Redact, ev.label, "EvaluateWorkItemNoVerdict", ev.acct.Carried(err)); err != nil {
 		return fmt.Errorf("record no verdict: %w", err)
 	}
-	e.Blind.Forget(ev.item.ID)
 	e.logf("item %s: evaluation reached no verdict on %s, recorded as no verdict ($%.2f): %s", ev.label, ev.fam.fullName(), cost, reason)
 	return nil
 }
@@ -1048,164 +727,7 @@ func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, 
 	defer hb.end()
 	e.logf("item %s: adopted its %s evaluation on %s (pid %d)", label, s.Liveness(), fam.logName(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
-	changed, cfg := e.touched(ctx, label, s.State.Workspace, res.BaseRef(), defaultBranchOf(res), item.Outcome == gateway.OutcomeAlreadyDone)
-	return e.claimLost(hb, label, e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: s.State.Model, fam: fam, dir: s.State.Workspace, adopted: true, prior: e.priorAttempts(ctx, item, label), changed: changed, setting: cfg.setting(), protected: cfg.ProtectedPaths, result: holder}, result, err))
-}
-
-// opinion is the second evaluation's outcome: its verdict and notes, or
-// why there is none (unavailable), and what it cost either way.
-type opinion struct {
-	passed      bool
-	notes       string
-	cost        float64
-	unavailable string
-	// killed is the sentence for what the session's end killed ("" when
-	// nothing), logged already
-	killed string
-	// result is the session's, for its tokens in the evaluation's report
-	result harness.Result
-	// acct is a Claude second opinion's own account, whose report the
-	// evaluation's carries (nil: a Codex one, on the harness's account)
-	acct *SessionAccount
-	// clauses are the acceptance clauses it failed, empty on a pass
-	clauses []harness.FailedClause
-}
-
-// secondOpinion runs the evaluation's job on the other family (on):
-// Codex after Claude, unless its account is paced or stopped; Claude
-// after Codex, on an account of its own. A session that errors, times
-// out, reaches no verdict, saw no context (toolBroken) or ran in a
-// sandbox that blocked every command (Result.SandboxBroken) is
-// unavailable, and the first verdict stands. role names it in the job's
-// label and node.log: "second opinion", or "evaluation" for the one
-// that stands in for a session that saw no context.
-func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, job harness.Job, role string) opinion {
-	label := ev.label
-	if role == "second opinion" {
-		setEvalPhase(ctx, evalPhaseSecondOpinion)
-	} else {
-		setEvalPhase(ctx, evalPhaseSession)
-	}
-	h := e.Harness
-	var acct *SessionAccount
-	sc, _ := e.Scopes.ByOrg(ev.item.OrgID)
-	ref := gateway.SessionRef{Kind: string(harness.KindEvaluate), ItemID: ev.item.ID, GoalID: ev.item.GoalID}
-	ctx = withSubject(ctx, sc, ev.item.ProjectID, "")
-	var open func() (*SessionAccount, error)
-	if on.codex {
-		if _, why, ok := e.codexForSecond(ev.res.Goal.Priority); !ok {
-			return opinion{unavailable: why}
-		}
-		h = e.Codex
-		// an issued Codex account, opened as a first Codex evaluation's is
-		open = func() (*SessionAccount, error) {
-			return e.Credentials.Open(withChooser(ctx, e.codexChooser(ev.res.Goal.Priority, false)), ref, sc.NodeID, AdapterCodex)
-		}
-	} else {
-		open = func() (*SessionAccount, error) {
-			return e.Credentials.Open(ctx, ref, sc.NodeID, AdapterClaudeCode)
-		}
-	}
-	if open != nil {
-		a, err := open()
-		if err != nil {
-			return opinion{unavailable: truncate(harness.Redact(err.Error(), job.Secrets...), 300)}
-		}
-		defer a.Cleanup()
-		if on.codex {
-			a.Model = on.model
-		}
-		a.Apply(&job)
-		acct = a
-	}
-	job.Model = on.model
-	job.Label = label + " " + role
-	// the second session hands its verdict to a holder of its own, on a
-	// proxy of the node tools' own (the first session's proxy was its)
-	holder, err := jobresult.New(EvaluateKind, jobresult.FinishVerdict, "")
-	if err != nil {
-		return opinion{unavailable: err.Error()}
-	}
-	bin, _, _ := harness.RelayOf(e.MCP[tools.Builtin])
-	endTools, err := SessionTools{NodeTools: holder.Tools()}.serveNodeToolsAlone(mcpRootFor(e.Layout, ev.item.ID), bin, &job, nil)
-	if err != nil {
-		return opinion{unavailable: truncate(err.Error(), 300)}
-	}
-	defer endTools(ctx)
-	if on.codex {
-		if why := e.preflight(ctx, job, acct); why != "" {
-			return opinion{unavailable: "preflight " + why}
-		}
-	}
-	e.logf("item %s: %s on %s", label, role, on.logName())
-	result, err := h.Run(ctx, job, nil)
-	op := opinion{cost: result.CostUSD, result: result, acct: acct,
-		killed: logKilled(e.logf, "item "+label, result.KilledPerSession(), result.KillError)}
-	if acct != nil {
-		acct.Report(result)
-	}
-	switch {
-	case ctx.Err() != nil:
-		op.unavailable = ctx.Err().Error()
-	case errors.Is(err, context.DeadlineExceeded):
-		op.unavailable = fmt.Sprintf("the session ran out of time (%s)", e.Timeout)
-	case err != nil:
-		op.unavailable = truncate(acct.Redact(harness.Redact(err.Error(), job.Secrets...)), 300)
-		if _, ok := harness.AsUnavailable(err); ok {
-			reportFailure(e.Tripline, tripline.HarnessUnavailable, errors.New(op.unavailable), ev.item, label, repoOf(ev.res), gateway.RoleEvaluator)
-		}
-	default:
-		if result.SandboxBroken != "" {
-			op.unavailable = "sandbox broken (" + acct.Redact(harness.Redact(result.SandboxBroken, job.Secrets...)) + ")"
-			reportFailure(e.Tripline, tripline.SandboxBroken, errors.New(op.unavailable), ev.item, label, repoOf(ev.res), gateway.RoleEvaluator)
-			break
-		}
-		if blind, broken := e.toolBroken(result, acct, false); broken {
-			op.unavailable = "saw no context (" + harness.Redact(blind, job.Secrets...) + ")"
-			break
-		}
-		recoverResult(holder, result, "item "+label+" "+role, e.logf)
-		passed, notes, clauses, why, ok := verdictOf(holder, acct.Redact)
-		if !ok {
-			op.unavailable = why
-			break
-		}
-		op.passed = passed
-		op.notes = strings.TrimSpace(harness.Redact(notes, job.Secrets...))
-		if op.notes == "" {
-			op.notes = "(no notes)"
-		}
-		op.clauses = clauses
-	}
-	return op
-}
-
-// verdictOf reads a session's verdict from what it handed the node's
-// mesh_result (ADR-041): the `verdict` object's passed, notes and
-// clauses (harness.VerdictResult), redacted. ok is false, with why, when
-// the session gave the job up by mesh_fail, handed nothing in, or
-// handed in a verdict with no readable passed — no verdict, never read
-// from the final message.
-func verdictOf(holder *jobresult.Holder, redact func(string) string) (passed bool, notes string, clauses []harness.FailedClause, why string, ok bool) {
-	if holder == nil {
-		return false, "", nil, "no result holder for the session", false
-	}
-	if reason, failed := holder.Failed(); failed {
-		return false, "", nil, "the session gave the evaluation up: " + redact(truncate(reason, 300)), false
-	}
-	res, has := holder.Result()
-	if !has {
-		return false, "", nil, "no result: the session made no mesh_result call", false
-	}
-	verdict, _ := res["verdict"].(map[string]any)
-	passed, notes, clauses, ok = harness.VerdictResult(verdict)
-	if !ok {
-		return false, "", nil, "the result's verdict carries no readable passed", false
-	}
-	for i := range clauses {
-		clauses[i].Clause, clauses[i].Satisfy = redact(clauses[i].Clause), redact(clauses[i].Satisfy)
-	}
-	return passed, redact(notes), clauses, "", true
+	return e.claimLost(hb, label, e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: s.State.Model, fam: fam, dir: s.State.Workspace, adopted: true, prior: e.priorAttempts(ctx, item, label)}, result, err))
 }
 
 // ErrNoContext is an evaluation that saw no context — its built-in
@@ -1216,232 +738,6 @@ func verdictOf(holder *jobresult.Holder, redact func(string) string) (passed boo
 // nothing is recorded, and the item waits in evaluating for a later tick
 // (ADR 011, a tool failure is never a verdict).
 var ErrNoContext = errors.New("the evaluation saw no context, and the other family could not evaluate it")
-
-// unreadable is why a session's text is no verdict whatever it says —
-// why, for the notes' `no verdict — <why>`, and what, for node.log's
-// `evaluation on <family> <what>` — or false when it may be read for
-// one: Codex's sandbox would not start, so every command it ran failed
-// (`sandbox: <the bwrap line>`), or its tests could not bind a socket
-// (`sandbox: <the socket line>`; ADR 011 amendments 2026-09-29), or it saw
-// no context (toolBroken).
-func (e *Evaluator) unreadable(res harness.Result, acct *SessionAccount, adopted bool) (why, what string, ok bool) {
-	if res.SandboxBroken != "" {
-		why = "sandbox: " + truncate(acct.Redact(res.SandboxBroken), 200)
-		return why, "ran in a sandbox that blocked every command (" + why + ")", true
-	}
-	if blind, broken := e.toolBroken(res, acct, adopted); broken {
-		return blind, "saw no context (" + blind + ")", true
-	}
-	return "", "", false
-}
-
-// toolBroken names the tool a session could not use and its first
-// error, capped at 200 characters: a built-in server of the evaluator's
-// (MCP: the context server) or a required console tool the session was
-// served that errored and was never reached (ToolStat.Reached: no clean
-// call and no call the server answered itself) — every call refused
-// before the server, or an error at startup with no call at all. A tool
-// that answered was reached: `not found` for a mesh_document slug it
-// does not have is the tool working, not a broken one (ADR-011's
-// amendment 2026-09-29, a tool that answered was reached). adopted is a
-// session an older node process started (AdoptEvaluation): only there
-// may the built-in carry its old name (tools.IsBuiltin).
-func (e *Evaluator) toolBroken(res harness.Result, acct *SessionAccount, adopted bool) (string, bool) {
-	broken := func(name string) (string, bool) {
-		s := res.Tools[name]
-		if s == nil || !(s.Errors > 0 && !s.Reached()) {
-			return "", false
-		}
-		msg := s.FirstError
-		if msg == "" {
-			msg = fmt.Sprintf("%d of %d calls errored", s.Errors, s.Calls)
-		}
-		return acct.Redact(msg), true
-	}
-	// the node's own servers and, for an adopted session, the built-in
-	// under any name it has had: an evaluation an older node started
-	// under its old name reports that name, not tools.Builtin
-	// (tools.IsBuiltin: mesh-context, or the name before it). A session this
-	// process started was rendered runsheet, so a server by the old
-	// name in its result is a console tool: broken only if required, below.
-	names := map[string]bool{}
-	for name := range e.MCP {
-		names[name] = true
-	}
-	if adopted {
-		for name := range res.Tools {
-			if tools.IsBuiltin(name) {
-				names[name] = true
-			}
-		}
-	}
-	for _, name := range slices.Sorted(maps.Keys(names)) {
-		if msg, ok := broken(name); ok {
-			return name + ": " + truncate(msg, 200), true
-		}
-	}
-	if acct != nil {
-		for _, t := range acct.used {
-			if !t.Required {
-				continue
-			}
-			if msg, ok := broken(t.Name); ok {
-				return t.Name + ": " + truncate(redactToolValues(msg, t), 200), true
-			}
-		}
-	}
-	return "", false
-}
-
-// canRetry says whether an evaluation that saw no context can run on
-// the other family (on), or why not: an adopted session's prompt is not
-// kept, a pinned family is the only one the item takes, and Codex needs
-// its harness and an account with headroom.
-func (e *Evaluator) canRetry(ev evalRun, on family) (string, bool) {
-	switch {
-	case ev.second == nil:
-		return "the evaluation was adopted after a restart, and its prompt is not kept", false
-	case ev.fam.pinned:
-		return "the item pins " + ev.fam.fullName(), false
-	case on.codex && !e.hasCodex():
-		return "the node has no Codex harness or account", false
-	case on.codex:
-		if _, why, ok := e.codexForSecond(ev.res.Goal.Priority); !ok {
-			return why, false
-		}
-	}
-	return "", true
-}
-
-// blind is ErrNoContext, with line said once for the item until an
-// evaluation of it saw its context.
-func (e *Evaluator) blind(itemID, line string) error {
-	if e.Blind.First(itemID) {
-		e.logf("%s; it stays in evaluating for a later tick (said once for the item)", line)
-	}
-	return ErrNoContext
-}
-
-// codexForSecond is the issued Codex account a second opinion for a
-// goal of that priority runs on, or why there is none: none of
-// CodexAccounts has headroom.
-func (e *Evaluator) codexForSecond(priority string) (AccountConfig, string, bool) {
-	a, ok := e.chooseCodex(priority, false)
-	if !ok {
-		return AccountConfig{}, "no Codex account has headroom", false
-	}
-	return a, "", true
-}
-
-// bothNotes labels the two verdicts, the first family's first, each by
-// its family and model, so a builder sees both, truncated together to
-// n: each gets half, and one shorter than its half leaves the rest to
-// the other, so neither is cut out.
-func bothNotes(firstOn family, first string, firstPassed bool, secondOn family, second string, secondPassed bool, n int) string {
-	firstHead := firstOn.name() + " (first evaluation, " + firstOn.shortModel() + "): " + verdictLine(firstPassed) + "\n"
-	secondHead := secondOn.name() + " (second opinion, " + secondOn.shortModel() + "): " + verdictLine(secondPassed) + "\n"
-	// the blank line between them, and the two bytes more truncate's
-	// "…" takes than the byte it replaces, in each
-	room := n - len(firstHead) - len(secondHead) - 2 - 4
-	a, b := room/2, room-room/2
-	if len(first) < a {
-		b += a - len(first)
-	} else if len(second) < b {
-		a += b - len(second)
-	}
-	return firstHead + truncateNotes(first, a) + "\n\n" + secondHead + truncateNotes(second, b)
-}
-
-// evalDecision is what the evaluate path decides one evaluator or two
-// on (goal one-evaluator-for-ordinary-work; ADR 005's and ADR 011's
-// amendments 2026-10-02): the goal's priority, what the item touched
-// that is protected, the first verdict and the project's setting.
-type evalDecision struct {
-	// Priority is the goal's.
-	Priority string
-	// ProtectedFiles are the item's touched files the platform matched to
-	// a protected rule; ProtectedRulePaths that rule's globs.
-	ProtectedFiles     []string
-	ProtectedRulePaths []string
-	// ProtectedPaths are the project's own protected-path globs.
-	ProtectedPaths []string
-	// Changed are the files the evaluated diff changed.
-	Changed []string
-	// FirstPassed is the first verdict, FailedClauses the clauses it
-	// failed (none on a pass).
-	FirstPassed   bool
-	FailedClauses []harness.FailedClause
-	// Setting is the project's second_opinion: "always", else the rule.
-	Setting string
-}
-
-// secondOpinionAlways is the second_opinion setting that keeps two
-// evaluators on every item.
-const secondOpinionAlways = "always"
-
-// oneEvaluatorReason is the reason a normal or low item gets one verdict.
-const oneEvaluatorReason = "normal/low goal, no protected path"
-
-// secondOpinionWanted is the rule: an urgent or high goal, a protected
-// touch, a first FAIL on a correctness clause (one that is not a reading
-// of the host, ADR-020) or second_opinion: always gets a second
-// evaluator; anything else one. The reason is the first that held.
-func secondOpinionWanted(d evalDecision) (bool, string) {
-	if gateway.PriorityRank(d.Priority) <= gateway.PriorityRank("high") {
-		return true, "urgent/high goal"
-	}
-	if len(d.ProtectedFiles) > 0 {
-		return true, "protected path " + d.ProtectedFiles[0]
-	}
-	for _, f := range d.Changed {
-		for _, g := range append(append([]string(nil), d.ProtectedRulePaths...), d.ProtectedPaths...) {
-			if globMatch(g, f) {
-				return true, "protected path " + f
-			}
-		}
-	}
-	if !d.FirstPassed {
-		for _, c := range d.FailedClauses {
-			if !hostReadingClause(c.Clause + ". " + c.Satisfy) {
-				return true, "first verdict FAIL on a correctness clause"
-			}
-		}
-	}
-	if d.Setting == secondOpinionAlways {
-		return true, "second_opinion: always"
-	}
-	return false, oneEvaluatorReason
-}
-
-// projectProtectedPaths are the project's protected-path globs, none
-// when the project was not read.
-func projectProtectedPaths(res *Resolved) []string {
-	if res == nil || res.Project == nil {
-		return nil
-	}
-	return res.Project.ProtectedPaths
-}
-
-// unionClauses is a's failed clauses and those of b no clause of a
-// names already.
-func unionClauses(a, b []harness.FailedClause) []harness.FailedClause {
-	out := slices.Clone(a)
-	for _, c := range b {
-		if !slices.ContainsFunc(out, func(o harness.FailedClause) bool {
-			return strings.EqualFold(strings.TrimSpace(o.Clause), strings.TrimSpace(c.Clause))
-		}) {
-			out = append(out, c)
-		}
-	}
-	return out
-}
-
-func verdictLine(passed bool) string {
-	if passed {
-		return harness.VerdictPass
-	}
-	return harness.VerdictFail
-}
 
 func codexModelName(m string) string {
 	if m == "" {
@@ -1464,13 +760,6 @@ type family struct {
 	priority      string
 }
 
-func (f family) name() string {
-	if f.codex {
-		return "Codex"
-	}
-	return "Claude"
-}
-
 // logName is how node.log and the notes' last line name the session:
 // Codex and its model, or the Claude model as it always has.
 func (f family) logName() string {
@@ -1487,26 +776,6 @@ func (f family) fullName() string {
 		return f.logName()
 	}
 	return "Claude " + modelName(f.model)
-}
-
-// shortModel is the model in a verdict's label.
-func (f family) shortModel() string {
-	switch {
-	case f.model != "":
-		return f.model
-	case f.codex:
-		return "its default model"
-	}
-	return "the CLI's default model"
-}
-
-// other is the family a second opinion runs on: Claude after Codex, on
-// the item's Claude evaluate model; Codex after Claude, on its mapping.
-func (f family) other(e *Evaluator) family {
-	if f.codex {
-		return family{model: f.claude, claude: f.claude, priority: f.priority}
-	}
-	return family{codex: true, model: e.codexModel(f.claude), claude: f.claude, priority: f.priority}
 }
 
 // preflight is why the Codex session job would not reach the built-in
@@ -1626,12 +895,6 @@ func (e *Evaluator) openFamily(ctx context.Context, ref gateway.SessionRef, node
 func (e *Evaluator) CodexHeadroom(priority string) bool {
 	_, ok := e.chooseCodex(priority, false)
 	return ok
-}
-
-// hasCodex says the evaluator has Codex to run on at all: its harness,
-// and an issued Codex account (CodexAccounts).
-func (e *Evaluator) hasCodex() bool {
-	return e.Codex != nil && e.CodexAccounts != nil && len(e.CodexAccounts()) > 0
 }
 
 // chooseCodex is the Codex account an evaluation of that priority runs

@@ -1842,10 +1842,6 @@ type secondOpinion struct {
 	accounts func() []node.AccountConfig
 	// waits says a Codex-pinned item's wait once per item
 	waits *node.OncePer
-	// blind says once per item that an evaluation saw no context and
-	// could not run on the other family — one per node, Codex or not,
-	// since every evaluator is built afresh per item
-	blind *node.OncePer
 	// noVerdict says once per run that the platform takes no no-verdict
 	// outcome
 	noVerdict *node.OncePer
@@ -1944,7 +1940,7 @@ func codexSourceOf(ctx context.Context, cfg *node.Config, sb *sandbox.Sandbox, l
 func codexSecondOpinionFrom(src codexSource, loop *node.Loop, workRoot string, logger *log.Logger) secondOpinion {
 	logger.Print(src.Line())
 	if !src.Built() {
-		return secondOpinion{blind: &node.OncePer{}, noVerdict: &node.OncePer{}, left: &node.LeftRunning{}}
+		return secondOpinion{noVerdict: &node.OncePer{}, left: &node.LeftRunning{}}
 	}
 	c := &harness.Codex{Binary: src.Binary, Sandbox: src.Sandbox, DetachSandboxed: src.Sandbox != nil, Stderr: sessionsOut, WorkRoot: workRoot, Tokens: tokenKeeper()}
 	if c.Binary == "" {
@@ -1952,7 +1948,7 @@ func codexSecondOpinionFrom(src codexSource, loop *node.Loop, workRoot string, l
 	}
 	h := node.ObserveLimits(c, loop.Limits)
 	loop.CodexRoom = (&node.Evaluator{Codex: h, CodexAccounts: loop.CodexCandidates, Limits: loop.Limits, Thresholds: loop.Thresholds}).CodexHeadroom
-	return secondOpinion{h: h, codex: c, preflight: c.Preflight, limits: loop.Limits, thresholds: loop.Thresholds, accounts: loop.CodexCandidates, waits: &node.OncePer{}, blind: &node.OncePer{}, noVerdict: &node.OncePer{}, left: &node.LeftRunning{}}
+	return secondOpinion{h: h, codex: c, preflight: c.Preflight, limits: loop.Limits, thresholds: loop.Thresholds, accounts: loop.CodexCandidates, waits: &node.OncePer{}, noVerdict: &node.OncePer{}, left: &node.LeftRunning{}}
 }
 
 // evaluateWith is the loop's Evaluate hook: a fresh evaluator session per
@@ -2026,7 +2022,7 @@ func researchWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, loop 
 
 func evaluator(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, second secondOpinion, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) *node.Evaluator {
 	return &node.Evaluator{GW: gw, Proxies: sessionProxies, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: loop.CurrentScopes(), WorkRoot: workRoot, Layout: nodeLayout, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Sandbox: sessionSandbox, Tripline: loop.Tripline, Log: logger,
-		Codex: second.h, CodexPreflight: second.preflight, CodexModel: cfg.Codex.CodexModel, CodexAccounts: second.accounts, Waits: second.waits, Blind: second.blind, NoVerdict: second.noVerdict, Splits: &node.OncePer{}, LeftRunning: second.left, Limits: second.limits, Thresholds: second.thresholds}
+		Codex: second.h, CodexPreflight: second.preflight, CodexModel: cfg.Codex.CodexModel, CodexAccounts: second.accounts, Waits: second.waits, NoVerdict: second.noVerdict, LeftRunning: second.left, Limits: second.limits, Thresholds: second.thresholds}
 }
 
 // validationNotices are the node's once-per-run validation notices,
