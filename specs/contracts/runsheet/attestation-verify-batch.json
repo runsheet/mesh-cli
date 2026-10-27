@@ -19,6 +19,8 @@
               "sha256:beef"
             ],
             "attested_at": "2026-01-01T00:00:00Z",
+            "attested_by_person": null,
+            "attester_kind": "node",
             "checks": [
               {
                 "check": "",
@@ -57,10 +59,13 @@
             "human_reviews": null,
             "item_seq": 1,
             "job": "",
+            "job_workflow_ref": "",
             "key_id": "ed25519:KEYID",
             "node_id": "d1f6c904-510f-5905-a598-8ea0b41f837a",
             "passes": 0,
+            "pull_request_number": 0,
             "received_at": "2026-01-01T00:00:00Z",
+            "ref": "",
             "repo_full_name": "contractco/api",
             "repo_id": "7dacfd73-80d2-5f33-94d6-54f222403404",
             "report": null,
@@ -106,10 +111,14 @@
             "tests_passed": 12,
             "tests_run": 12,
             "tree_hash": "tree-38dc1c892fe1a2581ba77fed6ec2d2a29ee3d33f",
+            "unverified_reason": "",
             "uploaded_at": null,
+            "verified": false,
             "work_item_id": "00000000-0000-4000-8000-0000000c0007",
             "workflow": ""
           },
+          "attested_by": "Box",
+          "attester_kind": "node",
           "head_sha": "6fea9e4254fc80130d82c3777b35607d344d412a",
           "pr_number": 7001,
           "reused_from": "",
@@ -118,6 +127,8 @@
         }
       ]
     },
+    "attested_by": "",
+    "attester_kind": "",
     "reasons": [],
     "reused_from": "",
     "risk_classes": [],

@@ -30,12 +30,24 @@
       },
       "finish": "answer-or-proposal",
       "finishSchema": "",
+      "finishTool": "",
+      "git": null,
       "guidance": "You answer one thread of a Wardroom channel as its assistant: read the thread, answer the person in it, and propose a card when the channel's work calls for one.",
       "harness": "claude-code",
       "harnesses": [
         "claude-code"
       ],
       "kind": "wardroom/thread",
+      "mcp": [
+        {
+          "name": "mesh",
+          "url": "https://api.runsheet.dev/mesh/mcp"
+        },
+        {
+          "name": "runsheet",
+          "url": "https://api.runsheet.dev/mcp"
+        }
+      ],
       "needs": "none",
       "pods": [
         {

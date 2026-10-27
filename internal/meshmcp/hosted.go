@@ -28,9 +28,13 @@ import (
 // the GraphQL mutations stay and HostedFallbackLine is said once per
 // run, as TokenFallback says the item token's fallback.
 
-// HostedWorkTools are the hosted tools the work tools call: all five
-// served is the hosted path, any missing is the mutations'.
-var HostedWorkTools = []string{"mesh_claim", "mesh_progress", "mesh_ask", "mesh_finish", "mesh_release"}
+// HostedWorkTools are the hosted tools the work tools call: all four
+// served is the hosted path, any missing is the mutations'. mesh_claim
+// is no MCP tool since runsheet ADR 069 step 3: the claim is always
+// claimWorkItem. Once runsheet's /mcp no longer carries mesh_progress and
+// mesh_release (step 4; they are the Mesh server's, which no person
+// reaches), the hosted path is not served and the mutations are used.
+var HostedWorkTools = []string{"mesh_progress", "mesh_ask", "mesh_finish", "mesh_release"}
 
 // HostedFallbackLine is said once per run on stderr when the platform's
 // /mcp serves no hosted work tools.
@@ -311,33 +315,27 @@ func (h *Hosted) Call(ctx context.Context, tool string, args map[string]any) (st
 // The arguments each hosted work tool is sent
 // (specs/contracts/hostedworktools.json).
 
-// ClaimArgs is hosted mesh_claim's: the goal's slug, the item's seq,
-// whether it is a pair's join, and the personal node claiming it.
-func ClaimArgs(goal string, seq int, pair bool, nodeID string) map[string]any {
-	return map[string]any{"goal": goal, "item": seq, "pair": pair, "node": nodeID}
-}
-
 // ProgressArgs is hosted mesh_progress's.
 func ProgressArgs(itemID, note string) map[string]any {
-	return map[string]any{"item": itemID, "note": note}
+	return map[string]any{"job_id": itemID, "note": note}
 }
 
 // AskArgs is hosted mesh_ask's.
 func AskArgs(itemID, question string) map[string]any {
-	return map[string]any{"item": itemID, "question": question}
+	return map[string]any{"item_id": itemID, "question": question}
 }
 
 // FinishArgs is hosted mesh_finish's for a built item.
 func FinishArgs(itemID, branch, head string) map[string]any {
-	return map[string]any{"item": itemID, "branch": branch, "headSha": head}
+	return map[string]any{"item_id": itemID, "branch": branch, "head_sha": head}
 }
 
 // FinishDoneArgs is hosted mesh_finish's for an already_done item.
 func FinishDoneArgs(itemID, evidence string) map[string]any {
-	return map[string]any{"item": itemID, "outcome": "already_done", "evidence": evidence}
+	return map[string]any{"item_id": itemID, "outcome": "already_done", "evidence": evidence}
 }
 
 // ReleaseArgs is hosted mesh_release's.
 func ReleaseArgs(itemID, reason string) map[string]any {
-	return map[string]any{"item": itemID, "reason": reason}
+	return map[string]any{"job_id": itemID, "note": reason}
 }

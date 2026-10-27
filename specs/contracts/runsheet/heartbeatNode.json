@@ -1,10 +1,21 @@
 {
-  "description": "heartbeatNode: every heartbeat carries the platform's answer to who owns the node and which orgs it now serves too, not only at registration — an enterprise's node picks up an org attached later with no restart. The runsheet goal a-node-has-an-owner serves this same shape at /contracts/heartbeatNode.json — the platform side of the contract. sessions are the node's live sessions, each its item, kind, harness session and since; the answer's stop names those whose item already merged, was cancelled or was superseded, which the node stops (goal a-session-stops-when-its-item-finishes-elsewhere).",
+  "description": "heartbeatNode: every heartbeat carries the platform's answer to who owns the node and which orgs it now serves too, not only at registration — an enterprise's node picks up an org attached later with no restart. The runsheet goal a-node-has-an-owner serves this same shape at /contracts/heartbeatNode.json — the platform side of the contract. sessions are the node's live sessions, each its item, kind, harness session and since; the answer's stop names those whose item already merged, was cancelled or was superseded, which the node stops (goal a-session-stops-when-its-item-finishes-elsewhere). manifest is what the node says it has (platform/nodecaps.Manifest): os, arch, tools with their versions, runtimes, harnesses and sandbox; optional, and a node that sends none keeps the manifest it last sent (goal a-node-says-what-it-has-and-claims-only-what-it-can-run).",
   "input": {
     "aggregateId": "b99be3f5-2f54-54a7-9af5-49d9bfc96744",
     "namespace": "runsheet",
     "version": "v0.2.200",
     "running": 3,
+    "manifest": {
+      "os": "darwin",
+      "arch": "arm64",
+      "tools": [
+        { "name": "go", "version": "1.23.2" },
+        { "name": "xcode", "version": "15.2" }
+      ],
+      "runtimes": ["docker", "npx", "uvx"],
+      "harnesses": ["claude-code", "codex"],
+      "sandbox": { "mode": "on", "runtime": "podman 5.2.1", "image": "ghcr.io/runsheet/mesh-node:v0.2.200" }
+    },
     "adopted": [
       {
         "itemId": "goal-1",

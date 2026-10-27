@@ -39,6 +39,7 @@
         "retry_cap": 3,
         "slug": "photo",
         "spent_cents": 220,
+        "statement": "Store it.",
         "status": "running",
         "title": "The backend stores a profile photo",
         "waiting_on": "ci",

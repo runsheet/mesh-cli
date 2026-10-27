@@ -47,7 +47,7 @@
         "main.go"
       ],
       "heartbeat_at": "2026-01-01T00:00:00Z",
-      "last_note": "asks: which port does the service listen on?",
+      "last_note": "the tests run",
       "last_verdict": {
         "at": "2026-01-01T00:00:00Z",
         "head_sha": "head-work-1",

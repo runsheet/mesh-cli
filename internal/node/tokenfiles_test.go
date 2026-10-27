@@ -345,7 +345,7 @@ func TestSessionStarted50MinutesBeforeRotationFinishesAfterIt(t *testing.T) {
 		t.Fatalf("initialize: %v", m)
 	}
 	c.send(map[string]any{"method": "notifications/initialized"})
-	if got := c.tool(2, "mesh_progress", map[string]any{"item": itemID, "note": "session started"}); got != "noted" {
+	if got := c.tool(2, "mesh_progress", map[string]any{"job_id": itemID, "note": "session started"}); got != "noted" {
 		t.Fatalf("mesh_progress before the rotation = %q", got)
 	}
 
@@ -371,10 +371,10 @@ func TestSessionStarted50MinutesBeforeRotationFinishesAfterIt(t *testing.T) {
 		t.Fatalf("token file after the rotation = %q", got)
 	}
 
-	if got := c.tool(3, "mesh_progress", map[string]any{"item": itemID, "note": "still here after the rotation"}); got != "noted" {
+	if got := c.tool(3, "mesh_progress", map[string]any{"job_id": itemID, "note": "still here after the rotation"}); got != "noted" {
 		t.Fatalf("mesh_progress after the rotation = %q", got)
 	}
-	if got := c.tool(4, "mesh_finish", map[string]any{"item": itemID, "branch": "mesh/outlive-3", "headSha": "0123456789abcdef0123456789abcdef01234567"}); got != "finished: the item is evaluating" {
+	if got := c.tool(4, "mesh_finish", map[string]any{"item_id": itemID, "branch": "mesh/outlive-3", "head_sha": "0123456789abcdef0123456789abcdef01234567"}); got != "finished: the item is evaluating" {
 		t.Fatalf("mesh_finish after the rotation = %q", got)
 	}
 	finishes := f.CallsNamed("mesh_finish")

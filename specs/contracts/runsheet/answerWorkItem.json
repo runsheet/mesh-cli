@@ -1,0 +1,32 @@
+{
+  "after": {
+    "asks": [
+      {
+        "accountId": "9615aef4-2553-53a0-96fa-55a1bd9d0410",
+        "answer": "Off: turn it on per project.",
+        "answeredAt": "2026-01-01T00:00:00Z",
+        "answeredBy": "user:e96b1f77-6ed9-53ce-8ef4-0861304b4a23",
+        "askedAt": "2026-01-01T00:00:00Z",
+        "attempt": 0,
+        "blockingReason": "the brief and the acceptance allow either, and the default changes what users see",
+        "nodeId": "d1f6c904-510f-5905-a598-8ea0b41f837a",
+        "question": "Should the flag default on or off?",
+        "sessionId": "iota-session",
+        "to": "person"
+      }
+    ],
+    "status": "ready"
+  },
+  "field": "answerWorkItem",
+  "input": {
+    "aggregateId": "00000000-0000-4000-8000-0000000c0009",
+    "answer": "Off: turn it on per project.",
+    "by": "e96b1f77-6ed9-53ce-8ef4-0861304b4a23",
+    "namespace": "runsheet"
+  },
+  "inputType": "AnswerWorkItemInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

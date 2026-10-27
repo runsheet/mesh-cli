@@ -9,7 +9,7 @@
   "sample": {
     "at": "2026-01-01T00:00:00Z",
     "cleared_last_24h": [],
-    "count": 6,
+    "count": 7,
     "errors": [
       "contractco: deadline exceeded after 300ms"
     ],
@@ -19,7 +19,8 @@
       "claims_failing_alike": 1,
       "held_past_green": 1,
       "idle_under_load": 1,
-      "no_progress": 1
+      "no_progress": 1,
+      "node_refused": 1
     },
     "rows": [
       {
@@ -111,6 +112,16 @@
         "org": "contractco",
         "repo": "contractco/console",
         "runbook": "docs/platform-health.md#attestation-missing"
+      },
+      {
+        "age_minutes": 0,
+        "cause": "node box refused 8 claims since 2026-01-01 00:00 UTC, last: not yours: an agent actor is a machine's, and this bearer is a person's",
+        "id": "15f82431-555f-5b5c-bf73-6b260f654cdb",
+        "kind": "node_refused",
+        "node": "box",
+        "opened_at": "2026-01-01T00:00:00Z",
+        "org": "contractco",
+        "runbook": "docs/platform-health.md#node-refused"
       },
       {
         "age_minutes": 0,

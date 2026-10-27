@@ -1,0 +1,18 @@
+{
+  "field": "askWorkItem",
+  "input": {
+    "accountId": "9615aef4-2553-53a0-96fa-55a1bd9d0410",
+    "aggregateId": "00000000-0000-4000-8000-0000000c0009",
+    "blockingReason": "the brief and the acceptance allow either, and the default changes what users see",
+    "namespace": "runsheet",
+    "nodeId": "d1f6c904-510f-5905-a598-8ea0b41f837a",
+    "question": "Should the flag default on or off?",
+    "sessionId": "iota-session",
+    "to": "person"
+  },
+  "inputType": "AskWorkItemInput",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

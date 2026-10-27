@@ -19,7 +19,7 @@ const mcpSession = "fake-mcp-session"
 
 var contextTools = []string{"mesh_document", "mesh_documents", "mesh_items", "mesh_projects", "mesh_search"}
 
-var hostedWorkTools = []string{"mesh_claim", "mesh_progress", "mesh_ask", "mesh_finish", "mesh_release"}
+var hostedWorkTools = []string{"mesh_progress", "mesh_ask", "mesh_finish", "mesh_release"}
 
 func (f *Fake) mcp(w http.ResponseWriter, r *http.Request) {
 	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -144,7 +144,10 @@ func (f *Fake) mcpCall(name string, args map[string]any, bearer string) (string,
 		return "", fmt.Errorf("%s", msg)
 	}
 	item := func() (string, map[string]any, error) {
-		id, _ := args["item"].(string)
+		id, _ := args["job_id"].(string)
+		if id == "" {
+			id, _ = args["item_id"].(string)
+		}
 		row := f.WorkItems[id]
 		if row == nil {
 			return "", nil, fmt.Errorf("no such item %q", id)
@@ -153,35 +156,6 @@ func (f *Fake) mcpCall(name string, args map[string]any, bearer string) (string,
 	}
 	var text string
 	switch name {
-	case "mesh_claim":
-		slug, _ := args["goal"].(string)
-		seq := toInt(args["item"])
-		var id string
-		for gid, g := range f.Goals {
-			if g["slug"] != slug {
-				continue
-			}
-			for iid, it := range f.WorkItems {
-				if it["goalId"] == gid && toInt(it["seq"]) == seq {
-					id = iid
-				}
-			}
-		}
-		row := f.WorkItems[id]
-		if row == nil {
-			return "", fmt.Errorf("no item %d on goal %s", seq, slug)
-		}
-		nodeID, _ := args["node"].(string)
-		if pair, _ := args["pair"].(bool); pair && row["nodeId"] != nil && row["nodeId"] != nodeID {
-			pairs, _ := row["pairs"].([]any)
-			row["pairs"] = append(pairs, nodeID)
-			text = fmt.Sprintf("paired on %s/%d with node %v", slug, seq, row["nodeId"])
-			break
-		}
-		if err := f.apply("claimWorkItem", map[string]any{"aggregateId": id, "nodeId": nodeID, "harness": "claude-code"}); err != nil {
-			return "", err
-		}
-		text = fmt.Sprintf("claimed %s/%d for node %s", slug, seq, nodeID)
 	case "mesh_progress", "mesh_ask":
 		id, _, err := item()
 		if err != nil {
@@ -202,9 +176,9 @@ func (f *Fake) mcpCall(name string, args map[string]any, bearer string) (string,
 			return "", err
 		}
 		in := map[string]any{"aggregateId": id}
-		for _, k := range []string{"branch", "headSha", "outcome", "evidence"} {
+		for k, to := range map[string]string{"branch": "branch", "head_sha": "headSha", "outcome": "outcome", "evidence": "evidence"} {
 			if v, ok := args[k]; ok {
-				in[k] = v
+				in[to] = v
 			}
 		}
 		if err := f.apply("finishWorkItem", in); err != nil {
@@ -216,7 +190,7 @@ func (f *Fake) mcpCall(name string, args map[string]any, bearer string) (string,
 		if err != nil {
 			return "", err
 		}
-		if err := f.apply("releaseWorkItem", map[string]any{"aggregateId": id, "nodeId": row["nodeId"], "note": args["reason"]}); err != nil {
+		if err := f.apply("releaseWorkItem", map[string]any{"aggregateId": id, "nodeId": row["nodeId"], "note": args["note"]}); err != nil {
 			return "", err
 		}
 		text = "released"

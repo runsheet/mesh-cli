@@ -1,5 +1,5 @@
 {
-  "description": "registerNode: the node declares its owner once (a person or an enterprise); the platform answers with the node's single id, who owns it, and every org it now serves. The runsheet goal a-node-has-an-owner serves this same shape at /contracts/registerNode.json — the platform side of the contract.",
+  "description": "registerNode: the node declares its owner once (a person or an enterprise); the platform answers with the node's single id, who owns it, and every org it now serves. The runsheet goal a-node-has-an-owner serves this same shape at /contracts/registerNode.json — the platform side of the contract. manifest is what the node says it has (platform/nodecaps.Manifest): os, arch, tools with their versions, runtimes, harnesses and sandbox; optional, and a node that sends none keeps the manifest it last sent (goal a-node-says-what-it-has-and-claims-only-what-it-can-run).",
   "ownerNodeId": {
     "namespace": "7b3c1d2e-4f5a-4b6c-8d7e-9f0a1b2c3d4e",
     "formula": "uuid5(namespace, \"node:<kind>:<owner>:<slug>\")",
@@ -18,7 +18,18 @@
     "harnesses": ["claude-code"],
     "capacity": 4,
     "version": "v0.2.200",
-    "ownerKind": "person"
+    "ownerKind": "person",
+    "manifest": {
+      "os": "darwin",
+      "arch": "arm64",
+      "tools": [
+        { "name": "go", "version": "1.23.2" },
+        { "name": "xcode", "version": "15.2" }
+      ],
+      "runtimes": ["docker", "npx", "uvx"],
+      "harnesses": ["claude-code", "codex"],
+      "sandbox": { "mode": "on", "runtime": "podman 5.2.1", "image": "ghcr.io/runsheet/mesh-node:v0.2.200" }
+    }
   },
   "answer": {
     "nodeId": "b99be3f5-2f54-54a7-9af5-49d9bfc96744",

@@ -33,8 +33,7 @@
         "precondition": "none: this item starts the plan",
         "repoId": "7dacfd73-80d2-5f33-94d6-54f222403404",
         "seq": 1,
-        "title": "Add the shared type",
-        "writesSharedDocs": true
+        "title": "Add the shared type"
       },
       {
         "acceptance": "go test ./... passes",
@@ -53,7 +52,8 @@
         "model": "opus",
         "repoId": "7dacfd73-80d2-5f33-94d6-54f222403404",
         "seq": 2,
-        "title": "Use the shared type"
+        "title": "Use the shared type",
+        "writesSharedDocs": true
       }
     ],
     "namespace": "runsheet",

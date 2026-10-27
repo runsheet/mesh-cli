@@ -9,7 +9,7 @@
     "nodes": [
       {
         "busy": 4,
-        "claimsRefused": 0,
+        "claimsRefused": 1,
         "claimsRefusedEndedAt": "2026-01-01T00:00:00Z",
         "desiredVersion": null,
         "desiredVersionAuto": false,

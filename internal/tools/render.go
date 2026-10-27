@@ -140,6 +140,31 @@ func ProxiedServers(builtinURL string, toolsIn []Tool, shim func(name string) ma
 	return servers, upstreams, nil
 }
 
+// WithMesh adds the Mesh server (Mesh) to a session's proxied servers
+// and upstreams (runsheet ADR 069, step 4): the work tools a session
+// calls about its own job — mesh_progress and the node's health and
+// pause tools — answer there, on /mesh/mcp beside builtinURL's /mcp,
+// reached with the same session bearer as the built-in. It is added
+// only for a session whose bearer is its own mesh session's (DPoP-bound):
+// /mesh/mcp serves apps and sessions alone and refuses the node's
+// operator bearer. A tool of that name is left as it is (no server
+// replaced); servers and upstreams are changed in place.
+func WithMesh(servers map[string]any, upstreams map[string]UpstreamSpec, builtinURL string, shim func(name string) map[string]any) {
+	u := MeshURL(builtinURL)
+	if u == "" {
+		return
+	}
+	if _, taken := upstreams[Mesh]; taken {
+		return
+	}
+	if servers != nil {
+		servers[Mesh] = shim(Mesh)
+	}
+	if upstreams != nil {
+		upstreams[Mesh] = UpstreamSpec{URL: u}
+	}
+}
+
 // CodexApproval is every rendered server's default_tools_approval_mode.
 // `codex exec` runs with approval policy never, and under `--sandbox
 // workspace-write` it refuses an MCP call that would need approval

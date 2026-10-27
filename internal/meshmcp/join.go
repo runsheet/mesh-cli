@@ -342,29 +342,15 @@ func (j *Join) run(ctx context.Context, slug string, seq int, exclude string, pa
 	return ans, nil
 }
 
-// claim claims the item for nodeID: hosted mesh_claim when the
-// platform serves it — a pair's join too, pair true, so the platform
-// records the pair — else claimWorkItem, and a pair's join nothing.
+// claim claims the item for nodeID with claimWorkItem (mesh_claim is no
+// MCP tool since runsheet ADR 069 step 3); a pair's join claims nothing,
+// working on the holder's branch.
 func (j *Join) claim(ctx context.Context, slug string, item gateway.WorkItem, nodeID string, paired bool) error {
+	// probe the hosted path now, so its fallback line is said at the
+	// join as before; the claim itself is the mutation either way
+	j.Hosted.Use(ctx)
 	if paired {
 		j.logf("item %s: pairing with node %s on its branch; no claim of ours", item.ID, item.NodeID)
-	}
-	if j.Hosted.Use(ctx) {
-		_, err := j.Hosted.Call(ctx, "mesh_claim", ClaimArgs(slug, item.Seq, paired, nodeID))
-		var he *HostedError
-		switch {
-		case err == nil:
-			return nil
-		case ctx.Err() != nil:
-			return ctx.Err()
-		case errors.As(err, &he) && paired:
-			return &PairRefused{Reason: he.Text}
-		case errors.As(err, &he):
-			return &ClaimRefused{Reason: he.Text}
-		}
-		return fmt.Errorf("mesh_claim: %w", err)
-	}
-	if paired {
 		return nil
 	}
 	if err := j.GW.ClaimWorkItem(ctx, item.ID, nodeID, JoinHarness); err != nil {

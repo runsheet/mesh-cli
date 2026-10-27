@@ -52,6 +52,7 @@
         },
         "slug": "alpha",
         "spent_cents": 1050,
+        "statement": "Make it.",
         "status": "done",
         "title": "Alpha",
         "waiting_on": "none"

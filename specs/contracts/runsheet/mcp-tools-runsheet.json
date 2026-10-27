@@ -12,6 +12,119 @@
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "blocking_reason": {
+            "description": "why you cannot go on without the answer: the choice that changes the result, and why nothing you can read settles it",
+            "type": "string"
+          },
+          "goal": {
+            "description": "the goal's slug (see mesh_goals); with project and seq, or give item_id alone",
+            "type": "string"
+          },
+          "item_id": {
+            "description": "the item's id, instead of project, goal and seq",
+            "type": "string"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects); with goal and seq, or give item_id alone",
+            "type": "string"
+          },
+          "question": {
+            "description": "the one question, in plain words, that the brief, the acceptance and the context cannot settle",
+            "type": "string"
+          },
+          "role": {
+            "description": "for a machine's bearer, the role its agent plays — agent:<role>@<node slug> (default builder); a person's bearer is always user:<id>",
+            "type": "string"
+          },
+          "seq": {
+            "description": "the item's seq (see mesh_items); with project and goal, or give item_id alone",
+            "type": "integer"
+          },
+          "to": {
+            "description": "who answers: planner (the default) — the goal's planner, in a short answer session — or person, on the console's needs-you list",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_ask"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "project": {
+            "description": "the project as org/slug (see mesh_projects) whose open forecast rounds to claim a sample of",
+            "type": "string"
+          },
+          "role": {
+            "description": "for a machine's bearer, the role its agent plays — agent:<role>@<node slug> (default builder)",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "the score session's id, a uuid; a new one when unset. The same session again answers its claim",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_claim_score"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "goal": {
+            "description": "the goal's slug (see mesh_goals); with project and seq, or give item_id alone",
+            "type": "string"
+          },
+          "item_id": {
+            "description": "the item's id, instead of project, goal and seq",
+            "type": "string"
+          },
+          "path": {
+            "description": "the file's path in that repository, relative to its root, matching one of the globs contract_sources names for it",
+            "type": "string"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects); with goal and seq, or give item_id alone",
+            "type": "string"
+          },
+          "ref": {
+            "description": "the branch, tag or commit to read the file at (default the repository's default branch)",
+            "type": "string"
+          },
+          "repo": {
+            "description": "the repository the contract is published in, as owner/name: one your item's repository names under contract_sources in its .mesh/config.yml",
+            "type": "string"
+          },
+          "role": {
+            "description": "for a machine's bearer, the role its agent plays — agent:<role>@<node slug> (default builder); a person's bearer is always user:<id>",
+            "type": "string"
+          },
+          "seq": {
+            "description": "the item's seq (see mesh_items); with project and goal, or give item_id alone",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "repo",
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_contract"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
           "project": {
             "description": "your own project, as org/slug: the slug is looked for there first, then in the org's .github, then in every other project of the same org",
             "type": "string"
@@ -334,6 +447,103 @@
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "org": {
+            "description": "only this org's projects, by its login",
+            "type": "string"
+          },
+          "project": {
+            "description": "only this project, as org/slug (see mesh_projects)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "mesh_health_stalls"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "the previous answer's next, to read the page after it; omitted, the first page. A cursor belongs to the arguments that gave it",
+            "type": "string"
+          },
+          "detail": {
+            "description": "concise (the default): each row's identifying fields alone; full: every field",
+            "type": "string"
+          },
+          "fields": {
+            "description": "only these top-level fields of each row, e.g. [\"slug\",\"title\"]; overrides detail",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "idle_seconds": {
+            "description": "estate only: name database sessions idle in a transaction longer than this many seconds (default 60)",
+            "type": "integer"
+          },
+          "limit": {
+            "description": "at most this many rows on the page (default 50, or as the tool's description says; at most 200)",
+            "type": "integer"
+          },
+          "org": {
+            "description": "only this org's projects, by its login",
+            "type": "string"
+          },
+          "project": {
+            "description": "only this project, as org/slug (see mesh_projects)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "mesh_health_stuck"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "the previous answer's next, to read the page of by_tool after it; omitted, the first page. A cursor belongs to the arguments that gave it",
+            "type": "string"
+          },
+          "days": {
+            "description": "the window, in days back from now: default 30, at most 90",
+            "type": "integer"
+          },
+          "goal": {
+            "description": "a goal's id, or its slug with project: the answer's goal then gives each of its items' context tokens and the totals per item and per merged item",
+            "type": "string"
+          },
+          "limit": {
+            "description": "at most this many by_tool rows on the page (default 100, at most 200)",
+            "type": "integer"
+          },
+          "org": {
+            "description": "only the calls naming this org's projects, by its login",
+            "type": "string"
+          },
+          "project": {
+            "description": "only the calls naming this project, as org/slug (see mesh_projects)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "mesh_health_usage"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "description": "concise (the default): every evaluation and its body, without spec_change's evaluator_input that repeats them; full: with it",
+            "type": "string"
+          },
           "goal": {
             "description": "the goal's slug (see mesh_goals); optional with item_id",
             "type": "string"
@@ -469,7 +679,7 @@
             ]
           },
           "checkpoints": {
-            "description": "not taken here: a plan carries no checkpoints (a person sets a goal's), so non-empty checkpoints are refused",
+            "description": "the checkpoints the planner asks for, each graph, pr or merge: added to the goal's while they are still its project's defaults, before the plan lands (so graph holds the plan for a person); on a goal whose checkpoints a person chose they are kept as the person chose and answered back as checkpoint_advice",
             "items": {
               "type": "string"
             },
@@ -520,6 +730,13 @@
                   },
                   "minItems": 1,
                   "type": "array"
+                },
+                "acceptance_from": {
+                  "description": "on a re-plan, the seq of an item of the goal's previous plan whose acceptance checks this item inherits (ADR 056); null or absent for none",
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
                 },
                 "agent_slug": {
                   "description": "the agent definition the item is built by",
@@ -649,7 +866,7 @@
             "type": "string"
           },
           "questions": {
-            "description": "not taken here: a plan with questions is handed in by the node from the final message's json block, so non-empty questions are refused",
+            "description": "what the planner would ask a person about the goal: taken with the plan and answered back under questions (no command records a goal's questions)",
             "items": true,
             "type": [
               "null",
@@ -657,7 +874,7 @@
             ]
           },
           "role": {
-            "description": "for a machine's bearer, the role its agent plays — agent:<role>@<node slug> (default builder); a person's bearer is always user:<id>",
+            "description": "for a machine's bearer, the role its agent plays — agent:<role>@<node slug> (default planner: the plan session's own hand-in, as the plan claim's holder); a person's bearer is always user:<id>",
             "type": "string"
           },
           "split": {
