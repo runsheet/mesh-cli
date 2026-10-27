@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -85,11 +86,58 @@ type Options struct {
 	// ContinueOnFailure runs every selected step regardless of an
 	// earlier failure; otherwise the first failing step stops the run.
 	ContinueOnFailure bool
+	// Redact masks what a step's output must not carry — the values of
+	// the run's environment — before it is kept on the StepResult (Output
+	// and Tail); nil keeps it as it is. Token shapes are masked either
+	// way (RedactTokens).
+	Redact func(string) string
 }
 
 // outputCap is the total bytes of a step's combined stdout+stderr kept
-// on its StepResult — the head and the tail, split evenly.
+// on its StepResult — the head and the tail, split evenly for a passing
+// step, and mostly the tail for a failing one, where the cause is.
 const outputCap = 8 * 1024
+
+// TailLines and tailCap bound a failing step's Tail: its last 200
+// lines, in at most 32 KiB.
+const (
+	TailLines = 200
+	tailCap   = 32 * 1024
+)
+
+// tokenShapes are credentials by their look, masked in any step output
+// whatever the run's environment named: GitHub's (ghs_, ghp_, gho_,
+// ghu_, ghr_, github_pat_), runsheet's rs_, Anthropic's and OpenAI's
+// sk- keys, and a bearer header's value.
+var tokenShapes = regexp.MustCompile(`\b(gh[spour]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}|rs_[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9_-]{20,})|(?i:bearer\s+)[A-Za-z0-9._~+/=-]{16,}`)
+
+// RedactTokens masks every token-shaped string in s.
+func RedactTokens(s string) string {
+	return tokenShapes.ReplaceAllString(s, "[redacted]")
+}
+
+// lastLines is the last n lines of s, within max bytes.
+func lastLines(s string, n, max int) string {
+	s = strings.TrimRight(s, "\n")
+	i := len(s)
+	for k := 0; k < n && i > 0; k++ {
+		j := strings.LastIndexByte(s[:i], '\n')
+		if j < 0 {
+			i = 0
+			break
+		}
+		i = j
+	}
+	out := s[i:]
+	out = strings.TrimPrefix(out, "\n")
+	if len(out) > max {
+		out = out[len(out)-max:]
+		if j := strings.IndexByte(out, '\n'); j >= 0 {
+			out = out[j+1:]
+		}
+	}
+	return out
+}
 
 // Run runs each step through runner in order, recording a StepResult for
 // each. The first step whose command errors or exits non-zero stops the
@@ -129,12 +177,23 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 			TestsRun:    run,
 			TestsPassed: passed,
 			TestsFailed: failed,
-			Output:      headTail(stdout.String() + stderr.String()),
+			Output:      "",
 			Report:      report,
 			TimedOut:    exitCode == 124,
 			Artifacts:   artifacts,
 		}
-		if exitCode != 0 || runErr != nil {
+		combined := RedactTokens(stdout.String() + stderr.String())
+		if opts.Redact != nil {
+			combined = opts.Redact(combined)
+		}
+		failing := exitCode != 0 || runErr != nil
+		if failing {
+			sr.Output = failTail(combined)
+			sr.Tail = lastLines(combined, TailLines, tailCap)
+		} else {
+			sr.Output = headTail(combined)
+		}
+		if failing {
 			sr.EnvironmentKind = EnvironmentKindOf(sr, runErr)
 		}
 		results = append(results, sr)
@@ -200,6 +259,17 @@ func readReports(dir string, reports []string) string {
 		}
 	}
 	return b.String()
+}
+
+// failTail is a failing step's Output: a short head (the command's
+// first words, a build's first error) and the rest of outputCap from
+// the tail, where a test run's failures and summary are.
+func failTail(combined string) string {
+	if len(combined) <= outputCap {
+		return combined
+	}
+	head := outputCap / 8
+	return combined[:head] + "\n...\n" + combined[len(combined)-(outputCap-head):]
 }
 
 func headTail(combined string) string {

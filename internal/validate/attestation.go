@@ -30,6 +30,10 @@ type StepResult struct {
 	// EnvironmentKind is why the step failed on the node rather than on
 	// the code (EnvironmentKindOf): empty for a pass or a code failure.
 	EnvironmentKind EnvironmentKind `json:"environmentKind,omitempty"`
+	// Tail is a failing step's last TailLines lines of its combined
+	// stdout and stderr, redacted, for the node's log; never part of the
+	// signed attestation (Output carries its share there).
+	Tail string `json:"-"`
 }
 
 // Artifact is one digested file a step named on Step.Artifacts.

@@ -20,6 +20,7 @@ import (
 	sessionsteps "projectmesh.io/mesh-cli/internal/session"
 	"projectmesh.io/mesh-cli/internal/sessionunit"
 	"projectmesh.io/mesh-cli/internal/sigstore"
+	"projectmesh.io/mesh-cli/internal/tools"
 	"projectmesh.io/mesh-cli/internal/validate"
 )
 
@@ -42,9 +43,12 @@ const AttestationFile = "attestation.json"
 // ran them, and every run's attestation (the first, and the retry's).
 type buildValidation struct {
 	runner validate.Runner
-	meta   validate.Meta
-	close  func()
-	runs   []validate.Attestation
+	// env is the environment the run's steps see, whose values a step's
+	// output is redacted of before it is kept or logged
+	env   []string
+	meta  validate.Meta
+	close func()
+	runs  []validate.Attestation
 	// baseGoneSaid: the build's base was found gone and said so, once
 	// for every run of the build's validation
 	baseGoneSaid bool
@@ -320,7 +324,8 @@ func (vr validator) start(ctx context.Context, t validationTarget) (*buildValida
 	if vr.Sandbox == nil {
 		v.close = removeScratch
 		host, _ := os.Hostname()
-		v.runner = validate.HostRunner{Dir: t.dir, Env: sandbox.SetEnv(hostValidationEnv(t.job, scratch, cache), t.served.env())}
+		v.env = sandbox.SetEnv(hostValidationEnv(t.job, scratch, cache), t.served.env())
+		v.runner = validate.HostRunner{Dir: t.dir, Env: v.env}
 		v.meta.RunnerImage, v.meta.Sandboxed = "host:"+host, false
 		return v, nil
 	}
@@ -350,6 +355,7 @@ func (vr validator) start(ctx context.Context, t validationTarget) (*buildValida
 	if t.job != nil {
 		env = t.job.Env
 	}
+	v.env = sandbox.SetEnv(append([]string(nil), env...), t.served.env())
 	v.runner = sandboxRunner{sess: sess, dir: t.dir, env: env, vars: t.served.env(), cache: &sandbox.ValidationCache{Scratch: scratch, GoCache: cache, Blobs: blobs}}
 	image := vr.Sandbox.Config.Image
 	run := vr.Inspect
@@ -496,7 +502,7 @@ func (vr validator) runSteps(ctx context.Context, t validationTarget, v *buildVa
 		ran = "no suite affected"
 	}
 	vr.logf("%s: validation on %s: %s", t.prefix, short(head), ran)
-	results, err := validate.Run(ctx, steps, v.runner, validate.Options{Dir: t.dir})
+	results, err := validate.Run(ctx, steps, v.runner, validate.Options{Dir: t.dir, Redact: func(out string) string { return tools.Redact(out, secretEnv(v.env)) }})
 	if err != nil {
 		return validate.Attestation{}, err
 	}
@@ -513,6 +519,7 @@ func (vr validator) runSteps(ctx context.Context, t validationTarget, v *buildVa
 			kind = " (" + string(s.EnvironmentKind) + ")"
 		}
 		vr.logf("%s: validation step %s exited %d in %dms%s", t.prefix, s.Name, s.ExitCode, s.DurationMs, kind)
+		logStepTail(vr.logf, t.prefix, s)
 	}
 	if err := writeAttestation(sessionunit.Dir(t.dir), att); err != nil {
 		vr.logf("%s: validation: %v", t.prefix, err)
@@ -1330,4 +1337,36 @@ func (s sandboxRunner) Run(ctx context.Context, cmd string, timeout time.Duratio
 	default:
 		return -1, err
 	}
+}
+
+// logStepTail puts a failing step's last lines in node.log at warn, each
+// line prefixed so a grep for the run finds them all: a red step's cause
+// is read where it ran, not reproduced by hand. The tail is redacted of
+// the run's environment and of token shapes (validate.Run).
+func logStepTail(logf func(string, ...any), prefix string, s validate.StepResult) {
+	if s.ExitCode == 0 || s.Tail == "" {
+		return
+	}
+	lines := strings.Split(s.Tail, "\n")
+	logf("%s: warn: validation step %s exited %d; its last %d line(s):", prefix, s.Name, s.ExitCode, len(lines))
+	for _, line := range lines {
+		logf("%s: warn: %s | %s", prefix, s.Name, line)
+	}
+}
+
+// secretName is an environment name whose value is a credential.
+var secretName = regexp.MustCompile(`(?i)token|secret|password|passwd|key|auth|credential|cookie|session|dsn|pat$`)
+
+// secretEnv is the entries of env a step's output is redacted of: those
+// named like a credential, with a value long enough to be one — never
+// PATH, HOME or CI=true, which would mask the output it is read for.
+func secretEnv(env []string) []string {
+	var out []string
+	for _, kv := range env {
+		k, v, ok := strings.Cut(kv, "=")
+		if ok && len(v) >= 8 && secretName.MatchString(k) {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
