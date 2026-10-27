@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -22,8 +23,23 @@ import (
 // certificate of an ephemeral key (proving possession over the token's
 // subject), signs PAE(type, payload) with it, and logs a dsse entry whose
 // verifier is that certificate; the envelope verifies with the
-// certificate's key and carries the chain.
+// certificate's key and carries the chain. It holds for both of Fulcio's
+// answers: the embedded-SCT one with newline-ended certificates, and the
+// detached one dl360's Fulcio (v1.6.6, no CT log) gives, whose
+// certificates end at "-----END CERTIFICATE-----" with no newline.
 func TestSignIsAVerifiableDSSEEnvelopeLoggedInRekor(t *testing.T) {
+	for _, shape := range []struct {
+		name, field string
+		trim        bool
+	}{
+		{"embedded SCT", "signedCertificateEmbeddedSct", false},
+		{"detached SCT, as dl360's Fulcio answers", "signedCertificateDetachedSct", true},
+	} {
+		t.Run(shape.name, func(t *testing.T) { signsWithFulcioAnswering(t, shape.field, shape.trim) })
+	}
+}
+
+func signsWithFulcioAnswering(t *testing.T, field string, trim bool) {
 	caKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	ca := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "test ca"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
 	caDER, _ := x509.CreateCertificate(rand.Reader, ca, ca, &caKey.PublicKey, caKey)
@@ -56,8 +72,13 @@ func TestSignIsAVerifiableDSSEEnvelopeLoggedInRekor(t *testing.T) {
 		leaf := &x509.Certificate{SerialNumber: big.NewInt(2), NotBefore: time.Now(), NotAfter: time.Now().Add(10 * time.Minute)}
 		der, _ := x509.CreateCertificate(rand.Reader, leaf, ca, pub, caKey)
 		issued, _ = x509.ParseCertificate(der)
-		_ = json.NewEncoder(w).Encode(map[string]any{"signedCertificateEmbeddedSct": map[string]any{"chain": map[string]any{"certificates": []string{
-			string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}))}}}})
+		certs := []string{string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}))}
+		if trim {
+			for i := range certs {
+				certs[i] = strings.TrimSuffix(certs[i], "\n")
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{field: map[string]any{"chain": map[string]any{"certificates": certs}}})
 	}))
 	defer fulcio.Close()
 	rekor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -84,6 +105,13 @@ func TestSignIsAVerifiableDSSEEnvelopeLoggedInRekor(t *testing.T) {
 	digest := sha256.Sum256(PAE(e.PayloadType, payload))
 	if !ecdsa.VerifyASN1(issued.PublicKey.(*ecdsa.PublicKey), digest[:], sig) {
 		t.Fatal("the signature does not verify with the issued certificate's key")
+	}
+	rest := []byte(e.Signatures[0].Cert)
+	for _, want := range [][]byte{issued.Raw, caDER} {
+		var b *pem.Block
+		if b, rest = pem.Decode(rest); b == nil || string(b.Bytes) != string(want) {
+			t.Fatalf("the envelope's chain is not leaf then CA as PEM: %q", e.Signatures[0].Cert)
+		}
 	}
 	if logged["kind"] != "dsse" {
 		t.Fatalf("logged a %v entry, want dsse", logged["kind"])
