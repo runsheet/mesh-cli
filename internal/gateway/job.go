@@ -114,12 +114,28 @@ func (b JobBrief) Product() string {
 	return ""
 }
 
+// HandInSection is the prompt's last section for a session that hands
+// its result to the product's own finish tool rather than to the node:
+// the one line naming the tool and its server; "" when the brief names
+// no finish tool.
+func (b JobBrief) HandInSection() string {
+	if b.FinishTool == "" {
+		return ""
+	}
+	server := b.Product()
+	if server == "" {
+		server = "product"
+	}
+	return fmt.Sprintf("# How this job finishes\n\nHand your result in with `%s` on the %s MCP server. Nothing else hands it in: when that call succeeds, end the session.", b.FinishTool, server)
+}
+
 // ProductGuidance is the brief's guidance with one line after it naming
-// the product's tools: where the session reads its subject and where it
-// hands its result in. The node passes the names through; what they do
-// is the product's to say. Guidance alone when the brief names neither,
-// and "" when it carries no guidance (the built-in prompt runs).
-func (b JobBrief) ProductGuidance() string {
+// the product's tools: where the session reads its subject and, when
+// handsIn (the session hands its result to the product, not to the
+// node), where it hands it in. The node passes the names through; what
+// they do is the product's to say. Guidance alone when the brief names
+// neither, and "" when it carries no guidance (the built-in prompt runs).
+func (b JobBrief) ProductGuidance(handsIn bool) string {
 	g := strings.TrimSpace(b.Guidance)
 	if g == "" {
 		return ""
@@ -132,7 +148,7 @@ func (b JobBrief) ProductGuidance() string {
 	if b.BriefTool != "" {
 		parts = append(parts, fmt.Sprintf("read your subject with `%s` on the %s MCP server", b.BriefTool, server))
 	}
-	if b.FinishTool != "" {
+	if handsIn && b.FinishTool != "" {
 		parts = append(parts, fmt.Sprintf("hand your result in with `%s` on the %s MCP server", b.FinishTool, server))
 	}
 	if len(parts) == 0 {

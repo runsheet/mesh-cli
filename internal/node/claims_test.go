@@ -70,7 +70,7 @@ func TestPlanClaimIsRecordedUntilHandIn(t *testing.T) {
 	}
 	close(h.release)
 	loop.wg.Wait()
-	if len(f.CallsNamed("planGoal")) != 1 {
+	if len(f.CallsNamed("finishJob")) != 1 {
 		t.Fatalf("plan not handed in")
 	}
 	if claims, _ := FindClaims(ws.root, []string{claimsNode}); len(claims) != 0 {

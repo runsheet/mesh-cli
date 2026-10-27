@@ -234,21 +234,22 @@ func resume(t *testing.T, p *hotswapProcess, gate *gatedSessions, root, nodeID s
 	return adopted, reopened
 }
 
-// handedIn checks what the platform holds after loop 2: four planGoal
-// calls, one per goal, each within PlanClaimTTL of the goal's
+// handedIn checks what the platform holds after loop 2: four plan jobs
+// closed (finishJob), one per goal, each within PlanClaimTTL of the goal's
 // planClaimedAt, which the same node's re-claim kept; every claimPlan by
 // the node's own id (none re-taken by TTL expiry), wantReclaims of them
 // after the swap; and no claim records left.
 func handedIn(t *testing.T, f *gatewaytest.Fake, cfg *Config, root string, before map[string]string, swapCalls, wantReclaims int) {
 	t.Helper()
-	plans := f.CallsNamed("planGoal")
+	plans := f.CallsNamed("finishJob")
 	if len(plans) != 4 {
-		t.Fatalf("planGoal calls = %d, want 4", len(plans))
+		t.Fatalf("plan jobs closed = %d, want 4", len(plans))
 	}
 	ttl := f.PlanClaimTTLInForce()
 	seen := map[string]bool{}
 	for _, c := range plans {
-		id, _ := c.Input["aggregateId"].(string)
+		subject, _ := c.Input["subject"].(map[string]any)
+		id, _ := subject["id"].(string)
 		if seen[id] {
 			t.Fatalf("goal %s planned twice", id)
 		}
@@ -318,8 +319,8 @@ func TestHotSwapBeforeAnyPlanOpenedReopensAllFour(t *testing.T) {
 	if b, err := os.ReadFile(exe + ".prev"); err != nil || string(b) != "v1.0.0" {
 		t.Fatalf(".prev after the swap = %q, %v", b, err)
 	}
-	if n := len(f.CallsNamed("planGoal")); n != 0 {
-		t.Fatalf("planGoal before the swap: %d", n)
+	if n := len(f.CallsNamed("finishJob")); n != 0 {
+		t.Fatalf("finishJob before the swap: %d", n)
 	}
 	if n := p1.claude.starts.Load(); n != 0 {
 		t.Fatalf("loop 1 started %d sessions", n)
@@ -399,8 +400,8 @@ func TestHotSwapAfterTwoPlansOpenedAdoptsTwoReopensTwo(t *testing.T) {
 			t.Fatalf("the plan session of %s (pid %d) died with the swap", goal, pid)
 		}
 	}
-	if n := len(f.CallsNamed("planGoal")); n != 0 {
-		t.Fatalf("planGoal before the swap: %d", n)
+	if n := len(f.CallsNamed("finishJob")); n != 0 {
+		t.Fatalf("finishJob before the swap: %d", n)
 	}
 	if n := p1.claude.starts.Load(); n != 2 {
 		t.Fatalf("loop 1 started %d sessions, want 2", n)

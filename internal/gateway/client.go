@@ -210,9 +210,6 @@ type Client struct {
 	// attestationSchema is whether the gateway's Mutation was last found
 	// to have recordValidationAttestation (see takesAttestations).
 	attestationSchema attestationProbe
-	// goalSplitSchema is whether the gateway's Mutation was last found to
-	// have proposeGoalSplit (see TakesGoalSplit).
-	goalSplitSchema holdingProbe
 	// evaluationClaimSchema is whether the gateway's Mutation was last
 	// found to have claimWorkItemEvaluation (see TakesEvaluationClaim).
 	evaluationClaimSchema holdingProbe
@@ -1400,31 +1397,6 @@ func (c *Client) AgentModel(ctx context.Context, agentID string) (string, error)
 		return "", nil
 	}
 	return out.Agent.Model, nil
-}
-
-// Scorecard reads the org's scorecard (runsheet trd §6a, a Map field
-// like planCredentials or directionResearch, no F.* selection to send)
-// and returns project's own entry from its `projects` list — a nil map,
-// no error, on an older platform without the query or a project the
-// scorecard does not name.
-func (c *Client) Scorecard(ctx context.Context, org, project string) (map[string]any, error) {
-	var out struct {
-		Scorecard map[string]any `json:"scorecard"`
-	}
-	q := fmt.Sprintf(`{ scorecard(orgId: %q) }`, org)
-	if err := c.Query(ctx, q, nil, &out); err != nil {
-		var ge *Error
-		if errors.As(err, &ge) && unknownField(ge.Message, "scorecard") {
-			return nil, nil
-		}
-		return nil, err
-	}
-	for _, row := range rowsOf(out.Scorecard["projects"]) {
-		if str(row, "projectId") == project || strings.EqualFold(str(row, "projectName"), project) {
-			return row, nil
-		}
-	}
-	return nil, nil
 }
 
 // Goal is a GoalIndex row.
@@ -4563,84 +4535,6 @@ type GoalDraft struct {
 	Statement  string `json:"statement"`
 	Acceptance string `json:"acceptance"`
 	RepoID     string `json:"repoId"`
-}
-
-// ProposeGoalSplit sends the planner's `split` answer — goal drafts in
-// place of the items PlanGoal would otherwise send, for a graph over
-// the project's item cap (ADR-023) — as
-// `proposeGoalSplit(input: ProposeGoalSplitInput!)` on the goal, with
-// drafts, costCents and, when by is non-empty, who asked. Sent only
-// when the gateway's Mutation type has proposeGoalSplit (TakesGoalSplit):
-// a platform without it is &Error{Unsupported: true} and nothing is
-// sent, for the caller to fall back on (mesh-specs ADR 013's
-// introspection pattern).
-func (c *Client) ProposeGoalSplit(ctx context.Context, goalID, by string, drafts []GoalDraft, costCents int, usage *UsageReport) error {
-	if !c.TakesGoalSplit(ctx) {
-		return &Error{Message: "gateway: the platform's Mutation has no proposeGoalSplit", Unsupported: true}
-	}
-	list := make([]map[string]any, 0, len(drafts))
-	for _, d := range drafts {
-		list = append(list, map[string]any{
-			"slug": d.Slug, "title": d.Title, "statement": d.Statement,
-			"acceptance": d.Acceptance, "repoId": d.RepoID,
-		})
-	}
-	m := map[string]any{"drafts": list, "costCents": costCents}
-	if by != "" {
-		m["by"] = by
-	}
-	return c.mutateWithUsage(ctx, "proposeGoalSplit", goalID, m, usage)
-}
-
-// TakesGoalSplit is whether the gateway's Mutation type has
-// proposeGoalSplit — asked by introspection and kept for
-// ScalingProbeEvery, as takesAttestations asks after
-// recordValidationAttestation (ADR-010's introspection pattern): the
-// planner's split answer is sent only once the platform (goal
-// a-goal-fits-in-eight-items) has shipped it.
-func (c *Client) TakesGoalSplit(ctx context.Context) bool {
-	p := &c.goalSplitSchema
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	now := c.now()
-	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
-		return p.takes
-	}
-	var out struct {
-		Type *struct {
-			Fields []struct {
-				Name string `json:"name"`
-			} `json:"fields"`
-		} `json:"__type"`
-	}
-	p.at, p.takes = now, false
-	q := `{ __type(name: "Mutation") { fields { name } } }`
-	if err := c.Query(ctx, q, nil, &out); err != nil || out.Type == nil {
-		return false
-	}
-	for _, f := range out.Type.Fields {
-		if f.Name == "proposeGoalSplit" {
-			p.takes = true
-		}
-	}
-	return p.takes
-}
-
-// SetGoalCheckpoints sets the goal's checkpoints — "a person confirms
-// in production" and the like (ADR-023, rule (c)): a clause no pull
-// request can satisfy that is not folded into a dependent item's
-// precondition becomes one of these instead of an item no builder can
-// close. The live mutation; no probe needed.
-func (c *Client) SetGoalCheckpoints(ctx context.Context, goalID, by string, checkpoints []string) error {
-	cps := checkpoints
-	if cps == nil {
-		cps = []string{}
-	}
-	m := map[string]any{"checkpoints": cps}
-	if by != "" {
-		m["by"] = by
-	}
-	return c.Mutate(ctx, "setGoalCheckpoints", goalID, m)
 }
 
 // ApproveGraph approves the pending graph checkpoint.

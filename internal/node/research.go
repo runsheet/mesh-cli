@@ -263,7 +263,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		Org: scope.Name(), Project: project.Slug, Direction: direction.Direction,
 		Repos: dirs, ContextDir: contextDir, ContextFiles: files, MeshContext: len(d.MCP) > 0,
 		Tools: toolHints(st.Use), Goals: existing, Room: room, Proposes: direction.Proposes(),
-		Guidance: brief.ProductGuidance(), Finish: holder.FinishSection(),
+		Guidance: brief.ProductGuidance(false), Finish: holder.FinishSection(),
 	})
 	budget, budgetSource := d.budgetWithSource()
 	kept, err := keptRootFor(d.Layout, direction.ID)

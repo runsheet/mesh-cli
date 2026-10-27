@@ -1,7 +1,6 @@
 package node
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -15,7 +14,6 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
-	"projectmesh.io/mesh-cli/internal/jobresult"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
 )
@@ -94,16 +92,6 @@ type Planner struct {
 	// noRelease says once per run that the platform takes no
 	// releasePlan (adr-022, A fetch that fails is reported).
 	noRelease sync.Once
-	// lastRefusal is each goal's last plan-check refusal, normalised, and
-	// released the goals whose plan claim a second identical one released
-	// (ADR-023, a refused plan is released, not re-planned); kept under
-	// the work root too (PlanRefusalsPath), so a fresh Planner and a
-	// restarted node read the same.
-	lastRefusal map[string]string
-	// streak counts each goal's refusals running, whatever their text:
-	// MaxPlanRefusals of them release the claim as two identical ones do
-	streak   map[string]int
-	released map[string]releasedPlan
 	// noGoalRelease says once that the platform takes no releaseGoalPlan.
 	noGoalRelease sync.Once
 }
@@ -190,26 +178,13 @@ func (p *Planner) Plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	}
 	tries := p.attempts[goal.ID]
 	p.mu.Unlock()
-	// a goal released for a repeated refusal is not planned again until
-	// its row changes (ADR-023, a refused plan is released, not re-planned)
-	p.forgetChanged(goal)
-	if reason, ok := p.Released(goal); ok {
-		return &PlanRefused{Goal: goal.Slug, Reason: reason, Released: true}
-	}
 	if tries >= MaxPlanAttempts {
 		return nil // said so already
 	}
+	// a plan the product refuses is the product's to count (runsheet
+	// counts a plan job that ends without a plan on the goal): the node
+	// keeps no per-goal record of refusals
 	err := p.plan(ctx, goal, scope)
-	if err == nil {
-		p.handedIn(goal)
-	}
-	if pr, ok := PlanRefusedOf(err); ok && ctx.Err() == nil {
-		// the same refusal twice running, or MaxPlanRefusals of any,
-		// releases the claim: no further session, no further try counted
-		if rel := p.refused(ctx, goal, scope, pr); rel.Released {
-			return rel
-		}
-	}
 	if _, ok := NoCredentialOf(err); ok {
 		// no credential issued is a hold, not a try: the claim lapses,
 		// and the loop asks again once Loop.NoCredential's re-check is due
@@ -338,167 +313,6 @@ func goalRepo(goal gateway.Goal, project *gateway.Project, repos map[string]gate
 	return gateway.Repo{}, false
 }
 
-// evidence reads the project's scorecard (item 5, model choice by
-// evidence) and builds its per-repo, per-model rows. A platform without
-// the query, or a scorecard whose shape carries none of the keys a row
-// needs, yields an empty slice — the plan still runs, unadvised.
-func (p *Planner) evidence(ctx context.Context, goalSlug string, scope Scope, project *gateway.Project) []harness.ModelEvidence {
-	sc, err := p.GW.Scorecard(ctx, scope.ID, project.ID)
-	if err != nil {
-		p.logf("goal %s: scorecard unavailable: %v", goalSlug, err)
-		return nil
-	}
-	return evidenceFromScorecard(sc)
-}
-
-// evidenceFromScorecard walks a scorecard project entry for per-model
-// rows, over the widest of its `windows` (runsheet trd §6a,
-// `platform/scorecard.Sums.Into`: each window's `models` list, one row
-// per model with an item in it — `model`, `evaluated`, `firstPassRate`
-// null when nothing was evaluated, `costPerItemCents`). The platform
-// carries no repo breakdown yet, so every row from `models` (or its
-// tolerated alias `byModel`) comes back with an empty repo — which
-// never matches an item's own repo in `modelAgainstEvidence`, so it is
-// advice the check has nothing to say about yet, not a wrong match. A
-// scorecard that does carry one — a `byRepo` list, each entry's own
-// repo and `models`/`byModel` rows — is read repo by repo, at the
-// project level and inside each window, for whenever the platform adds
-// it. A row needs a model and a first-pass rate to count: `firstPassRate`
-// (or `first_pass_rate`) first, else `firstPass`/`first_pass` over
-// `evaluated`/`items` when both are present, else `firstPass`/`first_pass`
-// itself as the rate; a missing or null rate skips the row. Items are
-// the row's `evaluated` (the rate's own denominator), else `items` or
-// `merged`. Cost per item is `costPerItemCents`/`cost_per_item_cents`,
-// else `costCents`/`cost_cents` over items. Anything else — no
-// scorecard, no windows, no such keys — yields none.
-func evidenceFromScorecard(sc map[string]any) []harness.ModelEvidence {
-	var out []harness.ModelEvidence
-	out = append(out, evidenceRows(sc, "")...)
-	out = append(out, evidenceByRepo(sc)...)
-	if w := widestWindow(sc); w != nil {
-		out = append(out, evidenceRows(w, "")...)
-		out = append(out, evidenceByRepo(w)...)
-	}
-	return out
-}
-
-// widestWindow is a scorecard entry's own `windows` row with the
-// largest `days` — the platform sends one, its own `models` list, per
-// trailing window (7 and 30 days today); the widest has the most
-// evidence behind each row.
-func widestWindow(sc map[string]any) map[string]any {
-	list, _ := sc["windows"].([]any)
-	var widest map[string]any
-	var widestDays float64 = -1
-	for _, e := range list {
-		w, ok := e.(map[string]any)
-		if !ok {
-			continue
-		}
-		if days := numberFieldOr(w, 0, "days"); days > widestDays {
-			widest, widestDays = w, days
-		}
-	}
-	return widest
-}
-
-// evidenceByRepo reads a `byRepo` list some future scorecard may carry:
-// each entry names a repo and its own `models`/`byModel` rows.
-func evidenceByRepo(m map[string]any) []harness.ModelEvidence {
-	var out []harness.ModelEvidence
-	list, _ := m["byRepo"].([]any)
-	for _, e := range list {
-		row, ok := e.(map[string]any)
-		if !ok {
-			continue
-		}
-		out = append(out, evidenceRows(row, stringField(row, "repo"))...)
-	}
-	return out
-}
-
-// evidenceRows reads the flat per-model list off m — `models`, the
-// platform's own key, or `byModel`, the tolerated alias — into
-// ModelEvidence rows all carrying the given repo.
-func evidenceRows(m map[string]any, repo string) []harness.ModelEvidence {
-	var out []harness.ModelEvidence
-	for _, key := range []string{"models", "byModel"} {
-		list, _ := m[key].([]any)
-		for _, e := range list {
-			row, ok := e.(map[string]any)
-			if !ok {
-				continue
-			}
-			model := stringField(row, "model")
-			if model == "" {
-				continue
-			}
-			fp, ok := firstPassRateOf(row)
-			if !ok {
-				continue
-			}
-			items := int(numberFieldOr(row, 0, "evaluated", "items", "merged"))
-			costPerItem := int(numberFieldOr(row, 0, "costPerItemCents", "cost_per_item_cents"))
-			if costPerItem == 0 && items > 0 {
-				if cost, ok := numberField(row, "costCents", "cost_cents"); ok {
-					costPerItem = int(cost / float64(items))
-				}
-			}
-			r := repo
-			if r == "" {
-				r = stringField(row, "repo")
-			}
-			out = append(out, harness.ModelEvidence{Repo: r, Model: model, FirstPass: fp, Items: items, CostPerItemCents: costPerItem})
-		}
-	}
-	return out
-}
-
-// firstPassRateOf is a model row's first-pass rate: `firstPassRate` (or
-// `first_pass_rate`) when the platform sent one — null reads as "no
-// rate", not zero, since nothing was evaluated — else `firstPass`/
-// `first_pass` over `evaluated`/`items` when both are counts, else
-// `firstPass`/`first_pass` taken as the rate itself.
-func firstPassRateOf(row map[string]any) (float64, bool) {
-	if v, ok := row["firstPassRate"]; ok {
-		n, ok := v.(float64)
-		return n, ok
-	}
-	if v, ok := row["first_pass_rate"]; ok {
-		n, ok := v.(float64)
-		return n, ok
-	}
-	fp, hasFP := numberField(row, "firstPass", "first_pass")
-	if !hasFP {
-		return 0, false
-	}
-	if items, ok := numberField(row, "evaluated", "items"); ok && items > 0 {
-		return fp / items, true
-	}
-	return fp, true
-}
-
-func stringField(row map[string]any, key string) string {
-	s, _ := row[key].(string)
-	return s
-}
-
-func numberField(row map[string]any, keys ...string) (float64, bool) {
-	for _, k := range keys {
-		if n, ok := row[k].(float64); ok {
-			return n, true
-		}
-	}
-	return 0, false
-}
-
-func numberFieldOr(row map[string]any, def float64, keys ...string) float64 {
-	if n, ok := numberField(row, keys...); ok {
-		return n
-	}
-	return def
-}
-
 func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) error {
 	project, repos, err := p.projectRepoMap(ctx, goal, scope)
 	if err != nil {
@@ -585,7 +399,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	in := harness.PlanInput{
 		GoalID: goal.ID, GoalSlug: goal.Slug, GoalTitle: goal.Title, Statement: goal.Statement, Acceptance: goal.Acceptance, BudgetCents: goal.BudgetCents,
 		Org: scope.Name(), Project: project.Slug, Repos: dirs, ContextDir: contextDir, ContextFiles: files, Blocked: goal.PausedReason,
-		Existing: existing, NextSeq: nextSeq, MeshContext: len(p.MCP) > 0, Evidence: p.evidence(ctx, goal.Slug, scope, project),
+		Existing: existing, NextSeq: nextSeq, MeshContext: len(p.MCP) > 0,
 		// the project's cap on a plan's items, read at claim time
 		// (ADR-023 (a); 8 until the platform serves maxItems)
 		MaxItems: project.ItemCap(),
@@ -602,63 +416,15 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	budget, budgetSource := p.budgetWithSource(&goal)
 	p.logf("goal %s: planning in %s (%d repos), budget $%.2f (%s)", goal.Slug, dir, len(repos), budget, budgetSource)
 	ctx = withSubject(ctx, scope, goal.ProjectID, project.Slug)
-	gr, hasGoalRepo := goalRepo(goal, project, repos)
-	items, reasons, flags, questions, checkpoints, drafts, added, cost, acct, err := p.ask(ctx, goal, scope, dir, budget, in, repos, merged, goalItems, replacing, sessionTok, gr, hasGoalRepo)
+	cost, acct, err := p.ask(ctx, goal, scope, dir, budget, in, repos, sessionTok)
 	acct.SetContextBytes(written.Bytes)
 	acct.SetLabel("goal "+goal.Slug, string(harness.KindPlan))
-	// the session's usage report rides the plan's hand-in; Finish logs it
-	// when nothing carried it (its report was built as it ended, in ask)
 	defer acct.Finish(ctx, harness.Result{})
 	if err != nil {
 		return err
 	}
-	if drafts != nil {
-		return p.handInSplit(ctx, goal, drafts, 0, in.MaxItems, cost, acct)
-	}
-	if len(flags) > 0 {
-		// adr-004: an acceptance no evaluator can see is the plan's error,
-		// ADR-020: so is a reading of the host as a merge gate, and
-		// ADR-021: so is a failed item recreated at its size; the planner
-		// is asked once more with what was flagged
-		p.logf("goal %s: plan names what no evaluator can see; asking again: %s", goal.Slug, strings.Join(flags, " | "))
-		in.Rejected = flags
-		// ADR-023 (a): a graph over the cap is asked for `split` instead
-		over := len(items)
-		in.OverCap = over > in.MaxItems
-		var again float64
-		var second *SessionAccount
-		items, reasons, flags, questions, checkpoints, drafts, added, again, second, err = p.ask(ctx, goal, scope, dir, budget, in, repos, merged, goalItems, replacing, sessionTok, gr, hasGoalRepo)
-		defer second.Finish(ctx, harness.Result{})
-		second.SetContextBytes(written.Bytes)
-		second.SetLabel("goal "+goal.Slug, string(harness.KindPlan))
-		// one hand-in, one report: the first session's rides the second's
-		second.Carries(acct)
-		if second != nil {
-			acct = second
-		}
-		cost += again
-		if err != nil {
-			return err
-		}
-		if drafts != nil {
-			if !in.OverCap {
-				over = 0
-			}
-			return p.handInSplit(ctx, goal, drafts, over, in.MaxItems, cost, acct)
-		}
-		if len(flags) > 0 {
-			// adr-004: the second plan is handed in as it stands; the
-			// evaluator's unverifiable-clause rule is the backstop (a
-			// re-land, or a narrow plan that does not split, never gets
-			// here: readPlan refused it)
-			p.logf("goal %s: plan still names what no evaluator can see; handing it in: %s", goal.Slug, strings.Join(flags, " | "))
-		}
-	}
-	// a narrow plan hands in its replacement items alone: PlanGoal, while
-	// the goal carries replacingItemId, supersedes only that item, keeps
-	// every other and rewires the replaced item's dependents onto these
-	// (runsheet ADR 023), so the node neither cancels nor recreates them
-	return p.handIn(ctx, goal, items, reasons, questions, checkpoints, added, cost, acct)
+	p.logf("goal %s: plan handed in through the product's tool; job closed ($%.2f)", goal.Slug, cost)
+	return nil
 }
 
 // planTokens reads the goal's plan GitHub tokens (adr-022), keyed by
@@ -735,145 +501,20 @@ func (p *Planner) failedClauses(ctx context.Context, goalSlug string, it gateway
 	return out
 }
 
-// handIn hands the graph in with PlanGoal, carrying the planner
-// session's usage report (acct's, built as it ended; none for an adopted
-// one), and logs each item's model.
-func (p *Planner) handIn(ctx context.Context, goal gateway.Goal, items []gateway.PlannedItem, reasons map[int]string, questions []harness.PlanQuestion, checkpoints []string, added []addedDep, cost float64, acct *SessionAccount) error {
-	// a node names no person as `by`, not even its operator: its act is
-	// on record as the node's (runsheet ADR 070)
-	const by = ""
-	// ADR-020: the planner's questions for the person ride the plan on a
-	// platform that takes them; else each is said once here, and the
-	// person reads them in node.log until the platform half lands
-	var sent []gateway.PlanQuestion
-	if len(questions) > 0 && p.GW.TakesPlanQuestions(ctx) {
-		for _, q := range questions {
-			sent = append(sent, gateway.PlanQuestion{Clause: q.Clause, Question: q.Question})
-		}
-	} else {
-		for _, q := range questions {
-			p.logf("plan %s: question for the person: %s — %s", goal.Slug, q.Clause, q.Question)
-		}
-	}
-	// ADR-023's amendment, the cut-over rule: a `pr` checkpoint beside the
-	// items is set on the goal before the plan lands, so a person approves
-	// each pull request; any other value is said and dropped
-	if p.wantsPRCheckpoint(goal, checkpoints) {
-		cps := append(append([]string{}, goal.Checkpoints...), "pr")
-		if err := p.GW.SetGoalCheckpoints(ctx, goal.ID, by, cps); err != nil {
-			// the graph still lands: a refused checkpoint is said, not
-			// the plan's failure
-			p.logf("goal %s: pr checkpoint refused: %v", goal.Slug, err)
-		} else {
-			p.logf("goal %s: pr checkpoint set: a person approves each pull request", goal.Slug)
-		}
-	}
-	if err := acct.Carried(p.GW.PlanGoal(ctx, goal.ID, by, items, Cents(cost), acct.Report(harness.Result{}), sent...)); err != nil {
-		return planHandInRefused(goal, "hand in the plan", err)
-	}
-	// the plan check's added dependencies, so a person reading node.log
-	// sees a plan that was parallel on paper and serial in fact
-	chained := ", none added by the plan check"
-	if len(added) > 0 {
-		pairs := make([]string, len(added))
-		for i, a := range added {
-			pairs[i] = a.String()
-		}
-		chained = fmt.Sprintf(", %d dependencies added by the plan check (%s)", len(added), strings.Join(pairs, "; "))
-	}
-	switch len(questions) {
-	case 0:
-		p.logf("goal %s: planned, %d items%s ($%.2f)", goal.Slug, len(items), chained, cost)
-	case 1:
-		p.logf("goal %s: planned, %d items and a question for the person%s ($%.2f)", goal.Slug, len(items), chained, cost)
-	default:
-		p.logf("goal %s: planned, %d items and %d questions for the person%s ($%.2f)", goal.Slug, len(items), len(questions), chained, cost)
-	}
-	for _, it := range items {
-		model := it.Model
-		if model == "" {
-			model = "none (the node's own)"
-		}
-		if r := reasons[it.Seq]; r != "" {
-			model += ": " + r
-		}
-		p.logf("goal %s: item %d %q: model %s", goal.Slug, it.Seq, it.Title, model)
-	}
-	return nil
-}
-
-// wantsPRCheckpoint says the plan's checkpoints name `pr` and the goal
-// lacks it, logging each value other than `pr` as dropped.
-func (p *Planner) wantsPRCheckpoint(goal gateway.Goal, checkpoints []string) bool {
-	want := false
-	for _, c := range checkpoints {
-		if !strings.EqualFold(strings.TrimSpace(c), "pr") {
-			p.logf("goal %s: plan checkpoint %q is not one the node sets (pr); dropped", goal.Slug, c)
-			continue
-		}
-		want = true
-	}
-	if !want {
-		return false
-	}
-	for _, c := range goal.Checkpoints {
-		if strings.EqualFold(c, "pr") {
-			return false
-		}
-	}
-	return true
-}
-
-// handInSplit hands the planner's `split` answer in with
-// ProposeGoalSplit, carrying the session's usage report as handIn does
-// (ADR-023 (a)): n is how many items the graph over the cap had (0 when
-// no graph came first, as for a split answered at once or adopted). A
-// platform without proposeGoalSplit is told nothing: each draft is
-// logged and the error leaves the goal in planning and says so, as an
-// unreadable plan does.
-func (p *Planner) handInSplit(ctx context.Context, goal gateway.Goal, drafts []gateway.GoalDraft, n, cap int, cost float64, acct *SessionAccount) error {
-	const by = "" // a node names no person as `by` (runsheet ADR 070)
-	slugs := make([]string, 0, len(drafts))
-	for _, d := range drafts {
-		slugs = append(slugs, d.Slug)
-	}
-	over := fmt.Sprintf("over the cap of %d", cap)
-	if n > 0 {
-		over = fmt.Sprintf("over the cap (%d items > %d)", n, cap)
-	}
-	if !p.GW.TakesGoalSplit(ctx) {
-		for _, d := range drafts {
-			p.logf("plan %s: proposed goal %s: %s", goal.Slug, d.Slug, d.Title)
-		}
-		if n > 0 {
-			return fmt.Errorf("plan has %d items, over the cap of %d; split into %d goals proposed, which this platform cannot take", n, cap, len(drafts))
-		}
-		return fmt.Errorf("plan answered over the cap of %d; split into %d goals proposed, which this platform cannot take", cap, len(drafts))
-	}
-	if err := acct.Carried(p.GW.ProposeGoalSplit(ctx, goal.ID, by, drafts, Cents(cost), acct.Report(harness.Result{}))); err != nil {
-		return planHandInRefused(goal, "propose the split", err)
-	}
-	p.logf("goal %s: %s; proposed a split into %d goals: %s", goal.Slug, over, len(drafts), strings.Join(slugs, ", "))
-	return nil
-}
-
-// ask runs one planner session on in and reads its graph: the items
-// mapped onto the project's repos, each item's model_reason by seq, the
-// check's flags on their acceptance (unverifiableAcceptance,
-// hostReadingAcceptance, closeOutAcceptance, cutOverAcceptance,
-// sameAcceptanceAsFailed
-// against goalItems, overCap against in.MaxItems), its questions for
-// the person and checkpoints for the goal — or, for a `split` answer,
-// its goal drafts in place of all of those (ADR-023 (a)) — the session's cost and its account, whose usage report is built as the
-// session ends: the caller hands it in and Finishes it. An error means
-// there is no graph to hand in.
-func (p *Planner) ask(ctx context.Context, goal gateway.Goal, scope Scope, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int, goalItems []gateway.WorkItem, replacing *gateway.WorkItem, tok *gateway.GitHubToken, gr gateway.Repo, hasGoalRepo bool) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, []string, []gateway.GoalDraft, []addedDep, float64, *SessionAccount, error) {
+// ask runs one planner session on in. The session reads its goal with
+// the kind's brief tool and hands its plan to the kind's finish tool,
+// both on the product's own MCP server; the node then closes the job
+// with an empty result and reads nothing of the plan (runsheet ADR 077:
+// the node knows nothing of what a plan is). It returns the session's
+// cost and its account, whose usage report is built as the session
+// ends: the caller Finishes it.
+func (p *Planner) ask(ctx context.Context, goal gateway.Goal, scope Scope, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, tok *gateway.GitHubToken) (float64, *SessionAccount, error) {
 	nodeID := scope.NodeID
 	acct, err := p.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goal.ID}, nodeID, Adapter(p.Harness))
 	if err != nil {
 		// an ErrNoCredential among them: no session starts, and the loop
 		// leaves the goal's plan unclaimed (Loop.NoCredential)
-		return nil, nil, nil, nil, nil, nil, nil, 0, nil, err
+		return 0, nil, err
 	}
 	defer unlessDetached(ctx, acct.Cleanup)
 	// the tools attached for the planner role, beside runsheet: a
@@ -885,34 +526,31 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, scope Scope, dir s
 	st := SelectTools(p.MCP, acct.Tools, tools.RoleFor(string(harness.KindPlan)), runtimes)
 	if len(st.Missing) > 0 {
 		p.Declines.Record(goal.ID, st.Missing, runtimes, time.Now())
-		return nil, nil, nil, nil, nil, nil, nil, 0, nil, &ToolsDeclinedError{Reason: st.DeclineReason()}
+		return 0, nil, &ToolsDeclinedError{Reason: st.DeclineReason()}
 	}
 	// Tools: the served tools, so PlanPrompt can name them and say when
 	// to search.
 	in.Tools = toolHints(st.Use)
-	// the plan reaches the node by mesh_result (ADR-041): the holder for
-	// this job, on the brief's finish and schema, its finish section the
-	// prompt's last and the brief's guidance its first
+	// the plan goes to the product's own tool, which its guidance names:
+	// the node hosts no finish tool of its own for it
 	brief := jobBriefOf(ctx, p.GW, PlanKind, goal.ID)
-	holder, err := jobresult.New(PlanKind, cmp.Or(brief.Finish, jobresult.FinishPlan), brief.FinishSchema)
-	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, 0, acct, err
+	if brief.FinishTool == "" {
+		return 0, acct, fmt.Errorf("the %s brief names no finish tool to hand the plan to", PlanKind)
 	}
 	if brief.Guidance == "" {
 		p.noGuidance.Note(PlanKind, p.logf)
 	}
-	in.Guidance, in.Finish = brief.ProductGuidance(), holder.FinishSection()
-	st.NodeTools = holder.Tools()
+	in.Guidance, in.Finish = brief.ProductGuidance(false), brief.HandInSection()
 	kept, err := keptRootFor(p.Layout, goal.ID)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, 0, acct, err
+		return 0, acct, err
 	}
 	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: harness.PlanPrompt(in), MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model, KeptRoot: kept}
 	// the goal's job's scratch, else the work root's (dir is
 	// PlanDir(root, slug): the work root is two up)
 	scratchRoot, err := scratchRootFor(p.Layout, goal.ID, filepath.Dir(filepath.Dir(dir)))
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, 0, acct, err
+		return 0, acct, err
 	}
 	// the goal's org's pod, opened before anything runs: a pod that
 	// cannot start runs no session, never on the host in its place
@@ -922,7 +560,7 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, scope Scope, dir s
 	// makes this Close nothing): the node that adopts it removes it
 	defer pod.Close()
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, 0, acct, err
+		return 0, acct, err
 	}
 	pod.Apply(&job)
 	if tok != nil {
@@ -931,7 +569,7 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, scope Scope, dir s
 		// scratch on a sandboxed node
 		ghDir, err := sessionGHConfigDir(p.Sandbox, scratchRoot)
 		if err != nil {
-			return nil, nil, nil, nil, nil, nil, nil, 0, acct, fmt.Errorf("gh config dir: %w", err)
+			return 0, acct, fmt.Errorf("gh config dir: %w", err)
 		}
 		// a session left running for the next node keeps it: the node
 		// that ends it removes it (TempDirs)
@@ -942,14 +580,14 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, scope Scope, dir s
 	// (sessionScratch); a detached one's by the node that ends it
 	scratch, err := sessionScratch(p.Sandbox, scratchRoot, p.BuildCache, harness.KindPlan, goal.ID, &job)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, 0, acct, err
+		return 0, acct, err
 	}
 	defer unlessDetached(ctx, func() { RemoveScratch(scratch) })
 	acct.Apply(&job)
 	job.BriefServers = briefServers(ctx, p.GW, PlanKind, goal.ID)
 	closeProxy, err := st.UseVia(p.Proxies, mcpRootFor(p.Layout, goal.ID), &job, p.MCP, acct)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, 0, acct, fmt.Errorf("tools: %w", err)
+		return 0, acct, fmt.Errorf("tools: %w", err)
 	}
 	defer closeProxy(ctx)
 	if len(st.Use) > 0 {
@@ -966,212 +604,67 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, scope Scope, dir s
 	if note := acct.UseNote(result); note != "" && err == nil {
 		p.logf("goal %s: %s", goal.Slug, note)
 	}
-	items, reasons, flags, questions, checkpoints, drafts, added, cost, err := p.readPlan(ctx, goal, dir, acct, holder, result, err, repos, merged, in.Evidence, goalItems, replacing, len(in.Rejected) > 0, gr, hasGoalRepo, in.MaxItems)
-	return items, reasons, flags, questions, checkpoints, drafts, added, cost, acct, err
+	cost, err := p.closePlan(ctx, goal, scope, dir, result, err)
+	return cost, acct, err
+}
+
+// closePlan is what follows a planner session, however this process came
+// to hold it: a session that failed or ran out of time is the plan's
+// error; one that ended is closed with finishJob's empty result, which
+// the product refuses when no plan reached its finish tool (and counts).
+// A cancelled ctx leaves the session running for the next node to adopt;
+// otherwise its session directory goes.
+func (p *Planner) closePlan(ctx context.Context, goal gateway.Goal, scope Scope, dir string, result harness.Result, err error) (float64, error) {
+	logKilled(p.logf, "goal "+goal.Slug, result.KilledPerSession(), result.KillError)
+	if ctx.Err() != nil {
+		return 0, ctx.Err()
+	}
+	defer harness.RemoveSession(dir)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return 0, fmt.Errorf("planner session ran out of time (%s)", p.Timeout)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("planner session: %w", err)
+	}
+	if _, ferr := p.GW.FinishJob(ctx, scope.NodeID, PlanKind, gateway.JobSubject{Type: "goal", ID: goal.ID}, map[string]any{"result": map[string]any{}}); ferr != nil {
+		return result.CostUSD, fmt.Errorf("planner session (%s) ended; the product refused to close the job: %w", result.SessionID, ferr)
+	}
+	return result.CostUSD, nil
 }
 
 // PlanKind is runsheet's plan kind, the job a plan is.
 const PlanKind = "runsheet/plan"
 
-// readPlan is what follows a planner session, however this process came
-// to hold it: its graph read and mapped onto the project's repos, as ask
-// describes. A cancelled ctx leaves the session running for the next
-// node to adopt; otherwise its session directory goes. A last answer
-// (final: the re-ask's, or an adopted session's, which is not asked
-// again) that still recreates a failed item at its acceptance, or, on a
-// narrow re-plan (replacing set), still does not split the replaced
-// item, or still names a repo other than the goal's own (hasGoalRepo,
-// ADR-023 (d)), is not handed in: it is an error naming the lineage or
-// the repo (ADR-021's amendments, ADR-023).
-func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, acct *SessionAccount, holder *jobresult.Holder, result harness.Result, err error, repos map[string]gateway.Repo, merged []int, evidence []harness.ModelEvidence, goalItems []gateway.WorkItem, replacing *gateway.WorkItem, final bool, gr gateway.Repo, hasGoalRepo bool, cap int) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, []string, []gateway.GoalDraft, []addedDep, float64, error) {
-	// logged before a done ctx returns: a deadline kills the unit too,
-	// and a detach kills nothing
-	logKilled(p.logf, "goal "+goal.Slug, result.KilledPerSession(), result.KillError)
-	if cap <= 0 {
-		cap = gateway.DefaultMaxItems
+// AdoptPlan takes up a planner session a node process before this one
+// started (ADR 009): followed to its end, or read from its file when it
+// is gone, its graph read and handed in. A plan the session left flagged
+// (adr-004) is handed in as it stands: its prompt is not kept to ask
+// again. A goal no longer in planning is not its to plan: the session is
+// stopped and its directory removed.
+func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope, s FoundSession) error {
+	ctx = actorContext(ctx, p.Cfg, gateway.RolePlanner)
+	// the node a finish is handed back by (finishJob, runsheet ADR 061)
+	ctx = gateway.WithNodeID(ctx, scope.NodeID)
+	if goal.Status != "planning" {
+		p.logf("goal %s: adopted plan is no longer wanted (%s); stopped", goal.Slug, goal.Status)
+		stopFound(p.logf, "goal "+goal.Slug, s)
+		return s.Remove()
 	}
-	if ctx.Err() != nil {
-		return nil, nil, nil, nil, nil, nil, nil, 0, ctx.Err()
-	}
-	defer harness.RemoveSession(dir)
-	if errors.Is(err, context.DeadlineExceeded) {
-		return nil, nil, nil, nil, nil, nil, nil, 0, fmt.Errorf("planner session ran out of time (%s)", p.Timeout)
-	}
-	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, 0, fmt.Errorf("planner session: %w", acct.RedactErr(err))
-	}
-	// the plan is what the session handed the node's mesh_result
-	// (ADR-041): the `plan` object, read by DecodePlan and its siblings
-	// and then through every check below; nothing of the final message
-	recoverResult(holder, result, "goal "+goal.Slug, p.logf)
-	graph, err := planGraphOf(holder, acct.Redact)
-	if err != nil {
-		err = fmt.Errorf("planner session (%s): %w", result.SessionID, err)
-		if errors.Is(err, errGaveUp) {
-			// the planner's own word that the goal cannot be planned as it
-			// stands: a refusal, so it counts toward the release
-			return nil, nil, nil, nil, nil, nil, nil, 0, &PlanRefused{Goal: goal.Slug, Reason: err.Error()}
-		}
-		return nil, nil, nil, nil, nil, nil, nil, 0, err
-	}
-	// a `split` answer — goal drafts in place of a graph over the
-	// project's cap (ADR-023 (a)) — is read first: it has no items
-	if drafts, ok := harness.DecodePlanSplit(graph); ok {
-		gd, err := splitDrafts(drafts, repos, cap)
-		if err != nil {
-			return nil, nil, nil, nil, nil, nil, nil, 0, &PlanRefused{Goal: goal.Slug, Reason: err.Error()}
-		}
-		return nil, nil, nil, nil, nil, gd, nil, result.CostUSD, nil
-	}
-	specs, err := harness.DecodePlan(graph, merged...)
-	if err != nil {
-		err = fmt.Errorf("planner session (%s): %w", result.SessionID, err)
-		if errors.Is(err, harness.ErrNoPlanItems) {
-			return nil, nil, nil, nil, nil, nil, nil, 0, &PlanRefused{Goal: goal.Slug, Reason: err.Error()}
-		}
-		return nil, nil, nil, nil, nil, nil, nil, 0, err
-	}
-	items := make([]gateway.PlannedItem, 0, len(specs))
-	itemRepo := map[int]gateway.Repo{}
-	reasons := map[int]string{}
-	// the dependencies kept (each with a because), then those the plan
-	// check adds between items naming the same code file, the later on
-	// the earlier (goal items-that-share-a-file-are-planned-in-a-line)
-	deps := map[int][]int{}
-	because := map[int]map[int]string{}
-	kept := make([]harness.PlannedSpec, len(specs))
-	for i, sp := range specs {
-		deps[sp.Seq], because[sp.Seq] = p.explainedDeps(goal.Slug, sp)
-		kept[i] = sp
-		kept[i].DependsOn = nil
-		for _, d := range deps[sp.Seq] {
-			kept[i].DependsOn = append(kept[i].DependsOn, harness.PlannedDep{Seq: d})
-		}
-	}
-	added := sharedCodeFiles(kept)
-	for _, a := range added {
-		deps[a.Seq] = append(deps[a.Seq], a.On)
-		if because[a.Seq] == nil {
-			because[a.Seq] = map[int]string{}
-		}
-		because[a.Seq][a.On] = a.because()
-	}
-	// one item writes the goal's shared documents; every other item's
-	// brief says not to touch them (goal
-	// items-that-share-a-file-are-planned-in-a-line, planSharedDocsRule).
-	// The writer gets no added dependency from this: the stamp is on the
-	// brief alone.
-	sharedWriter := sharedDocsWriter(specs)
-	sharedSiblings := sharedDocsSiblings(specs, sharedWriter)
-	// runsheet ADR 056: a platform that takes acceptanceChecks refuses
-	// an item with none; one that does not is never asked for them
-	takesChecks := p.GW.TakesAcceptanceChecks(ctx)
-	for _, sp := range specs {
-		r, ok := projectRepo(repos, sp.Repo)
-		if !ok {
-			return nil, nil, nil, nil, nil, nil, nil, 0, fmt.Errorf("item %d names repo %q, not one of the project's", sp.Seq, sp.Repo)
-		}
-		itemRepo[sp.Seq] = r
-		base := strings.TrimSpace(sp.BaseRef)
-		if base == "" {
-			base = r.DefaultBranch
-		}
-		deps, because := deps[sp.Seq], because[sp.Seq]
-		model := strings.TrimSpace(sp.Model)
-		if model != "" && !PlannableModel(model) {
-			// the planner's choice is advice: an unknown one leaves the
-			// item on the node's own model rather than failing the plan
-			p.logf("goal %s: item %d %q: model %q is not haiku, sonnet, opus or a claude-* id; dropped", goal.Slug, sp.Seq, strings.TrimSpace(sp.Title), model)
-			model = ""
-		}
-		reasons[sp.Seq] = strings.TrimSpace(sp.ModelReason)
-		brief := gateway.BriefWithAtomic(gateway.BriefWithPrecondition(briefWithDeps(sp.Brief, deps, because), sp.Precondition), sp.Atomic)
-		if sharedWriter > 0 {
-			if sp.Seq == sharedWriter {
-				brief = gateway.BriefWithSharedDocsWriter(brief, sharedSiblings)
-			} else {
-				brief = gateway.BriefWithoutSharedDocs(brief, sharedWriter)
-			}
-		}
-		// runsheet ADR 056: the item's checks as the planner listed them;
-		// on the final answer an item still without one gets one
-		// observable made of its prose, so the platform never refuses
-		// the plan for a missing list (missingAcceptanceChecks flagged it
-		// on the first)
-		checks := acceptanceChecksOf(sp)
-		if len(checks) == 0 && final && takesChecks {
-			checks = []gateway.AcceptanceCheck{observableOfProse(sp.Acceptance)}
-			p.logf("goal %s: item %d %q: no acceptance_checks on the final answer; one observable made of its prose", goal.Slug, sp.Seq, strings.TrimSpace(sp.Title))
-		}
-		items = append(items, gateway.PlannedItem{Seq: sp.Seq, Title: strings.TrimSpace(sp.Title), Brief: brief, Acceptance: strings.TrimSpace(sp.Acceptance), AcceptanceChecks: checks, DependsOn: deps, DependsBecause: because, RepoID: r.ID, BaseRef: base, Model: model, Precondition: strings.Join(strings.Fields(sp.Precondition), " ")})
-	}
-	flags := unverifiableAcceptance(specs, itemRepo, repos)
-	if !final && takesChecks {
-		flags = append(flags, missingAcceptanceChecks(specs)...)
-	}
-	flags = append(flags, hostReadingAcceptance(specs)...)
-	flags = append(flags, closeOutAcceptance(specs)...)
-	flags = append(flags, cutOverAcceptance(specs)...)
-	flags = append(flags, modelAgainstEvidence(specs, evidence)...)
-	flags = append(flags, sharedDocsWriterFlags(specs)...)
-	relanded := reLands(specs, goalItems)
-	unsplit := ""
-	if replacing != nil {
-		unsplit = notASplit(specs, *replacing)
-	}
-	otherRepoRefused := ""
-	if hasGoalRepo {
-		otherRepoRefused = otherRepoRefusal(specs, itemRepo, gr)
-	}
-	over := overCap(specs, cap)
-	if final && (len(relanded) > 0 || unsplit != "" || otherRepoRefused != "" || over != "") {
-		why := make([]string, 0, len(relanded)+3)
-		if over != "" {
-			why = append(why, overCapRefusal(len(specs), cap))
-		}
-		for _, r := range relanded {
-			why = append(why, r.refusal())
-		}
-		if unsplit != "" {
-			why = append(why, splitRefusal(*replacing, len(specs)))
-		}
-		if otherRepoRefused != "" {
-			why = append(why, otherRepoRefused)
-		}
-		return nil, nil, nil, nil, nil, nil, nil, 0, &PlanRefused{Goal: goal.Slug, Reason: strings.Join(why, "; ")}
-	}
-	if over != "" {
-		flags = append(flags, over)
-	}
-	flags = append(flags, sameAcceptanceAsFailed(specs, goalItems)...)
-	if unsplit != "" {
-		flags = append(flags, unsplit)
-	}
-	if hasGoalRepo {
-		flags = append(flags, otherRepoItems(specs, itemRepo, gr)...)
-	}
-	return items, reasons, flags, harness.DecodePlanQuestions(graph), harness.DecodePlanCheckpoints(graph), nil, added, result.CostUSD, nil
-}
-
-// errGaveUp is a planner session that gave the plan up (mesh_fail).
-var errGaveUp = errors.New("the session gave the plan up")
-
-// planGraphOf is the `plan` object the session handed mesh_result, its
-// strings redacted; an error names why there is none — the session gave
-// the plan up (mesh_fail) or made no call.
-func planGraphOf(holder *jobresult.Holder, redact func(string) string) (map[string]any, error) {
-	if holder == nil {
-		return nil, errors.New("no result holder for the session")
-	}
-	if why, failed := holder.Failed(); failed {
-		return nil, fmt.Errorf("%w: %s", errGaveUp, redact(truncate(why, 300)))
-	}
-	res, ok := holder.Result()
+	at, ok := p.Harness.(harness.Attacher)
 	if !ok {
-		return nil, errors.New("no result: the session made no mesh_result call")
+		stopFound(p.logf, "goal "+goal.Slug, s)
+		s.Remove()
+		return errNoAttach
 	}
-	graph, _ := res["plan"].(map[string]any)
-	return redactGraph(graph, redact).(map[string]any), nil
+	endProxy := adoptProxy(ctx, p.Proxies, p.Credentials, p.MCP, tools.RoleFor(string(harness.KindPlan)), p.runtimes(), gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goal.ID}, s, "goal "+goal.Slug, nil, p.logf)
+	defer endProxy(ctx)
+	p.logf("goal %s: adopted its %s planner session (pid %d)", goal.Slug, s.Liveness(), s.State.PID)
+	result, err := at.Attach(ctx, s.Dir, nil)
+	if _, err := p.closePlan(ctx, goal, scope, s.State.Workspace, result, err); err != nil {
+		return err
+	}
+	p.logf("goal %s: adopted plan closed", goal.Slug)
+	return nil
 }
 
 // redactGraph is v with every string in it redacted.
@@ -1193,111 +686,6 @@ func redactGraph(v any, redact func(string) string) any {
 		return out
 	}
 	return v
-}
-
-// explainedDeps keeps the item's dependencies that carry a because and
-// drops the rest, logging each (trd §5 phase 2, the dependency rubric):
-// the kept seqs and, by seq, what each one uses.
-func (p *Planner) explainedDeps(goal string, sp harness.PlannedSpec) ([]int, map[int]string) {
-	deps := []int{}
-	var because map[int]string
-	for _, d := range sp.DependsOn {
-		why := strings.TrimSpace(d.Because)
-		if why == "" {
-			p.logf("plan %s: item %d dropped dependency on %d: no because", goal, sp.Seq, d.Seq)
-			continue
-		}
-		if because == nil {
-			because = map[int]string{}
-		}
-		if _, dup := because[d.Seq]; dup {
-			continue
-		}
-		deps = append(deps, d.Seq)
-		because[d.Seq] = why
-	}
-	return deps, because
-}
-
-// briefWithDeps is the item's brief with a line per kept dependency,
-// so the builder sees what it is waiting for.
-func briefWithDeps(brief string, deps []int, because map[int]string) string {
-	brief = strings.TrimSpace(brief)
-	if len(deps) == 0 {
-		return brief
-	}
-	var b strings.Builder
-	b.WriteString(brief)
-	if brief != "" {
-		b.WriteString("\n\n")
-	}
-	for i, d := range deps {
-		if i > 0 {
-			b.WriteString("\n")
-		}
-		fmt.Fprintf(&b, "Depends on #%d because %s", d, strings.TrimRight(because[d], "."))
-		b.WriteString(".")
-	}
-	return b.String()
-}
-
-// AdoptPlan takes up a planner session a node process before this one
-// started (ADR 009): followed to its end, or read from its file when it
-// is gone, its graph read and handed in. A plan the session left flagged
-// (adr-004) is handed in as it stands: its prompt is not kept to ask
-// again. A goal no longer in planning is not its to plan: the session is
-// stopped and its directory removed.
-func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope, s FoundSession) error {
-	ctx = actorContext(ctx, p.Cfg, gateway.RolePlanner)
-	// the node a finish is handed back by (finishJob, runsheet ADR 061)
-	ctx = gateway.WithNodeID(ctx, scope.NodeID)
-	if goal.Status != "planning" {
-		p.logf("goal %s: adopted plan is no longer wanted (%s); stopped", goal.Slug, goal.Status)
-		stopFound(p.logf, "goal "+goal.Slug, s)
-		return s.Remove()
-	}
-	project, repos, err := p.projectRepoMap(ctx, goal, scope)
-	if err != nil {
-		return err
-	}
-	var merged []int
-	goalItems, err := p.GW.GoalWorkItems(ctx, goal.ID)
-	if err == nil {
-		for _, it := range goalItems {
-			if it.Status == "merged" {
-				merged = append(merged, it.Seq)
-			}
-		}
-	}
-	replacing := p.replacingItem(goal, goalItems)
-	at, ok := p.Harness.(harness.Attacher)
-	if !ok {
-		stopFound(p.logf, "goal "+goal.Slug, s)
-		s.Remove()
-		return errNoAttach
-	}
-	// a fresh holder for the adopted session (ADR-041): a result it handed
-	// the node before this one lived with that node
-	holder, err := jobresult.New(PlanKind, jobresult.FinishPlan, "")
-	if err != nil {
-		return err
-	}
-	endProxy := adoptProxy(ctx, p.Proxies, p.Credentials, p.MCP, tools.RoleFor(string(harness.KindPlan)), p.runtimes(), gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goal.ID}, s, "goal "+goal.Slug, holder.Tools(), p.logf)
-	defer endProxy(ctx)
-	p.logf("goal %s: adopted its %s planner session (pid %d)", goal.Slug, s.Liveness(), s.State.PID)
-	result, err := at.Attach(ctx, s.Dir, nil)
-	gr, hasGoalRepo := goalRepo(goal, project, repos)
-	items, reasons, flags, questions, checkpoints, drafts, added, cost, err := p.readPlan(ctx, goal, s.State.Workspace, nil, holder, result, err, repos, merged, p.evidence(ctx, goal.Slug, scope, project), goalItems, replacing, true, gr, hasGoalRepo, project.ItemCap())
-	if err != nil {
-		return err
-	}
-	if drafts != nil {
-		return p.handInSplit(ctx, goal, drafts, 0, project.ItemCap(), cost, nil)
-	}
-	if len(flags) > 0 {
-		p.logf("goal %s: adopted plan names what no evaluator can see; handing it in: %s", goal.Slug, strings.Join(flags, " | "))
-	}
-	return p.handIn(ctx, goal, items, reasons, questions, checkpoints, added, cost, nil)
 }
 
 // contextBudget is the context budget for p's sessions: live, through

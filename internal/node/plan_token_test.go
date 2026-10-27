@@ -81,8 +81,8 @@ func TestPlannerFetchesOnTheGoalsTokens(t *testing.T) {
 	if len(f.CallsNamed("planGitHubToken")) != 1 {
 		t.Fatalf("planGitHubToken calls: %+v", f.CallsNamed("planGitHubToken"))
 	}
-	if calls := f.CallsNamed("planGoal"); len(calls) != 1 {
-		t.Fatalf("planGoal calls: %+v", calls)
+	if calls := f.CallsNamed("finishJob"); len(calls) != 1 {
+		t.Fatalf("finishJob calls: %+v", calls)
 	}
 
 	if len(h.jobs) != 1 {
@@ -126,7 +126,7 @@ func TestPlannerRefusedTokenNamesTheRepo(t *testing.T) {
 	if len(h.jobs) != 0 || len(ws.repoOps) != 0 {
 		t.Fatalf("sessions %d, workspace calls %q: want none", len(h.jobs), ws.repoOps)
 	}
-	if calls := f.CallsNamed("planGoal"); len(calls) != 0 {
-		t.Fatalf("planGoal calls: %+v", calls)
+	if calls := f.CallsNamed("finishJob"); len(calls) != 0 {
+		t.Fatalf("finishJob calls: %+v", calls)
 	}
 }

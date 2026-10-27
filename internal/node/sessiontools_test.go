@@ -764,7 +764,7 @@ func TestPlanGetsItsToolsBesideMeshContext(t *testing.T) {
 		t.Fatalf("jobs: %+v", h.jobs)
 	}
 	assertSearchTools(t, h.jobs[0], logs.String())
-	if n := len(f.CallsNamed("planGoal")); n != 1 {
+	if n := len(f.CallsNamed("finishJob")); n != 1 {
 		t.Fatalf("%d plans handed in", n)
 	}
 }
