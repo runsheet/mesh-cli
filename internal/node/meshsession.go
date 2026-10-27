@@ -57,6 +57,24 @@ type SessionBearers struct {
 	Now func() time.Time
 
 	fallbackOnce sync.Once
+	// jobs is each open claim's mesh session id, by item and attempt: a
+	// build job's id (runsheet ADR 075), which its usage is reported on.
+	mu   sync.Mutex
+	jobs map[string]string
+}
+
+func jobKey(itemID string, attempt int) string { return itemID + " " + strconv.Itoa(attempt) }
+
+// JobID is the job id of item's claim at attempt — the mesh session Open
+// opened for it — or "" when none is open (a platform that opens no mesh
+// sessions, or a claim this process did not open).
+func (b *SessionBearers) JobID(itemID string, attempt int) string {
+	if b == nil {
+		return ""
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.jobs[jobKey(itemID, attempt)]
 }
 
 // MachineBearerRefusal is the refusal of a build on a node serving
@@ -121,7 +139,20 @@ func (b *SessionBearers) Open(ctx context.Context, item gateway.WorkItem, nodeID
 	if _, err := src(ctx); err != nil {
 		return noop, fmt.Errorf("%s: id token: %w", s, err)
 	}
-	return b.Tokens.Bind(item.ID, item.Attempts, src, b.Key), nil
+	b.mu.Lock()
+	if b.jobs == nil {
+		b.jobs = map[string]string{}
+	}
+	key := jobKey(item.ID, item.Attempts)
+	b.jobs[key] = s.SessionID
+	b.mu.Unlock()
+	unbindTokens := b.Tokens.Bind(item.ID, item.Attempts, src, b.Key)
+	return func() {
+		unbindTokens()
+		b.mu.Lock()
+		delete(b.jobs, key)
+		b.mu.Unlock()
+	}, nil
 }
 
 // source mints s's tokens for Audience, bound to Key, each kept until

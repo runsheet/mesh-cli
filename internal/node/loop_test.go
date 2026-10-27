@@ -1827,3 +1827,38 @@ func TestHeartbeatCarriesTheManifest(t *testing.T) {
 		}
 	}
 }
+
+// The heartbeat's limit readings go to Mesh by account reference — the
+// credential's id, never its label alone — so Mesh keeps them per
+// account; an unchanged report is not sent again within AccountsEvery,
+// and an account with no reference is left out (runsheet ADR 078).
+func TestAccountsWindowsGoToMeshByReference(t *testing.T) {
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	now := time.Date(2026, 10, 28, 1, 0, 0, 0, time.UTC)
+	known := &KnownAccounts{Path: filepath.Join(t.TempDir(), "known.json"), Now: func() time.Time { return now }}
+	if err := known.Note(AccountConfig{ID: "cred-1", Label: "max-cloud", Kind: AccountSubscription}, now); err != nil {
+		t.Fatal(err)
+	}
+	l := &Loop{GW: gateway.New(f.URL(), "rs_test"), Cfg: &Config{NodeID: "node-1"}, Known: known, Now: func() time.Time { return now }, Log: log.New(io.Discard, "", 0)}
+	limits := []gateway.Limits{
+		{Account: "max-cloud", OverageStatus: "rejected", FiveHour: &gateway.LimitWindow{Utilization: 0.41, ResetsAt: now.Add(3 * time.Hour)}, SevenDay: &gateway.LimitWindow{Utilization: 0.42}},
+		{Account: "unknown-label", FiveHour: &gateway.LimitWindow{Utilization: 0.9}},
+	}
+	l.reportAccounts(context.Background(), limits)
+	l.reportAccounts(context.Background(), limits)
+	got := f.NodeAccounts["node-1"]
+	if len(got) != 1 {
+		t.Fatalf("reports: %d, want 1 (the second unchanged within AccountsEvery)", len(got))
+	}
+	accs := got[0]["accounts"].([]any)
+	if len(accs) != 1 {
+		t.Fatalf("accounts: %+v", accs)
+	}
+	a := accs[0].(map[string]any)
+	wins := a["windows"].([]any)
+	five := wins[0].(map[string]any)
+	if a["account_ref"] != "cred-1" || a["overage"] != "rejected" || len(wins) != 2 || five["window"] != "five_hour" || five["used_pct"] != float64(41) {
+		t.Fatalf("account: %+v", a)
+	}
+}

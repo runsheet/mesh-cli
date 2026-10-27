@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"projectmesh.io/mesh-cli/internal/dpop"
 	"slices"
 	"strconv"
 	"strings"
@@ -951,5 +952,55 @@ func TestEveryKindsUsageReportNamesItsCredential(t *testing.T) {
 		if rep.CredentialID != tc.id || rep.CredentialKind != tc.kind {
 			t.Errorf("%s: credential %s/%s, want %s/%s", tc.ref.Kind, rep.CredentialID, rep.CredentialKind, tc.id, tc.kind)
 		}
+	}
+}
+
+// A build whose claim opened a mesh session reports its usage on that
+// job to Mesh — by the credential's reference — before it finishes, and
+// the finish then carries no usage report of its own; on a platform
+// without Mesh's route the finish carries it as before (runsheet ADR 078).
+func TestBuildReportsItsUsageOnItsJob(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		noMesh bool
+	}{{"mesh takes it", false}, {"a platform without the route", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := seed(t)
+			issueCredential(f, item1)
+			f.NoMeshUsage = tc.noMesh
+			h := &streamHarness{file: usageStream()}
+			r, _, item, _ := runnerOnFake(t, f, h, nil)
+			var logs syncBuf
+			r.Log = log.New(&logs, "", 0)
+			r.Credentials = usageCredentials(r.GW.(CredentialGateway), r.Log)
+			key, err := dpop.NewKey()
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.Bearers = &SessionBearers{GW: gateway.New(f.URL(), machine), Tokens: &TokenFiles{Token: func(context.Context) (string, error) { return machine, nil }}, Key: key, Orgs: func() int { return 1 }}
+			if err := r.RunItem(context.Background(), item); err != nil {
+				t.Fatal(err)
+			}
+			var job string
+			for id := range f.MeshSessions {
+				job = id
+			}
+			if tc.noMesh {
+				if len(f.JobUsages) != 0 {
+					t.Fatalf("usage sent to a platform without the route: %+v", f.JobUsages)
+				}
+				checkSessionUsage(t, f, "finishWorkItem")
+				return
+			}
+			got := f.JobUsages[job]
+			if job == "" || len(got) != 1 || got[0]["account_ref"] != "cred-1" || got[0]["tokens_input"] != float64(60600) || got[0]["cost_list_cents"] != float64(43) {
+				t.Fatalf("job usage on %q: %+v\n%s", job, f.JobUsages, logs.String())
+			}
+			for _, u := range f.SessionUsage {
+				if u.Name == "finishWorkItem" {
+					t.Fatalf("the finish still carried a usage report: %+v", u.Input)
+				}
+			}
+		})
 	}
 }

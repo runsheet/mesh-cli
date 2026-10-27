@@ -83,6 +83,14 @@ type Fake struct {
 	// route 404, a platform that predates it (meshsessions.go).
 	MeshSessions   map[string]*MeshSession
 	NoMeshSessions bool
+	// JobUsages are the job usage reports POST /mesh/v1/jobs/{id}/usage
+	// took, by job id, and NodeAccounts the accounts reports POST
+	// /mesh/v1/nodes/{id}/accounts took, by node id, latest last
+	// (runsheet ADR 078 §5); NoMeshUsage answers both routes a plain 404,
+	// a platform that predates them (meshusage.go).
+	JobUsages    map[string][]map[string]any
+	NodeAccounts map[string][]map[string]any
+	NoMeshUsage  bool
 	// ThreadTurns are the thread turns the fake holds (jobs.go), by id:
 	// listed by threadSessionIndexs while raised, claimed and finished
 	// through claimJob and finishJob, their accounts from jobAccess.
@@ -2720,6 +2728,9 @@ func (f *Fake) mesh(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasPrefix(r.URL.Path, gateway.MeshSessionsPath) {
 		f.meshSessions(w, r)
+		return
+	}
+	if f.meshUsage(w, r) {
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/mesh/v1/items/") {
