@@ -191,6 +191,13 @@ type Config struct {
 	// repository; a write token is relayed only once a claim names the
 	// refs it may push. Read at start; left out, off.
 	GitRelay bool `yaml:"git_relay,omitempty"`
+	// Sigstore is node.yaml's `sigstore: {fulcio_url, rekor_url}`: when
+	// both are set, a session signs what its product hands it to sign
+	// (an attestation's statement) with a Fulcio certificate for the
+	// session's own identity and logs it in Rekor; when either is unset,
+	// or a step fails, nothing is signed and nothing else changes
+	// (fail-soft). Read at start.
+	Sigstore SigstoreConfig `yaml:"sigstore,omitempty"`
 	// ValidationCacheMaxBytes is the most the node's cache root
 	// (SharedCacheRoot: the shared tree cache and the Go build cache
 	// beside it) may hold, in bytes; left out or 0,
@@ -1768,4 +1775,10 @@ func Slugify(name string) string {
 		}
 	}
 	return strings.Trim(b.String(), "-")
+}
+
+// SigstoreConfig is where a session's signatures are certified and logged.
+type SigstoreConfig struct {
+	FulcioURL string `yaml:"fulcio_url,omitempty"`
+	RekorURL  string `yaml:"rekor_url,omitempty"`
 }
