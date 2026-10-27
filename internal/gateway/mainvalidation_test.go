@@ -409,12 +409,12 @@ func TestFakeMergeBatchClaimConvergesAndFinishes(t *testing.T) {
 	if row := f.MergeBatch(b.MergeBatchID); row["validationNodeId"] != nodeID || row["validationState"] != "claimed" {
 		t.Fatalf("batch = %+v", row)
 	}
-	// the holder is still served it; another node is not
-	if q, _ := gw.MainValidations(ctx, otherNode); len(q.Batches) != 0 {
-		t.Fatalf("another node is served %+v", q.Batches)
-	}
-	if q, _ := gw.MainValidations(ctx, nodeID); len(q.Batches) != 1 {
-		t.Fatalf("the holder is served %+v", q.Batches)
+	// a claimed run leaves the read for every node, the holder's
+	// included, as runsheet's lists requested runs only
+	for _, n := range []string{otherNode, nodeID} {
+		if q, _ := gw.MainValidations(ctx, n); len(q.Batches) != 0 {
+			t.Fatalf("node %s is served the claimed batch %+v", n, q.Batches)
+		}
 	}
 
 	// the validate job's finish (finishJob): the attestation and the end

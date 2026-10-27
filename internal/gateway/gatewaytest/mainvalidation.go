@@ -136,10 +136,9 @@ func (f *Fake) mainValidations(w http.ResponseWriter, vars map[string]any) {
 		out := []any{}
 		for _, id := range sortedKeys(rows) {
 			row := rows[id]
-			switch {
-			case row[validationState] == "requested":
-			case row[validationState] == "claimed" && row[validationNode] == node:
-			default:
+			// requested runs only, as the platform's read filters them:
+			// a claimed run leaves it, the claiming node's included
+			if row[validationState] != "requested" {
 				continue
 			}
 			served := copyRow(row)
