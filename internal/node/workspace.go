@@ -1896,15 +1896,10 @@ type Gateway interface {
 	// holding the plan's or the research's claim.
 	PlanGitHubTokens(ctx context.Context, goalID, nodeID string) ([]gateway.GitHubToken, error)
 	ResearchGitHubTokens(ctx context.Context, directionID, nodeID string) ([]gateway.GitHubToken, error)
-	EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, clauses []gateway.FailedClause, costCents int, usage *gateway.UsageReport, choice gateway.EvaluateChoice) error
 	// WorkItemPriorAttempts reads the evaluations already recorded
 	// against an item (none, and no error, on a platform that does not
 	// serve them).
 	WorkItemPriorAttempts(ctx context.Context, itemID string) ([]gateway.PriorAttempt, error)
-	// EvaluateWorkItemNoVerdict records an evaluation that reached no
-	// verdict (gateway.ErrNoVerdictOutcome on a platform without the
-	// outcome, nothing sent).
-	EvaluateWorkItemNoVerdict(ctx context.Context, itemID, reason string, costCents int, usage *gateway.UsageReport, choice gateway.EvaluateChoice) error
 	Goal(ctx context.Context, id string) (*gateway.Goal, error)
 	Goals(ctx context.Context, orgID string) ([]gateway.Goal, error)
 	ClaimPlan(ctx context.Context, goalID, nodeID string) error

@@ -45,18 +45,16 @@ func (g *beatGateway) ReportWorkItemProgress(ctx context.Context, itemID, note s
 	return g.Gateway.ReportWorkItemProgress(ctx, itemID, note, costCents, sessionID)
 }
 
-func (g *beatGateway) EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, failed []gateway.FailedClause, costCents int, usage *gateway.UsageReport, choice gateway.EvaluateChoice) error {
-	g.record("verdict", "")
-	return g.Gateway.EvaluateWorkItem(ctx, itemID, passed, notes, failed, costCents, usage, choice)
-}
-
-func (g *beatGateway) EvaluateWorkItemNoVerdict(ctx context.Context, itemID, reason string, costCents int, usage *gateway.UsageReport, choice gateway.EvaluateChoice) error {
-	g.record("no-verdict", "")
-	return g.Gateway.EvaluateWorkItemNoVerdict(ctx, itemID, reason, costCents, usage, choice)
-}
-
 func (g *beatGateway) FinishJob(ctx context.Context, nodeID, kind string, subject gateway.JobSubject, finish map[string]any) (map[string]any, error) {
-	g.record("close", "")
+	// the node's own outcome is its verdict; a bare result closes the job
+	switch r, _ := finish["result"].(map[string]any); r["outcome"] {
+	case "failed":
+		g.record("verdict", "")
+	case "no_verdict":
+		g.record("no-verdict", "")
+	default:
+		g.record("close", "")
+	}
 	return g.Gateway.FinishJob(ctx, nodeID, kind, subject, finish)
 }
 

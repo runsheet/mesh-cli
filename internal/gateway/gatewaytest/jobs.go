@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/gateway"
 )
 
 // ThreadTurn is one thread turn the fake holds (runsheet ThreadSession):
@@ -358,7 +360,47 @@ func (f *Fake) finishJobAliases(r *http.Request, in map[string]any, bearer strin
 		// tool (mesh_verdict); the node then closes the job with its notes
 		// tail, which the product refuses when no verdict reached that tool
 		// (EvaluationNotHandedIn). An older node's {verdict} is still served.
-		if _, ok := fin["result"]; ok {
+		if r, ok := fin["result"].(map[string]any); ok {
+			// the node's own outcome, when no session judged (runsheet
+			// #5619): a branch it cannot diff fails on the clause the
+			// product names; a broken runtime reaches no verdict
+			outcome := false
+			switch out, _ := r["outcome"].(string); out {
+			case "failed":
+				cause, _ := r["cause"].(string)
+				if strings.TrimSpace(cause) == "" {
+					err = fmt.Errorf("finishJob: a failed outcome needs a cause")
+					break
+				}
+				err = send("evaluateWorkItem", map[string]any{"passed": false, "notes": cause,
+					"failedClauses": []any{map[string]any{"clause": "the branch can be evaluated: it diffs against its base"}}})
+				outcome = true
+			case "no_verdict":
+				if f.NoNoVerdict {
+					// a platform before the outcome reads the result as the
+					// session's close and refuses it, as runsheet did
+					err = fmt.Errorf("call mesh_verdict first")
+					break
+				}
+				reason, _ := r["reason"].(string)
+				if strings.TrimSpace(reason) == "" {
+					err = fmt.Errorf("finishJob: a no_verdict outcome needs a reason")
+					break
+				}
+				v := map[string]any{"passed": false, gateway.NoVerdictField: true, gateway.NoVerdictReasonField: reason,
+					"notes": reason, "costCents": r["cost_cents"]}
+				if m, ok := r["evaluated_model"]; ok {
+					v[gateway.EvaluatedModelField] = m
+				}
+				err = send("evaluateWorkItem", v)
+				outcome = true
+			case "":
+			default:
+				err = fmt.Errorf("finishJob: unknown outcome %q", out)
+			}
+			if err != nil || outcome {
+				break
+			}
 			if f.EvaluationNotHandedIn != "" {
 				err = fmt.Errorf("%s", f.EvaluationNotHandedIn)
 				break

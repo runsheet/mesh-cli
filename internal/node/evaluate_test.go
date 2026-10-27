@@ -344,8 +344,17 @@ func TestEvaluateNoMergeBaseFailsTheItem(t *testing.T) {
 	f, ev, h := diffFailFixture(t, &NoMergeBaseError{Base: "main", Branch: "mesh/ship-it-1"})
 	in := failedByTheNode(t, f, ev)
 	notes, _ := in["notes"].(string)
-	if in["costCents"] != float64(0) || !strings.Contains(notes, "shares no history with origin/main") || !strings.Contains(notes, "rebuilt from scratch") || !strings.Contains(notes, "Rebuild it on origin/main") {
+	if !strings.Contains(notes, "shares no history with origin/main") || !strings.Contains(notes, "rebuilt from scratch") || !strings.Contains(notes, "Rebuild it on origin/main") {
 		t.Fatalf("verdict: %+v", in)
+	}
+	// the node's failed outcome names the clause the product fails it on:
+	// a fail with no clause is refused (runsheet FailWithoutClausesRefused)
+	if cl, _ := in["failedClauses"].([]any); len(cl) != 1 || cl[0].(map[string]any)["clause"] != "the branch can be evaluated: it diffs against its base" {
+		t.Fatalf("failed clauses: %+v", in["failedClauses"])
+	}
+	// it goes as the job's close, not a verdict of the node's own
+	if n := len(f.CallsNamed("finishJob")); n != 1 {
+		t.Fatalf("finishJob calls = %d, want 1", n)
 	}
 	if len(h.jobs) != 0 {
 		t.Fatalf("no evaluator session: %d jobs", len(h.jobs))

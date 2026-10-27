@@ -212,8 +212,14 @@ func (e *Evaluator) failDiff(ctx context.Context, item gateway.WorkItem, label, 
 	notes = truncate(notes, 4000)
 	e.logf("item %s: not evaluated, failed: %s", label, notes)
 	stopHeartbeat(ctx)
-	ctx = gateway.WithNodeID(ctx, nodeIDOf(e.Scopes, item.OrgID, e.Cfg))
-	if err := handInRefused(e.logf, nil, label, "EvaluateWorkItem", e.GW.EvaluateWorkItem(ctx, item.ID, false, notes, nil, 0, nil, gateway.EvaluateChoice{})); err != nil {
+	nodeID := nodeIDOf(e.Scopes, item.OrgID, e.Cfg)
+	ctx = gateway.WithNodeID(ctx, nodeID)
+	// the node's own outcome closes the job: the product fails the item
+	// on the clause it names for a branch it cannot evaluate (runsheet
+	// ADR 077, the node's outcome rides the result)
+	res := map[string]any{"outcome": "failed", "cause": notes}
+	if _, err := e.GW.FinishJob(ctx, nodeID, EvaluateKind, gateway.JobSubject{Type: "item", ID: item.ID}, map[string]any{"result": res}); err != nil {
+		_ = handInRefused(e.logf, nil, label, "FinishJob", err)
 		return fmt.Errorf("record verdict: %w", err)
 	}
 	return nil
@@ -665,27 +671,38 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	return nil
 }
 
-// noVerdict records an evaluation that reached no verdict — the deciding
-// session wrote no VERDICT line, or saw no context and the other family
-// could not evaluate it — as a no-verdict (`passed: false`, `noVerdict:
-// true`, the reason; runsheet ADR 035) with the session's cost and its
-// usage report (ADR 011's amendments 2026-09-29 and 2026-10-02): never a
-// fail, since the evaluator had no way to reach one. A platform without
-// `noVerdict` (gateway.ErrNoVerdictOutcome) records nothing, as
-// before: said once per run, and fallback is the error the item waits in
-// evaluating with.
+// noVerdict records an evaluation the node could not run to a verdict —
+// its container runtime would not start the session — as the job's own
+// no_verdict outcome (runsheet ADR 077: the product records it as a
+// no-verdict, never a fail, with the session's cost and usage when one
+// ran). A platform that does not take the outcome (unsupported, or one
+// that reads the result as the session's close and refuses it) records
+// nothing: said once per run, and fallback is the error the item waits
+// in evaluating with.
 func (e *Evaluator) noVerdict(ctx context.Context, ev evalRun, reason string, cost float64, usage *gateway.UsageReport, fallback func() error) error {
 	reason = truncate(reason, 4000)
 	stopHeartbeat(ctx)
-	ctx = gateway.WithNodeID(ctx, nodeIDOf(e.Scopes, ev.item.OrgID, e.Cfg))
-	err := e.GW.EvaluateWorkItemNoVerdict(ctx, ev.item.ID, reason, Cents(cost), usage, gateway.EvaluateChoice{EvaluatedModel: ev.fam.model})
-	if errors.Is(err, gateway.ErrNoVerdictOutcome) {
+	nodeID := nodeIDOf(e.Scopes, ev.item.OrgID, e.Cfg)
+	ctx = gateway.WithNodeID(ctx, nodeID)
+	res := map[string]any{"outcome": "no_verdict", "reason": reason, "cost_cents": Cents(cost)}
+	if usage != nil {
+		res["usage"] = usage
+	}
+	if ev.fam.model != "" {
+		res["evaluated_model"] = ev.fam.model
+	}
+	_, err := e.GW.FinishJob(ctx, nodeID, EvaluateKind, gateway.JobSubject{Type: "item", ID: ev.item.ID}, map[string]any{"result": res})
+	if gateway.IsUnsupported(err) || (err != nil && strings.Contains(err.Error(), "call mesh_verdict first")) {
 		if e.NoVerdict.First("") {
 			e.logf("the platform takes no no-verdict outcome; a no-verdict evaluation waits in evaluating (said once per run)")
 		}
 		return fallback()
 	}
-	if err := handInRefused(e.logf, ev.acct.Redact, ev.label, "EvaluateWorkItemNoVerdict", ev.acct.Carried(err)); err != nil {
+	var redact func(string) string
+	if ev.acct != nil {
+		redact, err = ev.acct.Redact, ev.acct.Carried(err)
+	}
+	if err := handInRefused(e.logf, redact, ev.label, "FinishJob", err); err != nil {
 		return fmt.Errorf("record no verdict: %w", err)
 	}
 	e.logf("item %s: evaluation reached no verdict on %s, recorded as no verdict ($%.2f): %s", ev.label, ev.fam.fullName(), cost, reason)
