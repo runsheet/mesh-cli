@@ -1243,6 +1243,7 @@ func (t *buildTail) finish(ctx context.Context, state *sessionsteps.State) error
 	// platform that takes none there
 	ledger := r.meshUsage(ctx, item, b.acct.Report(result))
 	var pushErr error
+	var pushEnvelope, pushEntry string
 	f := &sessionsteps.Finish{
 		ItemID:      item.ID,
 		Branch:      b.spec.Branch,
@@ -1260,6 +1261,12 @@ func (t *buildTail) finish(ctx context.Context, state *sessionsteps.State) error
 				if pinned, err = r.pushPin(ctx, b, pin); err == nil && pinned != sha {
 					err = fmt.Errorf("pin %s holds %s, not the pushed head %s", pin, short(pinned), short(sha))
 				}
+				if err == nil {
+					// the session's own word for what it pushed, carried
+					// with the finish; the product checks the pin with or
+					// without it
+					pushEnvelope, pushEntry = r.signPush(ctx, b, brief.Git.Repo, pin, sha)
+				}
 			}
 			pushErr = err
 			return sha, err
@@ -1276,6 +1283,7 @@ func (t *buildTail) finish(ctx context.Context, state *sessionsteps.State) error
 			}
 			ctx = gateway.WithNodeID(ctx, nodeIDOf(r.Scopes, item.OrgID, r.Cfg))
 			ctx = gateway.WithFinishPin(ctx, pin)
+			ctx = gateway.WithFinishPinSignature(ctx, pushEnvelope, pushEntry)
 			return handInRefused(r.logf, b.acct.Redact, label, "FinishWorkItem", b.acct.Carried(r.validationUsage(r.GW.FinishWorkItem(ctx, itemID, branch, sha, b.cost.delta(), ledger, b.description(ctx)))))
 		},
 	}

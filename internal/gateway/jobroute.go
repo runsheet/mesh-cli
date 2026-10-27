@@ -74,7 +74,11 @@ func (c *Client) routeJob(ctx context.Context, field string, in map[string]any) 
 	}
 	finish := map[string]any{r.finish: value}
 	if pin := finishPinFrom(ctx); pin != "" {
-		finish["pin"] = map[string]any{"ref": pin}
+		p := map[string]any{"ref": pin}
+		if sig, ok := ctx.Value(finishPinSignatureKey{}).(map[string]any); ok {
+			p["signature"] = sig
+		}
+		finish["pin"] = p
 	}
 	_, err := c.FinishJob(ctx, node, r.kind, subject, finish)
 	return true, err
@@ -90,6 +94,18 @@ func WithFinishPin(ctx context.Context, ref string) context.Context {
 		return ctx
 	}
 	return context.WithValue(ctx, finishPinKey{}, ref)
+}
+
+type finishPinSignatureKey struct{}
+
+// WithFinishPinSignature carries the session's signed push statement
+// with the pin (pin: {ref, signature: {envelope, rekorEntry}}): its own
+// word, certified and logged, for what it pushed. Empty carries nothing.
+func WithFinishPinSignature(ctx context.Context, envelope, rekorEntry string) context.Context {
+	if envelope == "" || rekorEntry == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, finishPinSignatureKey{}, map[string]any{"envelope": envelope, "rekorEntry": rekorEntry})
 }
 
 func finishPinFrom(ctx context.Context) string {

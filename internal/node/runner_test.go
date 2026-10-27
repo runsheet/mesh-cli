@@ -1160,6 +1160,8 @@ func TestBuildPushesTheClaimsPinAndSaysSo(t *testing.T) {
 	finish, _ := fin[0].Input["finish"].(map[string]any)
 	if p, _ := finish["pin"].(map[string]any); p["ref"] != pin {
 		t.Fatalf("finish: %+v, want pin %s", finish, pin)
+	} else if _, signed := p["signature"]; signed {
+		t.Fatalf("a node with no sigstore sent a push signature: %+v", p)
 	}
 	if n := len(f.CallsNamed("recordChangeset")); n != 0 {
 		t.Fatalf("the node recorded a changeset of its own: %d", n)
