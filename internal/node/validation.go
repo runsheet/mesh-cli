@@ -325,7 +325,7 @@ func (vr validator) start(ctx context.Context, t validationTarget) (*buildValida
 		v.close = removeScratch
 		host, _ := os.Hostname()
 		v.env = sandbox.SetEnv(hostValidationEnv(t.job, scratch, cache), t.served.env())
-		v.runner = validate.HostRunner{Dir: t.dir, Env: v.env}
+		v.runner = goCacheRunner{validate.HostRunner{Dir: t.dir, Env: v.env}}
 		v.meta.RunnerImage, v.meta.Sandboxed = "host:"+host, false
 		return v, nil
 	}
@@ -356,7 +356,7 @@ func (vr validator) start(ctx context.Context, t validationTarget) (*buildValida
 		env = t.job.Env
 	}
 	v.env = sandbox.SetEnv(append([]string(nil), env...), t.served.env())
-	v.runner = sandboxRunner{sess: sess, dir: t.dir, env: env, vars: t.served.env(), cache: &sandbox.ValidationCache{Scratch: scratch, GoCache: cache, Blobs: blobs}}
+	v.runner = goCacheRunner{sandboxRunner{sess: sess, dir: t.dir, env: env, vars: t.served.env(), cache: &sandbox.ValidationCache{Scratch: scratch, GoCache: cache, Blobs: blobs}}}
 	image := vr.Sandbox.Config.Image
 	run := vr.Inspect
 	if run == nil {
@@ -1369,4 +1369,13 @@ func secretEnv(env []string) []string {
 		}
 	}
 	return out
+}
+
+// goCacheRunner runs each step holding the node's Go cache
+// (holdGoCache), so the cache trim's clean waits for it.
+type goCacheRunner struct{ validate.Runner }
+
+func (g goCacheRunner) Run(ctx context.Context, cmd string, timeout time.Duration, stdout, stderr io.Writer) (int, error) {
+	defer holdGoCache()()
+	return g.Runner.Run(ctx, cmd, timeout, stdout, stderr)
 }
