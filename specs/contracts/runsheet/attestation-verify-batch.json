@@ -102,6 +102,7 @@
               }
             ],
             "session_id": "zeta-build",
+            "session_signature_missing": "",
             "signature": "SIGNATURE",
             "skips": 0,
             "suite_hash": "ff3098b20936d93f1f5fee43633b8e90c04ad98b71e22f15e839afa988200fa6",

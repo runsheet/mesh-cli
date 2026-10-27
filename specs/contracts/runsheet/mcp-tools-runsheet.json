@@ -12,6 +12,42 @@
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "answer": {
+            "description": "your answer to the question the item's builder asked you (mesh_ask to: person)",
+            "type": "string"
+          },
+          "goal": {
+            "description": "the goal's slug (see mesh_goals); with project and seq, or give item_id alone",
+            "type": "string"
+          },
+          "item_id": {
+            "description": "the item's id, instead of project, goal and seq",
+            "type": "string"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects); with goal and seq, or give item_id alone",
+            "type": "string"
+          },
+          "role": {
+            "description": "for a machine's bearer, the role its agent plays — agent:<role>@<node slug> (default builder); a person's bearer is always user:<id>",
+            "type": "string"
+          },
+          "seq": {
+            "description": "the item's seq (see mesh_items); with project and goal, or give item_id alone",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "answer"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_answer"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
           "blocking_reason": {
             "description": "why you cannot go on without the answer: the choice that changes the result, and why nothing you can read settles it",
             "type": "string"
@@ -51,6 +87,78 @@
         "type": "object"
       },
       "name": "mesh_ask"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "goal": {
+            "description": "the goal's slug (see mesh_goals)",
+            "type": "string"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects)",
+            "type": "string"
+          },
+          "reason": {
+            "description": "why, in your words: kept on the goal",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "goal"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_cancel_goal"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "goal": {
+            "description": "the goal's slug (see mesh_goals); with project and seq, or give item_id alone",
+            "type": "string"
+          },
+          "harness": {
+            "description": "what you work with (default claude-code)",
+            "type": "string"
+          },
+          "item_id": {
+            "description": "the item's id, instead of project, goal and seq",
+            "type": "string"
+          },
+          "note": {
+            "description": "why you are taking it, kept as the release note when a node's claim is taken over",
+            "type": "string"
+          },
+          "pair": {
+            "description": "whoever else is at work with you, each user:<id> or agent:<role>@<slug>; kept on the item as paired",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects); with goal and seq, or give item_id alone",
+            "type": "string"
+          },
+          "role": {
+            "description": "for a machine's bearer, the role its agent plays — agent:<role>@<node slug> (default builder); a person's bearer is always user:<id>",
+            "type": "string"
+          },
+          "seq": {
+            "description": "the item's seq (see mesh_items); with project and goal, or give item_id alone",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "mesh_claim_item"
     },
     {
       "inputSchema": {
@@ -120,6 +228,66 @@
         "type": "object"
       },
       "name": "mesh_contract"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "priority": {
+            "description": "urgent, high, normal or low; normal when unset",
+            "type": "string"
+          },
+          "project": {
+            "description": "a project of the org the initiative belongs to (org/slug)",
+            "type": "string"
+          },
+          "slug": {
+            "description": "the initiative's slug, unique in the org: its id is derived from it",
+            "type": "string"
+          },
+          "spec_link": {
+            "type": "string"
+          },
+          "statement": {
+            "type": "string"
+          },
+          "title": {
+            "description": "what the initiative is for",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "slug",
+          "title"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_create_initiative"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "environment": {
+            "description": "only this environment's deploys (as deploy.yml names it)",
+            "type": "string"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects)",
+            "type": "string"
+          },
+          "repo": {
+            "description": "one of the project's repositories, as owner/name or name; all of them when blank",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_deployed"
     },
     {
       "inputSchema": {
@@ -255,6 +423,53 @@
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "cause": {
+            "description": "validation (a failed check: the item goes back to ready and spends one of its retries), environment (parked held infrastructure, no attempt or retry spent) or other (the default: the classifier reads the error, and the work's failure fails the item); or the class itself (ADR 069 2b): work, or product, platform or infrastructure — a failure not the work's, which sends the item back to ready with nothing spent, the fourth held for a person",
+            "type": "string"
+          },
+          "detail": {
+            "description": "the readable failure: the failing command, the tests, an excerpt of the output; a validation cause without one is other",
+            "type": "string"
+          },
+          "error": {
+            "description": "what failed: the step and what it printed, go test's --- FAIL lines and package verdicts included",
+            "type": "string"
+          },
+          "exit_code": {
+            "description": "the failing step's exit code",
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "failure_kind": {
+            "description": "code or environment; empty is the platform's call",
+            "type": "string"
+          },
+          "item_id": {
+            "description": "the job's id under its old name, read as job_id until mesh-cli sends job_id",
+            "type": "string"
+          },
+          "job_id": {
+            "description": "the job's id: the one whose claim you hold; a session's own job may be left out",
+            "type": "string"
+          },
+          "step": {
+            "description": "the step that failed: validate: check, workspace, push, …",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_fail"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
           "branch": {
             "description": "the branch the work was pushed to",
             "type": "string"
@@ -319,6 +534,57 @@
         "type": "object"
       },
       "name": "mesh_finish"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "goal": {
+            "description": "the goal's slug (see mesh_goals)",
+            "type": "string"
+          },
+          "into": {
+            "description": "the slug of the goal this one folds into, in the same org",
+            "type": "string"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects)",
+            "type": "string"
+          },
+          "reason": {
+            "description": "why, kept on the folded goal beside 'folded into <into>'",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "goal",
+          "into"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_fold_goal"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "goal": {
+            "description": "the goal's slug (see mesh_goals)",
+            "type": "string"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "goal"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_goal"
     },
     {
       "inputSchema": {
@@ -404,6 +670,19 @@
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "org": {
+            "description": "only this org's nodes, by its login or tenant slug",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "mesh_health_nodes"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
           "cursor": {
             "description": "the previous answer's next, to read the page after it; omitted, the first page. A cursor belongs to the arguments that gave it",
             "type": "string"
@@ -442,6 +721,13 @@
         "type": "object"
       },
       "name": "mesh_health_pipeline"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "name": "mesh_health_service"
     },
     {
       "inputSchema": {
@@ -540,6 +826,22 @@
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "project": {
+            "description": "a project of the org (org/slug): the org's initiatives are listed",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_initiatives"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
           "detail": {
             "description": "concise (the default): every evaluation and its body, without spec_change's evaluator_input that repeats them; full: with it",
             "type": "string"
@@ -610,6 +912,65 @@
         "type": "object"
       },
       "name": "mesh_items"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "goal": {
+            "description": "the goal's slug (see mesh_goals)",
+            "type": "string"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects)",
+            "type": "string"
+          },
+          "reason": {
+            "description": "why, in your words: kept on the goal",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "goal"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_pause_goal"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "description": "the kind of job: build, evaluate, rebase, plan, research or validate",
+            "type": "string"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects): the project itself, its org, or with repo one of its repositories; not needed for the estate",
+            "type": "string"
+          },
+          "reason": {
+            "description": "why the kind stops: what every claim of it there is refused with, as paused: <reason>",
+            "type": "string"
+          },
+          "repo": {
+            "description": "for scope repo: one of the project's repositories, as owner/name or name",
+            "type": "string"
+          },
+          "scope": {
+            "description": "where: repo, project, org or estate",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "scope",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_pause_kind"
     },
     {
       "inputSchema": {
@@ -922,6 +1283,34 @@
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "cost_cents": {
+            "description": "what the session has cost so far, in cents",
+            "type": "integer"
+          },
+          "item_id": {
+            "description": "the job's id under its old name, read as job_id until mesh-cli sends job_id",
+            "type": "string"
+          },
+          "job_id": {
+            "description": "the job's id: the one whose claim you hold; a session's own job may be left out",
+            "type": "string"
+          },
+          "note": {
+            "description": "what has happened since the last note: one line",
+            "type": "string"
+          }
+        },
+        "required": [
+          "note"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_progress"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
           "cursor": {
             "description": "the previous answer's next, to read the page after it; omitted, the first page. A cursor belongs to the arguments that gave it",
             "type": "string"
@@ -952,6 +1341,45 @@
         "type": "object"
       },
       "name": "mesh_projects"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "commit_sha": {
+            "description": "the full commit the revision was built from (read it off the revision, not main)",
+            "type": "string"
+          },
+          "environment": {
+            "description": "the environment (as deploy.yml names it); every environment's raised runs when blank",
+            "type": "string"
+          },
+          "note": {
+            "description": "anything worth keeping beside it",
+            "type": "string"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects)",
+            "type": "string"
+          },
+          "repo": {
+            "description": "the repository deployed, as owner/name or name",
+            "type": "string"
+          },
+          "revision": {
+            "description": "what is now serving, e.g. the Cloud Run revision routed to",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "repo",
+          "revision",
+          "commit_sha"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_record_deploy"
     },
     {
       "inputSchema": {
@@ -1134,6 +1562,143 @@
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "item_id": {
+            "description": "the job's id under its old name, read as job_id until mesh-cli sends job_id",
+            "type": "string"
+          },
+          "job_id": {
+            "description": "the job's id: the one whose claim you hold; a session's own job may be left out",
+            "type": "string"
+          },
+          "pr_number": {
+            "description": "the pull request's number; or give pr_url alone",
+            "type": "integer"
+          },
+          "pr_url": {
+            "description": "the pull request's URL, https://github.com/<owner>/<repo>/pull/<n>, on the item's own repository",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "mesh_record_pr"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "description": "the job's id under its old name, read as job_id until mesh-cli sends job_id",
+            "type": "string"
+          },
+          "job_id": {
+            "description": "the job's id: the one whose claim you hold; a session's own job may be left out",
+            "type": "string"
+          },
+          "note": {
+            "description": "why the claim is given back",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "mesh_release"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "goal": {
+            "description": "the goal's slug (see mesh_goals)",
+            "type": "string"
+          },
+          "ignore_dependencies": {
+            "description": "plan now even while a goal it depends on is not done",
+            "type": "boolean"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects)",
+            "type": "string"
+          },
+          "reason": {
+            "description": "why the plan is asked for, kept on the goal",
+            "type": "string"
+          },
+          "replace_item": {
+            "description": "an item's id: re-plan that item alone (a narrow re-plan), past the re-plan and lineage caps a node's request is held to",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "goal"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_request_plan"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "goal": {
+            "description": "the goal's slug (see mesh_goals)",
+            "type": "string"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects)",
+            "type": "string"
+          },
+          "reason": {
+            "description": "why, in your words: kept on the goal",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "goal"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_resume_goal"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "description": "the kind of job: build, evaluate, rebase, plan, research or validate",
+            "type": "string"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects): the project itself, its org, or with repo one of its repositories; not needed for the estate",
+            "type": "string"
+          },
+          "reason": {
+            "description": "why it may run again",
+            "type": "string"
+          },
+          "repo": {
+            "description": "for scope repo: one of the project's repositories, as owner/name or name",
+            "type": "string"
+          },
+          "scope": {
+            "description": "where: repo, project, org or estate",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "scope"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_resume_kind"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
           "cursor": {
             "description": "the previous answer's next, to read the page after it; omitted, the first page. A cursor belongs to the arguments that gave it",
             "type": "string"
@@ -1262,6 +1827,94 @@
         "type": "object"
       },
       "name": "mesh_set_goal"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "budget_cents": {
+            "description": "the goal's budget in cents; 0 clears it",
+            "type": "integer"
+          },
+          "daily_budget_cents": {
+            "description": "the goal's daily budget in cents; 0 leaves none",
+            "type": "integer"
+          },
+          "goal": {
+            "description": "the goal's slug (see mesh_goals)",
+            "type": "string"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "goal",
+          "budget_cents"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_set_goal_budget"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "depends_on": {
+            "description": "every goal slug this goal waits on, the whole list: an empty list clears its edges",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "goal": {
+            "description": "the goal's slug (see mesh_goals)",
+            "type": "string"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "goal",
+          "depends_on"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_set_goal_depends_on"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "goal": {
+            "description": "the goal's slug (see mesh_goals)",
+            "type": "string"
+          },
+          "initiative": {
+            "description": "the initiative by slug or id",
+            "type": "string"
+          },
+          "project": {
+            "description": "the project as org/slug (see mesh_projects)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "goal",
+          "initiative"
+        ],
+        "type": "object"
+      },
+      "name": "mesh_set_goal_initiative"
     },
     {
       "inputSchema": {

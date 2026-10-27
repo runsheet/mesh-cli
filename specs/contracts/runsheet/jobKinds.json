@@ -14,6 +14,7 @@
           "runsheet",
           "model"
         ],
+        "briefTool": "mesh_goal",
         "finish": "result",
         "finishSchema": "",
         "finishTool": "mesh_plan",

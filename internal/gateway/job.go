@@ -75,6 +75,10 @@ type JobBrief struct {
 	// the kind names none.
 	FinishTool string `json:"finishTool,omitempty"`
 	BriefTool  string `json:"briefTool,omitempty"`
+	// Git is what the job's git may reach, as the product grants it: the
+	// repository, read or write, and the refs a push may touch. The node
+	// enforces it through its relay and reads no meaning into the refs.
+	Git *JobGit `json:"git,omitempty"`
 	// Claim is the older claim the platform routed this one to.
 	Claim string `json:"claim"`
 	// Thread is a thread job's turn: the product, the role, the project
@@ -83,6 +87,40 @@ type JobBrief struct {
 	// MCP are the MCP servers the job's session reaches, each by name
 	// and URL, as the platform names them.
 	MCP []JobMCP `json:"mcp,omitempty"`
+}
+
+// JobGit is a brief's git policy.
+type JobGit struct {
+	Repo   string       `json:"repo"`
+	Access string       `json:"access"`
+	Push   []JobPushRef `json:"push,omitempty"`
+}
+
+// JobPushRef is one ref a job's push may touch: exact, or a prefix
+// ending "/*"; CreateOnly may create it but never move it.
+type JobPushRef struct {
+	Ref        string `json:"ref"`
+	CreateOnly bool   `json:"create_only"`
+}
+
+// Pin is the one exact, create-only ref the brief grants a push — the
+// job's pin, where its result's commit is kept — or "" when it grants
+// none or more than one.
+func (b JobBrief) Pin() string {
+	if b.Git == nil {
+		return ""
+	}
+	pin := ""
+	for _, r := range b.Git.Push {
+		if !r.CreateOnly || strings.HasSuffix(r.Ref, "*") {
+			continue
+		}
+		if pin != "" {
+			return ""
+		}
+		pin = r.Ref
+	}
+	return pin
 }
 
 // JobMCP is one MCP server a brief names.

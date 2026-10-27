@@ -175,6 +175,15 @@ func (w *fakeWS) Push(_ context.Context, dir, branch string) (string, error) {
 	return "abc123def456", nil
 }
 
+// PushPin records a pin pushed, as "pin <ref>", and answers the head
+// Push answers.
+func (w *fakeWS) PushPin(_ context.Context, dir, ref string) (string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.events = append(w.events, "pin "+ref)
+	return "abc123def456", nil
+}
+
 // PushedHead reads back what the session pushed: pushedHead when set,
 // else the error pushedErr.
 func (w *fakeWS) PushedHead(_ context.Context, dir, branch, base string) (string, error) {

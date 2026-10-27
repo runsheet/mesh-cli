@@ -72,8 +72,29 @@ func (c *Client) routeJob(ctx context.Context, field string, in map[string]any) 
 	if node == "" {
 		return true, fmt.Errorf("%s: finishJob names the node that finishes (gateway.WithNodeID)", field)
 	}
-	_, err := c.FinishJob(ctx, node, r.kind, subject, map[string]any{r.finish: value})
+	finish := map[string]any{r.finish: value}
+	if pin := finishPinFrom(ctx); pin != "" {
+		finish["pin"] = map[string]any{"ref": pin}
+	}
+	_, err := c.FinishJob(ctx, node, r.kind, subject, finish)
 	return true, err
+}
+
+type finishPinKey struct{}
+
+// WithFinishPin marks ctx's finish as one whose node pushed the job's
+// pin, ref: finishJob says so ({pin: {ref}}), and the product reads its
+// result from the pin.
+func WithFinishPin(ctx context.Context, ref string) context.Context {
+	if ref == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, finishPinKey{}, ref)
+}
+
+func finishPinFrom(ctx context.Context) string {
+	s, _ := ctx.Value(finishPinKey{}).(string)
+	return s
 }
 
 type jobKindKey struct{}

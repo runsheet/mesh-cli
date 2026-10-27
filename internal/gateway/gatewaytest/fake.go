@@ -99,6 +99,9 @@ type Fake struct {
 	// per kind (runsheet ADR 067): the guidance text and the product's
 	// schema for the proposal (SetKindGuidance).
 	KindGuidance, KindFinishSchema map[string]string
+	// KindGit is the git policy a kind's claimJob brief carries ({repo,
+	// access, push: [{ref, create_only}]}), none when unset.
+	KindGit map[string]map[string]any
 	// PlanNotHandedIn, when set, is the refusal finishJob answers a plan
 	// job's empty result with: no plan reached the product's tool.
 	PlanNotHandedIn string

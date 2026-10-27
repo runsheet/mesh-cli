@@ -1137,6 +1137,19 @@ func (g *Git) Push(ctx context.Context, dir, branch string) (string, error) {
 	return g.run(ctx, dir, "git", "rev-parse", "HEAD")
 }
 
+// PushPin pushes HEAD in dir to ref, a job's pin: created, never moved
+// (no force), so a pin that exists already is refused by GitHub and the
+// relay alike. It answers the commit pushed.
+func (g *Git) PushPin(ctx context.Context, dir, ref string) (string, error) {
+	if out, err := g.run(ctx, dir, "git", "push", "origin", "HEAD:"+ref); err != nil {
+		if PushRefusal(out) {
+			return "", &PushRefusedError{Branch: ref, Output: strings.TrimSpace(out), Err: err}
+		}
+		return "", err
+	}
+	return g.run(ctx, dir, "git", "rev-parse", "HEAD")
+}
+
 // tracksOrigin reports whether branch's upstream in dir is already
 // origin's branch of the same name.
 func (g *Git) tracksOrigin(ctx context.Context, dir, branch string) bool {
