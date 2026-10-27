@@ -71,23 +71,6 @@ func RoleFor(kind string) string {
 // the-node-calls-the-context-server-runsheet; ADR-006's amendment).
 const Builtin = "runsheet"
 
-// Mesh is the Mesh server the node attaches beside the built-in to a
-// session that runs on its own mesh session (runsheet ADR 069): /mesh/mcp,
-// serving the job's work tools (mesh_progress, mesh_fail,
-// mesh_release), the node health tools and pause/resume. It serves apps
-// and sessions alone; no person and no operator bearer reaches it.
-const Mesh = "mesh"
-
-// MeshURL is the Mesh server's endpoint beside a built-in /mcp URL: the
-// gateway's /mesh/mcp. "" when builtinURL is no /mcp endpoint.
-func MeshURL(builtinURL string) string {
-	u := strings.TrimRight(builtinURL, "/")
-	if !strings.HasSuffix(u, "/mcp") {
-		return ""
-	}
-	return strings.TrimSuffix(u, "/mcp") + "/mesh/mcp"
-}
-
 // builtinAliases are the built-in's old names, newest first, read only —
 // for the stream and state of a session an older node started and this
 // one adopted: mesh-context (2026-09-28 to 2026-10-15) and the name

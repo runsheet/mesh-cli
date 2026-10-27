@@ -83,11 +83,14 @@ func ClaudeCode(builtin map[string]any, tools []Tool) (servers map[string]any, e
 type UpstreamSpec struct {
 	Transport string
 	URL       string
-	Headers   map[string]string
-	Command   string
-	Args      []string
-	Env       map[string]string
-	Secrets   map[string]string
+	// Session is a server the job's brief names (WithServers): reached
+	// on the session's own bearer and key, as the built-in is.
+	Session bool
+	Headers map[string]string
+	Command string
+	Args    []string
+	Env     map[string]string
+	Secrets map[string]string
 }
 
 // ProxiedServers is a session's mcpServers when it reaches every server
@@ -140,29 +143,38 @@ func ProxiedServers(builtinURL string, toolsIn []Tool, shim func(name string) ma
 	return servers, upstreams, nil
 }
 
-// WithMesh adds the Mesh server (Mesh) to a session's proxied servers
-// and upstreams (runsheet ADR 069, step 4): the work tools a session
-// calls about its own job — mesh_progress and the node's health and
-// pause tools — answer there, on /mesh/mcp beside builtinURL's /mcp,
-// reached with the same session bearer as the built-in. It is added
-// only for a session whose bearer is its own mesh session's (DPoP-bound):
-// /mesh/mcp serves apps and sessions alone and refuses the node's
-// operator bearer. A tool of that name is left as it is (no server
-// replaced); servers and upstreams are changed in place.
-func WithMesh(servers map[string]any, upstreams map[string]UpstreamSpec, builtinURL string, shim func(name string) map[string]any) {
-	u := MeshURL(builtinURL)
-	if u == "" {
-		return
+// Server is an MCP server a job's brief names (the platform's claimJob
+// answer, `mcp: [{name, url}]`): mesh-cli knows no server of its own
+// beyond the built-in; the platform says which servers a job's session
+// reaches and where.
+type Server struct {
+	Name string
+	URL  string
+}
+
+// WithServers adds each server the brief names, other than the built-in
+// and any name already taken by a tool, to a session's proxied servers
+// and upstreams: reached on the session's own bearer (UpstreamSpec.Session),
+// as the built-in is. servers and upstreams are changed in place; either
+// may be nil. It answers the names it added.
+func WithServers(servers map[string]any, upstreams map[string]UpstreamSpec, named []Server, shim func(name string) map[string]any) []string {
+	var added []string
+	for _, n := range named {
+		if n.Name == "" || n.URL == "" || IsBuiltin(n.Name) || !validName.MatchString(n.Name) {
+			continue
+		}
+		if _, taken := upstreams[n.Name]; taken {
+			continue
+		}
+		if upstreams != nil {
+			upstreams[n.Name] = UpstreamSpec{URL: n.URL, Session: true}
+		}
+		if servers != nil {
+			servers[n.Name] = shim(n.Name)
+		}
+		added = append(added, n.Name)
 	}
-	if _, taken := upstreams[Mesh]; taken {
-		return
-	}
-	if servers != nil {
-		servers[Mesh] = shim(Mesh)
-	}
-	if upstreams != nil {
-		upstreams[Mesh] = UpstreamSpec{URL: u}
-	}
+	return added
 }
 
 // CodexApproval is every rendered server's default_tools_approval_mode.

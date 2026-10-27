@@ -7,6 +7,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/jobresult"
+	"projectmesh.io/mesh-cli/internal/tools"
 )
 
 // briefReader is a gateway that keeps the briefs of the jobs it claimed
@@ -98,4 +99,16 @@ func recoverResult(holder *jobresult.Holder, result harness.Result, label string
 	case recorded:
 		logf("%s: mesh_result read from the session's stream: the call never reached the node", label)
 	}
+}
+
+// briefServers are the MCP servers the job of kind on the subject with id
+// reaches, as its brief names them (none for a job this process did not
+// claim through claimJob): the node proxies them beside the built-in
+// (tools.WithServers), knowing none of its own.
+func briefServers(ctx context.Context, gw any, kind, id string) []tools.Server {
+	var out []tools.Server
+	for _, m := range jobBriefOf(ctx, gw, kind, id).MCP {
+		out = append(out, tools.Server{Name: m.Name, URL: m.URL})
+	}
+	return out
 }

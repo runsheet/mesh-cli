@@ -946,6 +946,7 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, scope Scope, dir s
 	}
 	defer unlessDetached(ctx, func() { RemoveScratch(scratch) })
 	acct.Apply(&job)
+	job.BriefServers = briefServers(ctx, p.GW, PlanKind, goal.ID)
 	closeProxy, err := st.UseVia(p.Proxies, mcpRootFor(p.Layout, goal.ID), &job, p.MCP, acct)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, nil, 0, acct, fmt.Errorf("tools: %w", err)

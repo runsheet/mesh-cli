@@ -3,6 +3,7 @@ package harness
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 
 	"projectmesh.io/mesh-cli/internal/sandbox"
@@ -89,6 +90,21 @@ func ProxyStateOf(servers map[string]any) *sessionunit.Proxy {
 	}
 	if p != nil {
 		sort.Strings(p.Servers)
+	}
+	return p
+}
+
+// proxyStateOfJob is ProxyStateOf for job's servers, with the servers
+// its brief named that the session reaches through the proxy.
+func proxyStateOfJob(job Job) *sessionunit.Proxy {
+	p := ProxyStateOf(job.MCPServers)
+	if p == nil {
+		return nil
+	}
+	for _, n := range job.BriefServers {
+		if slices.Contains(p.Servers, n.Name) {
+			p.Named = append(p.Named, sessionunit.NamedServer{Name: n.Name, URL: n.URL})
+		}
 	}
 	return p
 }

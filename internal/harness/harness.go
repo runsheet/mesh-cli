@@ -42,6 +42,11 @@ const (
 // Job is one session's brief.
 type Job struct {
 	Kind Kind
+	// BriefServers are the MCP servers the job's brief names (the
+	// platform's claimJob answer, `mcp`), beyond the built-in: the node
+	// proxies each on the session's own bearer (tools.WithServers). The
+	// platform says which servers a session reaches; mesh-cli names none.
+	BriefServers []tools.Server
 	// Workspace is the checked-out repo the session runs in.
 	Workspace string
 	// KeptRoot is the kept-sessions dir of the job's org (node

@@ -476,6 +476,7 @@ func (e *Evaluator) evaluate(ctx context.Context, item gateway.WorkItem, res *Re
 			return fmt.Errorf("declined, %s", st.DeclineReason())
 		}
 		st.NodeTools = holder.Tools()
+		job.BriefServers = briefServers(ctx, e.GW, EvaluateKind, item.ID)
 		closeProxy, err := st.UseVia(e.Proxies, mcpRootFor(e.Layout, item.ID), &job, e.MCP, acct)
 		if err != nil {
 			return fmt.Errorf("tools: %w", err)
