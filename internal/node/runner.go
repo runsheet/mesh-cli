@@ -567,7 +567,29 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		}
 		hold(func() { unlessDetached(ctx, func() { RemoveScratch(scratch) }) })
 		ident.Apply(&job)
-		acct, err = r.Credentials.Open(withSubject(ctx, sc, cmp.Or(res.Project.ID, item.ProjectID), res.Project.Slug), gateway.SessionRef{Kind: string(harness.KindBuild), ItemID: item.ID, GoalID: item.GoalID}, sc.NodeID, Adapter(r.Harness))
+		// the session's runsheet reads on its own mesh session's bearer, its
+		// token file under its org's MCP root, never the machine's bearer
+		// on a node serving several orgs (ADR-035); opened before the
+		// account, which a claim Mesh picked one for reads on it
+		unbind, err := r.bindSessionBearer(ctx, item, sc.NodeID, &job)
+		if err != nil {
+			reason := err.Error()
+			r.logf("item %s: %s; released", label, reason)
+			handInRefused(r.logf, nil, label, "ReleaseWorkItem", r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason))
+			return end(nil)
+		}
+		hold(unbind)
+		if job.TokenDir != "" {
+			tokenDir := job.TokenDir
+			hold(func() { unlessDetached(ctx, func() { RemoveTokenDir(tokenDir) }) })
+		}
+		octx := withSubject(ctx, sc, cmp.Or(res.Project.ID, item.ProjectID), res.Project.Slug)
+		if ref := CredentialRefFrom(ctx); ref != "" && r.Bearers != nil {
+			// Mesh picked the build's account at claim (runsheet ADR 078
+			// decision 5): its secret is read from Latchkey for the job
+			octx = withJobCredential(octx, func(c context.Context) (gateway.Credential, error) { return r.Bearers.ForJob(c, item) })
+		}
+		acct, err = r.Credentials.Open(octx, gateway.SessionRef{Kind: string(harness.KindBuild), ItemID: item.ID, GoalID: item.GoalID}, sc.NodeID, Adapter(r.Harness))
 		if nc, ok := NoCredentialOf(err); ok {
 			// nothing issued for the adapter: the item waits, never on the
 			// machine's own login; the reason is said once for the goal
@@ -596,21 +618,6 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		acct.SetLabel("item "+label, string(harness.KindBuild))
 		acct.Apply(&job)
 		job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts, TempDirs: sessionTempDirs(job, acct)}
-		// the session's runsheet reads on its own mesh session's bearer, its
-		// token file under its org's MCP root, never the machine's bearer
-		// on a node serving several orgs (ADR-035)
-		unbind, err := r.bindSessionBearer(ctx, item, sc.NodeID, &job)
-		if err != nil {
-			reason := err.Error()
-			r.logf("item %s: %s; released", label, reason)
-			handInRefused(r.logf, nil, label, "ReleaseWorkItem", r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason))
-			return end(nil)
-		}
-		hold(unbind)
-		if job.TokenDir != "" {
-			tokenDir := job.TokenDir
-			hold(func() { unlessDetached(ctx, func() { RemoveTokenDir(tokenDir) }) })
-		}
 		// the item's tools, beside the built-in runsheet: a required one this
 		// node cannot start hands the item back for a node that can
 		runtimes = r.runtimes()

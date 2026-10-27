@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"net/http"
 	"errors"
 	"fmt"
 	"os"
@@ -53,6 +54,9 @@ type SessionBearers struct {
 	// machine bearer when the platform opens no mesh sessions.
 	Orgs func() int
 	Logf func(format string, args ...any)
+	// HTTP is the client ForJob reads Latchkey with; nil is a client of
+	// forJobTimeout.
+	HTTP *http.Client
 	// Now is the clock the id tokens' expiry is read on; nil is time.Now.
 	Now func() time.Time
 

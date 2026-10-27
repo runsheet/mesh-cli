@@ -677,6 +677,9 @@ type QueuedJob struct {
 	Kind        string
 	SubjectType string
 	SubjectID   string
+	// CredentialRef is the account link Mesh picked for a build at
+	// claim, answered as the job's credential_ref ("" answers none).
+	CredentialRef string
 }
 
 // claimNext is the one claim: the first job on f.Queue of the kind the
@@ -709,6 +712,9 @@ func (f *Fake) claimNext(w http.ResponseWriter, r *http.Request, in map[string]a
 		}
 		job := map[string]any{"kind": j.Kind, "subject": map[string]any{"type": j.SubjectType, "id": j.SubjectID},
 			"code": map[string]any{"form": "commit"}, "claim": field, "finish": kindFinishes[j.Kind], "finishTool": kindFinishTools[j.Kind]}
+		if j.CredentialRef != "" {
+			job["credential_ref"] = j.CredentialRef
+		}
 		writeData(w, map[string]any{"claimJob": map[string]any{"status": "claimed", "job": job}})
 		return
 	}

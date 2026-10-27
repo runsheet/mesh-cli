@@ -54,6 +54,11 @@ type JobPod struct {
 // JobBrief is a claimed Job (ADR 061 §1).
 type JobBrief struct {
 	Kind      string         `json:"kind"`
+	// CredentialRef is the account link Mesh picked for the job at claim
+	// (runsheet ADR 078 decision 5): the node reads the job's secret from
+	// Latchkey's for-job route by it rather than from its own stored
+	// accounts; "" when Mesh picked none.
+	CredentialRef string `json:"credential_ref,omitempty"`
 	Subject   JobSubject     `json:"subject"`
 	Code      JobCode        `json:"code"`
 	Needs     string         `json:"needs"`
