@@ -1137,6 +1137,25 @@ func (g *Git) Push(ctx context.Context, dir, branch string) (string, error) {
 	return g.run(ctx, dir, "git", "rev-parse", "HEAD")
 }
 
+// PushPinned pushes branch and pins its head at pinRef in one push
+// (runsheet ADR 076): the branch as Push does, --force-with-lease, and
+// the pin created beside it. It answers the head pushed.
+func (g *Git) PushPinned(ctx context.Context, dir, branch, pinRef string) (string, error) {
+	head, err := g.run(ctx, dir, "git", "rev-parse", branch)
+	if err != nil {
+		return "", err
+	}
+	head = strings.TrimSpace(head)
+	args := []string{"push", "--force-with-lease=refs/heads/" + branch, "origin", branch + ":refs/heads/" + branch, head + ":" + pinRef}
+	if out, err := g.run(ctx, dir, "git", args...); err != nil {
+		if PushRefusal(out) {
+			return "", &PushRefusedError{Branch: branch, Output: strings.TrimSpace(out), Err: err}
+		}
+		return "", err
+	}
+	return head, nil
+}
+
 // tracksOrigin reports whether branch's upstream in dir is already
 // origin's branch of the same name.
 func (g *Git) tracksOrigin(ctx context.Context, dir, branch string) bool {

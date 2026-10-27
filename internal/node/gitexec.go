@@ -106,7 +106,14 @@ func hardenedGitEnv(ctx context.Context, base, dir string) []string {
 	}
 	if ok {
 		key := "credential." + t.base + ".helper"
-		pairs = append(pairs, [2]string{key, ""}, [2]string{key, t.helper})
+		if t.relay != "" {
+			// through the node's git relay (runsheet ADR 076): GitHub's
+			// URL points at it and no helper answers, so the token is in
+			// no environment or config the command or its children see
+			pairs = append(pairs, [2]string{key, ""}, [2]string{"url." + t.relay + ".insteadOf", t.base + "/"})
+		} else {
+			pairs = append(pairs, [2]string{key, ""}, [2]string{key, t.helper})
+		}
 	}
 	env = append(env, "GIT_CONFIG_COUNT="+strconv.Itoa(len(pairs)))
 	for i, p := range pairs {
@@ -129,7 +136,7 @@ func operatorHelper(base string) (gitToken, bool) {
 	if err != nil || strings.ContainsAny(ghDir, "'\n") {
 		return gitToken{}, false
 	}
-	return gitToken{strings.TrimRight(base, "/"), "!GH_CONFIG_DIR='" + ghDir + "' gh auth git-credential"}, true
+	return gitToken{base: strings.TrimRight(base, "/"), helper: "!GH_CONFIG_DIR='" + ghDir + "' gh auth git-credential"}, true
 }
 
 // nodeHelpers is the credential helper the node wrote into each
@@ -147,7 +154,7 @@ var nodeHelpers = struct {
 func rememberHelper(dir, base, helper string) {
 	nodeHelpers.Lock()
 	defer nodeHelpers.Unlock()
-	nodeHelpers.byDir[filepath.Clean(dir)] = gitToken{strings.TrimRight(base, "/"), helper}
+	nodeHelpers.byDir[filepath.Clean(dir)] = gitToken{base: strings.TrimRight(base, "/"), helper: helper}
 }
 
 func forgetHelper(dir string) {

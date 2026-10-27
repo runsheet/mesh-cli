@@ -28,6 +28,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/auth"
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/gitdata"
+	"projectmesh.io/mesh-cli/internal/gitrelay"
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/latchkey"
 	"projectmesh.io/mesh-cli/internal/node"
@@ -1193,6 +1194,21 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 		sb.Config.TZ = os.Getenv("TZ")
 	}
 	sessionSandbox, loop.Sandbox = sb, sbInfo
+	if cfg.GitRelay {
+		// node.yaml's git_relay (runsheet ADR 076): the item token stays
+		// in the node's relay, every git command the node runs reaches
+		// GitHub through it
+		rel := &gitrelay.Server{Audit: func(e gitrelay.Event) {
+			if e.Outcome != "ok" {
+				logger.Printf("git relay: %s %s %s: %s (refs %v)", e.Repo, e.Service, e.Outcome, e.Reason, e.Refs)
+			}
+		}}
+		if err := rel.Start(ctx); err != nil {
+			return fmt.Errorf("git relay: %w", err)
+		}
+		node.SetGitRelay(rel, logger.Printf)
+		logger.Printf("git relay: on (node.yaml git_relay)")
+	}
 	if sb != nil {
 		// a runtime that cannot start a pod latches the node: it claims
 		// nothing, heartbeats runtime_broken, and probes until it heals

@@ -161,8 +161,11 @@ func isWorktree(dir string) bool {
 
 type gitTokenKey struct{}
 
-// gitToken is what withGitToken puts on a ctx.
-type gitToken struct{ base, helper string }
+// gitToken is what withGitToken puts on a ctx: the helper answering
+// base, or, through the node's git relay (runsheet ADR 076), relay —
+// the relay's base URL every git command points base at by insteadOf,
+// with no helper, so the token is in no environment or config.
+type gitToken struct{ base, helper, relay string }
 
 // withGitToken makes every command Git runs under ctx answer base with
 // tok alone, by the environment (GIT_CONFIG_COUNT), never a config file
@@ -173,7 +176,11 @@ func withGitToken(ctx context.Context, base string, tok *gateway.GitHubToken) co
 	if tok == nil || !tokenShape.MatchString(tok.Token) {
 		return ctx
 	}
-	return context.WithValue(ctx, gitTokenKey{}, gitToken{strings.TrimRight(base, "/"), credentialHelper(tok.Token)})
+	base = strings.TrimRight(base, "/")
+	if relay := relayFor(tok, gitRelayLogf); relay != "" {
+		return context.WithValue(ctx, gitTokenKey{}, gitToken{base: base, relay: relay})
+	}
+	return context.WithValue(ctx, gitTokenKey{}, gitToken{base: base, helper: credentialHelper(tok.Token)})
 }
 
 // gitTokenEnv is the environment withGitToken asks for, or nil.
@@ -183,6 +190,11 @@ func gitTokenEnv(ctx context.Context) []string {
 		return nil
 	}
 	key := "credential." + t.base + ".helper"
+	if t.relay != "" {
+		return []string{"GIT_CONFIG_COUNT=2",
+			"GIT_CONFIG_KEY_0=" + key, "GIT_CONFIG_VALUE_0=",
+			"GIT_CONFIG_KEY_1=url." + t.relay + ".insteadOf", "GIT_CONFIG_VALUE_1=" + t.base + "/"}
+	}
 	return []string{"GIT_CONFIG_COUNT=2",
 		"GIT_CONFIG_KEY_0=" + key, "GIT_CONFIG_VALUE_0=",
 		"GIT_CONFIG_KEY_1=" + key, "GIT_CONFIG_VALUE_1=" + t.helper}

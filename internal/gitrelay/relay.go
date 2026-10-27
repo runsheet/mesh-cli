@@ -40,9 +40,10 @@ type Policy struct {
 	Repo string
 	// Access is read or write; read refuses git-receive-pack.
 	Access Access
-	// PushRef is the branch a push may update, refs/heads/<branch>;
-	// beside it a push may only create pinned changeset refs
-	// (ChangesetRefPrefix).
+	// PushRef is the branch a push may update, refs/heads/<branch>, or
+	// a prefix of branches ending /* (refs/heads/mesh/*) when the job's
+	// branch is not known to the relay; beside it a push may only create
+	// pinned changeset refs (ChangesetRefPrefix).
 	// Whether the update may be a non-fast-forward is left to git and
 	// GitHub's branch rules; what a pushed head holds is judged by
 	// runsheet against the changeset's tree (ADR 076 decision 5).
@@ -201,21 +202,22 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.audit(ev)
 }
 
-// splitPath reads /git/<owner>/<repo>.git<rest>.
+// splitPath reads /git/<owner>/<repo>[.git]<rest>: git asks for a remote
+// named with or without .git, and GitHub answers both.
 func splitPath(p string) (repo, rest string, ok bool) {
 	p, ok = strings.CutPrefix(p, Prefix)
 	if !ok {
 		return "", "", false
 	}
-	i := strings.Index(p, ".git/")
-	if i <= 0 {
+	parts := strings.SplitN(p, "/", 3)
+	if len(parts) < 3 || parts[0] == "" || parts[1] == "" {
 		return "", "", false
 	}
-	repo, rest = p[:i], p[i+len(".git"):]
-	if strings.Count(repo, "/") != 1 || strings.HasPrefix(repo, "/") || strings.HasSuffix(repo, "/") || strings.Contains(repo, "..") {
+	owner, name := parts[0], strings.TrimSuffix(parts[1], ".git")
+	if name == "" || strings.Contains(owner+name, "..") || owner == "." || name == "." {
 		return "", "", false
 	}
-	return repo, rest, true
+	return owner + "/" + name, "/" + parts[2], true
 }
 
 // serviceOf names the git service a request is for: upload-pack (fetch,
@@ -251,7 +253,7 @@ func (p Policy) check(c command) string {
 	if strings.Trim(c.new, "0") == "" {
 		return "this job may not delete " + c.ref
 	}
-	if c.ref == p.PushRef {
+	if c.ref == p.PushRef || (strings.HasSuffix(p.PushRef, "/*") && strings.HasPrefix(c.ref, strings.TrimSuffix(p.PushRef, "*")) && len(c.ref) > len(p.PushRef)-1) {
 		return ""
 	}
 	if id, ok := strings.CutPrefix(c.ref, ChangesetRefPrefix); ok {

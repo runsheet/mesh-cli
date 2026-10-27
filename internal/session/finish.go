@@ -82,6 +82,13 @@ type Finish struct {
 	// changesets fails the step.
 	Push         func(ctx context.Context, dir, branch string) (string, error)
 	FinishPushed func(ctx context.Context, itemID, branch, headSHA string) error
+	// PushPinned, when set, is the node pushing the item's branch and
+	// pinning its head at pinRef (refs/runsheet/changesets/<id>) through
+	// its git relay, answering the commit pushed (runsheet ADR 076): the
+	// changeset is then recorded as that commit and nothing is uploaded.
+	// A push that fails, or a record the platform refuses, falls back to
+	// the upload, as before.
+	PushPinned func(ctx context.Context, dir, branch, pinRef string) (string, error)
 	// Recorded runs once the changeset is recorded and before the item
 	// is finished on it, with the result so far (its ChangesetID and
 	// Tree set): the node's attestation of the tree it validated goes
@@ -105,6 +112,9 @@ type FinishResult struct {
 	// Pushed is the fallback taken: the node pushed HeadSHA.
 	Pushed  bool
 	HeadSHA string
+	// Pinned: the node pushed the branch and pinned HeadSHA as the
+	// changeset (runsheet ADR 076), and nothing was uploaded.
+	Pinned bool
 }
 
 // FinishStepName is the finish step's name in a Job.
@@ -185,6 +195,12 @@ func (f *Finish) changeset(ctx context.Context, dir, base, checkoutSHA string) (
 	}
 	res := &FinishResult{BaseSHA: baseSHA, BaseTree: baseTree, Tree: tree, PathsChanged: paths}
 
+	id := f.newID()
+	cs := gateway.Changeset{ChangesetID: id, BaseTree: baseTree, Tree: tree, PathsChanged: paths, ParentChangesetID: f.ParentChangesetID}
+	if f.pinned(ctx, git, dir, &cs, res) {
+		return f.finishOn(ctx, res, id, baseSHA)
+	}
+
 	missing, err := f.Gateway.ChangesetMissing(ctx, f.ItemID, objects)
 	if err != nil {
 		return nil, fmt.Errorf("finish: changeset missing: %w", err)
@@ -207,11 +223,53 @@ func (f *Finish) changeset(ctx context.Context, dir, base, checkoutSHA string) (
 		res.Uploaded = append(res.Uploaded, o)
 	}
 
-	id := f.newID()
-	cs := gateway.Changeset{ChangesetID: id, BaseTree: baseTree, Tree: tree, PathsChanged: paths, ParentChangesetID: f.ParentChangesetID}
 	if err := f.Gateway.RecordChangeset(ctx, f.ItemID, cs); err != nil {
 		return nil, fmt.Errorf("finish: record changeset: %w", err)
 	}
+	return f.finishOn(ctx, res, id, baseSHA)
+}
+
+// pinned pushes the item's branch and pins its head at the changeset's
+// ref through the node's git relay (PushPinned), and records the
+// changeset as that commit (runsheet ADR 076 decision 5). False — no
+// PushPinned, a push that failed, a head whose tree is not the
+// changeset's, or a record the platform refused — leaves the upload to
+// do, as before; each is logged.
+func (f *Finish) pinned(ctx context.Context, git GitFunc, dir string, cs *gateway.Changeset, res *FinishResult) bool {
+	if f.PushPinned == nil || f.Branch == "" {
+		return false
+	}
+	note := func(format string, args ...any) {
+		if f.Logf != nil {
+			f.Logf("finish: "+format+"; uploading the changeset instead", args...)
+		}
+	}
+	commit, err := f.PushPinned(ctx, dir, f.Branch, PinnedRefPrefix+cs.ChangesetID)
+	if err != nil {
+		note("pinned push: %v", err)
+		return false
+	}
+	held, err := gitLine(ctx, git, dir, "rev-parse", commit+"^{tree}")
+	if err != nil || held != cs.Tree {
+		note("pushed %s holds tree %q, not the changeset's %s (%v)", commit, held, cs.Tree, err)
+		return false
+	}
+	cs.Commit = commit
+	if err := f.Gateway.RecordChangeset(ctx, f.ItemID, *cs); err != nil {
+		note("record as pinned commit %s: %v", commit, err)
+		cs.Commit = ""
+		return false
+	}
+	res.HeadSHA, res.Pinned = commit, true
+	return true
+}
+
+// PinnedRefPrefix is where a changeset's commit is pinned in its
+// repository (runsheet ADR 076): refs/runsheet/changesets/<id>.
+const PinnedRefPrefix = "refs/runsheet/changesets/"
+
+// finishOn finishes the item on the recorded changeset id.
+func (f *Finish) finishOn(ctx context.Context, res *FinishResult, id, baseSHA string) (*FinishResult, error) {
 	res.ChangesetID = id
 	if f.Recorded != nil {
 		f.Recorded(ctx, res)
