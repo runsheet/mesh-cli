@@ -217,3 +217,33 @@ func TestChangesetUnsupported(t *testing.T) {
 		t.Fatalf("finish without changesetId: %v", err)
 	}
 }
+
+// TestRecordChangesetAtRunsheetsRoute (runsheet ADR 076): the record goes
+// to /runsheet/v1/items/{id}/changesets, and to Mesh's old path only on
+// a platform that does not serve runsheet's.
+func TestRecordChangesetAtRunsheetsRoute(t *testing.T) {
+	cs := gateway.Changeset{ChangesetID: "cs-1", BaseTree: "b", Tree: "t", PathsChanged: []string{"a"}, Commit: "c"}
+	for name, serves := range map[string]string{"new platform": "/runsheet/v1/items/item-1/changesets", "old platform": "/mesh/v1/items/item-1/changesets"} {
+		var paths []string
+		var body map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			paths = append(paths, r.URL.Path)
+			if r.URL.Path != serves {
+				http.NotFound(w, r)
+				return
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+		}))
+		gw := gateway.New(srv.URL, "rs_test")
+		if err := gw.RecordChangeset(nodeCtx(), "item-1", cs); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		srv.Close()
+		if paths[len(paths)-1] != serves || paths[0] != "/runsheet/v1/items/item-1/changesets" {
+			t.Fatalf("%s: asked %v", name, paths)
+		}
+		if body["commit"] != "c" {
+			t.Fatalf("%s: the record's commit is %v", name, body["commit"])
+		}
+	}
+}
