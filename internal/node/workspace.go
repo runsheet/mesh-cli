@@ -1936,3 +1936,9 @@ type Gateway interface {
 	ContextDocuments(ctx context.Context, org, project string) ([]gateway.Document, error)
 	ContextDocument(ctx context.Context, org, project, doc string) (string, error)
 }
+
+// TreeOf is the tree a commit in dir's repository records.
+func (g *Git) TreeOf(ctx context.Context, dir, commit string) (string, error) {
+	out, err := g.run(ctx, dir, "git", "rev-parse", commit+"^{tree}")
+	return strings.TrimSpace(out), err
+}
