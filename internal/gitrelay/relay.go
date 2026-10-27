@@ -1,6 +1,6 @@
-// Package gitrelay is the node's git smart-HTTP relay (runsheet ADR 076):
+// Package gitrelay is the node's git smart-HTTP relay:
 // a session's checkout fetches and pushes through it, the relay adds the
-// item's GitHub token on the way out, and the job's git policy decides
+// job's GitHub token on the way out, and the job's git policy decides
 // what it may reach. No GitHub token is in the session's env, disk or
 // git config.
 //
@@ -33,21 +33,34 @@ const (
 	Write Access = "write"
 )
 
-// Policy is one job's git policy, from runsheet's claim answer (ADR 076
-// decision 3).
+// Policy is one job's git policy as the product's claim names it, opaque
+// to the relay: which repository, read or write, and which refs a push
+// may touch. The relay knows nothing of what a ref means; it enforces
+// these and nothing else.
 type Policy struct {
 	// Repo is owner/name, the only repository the job reaches.
 	Repo string
 	// Access is read or write; read refuses git-receive-pack.
 	Access Access
-	// PushRef is the branch a push may update, refs/heads/<branch>, or
-	// a prefix of branches ending /* (refs/heads/mesh/*) when the job's
-	// branch is not known to the relay; beside it a push may only create
-	// pinned changeset refs (ChangesetRefPrefix).
-	// Whether the update may be a non-fast-forward is left to git and
-	// GitHub's branch rules; what a pushed head holds is judged by
-	// runsheet against the changeset's tree (ADR 076 decision 5).
-	PushRef string
+	// Push are the refs a push may update; anything else is refused, and
+	// so is any deletion. Whether an update may be a non-fast-forward is
+	// left to git and GitHub's own branch rules.
+	Push []RefRule
+}
+
+// RefRule is one ref a push may touch: an exact ref, or a prefix ending
+// "/*" for any ref under it; CreateOnly allows creating it but never
+// moving one that exists.
+type RefRule struct {
+	Ref        string
+	CreateOnly bool
+}
+
+func (r RefRule) matches(ref string) bool {
+	if prefix, ok := strings.CutSuffix(r.Ref, "*"); ok && strings.HasSuffix(prefix, "/") {
+		return strings.HasPrefix(ref, prefix) && len(ref) > len(prefix)
+	}
+	return ref == r.Ref
 }
 
 // Token is the job's GitHub token and when it expires.
@@ -56,8 +69,7 @@ type Token struct {
 	ExpiresAt time.Time
 }
 
-// Event is one git request the relay answered, for runsheet's audit
-// (ADR 076 decision 7).
+// Event is one git request the relay answered, for the node's audit.
 type Event struct {
 	Repo    string
 	Service string // upload-pack or receive-pack
@@ -139,20 +151,12 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			refuse("reading the push: " + err.Error())
 			return
 		}
-		pins := 0
 		for _, c := range cmds {
 			ev.Refs = append(ev.Refs, c.ref)
 			if reason := r.Policy.check(c); reason != "" {
 				refuse(reason)
 				return
 			}
-			if strings.HasPrefix(c.ref, ChangesetRefPrefix) {
-				pins++
-			}
-		}
-		if pins > 1 {
-			refuse("a push pins one changeset, not several")
-			return
 		}
 		body = replay
 	}
@@ -240,51 +244,21 @@ type command struct {
 
 const zeroID = "0000000000000000000000000000000000000000"
 
-// ChangesetRefPrefix is where a job pins the commit of a changeset it
-// records (runsheet ADR 076 decision 5): refs/runsheet/changesets/<id>,
-// so the commit is never collected and runsheet reads the changeset's
-// content from git.
-const ChangesetRefPrefix = "refs/runsheet/changesets/"
-
-// check refuses a ref update the policy does not allow: a push may
-// update the job's branch and create pinned changeset refs, nothing
-// else, and may delete neither.
+// check refuses a ref update the policy does not name, and any deletion.
 func (p Policy) check(c command) string {
 	if strings.Trim(c.new, "0") == "" {
 		return "this job may not delete " + c.ref
 	}
-	if c.ref == p.PushRef || (strings.HasSuffix(p.PushRef, "/*") && strings.HasPrefix(c.ref, strings.TrimSuffix(p.PushRef, "*")) && len(c.ref) > len(p.PushRef)-1) {
-		return ""
-	}
-	if id, ok := strings.CutPrefix(c.ref, ChangesetRefPrefix); ok {
-		if !isUUID(id) {
-			return "a changeset ref names a changeset id: " + c.ref
+	for _, r := range p.Push {
+		if !r.matches(c.ref) {
+			continue
 		}
-		if strings.Trim(c.old, "0") != "" {
-			return "a changeset ref is pinned once and never moved: " + c.ref
+		if r.CreateOnly && strings.Trim(c.old, "0") != "" {
+			return c.ref + " may be created, never moved"
 		}
 		return ""
 	}
-	return fmt.Sprintf("this job may push only %s and %s<changeset>, not %s", p.PushRef, ChangesetRefPrefix, c.ref)
-}
-
-func isUUID(s string) bool {
-	if len(s) != 36 {
-		return false
-	}
-	for i, r := range s {
-		switch i {
-		case 8, 13, 18, 23:
-			if r != '-' {
-				return false
-			}
-		default:
-			if !strings.ContainsRune("0123456789abcdef", r) {
-				return false
-			}
-		}
-	}
-	return true
+	return "this job may not push " + c.ref
 }
 
 // readCommands reads a receive-pack request's command list (pkt-lines up

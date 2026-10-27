@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -68,7 +69,10 @@ func (s *Server) Register(policy Policy, token Token) (string, error) {
 		return "", errors.New("gitrelay: the server is not started")
 	}
 	now := s.now()
-	key := token.Value + "\x00" + policy.Repo + "\x00" + string(policy.Access) + "\x00" + policy.PushRef
+	key := token.Value + "\x00" + policy.Repo + "\x00" + string(policy.Access)
+	for _, r := range policy.Push {
+		key += fmt.Sprintf("\x00%s %t", r.Ref, r.CreateOnly)
+	}
 	for c, e := range s.entries {
 		if !e.expires.After(now) {
 			delete(s.entries, c)
@@ -87,7 +91,7 @@ func (s *Server) Register(policy Policy, token Token) (string, error) {
 	s.entries[c] = &entry{key: key, expires: token.ExpiresAt, relay: &Relay{
 		Policy: policy, Upstream: s.Upstream, HTTP: s.HTTP, Audit: s.Audit, Now: s.Now,
 		Mint: func(context.Context) (Token, error) { return tok, nil },
-		// the node renews the item's token and registers the new one; a
+		// the node renews the job's token and registers the new one; a
 		// relay serves its own until it expires
 		RefreshBefore: time.Nanosecond,
 	}}

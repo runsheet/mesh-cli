@@ -38,11 +38,6 @@ type Changeset struct {
 	Tree              string   `json:"tree"`
 	PathsChanged      []string `json:"paths_changed"`
 	ParentChangesetID string   `json:"parent_changeset_id,omitempty"`
-	// Commit is the commit holding Tree the node pushed and pinned at
-	// refs/runsheet/changesets/<ChangesetID> (runsheet ADR 076): the
-	// platform reads the changeset from git and takes no upload. Empty,
-	// the objects are uploaded first, as before.
-	Commit string `json:"commit,omitempty"`
 }
 
 // ChangesetIDField is FinishWorkItemInput's key naming the recorded
@@ -159,9 +154,7 @@ func (c *Client) HasChangesetObject(ctx context.Context, itemID string, obj Chan
 }
 
 // RecordChangeset records cs for itemID: POST
-// /runsheet/v1/items/{id}/changesets, runsheet's route (runsheet ADR
-// 076), else — a platform that does not serve it yet — Mesh's old
-// /mesh/v1/items/{id}/changesets. A platform with neither answers
+// /mesh/v1/items/{id}/changesets. A platform without the route answers
 // IsUnsupported; a refusal (a tree it lacks, a parent not the item's)
 // is a *Error.
 func (c *Client) RecordChangeset(ctx context.Context, itemID string, cs Changeset) error {
@@ -171,10 +164,7 @@ func (c *Client) RecordChangeset(ctx context.Context, itemID string, cs Changese
 	if cs.PathsChanged == nil {
 		cs.PathsChanged = []string{}
 	}
-	_, err := c.changesetJSON(ctx, http.MethodPost, "/runsheet/v1/items/"+url.PathEscape(itemID)+"/changesets", cs)
-	if IsUnsupported(err) {
-		_, err = c.changesetJSON(ctx, http.MethodPost, itemPath(itemID, "/changesets"), cs)
-	}
+	_, err := c.changesetJSON(ctx, http.MethodPost, itemPath(itemID, "/changesets"), cs)
 	return err
 }
 

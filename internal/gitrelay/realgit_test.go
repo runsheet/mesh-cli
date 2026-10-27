@@ -69,10 +69,10 @@ func TestRelayWithRealGit(t *testing.T) {
 
 	var events []Event
 	relay := &Relay{
-		Policy:   Policy{Repo: "acme/app", Access: Write, PushRef: "refs/heads/mesh/g-1"},
+		Policy:   Policy{Repo: "acme/app", Access: Write, Push: []RefRule{{Ref: "refs/heads/mesh/g-1"}, {Ref: "refs/pins/*", CreateOnly: true}}},
 		Upstream: gh.URL,
 		Mint: func(context.Context) (Token, error) {
-			return Token{Value: "item-token", ExpiresAt: time.Now().Add(time.Hour)}, nil
+			return Token{Value: "job-token", ExpiresAt: time.Now().Add(time.Hour)}, nil
 		},
 		Audit: func(e Event) { events = append(events, e) },
 	}
@@ -84,13 +84,13 @@ func TestRelayWithRealGit(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(work, "a.txt")); string(b) != "one\n" {
 		t.Fatalf("clone through the relay read %q", b)
 	}
-	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:item-token"))
+	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:job-token"))
 	for _, a := range seenAuth {
 		if a != want {
-			t.Fatalf("the backend saw %q, want the item token", a)
+			t.Fatalf("the backend saw %q, want the job token", a)
 		}
 	}
-	if cfg := run(work, "config", "--list"); strings.Contains(cfg, "item-token") {
+	if cfg := run(work, "config", "--list"); strings.Contains(cfg, "job-token") {
 		t.Fatal("the token reached the checkout's git config")
 	}
 
@@ -98,10 +98,10 @@ func TestRelayWithRealGit(t *testing.T) {
 	os.WriteFile(filepath.Join(work, "b.txt"), []byte("two\n"), 0o644)
 	run(work, "add", ".")
 	run(work, "commit", "-qm", "two")
-	pin := "refs/runsheet/changesets/7f4e0282-e04a-5639-ad32-d58275988f03"
+	pin := "refs/pins/7f4e0282-e04a-5639-ad32-d58275988f03"
 	run(work, "push", "-q", "origin", "mesh/g-1", "HEAD:"+pin)
 	if got := strings.TrimSpace(run(bare, "rev-parse", pin)); got != strings.TrimSpace(run(work, "rev-parse", "HEAD")) {
-		t.Fatalf("the pinned changeset ref on the backend is %s", got)
+		t.Fatalf("the create-only ref on the backend is %s", got)
 	}
 	if got := strings.TrimSpace(run(bare, "rev-parse", "refs/heads/mesh/g-1")); got != strings.TrimSpace(run(work, "rev-parse", "HEAD")) {
 		t.Fatalf("the job's branch on the backend is %s", got)

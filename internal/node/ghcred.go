@@ -162,7 +162,7 @@ func isWorktree(dir string) bool {
 type gitTokenKey struct{}
 
 // gitToken is what withGitToken puts on a ctx: the helper answering
-// base, or, through the node's git relay (runsheet ADR 076), relay —
+// base, or, through the node's git relay, relay —
 // the relay's base URL every git command points base at by insteadOf,
 // with no helper, so the token is in no environment or config.
 type gitToken struct{ base, helper, relay string }

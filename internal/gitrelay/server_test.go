@@ -58,7 +58,7 @@ func TestServerRoutesEachRegistrationToItsOwnPolicy(t *testing.T) {
 }
 
 func TestPushRefPrefix(t *testing.T) {
-	p := Policy{Repo: "a/b", Access: Write, PushRef: "refs/heads/mesh/*"}
+	p := Policy{Repo: "a/b", Access: Write, Push: []RefRule{{Ref: "refs/heads/mesh/*"}}}
 	ok := command{old: zeroID, new: "1111111111111111111111111111111111111111", ref: "refs/heads/mesh/g-1"}
 	if r := p.check(ok); r != "" {
 		t.Fatalf("a mesh branch: %s", r)

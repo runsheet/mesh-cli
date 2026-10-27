@@ -185,11 +185,11 @@ type Config struct {
 	// every tick like the claim limits. Left out, every kind (Takes.Takes
 	// is true for anything).
 	Takes Takes `yaml:"takes,omitempty"`
-	// GitRelay is node.yaml's `git_relay:` (runsheet ADR 076): true runs
-	// every git command the node makes on an item's token through the
-	// node's loopback git relay, which holds the token and allows only
-	// the token's repository and, for a push, the node's own branches
-	// and pinned changeset refs. Read at start; left out, off.
+	// GitRelay is node.yaml's `git_relay:`: true runs every git command
+	// the node makes on a read token through the node's loopback git
+	// relay, which holds the token and allows only the token's
+	// repository; a write token is relayed only once a claim names the
+	// refs it may push. Read at start; left out, off.
 	GitRelay bool `yaml:"git_relay,omitempty"`
 	// ValidationCacheMaxBytes is the most the node's cache root
 	// (SharedCacheRoot: the shared tree cache and the Go build cache
