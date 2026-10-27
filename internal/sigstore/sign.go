@@ -79,10 +79,11 @@ func (s *Signer) Sign(ctx context.Context, idToken, payloadType string, payload 
 	if err != nil {
 		return "", "", err
 	}
-	chain, err := s.certificate(ctx, idToken, key)
+	certs, err := s.certificate(ctx, idToken, key)
 	if err != nil {
 		return "", "", err
 	}
+	chain := strings.Join(certs, "")
 	digest := sha256.Sum256(PAE(payloadType, payload))
 	sig, err := ecdsa.SignASN1(rand.Reader, key, digest[:])
 	if err != nil {
@@ -94,7 +95,7 @@ func (s *Signer) Sign(ctx context.Context, idToken, payloadType string, payload 
 	if err != nil {
 		return "", "", err
 	}
-	entry, err := s.logEnvelope(ctx, raw, leafPEM(chain))
+	entry, err := s.logEnvelope(ctx, raw, certs[0])
 	if err != nil {
 		return "", "", err
 	}
@@ -102,20 +103,23 @@ func (s *Signer) Sign(ctx context.Context, idToken, payloadType string, payload 
 }
 
 // certificate asks Fulcio for a certificate of key for the token's
-// identity, proving possession by signing the token's subject.
-func (s *Signer) certificate(ctx context.Context, idToken string, key *ecdsa.PrivateKey) (string, error) {
+// identity, proving possession by signing the token's subject. It is the
+// chain, leaf first, each certificate re-encoded as PEM: Fulcio's
+// signingCert answer ends its certificates without a newline (its trust
+// bundle does not), so they cannot be joined as they come.
+func (s *Signer) certificate(ctx context.Context, idToken string, key *ecdsa.PrivateKey) ([]string, error) {
 	sub, err := subjectOf(idToken)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	sum := sha256.Sum256([]byte(sub))
 	proof, err := ecdsa.SignASN1(rand.Reader, key, sum[:])
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	req := map[string]any{
 		"credentials": map[string]string{"oidcIdentityToken": idToken},
@@ -133,7 +137,7 @@ func (s *Signer) certificate(ctx context.Context, idToken string, key *ecdsa.Pri
 		} `json:"signedCertificateDetachedSct"`
 	}
 	if err := s.post(ctx, strings.TrimRight(s.FulcioURL, "/")+"/api/v2/signingCert", req, &out); err != nil {
-		return "", fmt.Errorf("sigstore: fulcio: %w", err)
+		return nil, fmt.Errorf("sigstore: fulcio: %w", err)
 	}
 	var certs []string
 	switch {
@@ -143,9 +147,17 @@ func (s *Signer) certificate(ctx context.Context, idToken string, key *ecdsa.Pri
 		certs = out.Detached.Chain.Certificates
 	}
 	if len(certs) == 0 {
-		return "", errors.New("sigstore: fulcio answered no certificate")
+		return nil, errors.New("sigstore: fulcio answered no certificate")
 	}
-	return strings.Join(certs, ""), nil
+	chain := make([]string, len(certs))
+	for i, c := range certs {
+		b, _ := pem.Decode([]byte(strings.TrimSpace(c) + "\n"))
+		if b == nil || b.Type != "CERTIFICATE" {
+			return nil, fmt.Errorf("sigstore: fulcio's certificate %d is not PEM", i)
+		}
+		chain[i] = string(pem.EncodeToMemory(b))
+	}
+	return chain, nil
 }
 
 // logEnvelope enters the envelope's signature in Rekor as a dsse entry
@@ -210,13 +222,4 @@ func subjectOf(token string) (string, error) {
 		return "", errors.New("sigstore: the identity token names no subject")
 	}
 	return c.Sub, nil
-}
-
-// leafPEM is the first certificate of a PEM chain.
-func leafPEM(chain string) string {
-	b, _ := pem.Decode([]byte(chain))
-	if b == nil {
-		return ""
-	}
-	return string(pem.EncodeToMemory(b))
 }
