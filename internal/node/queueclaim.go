@@ -379,8 +379,8 @@ func (l *Loop) queuedGoal(ctx context.Context, goalID string) (gateway.Goal, Sco
 // queueReadTries and queueReadWait bound the reads after a claim for a
 // validation the read before it did not show (one requested in between):
 // the read lists requested runs only, so it shows a claimed one only
-// while the read model lags the claim. A validation has no release, so
-// one found late is better than one left to lapse.
+// while the read model lags the claim. A validation found late is better
+// than one failed.
 var (
 	queueReadTries = 2
 	queueReadWait  = time.Second
@@ -404,9 +404,7 @@ func (l *Loop) validationsWaiting(ctx context.Context, nodeID string) *gateway.M
 // startQueuedValidation starts the validation the one claim handed this
 // node — a merged item's, a merge batch candidate's or a hand-opened pull
 // request's — as its own pass would, with no claim of its own: the one
-// claim already made it. A validation has no release command, so one the
-// node cannot find in its queue read after queueReadTries lapses on the
-// platform's timer, logged.
+// claim already made it. One the node cannot start it fails with why.
 func (l *Loop) startQueuedValidation(ctx context.Context, nodeID, subject, id string) {
 	gw, ok := l.mainValidation(ctx)
 	if !ok {
@@ -415,7 +413,8 @@ func (l *Loop) startQueuedValidation(ctx context.Context, nodeID, subject, id st
 	}
 	pgw, takesPRs := l.pullRequestValidation(ctx, gw)
 	// giveBack fails the claim with why the node cannot run it — never a
-	// red verdict — which frees it for the next node at once
+	// red verdict — at once, where a lapse waits out the platform's stall
+	// timer to fail it the same way with no reason a person can read
 	giveBack := func(why string) {
 		label := fmt.Sprintf("queue: %s validation %s", subject, id)
 		reason := refusedCannotRun(why)

@@ -137,9 +137,9 @@ func TestQueuedNodeStandsItsPollsDown(t *testing.T) {
 	}
 }
 
-// A queued candidate the node's validation read never shows is handed
-// back with why — failMergeBatchValidation, freeing it for the next
-// node — not left to lapse on the platform's timer.
+// A queued candidate the node's validation read never shows is failed
+// with why at once (failMergeBatchValidation), not left to lapse until
+// the platform's stall timer fails it with no reason.
 func TestAQueuedValidationTheNodeCannotFindIsHandedBack(t *testing.T) {
 	r := newKindsRig(t)
 	defer func(n int, w time.Duration) { queueReadTries, queueReadWait = n, w }(queueReadTries, queueReadWait)
@@ -156,9 +156,6 @@ func TestAQueuedValidationTheNodeCannotFindIsHandedBack(t *testing.T) {
 	fails := r.f.CallsNamed("failMergeBatchValidation")
 	if len(fails) != 1 || !strings.Contains(reasonOf(fails[0].Input["reason"]), "refused: cannot run") {
 		t.Fatalf("failMergeBatchValidation %+v, want one refused: cannot run\n%s", fails, r.logs.String())
-	}
-	if r.f.MergeBatch(batchID)["validationState"] != "requested" {
-		t.Fatalf("batch %v, want requested again for the next node", r.f.MergeBatch(batchID))
 	}
 }
 
