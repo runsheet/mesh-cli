@@ -28,6 +28,10 @@ import (
 // Prefix is the path every server is served under: /mcp/<server>.
 const Prefix = "/mcp/"
 
+// GitPrefix is the path the session's git relay is served under:
+// /git/<owner>/<repo>.git.
+const GitPrefix = "/git/"
+
 // forwarded are the only client headers sent upstream: what streamable
 // HTTP needs. Anything else — Authorization, a cookie, a header an
 // upstream's config names — never leaves the proxy.
@@ -153,6 +157,10 @@ type Proxy struct {
 	// Logf takes the proxy's own lines, every one masked; nothing is
 	// logged when nil.
 	Logf func(format string, args ...any)
+	// Git serves /git/<owner>/<repo>.git on the same socket: the node's
+	// git relay for the session's job (runsheet ADR 076), which holds
+	// the GitHub token so the session never does. Nil serves no git.
+	Git http.Handler
 
 	mu        sync.Mutex
 	upstreams map[string]Upstream
@@ -349,6 +357,14 @@ func (p *Proxy) Close() error {
 
 // ServeHTTP relays one request to the upstream its path names.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if strings.HasPrefix(req.URL.Path, GitPrefix) {
+		if p.Git == nil {
+			http.Error(w, "sessionproxy: this session has no git relay", http.StatusNotFound)
+			return
+		}
+		p.Git.ServeHTTP(w, req)
+		return
+	}
 	name, ok := strings.CutPrefix(req.URL.Path, Prefix)
 	name = strings.TrimSuffix(name, "/")
 	u, found := p.upstream(name)
