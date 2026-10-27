@@ -466,7 +466,10 @@ type Loop struct {
 	// for the update to end (tests).
 	updating bool
 	restart  bool
-	updateWG sync.WaitGroup
+	// validationHold is set while an update waits out the running
+	// validations (waitValidations): no new one is claimed
+	validationHold bool
+	updateWG       sync.WaitGroup
 	// stoppables are the sessions the platform's stop list can end, by
 	// kind and item (stops.go)
 	stoppables map[string]stoppable

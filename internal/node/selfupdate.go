@@ -319,6 +319,58 @@ func (l *Loop) desiredVersion(ctx context.Context) (string, bool) {
 	return "", ok
 }
 
+// updateValidationWait bounds how long a verified update waits for the
+// node's running validations before it swaps: a validation runs in the
+// node's own process, so unlike a session it does not outlive the node,
+// and one cut short is abandoned (batch #262 died mid-materialise when
+// dl360 updated, 2026-10-27 20:21:58Z). Past it the update swaps anyway.
+var updateValidationWait = 30 * time.Minute
+
+// holdingValidations is whether an update is waiting out the running
+// validations: no new one is claimed meanwhile.
+func (l *Loop) holdingValidations() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.validationHold
+}
+
+// waitValidations holds new validations and waits, up to
+// updateValidationWait, for the running ones to end. It answers false
+// when ctx ends first: the node is stopping.
+func (l *Loop) waitValidations(ctx context.Context, to string) bool {
+	n := l.Validating()
+	if n == 0 {
+		return true
+	}
+	l.mu.Lock()
+	l.validationHold = true
+	l.mu.Unlock()
+	defer func() {
+		l.mu.Lock()
+		l.validationHold = false
+		l.mu.Unlock()
+	}()
+	l.logf("self-update: %s verified; waiting up to %s for %d running validation(s) to finish first — a validation does not outlive the node — and claiming no new one", to, updateValidationWait, n)
+	deadline := time.NewTimer(updateValidationWait)
+	defer deadline.Stop()
+	t := time.NewTicker(drainPoll)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline.C:
+			l.logf("self-update: %d validation(s) still running after %s; swapping anyway, they end with this process", l.Validating(), updateValidationWait)
+			return true
+		case <-t.C:
+			if l.Validating() == 0 {
+				l.logf("self-update: the running validations have finished")
+				return true
+			}
+		}
+	}
+}
+
 // update fetches and verifies to and ensures its node image — a refused
 // release or an image that cannot be had costs the node no work and
 // leaves it on its binary — then swaps the binary in and restarts at
@@ -326,8 +378,10 @@ func (l *Loop) desiredVersion(ctx context.Context) (string, bool) {
 // and the new process adopts it (adr-009, adr-002). Run then returns
 // ErrRestartForUpdate. A sandboxed node is no different: its sessions'
 // agents run detached in their pods, which outlive the node as a unit
-// does (adr-007's and adr-009's amendments 2026-10-13). A failure is
-// reported on the heartbeat.
+// does (adr-007's and adr-009's amendments 2026-10-13). A validation
+// is the exception: it runs in this process, so the swap waits for the
+// running ones first (waitValidations). A failure is reported on the
+// heartbeat.
 func (l *Loop) update(ctx context.Context, from, to string) {
 	defer l.updateWG.Done()
 	l.logf("self-update: %s → %s: fetching", from, to)
@@ -344,6 +398,10 @@ func (l *Loop) update(ctx context.Context, from, to string) {
 			return
 		}
 		l.logf("self-update: %s", img.Summary())
+	}
+	if !l.waitValidations(ctx, to) {
+		l.updateFailed(ctx, from, to, ctx.Err(), false)
+		return
 	}
 	l.logf("self-update: %s verified; no drain: swapping and restarting, sessions left running for the new binary to adopt%s", to, l.sandboxNote())
 	err = l.Update.Begin(from, to, l.CurrentScopes().Names())
