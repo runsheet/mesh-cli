@@ -65,4 +65,3 @@ func readCheckoutConfig(dir string) checkoutConfig {
 	}
 	return cfg
 }
-
