@@ -67,12 +67,8 @@ func TestLoopPlansOnALinkedAccountRepo(t *testing.T) {
 	if len(h.jobs) != 1 || h.jobs[0].Kind != harness.KindPlan || !strings.Contains(h.jobs[0].Prompt, "`go-apis/loom` in `repos/loom/`") {
 		t.Fatalf("the planner sees go-apis/loom: %+v", h.jobs)
 	}
-	calls := f.CallsNamed("planGoal")
-	if len(calls) != 1 {
-		t.Fatalf("plan calls: %+v\n%s", calls, logs.String())
-	}
-	if first := calls[0].Input["items"].([]any)[0].(map[string]any); first["repoId"] != loomRepo {
-		t.Fatalf("item 1 is on loom: %v", first)
+	if calls := f.CallsNamed("finishJob"); len(calls) != 1 {
+		t.Fatalf("plan job closes: %+v\n%s", calls, logs.String())
 	}
 }
 

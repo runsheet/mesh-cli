@@ -1357,7 +1357,6 @@ func runNode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gate
 		loop.CacheTrim = &node.CacheTrim{Cache: cache, State: cache.State, Logf: logger.Printf}
 	}
 	loop.Plan = planWith(gw, cfg, h, loop, workRoot, accounts, logger)
-	loop.PlanReleased = (&node.Planner{WorkRoot: workRoot, Log: logger}).Released
 	loop.Research = researchWith(gw, cfg, h, loop, workRoot, accounts, logger)
 	// thread turns (runsheet ADR 061 §7): a person's message on a
 	// product's thread, answered in its own session
@@ -1956,13 +1955,9 @@ func saidByEvaluator(err error) bool {
 // saidOnce is an error node.log has said already, once for its goal: a
 // claim-time read that issued no credential for the session's adapter
 // (node.NoCredentials.Say), or a plan declined for a required tool
-// (node.ToolsDeclined, which the planner logs), or a plan released for a
-// refusal repeated (node.PlanRefused.Released, which the planner logs).
+// (node.ToolsDeclined, which the planner logs).
 func saidOnce(err error) bool {
 	_, ok := node.NoCredentialOf(err)
-	if pr, released := node.PlanRefusedOf(err); released && pr.Released {
-		return true // the planner logged the release
-	}
 	return ok || node.ToolsDeclined(err)
 }
 

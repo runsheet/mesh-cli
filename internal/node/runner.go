@@ -666,7 +666,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		in.Services = pod.Prompt()
 		// the brief's guidance is the builder's role (ADR-041); the finish
 		// stays the node's own mesh_finish and push
-		if in.Guidance = jobBriefOf(ctx, r.GW, BuildKind, item.ID).ProductGuidance(); in.Guidance == "" {
+		if in.Guidance = jobBriefOf(ctx, r.GW, BuildKind, item.ID).ProductGuidance(false); in.Guidance == "" {
 			r.noGuidance.Note(BuildKind, r.logf)
 		}
 		job.Prompt = harness.BuildPrompt(in)

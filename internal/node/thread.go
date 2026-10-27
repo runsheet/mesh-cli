@@ -197,7 +197,7 @@ func (t *ThreadRunner) answer(ctx context.Context, turn gateway.ThreadTurn, kind
 		t.noGuidance.Note(kind, t.logf)
 	}
 	prompt := prompter(harness.ThreadInput{Org: sc.Name(), Project: projectSlug, Transcript: tr, MeshContext: len(t.MCP) > 0, Tools: toolNames(st),
-		Guidance: brief.ProductGuidance(), Finish: holder.FinishSection()})
+		Guidance: brief.ProductGuidance(false), Finish: holder.FinishSection()})
 	kept, err := keptRootFor(t.Layout, jobID)
 	if err != nil {
 		return nil, err

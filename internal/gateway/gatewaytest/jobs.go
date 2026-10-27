@@ -54,7 +54,7 @@ func (f *Fake) turnKinds() map[string]map[string]any {
 		}
 		product, kind, _ := strings.Cut(t.Kind, "/")
 		rows[t.Kind] = map[string]any{"slug": t.Kind, "product": product, "kind": kind, "harness": harness, "finish": finish,
-			"access": []string{product, "model"}, "guidance": t.Guidance, "finishSchema": t.FinishSchema}
+			"access": []string{product, "model"}, "guidance": t.Guidance, "finishSchema": t.FinishSchema, "finishTool": kindFinishTools[t.Kind]}
 	}
 	return rows
 }
@@ -137,7 +137,7 @@ func (f *Fake) jobAPI(w http.ResponseWriter, r *http.Request, q string, vars map
 		kind, _ := in["kind"].(string)
 		writeData(w, map[string]any{"claimJob": map[string]any{"status": "claimed", "job": map[string]any{
 			"kind": kind, "subject": subject, "code": map[string]any{"form": "commit"}, "claim": field,
-			"finish": kindFinishes[kind], "guidance": f.KindGuidance[kind], "finishSchema": f.KindFinishSchema[kind]}}})
+			"finish": kindFinishes[kind], "guidance": f.KindGuidance[kind], "finishSchema": f.KindFinishSchema[kind], "finishTool": kindFinishTools[kind]}}})
 	case strings.Contains(q, "finishJob(input"):
 		f.Calls = append(f.Calls, Call{Name: "finishJob", Input: in, At: time.Now(), Bearer: bearer})
 		answers, err := f.finishJobAliases(r, in, bearer)
@@ -196,6 +196,13 @@ func mutationQuery(field string) string {
 
 // kindFinishes is each runsheet kind's finish, as its catalogue row
 // declares it (runsheet finishjob.go's routes).
+// kindFinishTools are the product tools runsheet's kinds hand their
+// result to (finish_tool, runsheet #5470).
+var kindFinishTools = map[string]string{
+	"runsheet/plan":     "mesh_plan",
+	"runsheet/evaluate": "mesh_verdict",
+}
+
 var kindFinishes = map[string]string{
 	"runsheet/build":    "changeset",
 	"runsheet/evaluate": "verdict",
@@ -342,6 +349,22 @@ func (f *Fake) finishJobAliases(r *http.Request, in map[string]any, bearer strin
 			err = send("evaluateWorkItem", v)
 		}
 	case "runsheet/plan goal":
+		// a plan session hands its graph to the product's own tool
+		// (finishTool); the node then closes the job with an empty result,
+		// which the product refuses when no plan reached that tool
+		// (PlanNotHandedIn). An older node's {plan} is still served.
+		if _, ok := fin["result"]; ok {
+			if f.PlanNotHandedIn != "" {
+				err = fmt.Errorf("%s", f.PlanNotHandedIn)
+				break
+			}
+			// what the product's tool did with the plan: the goal leaves
+			// planning, as runsheet's mesh_plan moves it
+			if g := f.Goals[id]; g != nil {
+				g["status"] = "awaiting_approval"
+			}
+			break
+		}
 		var v map[string]any
 		if v, err = part("plan"); err == nil {
 			err = send("planGoal", v)
@@ -475,7 +498,7 @@ func (f *Fake) claimThreadJob(w http.ResponseWriter, in map[string]any) {
 		"kind": t.Kind, "subject": map[string]any{"type": "thread", "id": t.ID}, "code": map[string]any{"form": "none"},
 		"harness": harnesses[0], "harnesses": harnesses, "access": []string{t.Product, "model"},
 		"finish": finish, "pods": []map[string]any{{"name": t.Role, "from": "kind", "code": false}},
-		"guidance": t.Guidance, "finishSchema": t.FinishSchema,
+		"guidance": t.Guidance, "finishSchema": t.FinishSchema, "finishTool": kindFinishTools[t.Kind],
 		"claim": "claimThreadSession", "thread": map[string]any{"product": t.Product, "role": t.Role, "threadKey": t.ThreadKey,
 			"ask": t.Ask, "body": t.Body, "projectId": t.ProjectID}}}})
 }

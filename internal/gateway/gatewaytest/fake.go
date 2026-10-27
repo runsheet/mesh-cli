@@ -91,6 +91,9 @@ type Fake struct {
 	// per kind (runsheet ADR 067): the guidance text and the product's
 	// schema for the proposal (SetKindGuidance).
 	KindGuidance, KindFinishSchema map[string]string
+	// PlanNotHandedIn, when set, is the refusal finishJob answers a plan
+	// job's empty result with: no plan reached the product's tool.
+	PlanNotHandedIn string
 	// DPoP checks every mint's proof (meshsessions.go); DPoPNonce, set,
 	// is the nonce a proof must carry, asked for with use_dpop_nonce.
 	DPoP      dpoptest.Verifier
@@ -2697,7 +2700,7 @@ func (f *Fake) mesh(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, slug := range []string{"runsheet/build", "runsheet/evaluate", "runsheet/plan", "runsheet/research", "runsheet/rebase"} {
 			kinds = append(kinds, map[string]any{"slug": slug, "product": "runsheet", "kind": strings.TrimPrefix(slug, "runsheet/"), "harness": []string{"claude-code", "codex"},
-				"finish": kindFinishes[slug], "access": []string{"repo", "runsheet", "model"}, "guidance": f.KindGuidance[slug], "finishSchema": f.KindFinishSchema[slug]})
+				"finish": kindFinishes[slug], "access": []string{"repo", "runsheet", "model"}, "guidance": f.KindGuidance[slug], "finishSchema": f.KindFinishSchema[slug], "finishTool": kindFinishTools[slug]})
 		}
 		// a raised turn's kind is listed as the turn describes it — its
 		// harness and finish — added when the rows above do not have it,

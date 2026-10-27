@@ -100,9 +100,25 @@ func (g *actorGW) EvaluateWorkItemNoVerdict(ctx context.Context, itemID, reason 
 	return g.Gateway.EvaluateWorkItemNoVerdict(ctx, itemID, reason, costCents, usage, choice)
 }
 
-func (g *actorGW) PlanGoal(ctx context.Context, goalID, by string, items []gateway.PlannedItem, costCents int, usage *gateway.UsageReport, questions ...gateway.PlanQuestion) error {
-	g.note("planGoal", ctx)
-	return g.Gateway.PlanGoal(ctx, goalID, by, items, costCents, usage, questions...)
+// JobBriefOf and JobKindOf pass the briefs and catalogue through, so a
+// session started on the recorder reads its kind's brief as on the client.
+func (g *actorGW) JobBriefOf(kind string, subject gateway.JobSubject) (*gateway.JobBrief, bool) {
+	if r, ok := g.Gateway.(briefReader); ok {
+		return r.JobBriefOf(kind, subject)
+	}
+	return nil, false
+}
+
+func (g *actorGW) JobKindOf(ctx context.Context, kind string) (gateway.JobKind, bool) {
+	if r, ok := g.Gateway.(kindReader); ok {
+		return r.JobKindOf(ctx, kind)
+	}
+	return gateway.JobKind{}, false
+}
+
+func (g *actorGW) FinishJob(ctx context.Context, nodeID, kind string, subject gateway.JobSubject, finish map[string]any) (map[string]any, error) {
+	g.note("finishJob", ctx)
+	return g.Gateway.FinishJob(ctx, nodeID, kind, subject, finish)
 }
 
 // An evaluation's evaluateWorkItem acts as agent:evaluator@<slug>, on a
@@ -139,8 +155,8 @@ func TestEvaluateActsAsTheEvaluator(t *testing.T) {
 	}
 }
 
-// A plan's planGoal acts as agent:planner@<slug> (ADR-015's amendment
-// 2026-10-03).
+// A plan job's close (finishJob) acts as agent:planner@<slug> (ADR-015's
+// amendment 2026-10-03).
 func TestPlanActsAsThePlanner(t *testing.T) {
 	f := seed(t)
 	const goal2 = "dddddddd-3333-4333-8333-dddddddddddd"
@@ -160,8 +176,8 @@ func TestPlanActsAsThePlanner(t *testing.T) {
 	defer cancel()
 	loop.Tick(ctx)
 	loop.wg.Wait()
-	got := rec.of("planGoal")
+	got := rec.of("finishJob")
 	if len(got) != 1 || got[0] != "agent:planner@test-node" {
-		t.Fatalf("planGoal actors %q, want [agent:planner@test-node]", got)
+		t.Fatalf("finishJob actors %q, want [agent:planner@test-node]", got)
 	}
 }

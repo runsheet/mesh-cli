@@ -1918,24 +1918,10 @@ type Gateway interface {
 	// (gateway.ErrNoReplaceItem on a platform without replaceItem,
 	// nothing sent; ADR-021's amendment 2026-10-02).
 	RequestPlanReplacing(ctx context.Context, goalID, by, itemID string) error
-	PlanGoal(ctx context.Context, goalID, by string, items []gateway.PlannedItem, costCents int, usage *gateway.UsageReport, questions ...gateway.PlanQuestion) error
-	// TakesAcceptanceChecks is whether the platform's PlannedItemInput
-	// takes `acceptanceChecks` (runsheet ADR 056): where it does, PlanGoal
-	// refuses an item with none, so the plan check asks for them.
-	TakesAcceptanceChecks(ctx context.Context) bool
-	// TakesPlanQuestions is whether PlanGoal can carry the planner's
-	// questions for the person (ADR-020).
-	TakesPlanQuestions(ctx context.Context) bool
-	// SetGoalCheckpoints sets the goal's checkpoints: a plan's `pr`
-	// checkpoint is set before PlanGoal (ADR-023's amendment, the cut-over
-	// rule).
-	SetGoalCheckpoints(ctx context.Context, goalID, by string, checkpoints []string) error
-	// ProposeGoalSplit hands in the planner's `split` answer — goal
-	// drafts in place of a graph over the project's item cap — and
-	// TakesGoalSplit is whether the platform has it (ADR-023, the size
-	// rule).
-	ProposeGoalSplit(ctx context.Context, goalID, by string, drafts []gateway.GoalDraft, costCents int, usage *gateway.UsageReport) error
-	TakesGoalSplit(ctx context.Context) bool
+	// FinishJob closes a job the node ran (runsheet ADR 061): for a job
+	// whose session handed its result to the product's own tool, an empty
+	// result, which the product refuses when nothing reached that tool.
+	FinishJob(ctx context.Context, nodeID, kind string, subject gateway.JobSubject, finish map[string]any) (map[string]any, error)
 	Project(ctx context.Context, id string) (*gateway.Project, error)
 	Projects(ctx context.Context, orgID string) ([]gateway.Project, error)
 	Directions(ctx context.Context, orgID, projectID string) ([]gateway.Direction, error)
@@ -1955,5 +1941,4 @@ type Gateway interface {
 	ProjectRepos(ctx context.Context, repoIDs []string) ([]gateway.Repo, error)
 	ContextDocuments(ctx context.Context, org, project string) ([]gateway.Document, error)
 	ContextDocument(ctx context.Context, org, project, doc string) (string, error)
-	Scorecard(ctx context.Context, org, project string) (map[string]any, error)
 }
