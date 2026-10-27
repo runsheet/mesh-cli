@@ -1300,6 +1300,9 @@ func (t *buildTail) finish(ctx context.Context, state *sessionsteps.State) error
 // noMeshUsage says once per run that the platform takes no job usage.
 var noMeshUsage sync.Once
 
+// meshUsageSkipped says once per run why a build's usage was not sent.
+var meshUsageSkipped sync.Once
+
 // meshUsageReporter is a gateway that reports a job's usage to Mesh
 // (gateway.Client.ReportJobUsage).
 type meshUsageReporter interface {
@@ -1313,12 +1316,21 @@ type meshUsageReporter interface {
 // (said once per run). A refusal is logged and the finish carries rep.
 func (r *Runner) meshUsage(ctx context.Context, item gateway.WorkItem, rep *gateway.UsageReport) *gateway.UsageReport {
 	mu, ok := r.GW.(meshUsageReporter)
-	if !ok || rep == nil || rep.CredentialID == "" {
+	skip := func(why string) *gateway.UsageReport {
+		meshUsageSkipped.Do(func() { r.logf("usage: not reported to Mesh (%s); the finish carries it (said once per run)", why) })
 		return rep
+	}
+	switch {
+	case !ok:
+		return skip("the gateway takes no job usage")
+	case rep == nil:
+		return rep
+	case rep.CredentialID == "":
+		return skip("the session's account has no reference")
 	}
 	job := r.Bearers.JobID(item.ID, item.Attempts)
 	if job == "" {
-		return rep
+		return skip("the claim opened no mesh session, so the job has no id")
 	}
 	switch err := mu.ReportJobUsage(ctx, nodeIDOf(r.Scopes, item.OrgID, r.Cfg), job, gateway.JobUsageOf(rep)); {
 	case err == nil:
