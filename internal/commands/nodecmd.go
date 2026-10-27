@@ -1195,9 +1195,8 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 	}
 	sessionSandbox, loop.Sandbox = sb, sbInfo
 	if cfg.GitRelay {
-		// node.yaml's git_relay (runsheet ADR 076): the item token stays
-		// in the node's relay, every git command the node runs reaches
-		// GitHub through it
+		// node.yaml's git_relay: a read token stays in the node's relay,
+		// and git commands on it reach GitHub through it
 		rel := &gitrelay.Server{Audit: func(e gitrelay.Event) {
 			if e.Outcome != "ok" {
 				logger.Printf("git relay: %s %s %s: %s (refs %v)", e.Repo, e.Service, e.Outcome, e.Reason, e.Refs)

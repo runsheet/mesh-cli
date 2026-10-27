@@ -17,11 +17,11 @@ import (
 	"projectmesh.io/mesh-cli/internal/gitrelay"
 )
 
-// TestGitThroughTheRelay (runsheet ADR 076): with the node's git relay on,
-// a git command the node runs on an item's token reaches GitHub through
-// the relay — GitHub's URL rewritten by insteadOf — and carries the
-// token in no environment variable; the relay adds it. A push to the
-// node's own branch goes through and one to main is refused.
+// TestGitThroughTheRelay: with the node's git relay on, a git command the
+// node runs on a read token reaches GitHub through the relay — GitHub's
+// URL rewritten by insteadOf — and carries the token in no environment
+// variable; the relay adds it, and refuses a push. A write token is not
+// relayed until a claim names its refs.
 func TestGitThroughTheRelay(t *testing.T) {
 	gitBin, err := exec.LookPath("git")
 	if err != nil {
@@ -76,7 +76,7 @@ func TestGitThroughTheRelay(t *testing.T) {
 	defer SetGitRelay(nil, nil)
 
 	const base = "https://github.example"
-	tctx := withGitToken(ctx, base, &gateway.GitHubToken{Token: token, Repository: "acme/app", Access: "write", ExpiresAt: time.Now().Add(time.Hour)})
+	tctx := withGitToken(ctx, base, &gateway.GitHubToken{Token: token, Repository: "acme/app", Access: "read", ExpiresAt: time.Now().Add(time.Hour)})
 	for _, kv := range hardenedGitEnv(tctx, base, "") {
 		if strings.Contains(kv, token) {
 			t.Fatalf("the token is in the command's environment: %s", kv)
@@ -95,6 +95,9 @@ func TestGitThroughTheRelay(t *testing.T) {
 	if len(auths) == 0 || auths[0] != "Basic "+base64.StdEncoding.EncodeToString([]byte("x-access-token:"+token)) {
 		t.Fatalf("GitHub saw %q, want the relay's x-access-token", auths)
 	}
+	if out, err := run(work, "fetch", "-q", "origin"); err != nil {
+		t.Fatalf("fetch through the relay: %v\n%s", err, out)
+	}
 	os.WriteFile(filepath.Join(work, "b.txt"), []byte("two\n"), 0o644)
 	if out, err := run(work, "add", "."); err != nil {
 		t.Fatal(out)
@@ -102,35 +105,16 @@ func TestGitThroughTheRelay(t *testing.T) {
 	if out, err := run(work, "commit", "-qm", "two"); err != nil {
 		t.Fatal(out)
 	}
-	if out, err := run(work, "push", "-q", "origin", "HEAD:refs/heads/mesh/g-1"); err != nil {
-		t.Fatalf("push of the node's branch: %v\n%s", err, out)
-	}
-	if out, err := run(work, "push", "-q", "origin", "HEAD:main"); err == nil {
-		t.Fatalf("a push to main went through:\n%s", out)
-	}
-
-	// the finish's write: the branch and its pinned changeset in one push
-	if out, err := run(work, "checkout", "-q", "-b", "mesh/g-3"); err != nil {
-		t.Fatal(out)
-	}
-	g := &Git{GitHubURL: base}
-	pin := "refs/runsheet/changesets/7f4e0282-e04a-5639-ad32-d58275988f03"
-	pushed, err := g.PushPinned(tctx, work, "mesh/g-3", pin)
-	if err != nil {
-		t.Fatalf("PushPinned through the relay: %v", err)
-	}
-	for _, ref := range []string{"refs/heads/mesh/g-3", pin} {
-		out, err := exec.Command(gitBin, "-C", bare, "rev-parse", ref).Output()
-		if err != nil || strings.TrimSpace(string(out)) != pushed {
-			t.Fatalf("%s on the backend is %q, want %s (%v)", ref, out, pushed, err)
-		}
-	}
-
-	// read token: fetch only
-	rctx := withGitToken(ctx, base, &gateway.GitHubToken{Token: token + "r", Repository: "acme/app", Access: "read", ExpiresAt: time.Now().Add(time.Hour)})
-	cmd := hardenedGitCmdEnv(rctx, base, work, []string{"HOME=" + root}, "push", "-q", "origin", "HEAD:refs/heads/mesh/g-2")
-	if out, err := cmd.CombinedOutput(); err == nil {
+	if out, err := run(work, "push", "-q", "origin", "HEAD:refs/heads/mesh/g-1"); err == nil {
 		t.Fatalf("a read token pushed:\n%s", out)
+	}
+
+	// a write token is not relayed until a claim names the refs it may
+	// push: its command carries its helper, as before
+	wctx := withGitToken(ctx, base, &gateway.GitHubToken{Token: token + "w", Repository: "acme/app", Access: "write", ExpiresAt: time.Now().Add(time.Hour)})
+	env := strings.Join(gitTokenEnv(wctx), "\n")
+	if strings.Contains(env, "insteadOf") || !strings.Contains(env, "password="+token+"w") {
+		t.Fatalf("a write token was relayed: %s", env)
 	}
 }
 

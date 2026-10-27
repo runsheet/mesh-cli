@@ -1256,22 +1256,6 @@ func (t *buildTail) finish(ctx context.Context, state *sessionsteps.State) error
 		},
 	}
 	if cg, ok := r.GW.(changesetGateway); ok && cg.TakesChangesets(ctx) {
-		if g, ok := r.WS.(*Git); ok && gitRelayOn() {
-			// the relay is on (runsheet ADR 076): the node pushes the
-			// branch and pins the changeset's commit through it, and the
-			// changeset is recorded as that commit, nothing uploaded
-			f.PushPinned = func(ctx context.Context, dir, branch, pinRef string) (string, error) {
-				tok, err := b.cred.ForPush(ctx)
-				if err != nil {
-					r.logf("item %s: %v", label, err)
-				}
-				sha, err := g.PushPinned(OnItemToken(ctx, r.WS, tok), b.dir, branch, pinRef)
-				if err != nil && tok != nil {
-					err = scrubbed(err, []string{tok.Token})
-				}
-				return sha, err
-			}
-		}
 		if t.v != nil && len(t.v.runs) > 0 {
 			att := t.v.runs[len(t.v.runs)-1]
 			if rep := b.acct.Report(result); rep != nil {

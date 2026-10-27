@@ -158,7 +158,7 @@ type Proxy struct {
 	// logged when nil.
 	Logf func(format string, args ...any)
 	// Git serves /git/<owner>/<repo>.git on the same socket: the node's
-	// git relay for the session's job (runsheet ADR 076), which holds
+	// git relay for the session's job, which holds
 	// the GitHub token so the session never does. Nil serves no git.
 	Git http.Handler
 

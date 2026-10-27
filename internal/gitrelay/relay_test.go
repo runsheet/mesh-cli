@@ -109,7 +109,7 @@ func TestRelayFetchAddsTheTokenAndNothingElse(t *testing.T) {
 }
 
 func TestRelayRefusesAnotherRepository(t *testing.T) {
-	r, gh, evs := relayFor(t, Policy{Repo: "acme/app", Access: Write, PushRef: "refs/heads/mesh/g-1"})
+	r, gh, evs := relayFor(t, Policy{Repo: "acme/app", Access: Write, Push: []RefRule{{Ref: "refs/heads/mesh/g-1"}, {Ref: "refs/pins/*", CreateOnly: true}}})
 	rec := do(r, "GET", "/git/acme/other.git/info/refs?service=git-upload-pack", nil, nil)
 	if rec.Code != http.StatusForbidden || len(gh.reqs) != 0 {
 		t.Fatalf("got %d, %d upstream requests", rec.Code, len(gh.reqs))
@@ -142,7 +142,7 @@ func TestRelayReadJobCannotPush(t *testing.T) {
 }
 
 func TestRelayPushOnlyItsRef(t *testing.T) {
-	p := Policy{Repo: "acme/app", Access: Write, PushRef: "refs/heads/mesh/g-1"}
+	p := Policy{Repo: "acme/app", Access: Write, Push: []RefRule{{Ref: "refs/heads/mesh/g-1"}, {Ref: "refs/pins/*", CreateOnly: true}}}
 	r, gh, evs := relayFor(t, p)
 	ok := pushBody("2222222222222222222222222222222222222222 1111111111111111111111111111111111111111 refs/heads/mesh/g-1")
 	if rec := do(r, "POST", "/git/acme/app.git/git-receive-pack", ok, nil); rec.Code != 200 {
@@ -152,14 +152,15 @@ func TestRelayPushOnlyItsRef(t *testing.T) {
 		t.Fatal("the push body was not replayed byte for byte")
 	}
 	pinned := pushBody("2222222222222222222222222222222222222222 1111111111111111111111111111111111111111 refs/heads/mesh/g-1",
-		zeroID+" 1111111111111111111111111111111111111111 refs/runsheet/changesets/7f4e0282-e04a-5639-ad32-d58275988f03")
+		zeroID+" 1111111111111111111111111111111111111111 refs/pins/7f4e0282-e04a-5639-ad32-d58275988f03")
 	if rec := do(r, "POST", "/git/acme/app.git/git-receive-pack", pinned, nil); rec.Code != 200 {
-		t.Fatalf("branch and pinned changeset ref: got %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("branch and a create-only ref: got %d %s", rec.Code, rec.Body.String())
 	}
 	for name, body := range map[string][]byte{
 		"main":       pushBody("2222222222222222222222222222222222222222 1111111111111111111111111111111111111111 refs/heads/main"),
 		"second ref": pushBody("2222222222222222222222222222222222222222 1111111111111111111111111111111111111111 refs/heads/mesh/g-1", zeroID+" 1111111111111111111111111111111111111111 refs/tags/v9"),
 		"delete":     pushBody("2222222222222222222222222222222222222222 " + zeroID + " refs/heads/mesh/g-1"),
+		"moved pin":  pushBody("2222222222222222222222222222222222222222 1111111111111111111111111111111111111111 refs/pins/a"),
 		"no command": []byte("0000PACK"),
 		"compressed": ok,
 	} {

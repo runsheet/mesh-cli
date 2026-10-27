@@ -107,7 +107,7 @@ func hardenedGitEnv(ctx context.Context, base, dir string) []string {
 	if ok {
 		key := "credential." + t.base + ".helper"
 		if t.relay != "" {
-			// through the node's git relay (runsheet ADR 076): GitHub's
+			// through the node's git relay: GitHub's
 			// URL points at it and no helper answers, so the token is in
 			// no environment or config the command or its children see
 			pairs = append(pairs, [2]string{key, ""}, [2]string{"url." + t.relay + ".insteadOf", t.base + "/"})

@@ -8,9 +8,8 @@ import (
 	"projectmesh.io/mesh-cli/internal/gitrelay"
 )
 
-// The node's git relay (runsheet ADR 076), on when node.yaml says
-// git_relay: every git command the node runs on an item's token goes
-// through it — GitHub's URL rewritten by insteadOf to a loopback path
+// The node's git relay, on when node.yaml says git_relay: a git command
+// the node runs on a read token goes through it — GitHub's URL rewritten by insteadOf to a loopback path
 // only that command is told — and the relay adds the token, so it is in
 // no git command's environment, config or children. Off, commands carry
 // the token's helper by the environment as before (withGitToken).
@@ -32,24 +31,18 @@ func SetGitRelay(srv *gitrelay.Server, logf func(string, ...any)) {
 
 // relayFor registers tok's repository on the node's relay and answers
 // the base URL a command's insteadOf points GitHub at, or "" when the
-// relay is off or the token names no repository (the command then
-// carries the token's helper, as before). A write token may push the
-// node's own branches (refs/heads/mesh/*) and pin changesets; a read
-// token only fetches.
+// relay is off, the token names no repository, or the token may write:
+// which refs a push may touch is the product's to say, in the claim, and
+// until a claim says so a write token's commands carry its helper as
+// before. A read token is relayed read-only.
 func relayFor(tok *gateway.GitHubToken, logf func(string, ...any)) string {
 	gitRelayState.Lock()
 	srv := gitRelayState.srv
 	gitRelayState.Unlock()
-	if srv == nil || tok == nil || tok.Repository == "" {
+	if srv == nil || tok == nil || tok.Repository == "" || !strings.EqualFold(tok.Access, "read") {
 		return ""
 	}
-	// a token the platform calls read only fetches; any other (write,
-	// or an older platform's that says neither) may push the node's
-	// branches, GitHub's own check on the token still standing
-	p := gitrelay.Policy{Repo: tok.Repository, Access: gitrelay.Write, PushRef: "refs/heads/mesh/*"}
-	if strings.EqualFold(tok.Access, "read") {
-		p = gitrelay.Policy{Repo: tok.Repository, Access: gitrelay.Read}
-	}
+	p := gitrelay.Policy{Repo: tok.Repository, Access: gitrelay.Read}
 	base, err := srv.Register(p, gitrelay.Token{Value: tok.Token, ExpiresAt: tok.ExpiresAt})
 	if err != nil {
 		if logf != nil {
@@ -58,11 +51,4 @@ func relayFor(tok *gateway.GitHubToken, logf func(string, ...any)) string {
 		return ""
 	}
 	return base
-}
-
-// gitRelayOn says whether the node's git relay is on.
-func gitRelayOn() bool {
-	gitRelayState.Lock()
-	defer gitRelayState.Unlock()
-	return gitRelayState.srv != nil
 }
