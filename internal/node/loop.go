@@ -491,9 +491,10 @@ type Loop struct {
 	manifestAt time.Time
 	// accountsSent is the last accounts report Mesh took, and when
 	// (reportAccounts); noMeshAccounts says once that it takes none.
-	accountsSent   string
-	accountsAt     time.Time
-	noMeshAccounts sync.Once
+	accountsSent    string
+	accountsAt      time.Time
+	noMeshAccounts  sync.Once
+	accountsSkipped sync.Once
 }
 
 type goalsRead struct {
@@ -2150,7 +2151,18 @@ const AccountsEvery = 5 * time.Minute
 // left out; a platform without the route is said once per run.
 func (l *Loop) reportAccounts(ctx context.Context, limits []gateway.Limits) {
 	mr, ok := l.GW.(meshAccountsReporter)
-	if !ok || len(limits) == 0 || l.Known == nil {
+	skip := func(why string) {
+		l.accountsSkipped.Do(func() { l.logf("accounts: not reported to Mesh yet (%s; said once per run)", why) })
+	}
+	switch {
+	case !ok:
+		skip("the gateway takes no accounts report")
+		return
+	case len(limits) == 0:
+		skip("no account has a limit reading yet")
+		return
+	case l.Known == nil:
+		skip("the node keeps no known accounts")
 		return
 	}
 	now := l.now()
@@ -2176,6 +2188,11 @@ func (l *Loop) reportAccounts(ctx context.Context, limits []gateway.Limits) {
 		accounts = append(accounts, acc)
 	}
 	if len(accounts) == 0 {
+		labels := make([]string, 0, len(limits))
+		for _, lim := range limits {
+			labels = append(labels, lim.Account)
+		}
+		skip("no reading names a known account's reference: " + strings.Join(labels, ", "))
 		return
 	}
 	sent, _ := json.Marshal(accounts)

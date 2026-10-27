@@ -74,7 +74,12 @@ func (b *SessionBearers) JobID(itemID string, attempt int) string {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.jobs[jobKey(itemID, attempt)]
+	if id := b.jobs[jobKey(itemID, attempt)]; id != "" {
+		return id
+	}
+	// the item's one open claim on this node, whatever attempt the
+	// caller's copy of the item names
+	return b.jobs[itemID]
 }
 
 // MachineBearerRefusal is the refusal of a build on a node serving
@@ -144,13 +149,16 @@ func (b *SessionBearers) Open(ctx context.Context, item gateway.WorkItem, nodeID
 		b.jobs = map[string]string{}
 	}
 	key := jobKey(item.ID, item.Attempts)
-	b.jobs[key] = s.SessionID
+	b.jobs[key], b.jobs[item.ID] = s.SessionID, s.SessionID
 	b.mu.Unlock()
 	unbindTokens := b.Tokens.Bind(item.ID, item.Attempts, src, b.Key)
 	return func() {
 		unbindTokens()
 		b.mu.Lock()
 		delete(b.jobs, key)
+		if b.jobs[item.ID] == s.SessionID {
+			delete(b.jobs, item.ID)
+		}
 		b.mu.Unlock()
 	}, nil
 }
