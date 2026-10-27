@@ -39,6 +39,16 @@ const (
 	queueRebase   = "runsheet/rebase"
 	queueValidate = "runsheet/validate"
 	queuePlan     = "runsheet/plan"
+	queueResearch = "runsheet/research"
+)
+
+// The subjects a queued validation names (runsheet #5617): a merged
+// item's main validation, a merge batch's candidate, a hand-opened pull
+// request.
+const (
+	subjectMain        = "main"
+	subjectCandidate   = "candidate"
+	subjectPullRequest = "pull_request"
 )
 
 // queueOn is whether this tick claims through the one claim: a node with
@@ -66,6 +76,13 @@ func (l *Loop) queueOn() (queueClaimer, string, bool) {
 // — claims evaluations and rebases as their passes did. It answers false
 // when the platform has no one claim: the caller claims kind by kind.
 func (l *Loop) claimFromQueue(ctx context.Context, qc queueClaimer, nodeID string, free int) bool {
+	// the validations waiting, read before any claim: a claimed one
+	// leaves the read (it lists requested runs only), so the run a
+	// queued validation names is found here
+	seen := l.validationsWaiting(ctx, nodeID)
+	l.mu.Lock()
+	l.queueSeen = seen
+	l.mu.Unlock()
 	for i := 0; i < free; i++ {
 		kind := ""
 		if !l.anyAccount(ctx) {
@@ -154,7 +171,9 @@ func (l *Loop) startQueued(ctx context.Context, nodeID string, job gateway.JobBr
 	case queuePlan:
 		l.startQueuedPlan(ctx, nodeID, job.Subject.ID)
 	case queueValidate:
-		l.startQueuedMain(ctx, nodeID, job.Subject.ID)
+		l.startQueuedValidation(ctx, nodeID, job.Subject.Type, job.Subject.ID)
+	case queueResearch:
+		l.startQueuedResearch(ctx, nodeID, job.Subject.ID)
 	default:
 		l.logf("queue: claimed %s %s %s, a kind this node does not run; its claim lapses", job.Kind, job.Subject.Type, job.Subject.ID)
 	}
@@ -357,21 +376,93 @@ func (l *Loop) queuedGoal(ctx context.Context, goalID string) (gateway.Goal, Sco
 	return gateway.Goal{}, Scope{}, false
 }
 
-func (l *Loop) startQueuedMain(ctx context.Context, nodeID, itemID string) {
+// queueReadTries and queueReadWait bound the reads after a claim for a
+// validation the read before it did not show (one requested in between):
+// the read lists requested runs only, so it shows a claimed one only
+// while the read model lags the claim. A validation has no release, so
+// one found late is better than one left to lapse.
+var (
+	queueReadTries = 2
+	queueReadWait  = time.Second
+)
+
+// validationsWaiting is the node's validation read, nil on a node that
+// runs no validation or when the read fails.
+func (l *Loop) validationsWaiting(ctx context.Context, nodeID string) *gateway.MainValidationQueue {
 	gw, ok := l.mainValidation(ctx)
-	if !ok || l.ValidateMain == nil {
-		return
+	if !ok {
+		return nil
 	}
 	q, err := gw.MainValidations(ctx, nodeID)
 	if err != nil {
 		l.logf("queue: read main validations: %v", err)
+		return nil
+	}
+	return &q
+}
+
+// startQueuedValidation starts the validation the one claim handed this
+// node — a merged item's, a merge batch candidate's or a hand-opened pull
+// request's — as its own pass would, with no claim of its own: the one
+// claim already made it. A validation has no release command, so one the
+// node cannot find in its queue read after queueReadTries lapses on the
+// platform's timer, logged.
+func (l *Loop) startQueuedValidation(ctx context.Context, nodeID, subject, id string) {
+	gw, ok := l.mainValidation(ctx)
+	if !ok {
+		l.logf("queue: claimed %s validation %s, but this node runs no validation; its claim lapses", subject, id)
 		return
 	}
-	for _, r := range q.Requests {
-		if r.WorkItemID != itemID {
+	pgw, takesPRs := l.pullRequestValidation(ctx, gw)
+	// giveBack fails the claim with why the node cannot run it — never a
+	// red verdict — which frees it for the next node at once
+	giveBack := func(why string) {
+		label := fmt.Sprintf("queue: %s validation %s", subject, id)
+		reason := refusedCannotRun(why)
+		var err error
+		switch subject {
+		case subjectCandidate:
+			err = gw.FailMergeBatchValidation(ctx, id, nodeID, reason)
+		case subjectPullRequest:
+			if !takesPRs {
+				l.logf("%s: %s; its claim lapses (no pull request fail on this platform)", label, why)
+				return
+			}
+			err = pgw.FailPullRequestValidation(ctx, id, nodeID, reason)
+		default:
+			err = gw.FailWorkItemMainValidation(ctx, id, reason)
+		}
+		l.logf("%s: %s; handed back", label, why)
+		_ = handInRefused(l.logf, nil, label, "Fail"+subject+"Validation", err)
+	}
+	switch {
+	case subject == subjectPullRequest && !takesPRs:
+		giveBack("this node validates no pull request")
+		return
+	case subject == subjectCandidate && l.ValidateBatch == nil,
+		(subject == subjectMain || subject == "") && l.ValidateMain == nil:
+		giveBack("this node validates no " + subject)
+		return
+	}
+	l.mu.Lock()
+	q := l.queueSeen
+	l.mu.Unlock()
+	for try := 0; try <= queueReadTries; try++ {
+		if try > 0 {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(queueReadWait):
+			}
+			q = l.validationsWaiting(ctx, nodeID)
+		}
+		if q == nil {
 			continue
 		}
-		j := requestJob(l, gw, r, nodeID)
+		j, found := queuedValidationJob(l, gw, pgw, *q, subject, id, nodeID)
+		if !found {
+			continue
+		}
 		// the one claim already claimed it: the job starts with no claim
 		// of its own
 		j.claim = func(context.Context) error { return nil }
@@ -379,7 +470,96 @@ func (l *Loop) startQueuedMain(ctx context.Context, nodeID, itemID string) {
 		l.startMainJob(ctx, j, false)
 		return
 	}
-	// the queue read lags the claim by a step: the claim lapses on the
-	// platform's timer and the validation is offered again
-	l.logf("queue: claimed main validation of item %s is not in this node's queue yet; its claim lapses", itemID)
+	giveBack(fmt.Sprintf("not in this node's validation read, before the claim or %d after", queueReadTries))
+}
+
+// queuedValidationJob finds the queued validation in the node's queue
+// read, as its pass builds it.
+func queuedValidationJob(l *Loop, gw mainValidationGateway, pgw pullRequestValidationGateway, q gateway.MainValidationQueue, subject, id, nodeID string) (mainJob, bool) {
+	switch subject {
+	case subjectMain, "":
+		for _, r := range q.Requests {
+			if r.WorkItemID == id {
+				return requestJob(l, gw, r, nodeID), true
+			}
+		}
+	case subjectCandidate:
+		for _, b := range q.Batches {
+			if b.MergeBatchID == id {
+				return batchJob(l, gw, b, nodeID), true
+			}
+		}
+	case subjectPullRequest:
+		for _, p := range q.PullRequests {
+			if p.PullRequestValidationID == id {
+				return pullRequestJob(l, gw, pgw, p, nodeID), true
+			}
+		}
+	}
+	return mainJob{}, false
+}
+
+// startQueuedResearch runs the director on the direction the one claim
+// handed this node, as researchDue would after its own claim. One the
+// node cannot run it hands back as the director hands back a refused
+// research: an empty hand-in at no cost, its note saying why, which lets
+// the claim go rather than hold it for the platform's timer.
+func (l *Loop) startQueuedResearch(ctx context.Context, nodeID, directionID string) {
+	giveBack := func(why string) {
+		label := "queue: research of direction " + directionID
+		l.logf("%s: %s; handed back", label, why)
+		_ = handInRefused(l.logf, nil, label, "RecordDirectionResearch",
+			l.GW.RecordDirectionResearch(ctx, directionID, nodeID, gateway.Research{}, 0, refusedCannotRun(why), nil))
+	}
+	if l.Research == nil || !l.takesKind(harness.KindResearch) {
+		giveBack("this node takes no research")
+		return
+	}
+	for _, sc := range l.CurrentScopes() {
+		directions, err := l.GW.Directions(ctx, sc.ID, "")
+		if err != nil {
+			l.logf("queue: list directions of %s: %v", sc.Name(), err)
+			continue
+		}
+		for _, d := range directions {
+			if d.ID != directionID {
+				continue
+			}
+			projects, err := l.GW.Projects(ctx, sc.ID)
+			if err != nil {
+				giveBack(fmt.Sprintf("list projects of %s: %v", sc.Name(), err))
+				return
+			}
+			var p gateway.Project
+			for _, pr := range projects {
+				if pr.ID == d.ProjectID {
+					p = pr
+				}
+			}
+			if p.ID == "" {
+				giveBack("its project is not one this node can see")
+				return
+			}
+			actx, ok := l.accountFor(ctx, "", false, "")
+			if !ok {
+				giveBack("no account has room for a research session")
+				return
+			}
+			l.mu.Lock()
+			if l.researching == nil {
+				l.researching = map[string]bool{}
+			}
+			if l.researching[d.ID] {
+				l.mu.Unlock()
+				return
+			}
+			l.researching[d.ID] = true
+			l.mu.Unlock()
+			l.logf("%s: researching %q (claimed from the queue)", sc.Name(), p.Slug+"/"+d.Slug)
+			l.recordClaim(ClaimRecord{NodeID: nodeID, Kind: harness.KindResearch, DirectionID: d.ID, ScopeID: sc.ID, Name: p.Slug + "/" + d.Slug})
+			l.startResearch(actx, d, p, sc)
+			return
+		}
+	}
+	giveBack("the direction is in no org this node serves")
 }

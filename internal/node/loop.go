@@ -299,6 +299,9 @@ type Loop struct {
 	evaluating  map[string]bool
 	planning    map[string]bool
 	researching map[string]bool
+	// queueSeen is the validation read the one claim took before its
+	// claims this tick (claimFromQueue)
+	queueSeen *gateway.MainValidationQueue
 	// threading is the thread turns this node is answering, by turn id.
 	threading map[string]bool
 	// threadKinds is the platform's job-kind catalogue, read at most
@@ -1331,18 +1334,24 @@ func (l *Loop) Tick(ctx context.Context) {
 			// candidate waits, a hand-opened pull request never
 			// (laneTakes). It says why when it skips (low disk or
 			// memory among them)
-			inUse += l.validateBatches(ctx, l.Capacity()-inUse, lanes.Validate-l.ValidatingInLane())
 			// the one claim (queueclaim.go): Mesh orders builds,
-			// evaluations, rebases, main validations and plans across
-			// kinds; with it the node's own per-kind passes stand down
+			// evaluations, rebases, validations of every subject, plans and
+			// research across kinds; with it the node's own per-kind passes
+			// stand down, and so do the lanes — Mesh ranks validations
+			// first, and a lane the queue cannot fill would sit idle
 			qc, qnode, queued := l.queueOn()
+			if queued {
+				lanes = Reserve{}
+			} else {
+				inUse += l.validateBatches(ctx, l.Capacity()-inUse, lanes.Validate-l.ValidatingInLane())
+			}
 			if !low {
 				if !queued {
 					l.evaluateHeld(ctx)
 					l.rebaseRequested(ctx)
 					l.planRequested(ctx)
+					l.researchDue(ctx)
 				}
-				l.researchDue(ctx)
 				l.threadsDue(ctx)
 			}
 			// a build never takes a lane: the validation lane while no
@@ -1381,14 +1390,23 @@ func (l *Loop) Tick(ctx context.Context) {
 				if !l.claimFromQueue(ctx, qc, qnode, slots) {
 					// the platform has no one claim after all: this tick
 					// claims kind by kind
+					n := l.validateBatches(ctx, free, 0)
+					free, normalFree = free-n, normalFree-n
 					l.evaluateHeld(ctx)
 					l.rebaseRequested(ctx)
 					l.planRequested(ctx)
+					l.researchDue(ctx)
 					if (free > 0 || l.buildCapped()) && !l.hostHot() {
 						l.claimReady(ctx, free, normalFree, claimRank)
 					}
-				} else if l.atMin() && (free > 0 || l.buildCapped()) && !l.hostHot() {
-					l.claimReady(ctx, free, normalFree, claimRank)
+				} else if l.atMin() && !l.hostHot() {
+					// the queue was asked for nothing: validations, which
+					// a node at its min still takes, come by their pass
+					n := l.validateBatches(ctx, free, 0)
+					free, normalFree = free-n, normalFree-n
+					if free > 0 || l.buildCapped() {
+						l.claimReady(ctx, free, normalFree, claimRank)
+					}
 				}
 			case (free > 0 || l.buildCapped()) && !l.hostHot() && !low:
 				l.claimReady(ctx, free, normalFree, claimRank)
