@@ -618,6 +618,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 			handInRefused(r.logf, nil, label, "ReleaseWorkItem", r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason))
 			return end(nil)
 		}
+		job.BriefServers = briefServers(ctx, r.GW, BuildKind, item.ID)
 		closeProxy, err := st.UseVia(r.Proxies, mcpRootFor(r.Layout, item.ID), &job, mcp, acct)
 		if err != nil {
 			return end(r.fail(ctx, item, fmt.Errorf("tools: %w", err)))

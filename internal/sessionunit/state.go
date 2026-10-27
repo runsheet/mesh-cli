@@ -107,6 +107,16 @@ type Proxy struct {
 	// Servers are the server names the session reaches through it,
 	// sorted.
 	Servers []string `json:"servers"`
+	// Named are the servers the job's brief named beyond the built-in
+	// (name and URL), for the node that adopts the session to front
+	// them again; the brief is not read twice.
+	Named []NamedServer `json:"named,omitempty"`
+}
+
+// NamedServer is one MCP server a job's brief names.
+type NamedServer struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
 }
 
 // WriteState writes st to dir/state.json atomically: a temporary file

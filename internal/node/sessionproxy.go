@@ -162,9 +162,9 @@ func upstreamsOf(specs map[string]tools.UpstreamSpec, builtinURL string, bearer 
 		switch {
 		case name == tools.Builtin:
 			ups[name] = sessionproxy.Runsheet{URL: builtinURL, Bearer: bearer, Key: key}
-		case name == tools.Mesh && sp.Transport == "":
-			// the Mesh server (ADR 069): the session's own bearer, signed
-			// with its own key, on /mesh/mcp
+		case sp.Session:
+			// a server the job's brief names: the session's own bearer,
+			// signed with its own key, as the built-in is
 			ups[name] = sessionproxy.Runsheet{URL: sp.URL, Bearer: bearer, Key: key}
 		case sp.Transport == tools.Local:
 			ups[name] = sessionproxy.Local{Command: sp.Command, Args: sp.Args, Env: sp.Env, Secrets: sp.Secrets}
@@ -201,9 +201,13 @@ func (px *SessionProxies) Adopt(st sessionunit.State, builtin map[string]any, us
 	if err != nil {
 		return nil, nil, err
 	}
-	adoptMeta := harness.SessionMeta{NodeID: st.NodeID, ItemID: st.ItemID, GoalID: st.GoalID, DirectionID: st.DirectionID, Attempt: st.Attempt}
-	if px.keyOf(adoptMeta) != nil {
-		tools.WithMesh(nil, specs, url, nil)
+	if px.keyOf(harness.SessionMeta{NodeID: st.NodeID, ItemID: st.ItemID, GoalID: st.GoalID, DirectionID: st.DirectionID, Attempt: st.Attempt}) != nil {
+		// the servers the job's brief named, as the session's state kept them
+		named := make([]tools.Server, 0, len(st.Proxy.Named))
+		for _, n := range st.Proxy.Named {
+			named = append(named, tools.Server{Name: n.Name, URL: n.URL})
+		}
+		tools.WithServers(nil, specs, named, nil)
 	}
 	named := make(map[string]tools.UpstreamSpec, len(st.Proxy.Servers))
 	serveNode := false
@@ -273,11 +277,12 @@ func (st SessionTools) UseVia(px *SessionProxies, root string, job *harness.Job,
 	if err != nil {
 		return noop, err
 	}
-	// the Mesh server only for a session on its own mesh session: the
-	// operator's bearer is refused there (runsheet ADR 069)
-	withMesh := px.keyOf(job.Meta) != nil
-	if withMesh {
-		tools.WithMesh(nil, specs, url, nil)
+	// the servers the job's brief names (the platform's claimJob answer),
+	// only for a session on its own mesh session: they serve apps and
+	// sessions, and refuse the node operator's bearer
+	var added []string
+	if px.keyOf(job.Meta) != nil {
+		added = tools.WithServers(nil, specs, job.BriefServers, nil)
 	}
 	if sp, err = px.open(job, root, url, specs); err != nil {
 		return noop, err
@@ -287,8 +292,8 @@ func (st SessionTools) UseVia(px *SessionProxies, root string, job *harness.Job,
 		sp.Close()
 		return noop, err
 	}
-	if withMesh {
-		tools.WithMesh(servers, map[string]tools.UpstreamSpec{}, url, shim)
+	for _, name := range added {
+		servers[name] = shim(name)
 	}
 	st.serveNodeTools(sp, servers, shim, job)
 	job.MCPServers = servers

@@ -72,6 +72,15 @@ type JobBrief struct {
 	// Thread is a thread job's turn: the product, the role, the project
 	// and the transcript it is answered from; nil for any other job.
 	Thread *JobThread `json:"thread,omitempty"`
+	// MCP are the MCP servers the job's session reaches, each by name
+	// and URL, as the platform names them.
+	MCP []JobMCP `json:"mcp,omitempty"`
+}
+
+// JobMCP is one MCP server a brief names.
+type JobMCP struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
 }
 
 // JobThread is a thread turn as the brief carries it.

@@ -7,20 +7,20 @@ import (
 	"projectmesh.io/mesh-cli/internal/tools"
 )
 
-// The Mesh server is reached as the built-in is: the session's own
-// bearer and key, on /mesh/mcp (runsheet ADR 069 step 4).
-func TestUpstreamsOfMesh(t *testing.T) {
-	specs := map[string]tools.UpstreamSpec{tools.Builtin: {URL: "https://api.runsheet.dev/mcp"}}
-	tools.WithMesh(nil, specs, "https://api.runsheet.dev/mcp", nil)
-	ups := upstreamsOf(specs, "https://api.runsheet.dev/mcp", nil, nil)
-	m, ok := ups[tools.Mesh].(sessionproxy.Runsheet)
+// A server the job's brief names is reached as the built-in is: the
+// session's own bearer and key, at the URL the brief gives.
+func TestUpstreamsOfBriefServer(t *testing.T) {
+	specs := map[string]tools.UpstreamSpec{tools.Builtin: {URL: "https://platform.test/mcp"}}
+	added := tools.WithServers(nil, specs, []tools.Server{{Name: "jobs", URL: "https://platform.test/jobs/mcp"}}, nil)
+	if len(added) != 1 || added[0] != "jobs" {
+		t.Fatalf("added %v", added)
+	}
+	ups := upstreamsOf(specs, "https://platform.test/mcp", nil, nil)
+	m, ok := ups["jobs"].(sessionproxy.Runsheet)
 	if !ok {
-		t.Fatalf("mesh upstream %T, want sessionproxy.Runsheet", ups[tools.Mesh])
+		t.Fatalf("jobs upstream %T, want the session's own bearer (sessionproxy.Runsheet)", ups["jobs"])
 	}
-	if m.URL != "https://api.runsheet.dev/mesh/mcp" {
-		t.Fatalf("mesh upstream at %q", m.URL)
-	}
-	if b, _ := ups[tools.Builtin].(sessionproxy.Runsheet); b.URL != "https://api.runsheet.dev/mcp" {
-		t.Fatalf("built-in at %q", b.URL)
+	if m.URL != "https://platform.test/jobs/mcp" {
+		t.Fatalf("jobs upstream at %q", m.URL)
 	}
 }

@@ -114,13 +114,11 @@ var HostedFinishTools = []string{
 	"mcp__" + BuiltinMCP + "__mesh_fail",
 }
 
-// MeshFinishTools are the Mesh server's tools a build session is not
-// allowed when it has that server (runsheet ADR 069): its failure and
-// its release are the node's, on the node's own credential.
-var MeshFinishTools = []string{
-	"mcp__" + MeshMCP + "__mesh_fail",
-	"mcp__" + MeshMCP + "__mesh_release",
-}
+// jobFinishTools are the job tools a build session may not call on any
+// server its brief names (Job.BriefServers): its failure and its release
+// are the node's, on the node's own credential. Tool names of the job
+// system's own (mesh_*), never a product's.
+var jobFinishTools = []string{"mesh_fail", "mesh_release"}
 
 // HostedVerdictTools are the hosted runsheet tools an evaluation
 // session is not allowed: its verdict is the node's mesh_result
@@ -139,10 +137,16 @@ func HostedDisallowed(job Job) []string {
 	}
 	switch job.Kind {
 	case KindBuild:
-		if _, mesh := job.MCPServers[MeshMCP]; mesh {
-			return append(append([]string(nil), HostedFinishTools...), MeshFinishTools...)
+		out := append([]string(nil), HostedFinishTools...)
+		for _, srv := range job.BriefServers {
+			if _, ok := job.MCPServers[srv.Name]; !ok {
+				continue
+			}
+			for _, tool := range jobFinishTools {
+				out = append(out, "mcp__"+srv.Name+"__"+tool)
+			}
 		}
-		return HostedFinishTools
+		return out
 	case KindEvaluate:
 		return HostedVerdictTools
 	}

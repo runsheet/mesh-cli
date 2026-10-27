@@ -319,6 +319,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	defer unlessDetached(ctx, func() { RemoveScratch(scratch) })
 	acct.SetContextBytes(written.Bytes)
 	acct.Apply(&job)
+	job.BriefServers = briefServers(ctx, d.GW, ResearchKind, direction.ID)
 	closeProxy, err := st.UseVia(d.Proxies, mcpRootFor(d.Layout, direction.ID), &job, d.MCP, acct)
 	if err != nil {
 		return d.emptyResearch(ctx, direction, project, scope, fmt.Errorf("tools: %w", err), "tools: "+err.Error())
