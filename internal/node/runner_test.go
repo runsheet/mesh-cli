@@ -242,7 +242,9 @@ func TestRunnerFailsWhenTheTokenIsRefused(t *testing.T) {
 // prepares the branch and reads its diff, and its session carries it.
 func TestEvaluatorRunsOnTheItemsToken(t *testing.T) {
 	h := &fakeHarness{text: "Fine.\nVERDICT: PASS"}
-	r, ws, item, row := runnerOn(t, h, nil)
+	f := seed(t)
+	f.HandedInVerdicts = map[string]map[string]any{item1: {"passed": true, "notes": "Fine."}}
+	r, ws, item, row := runnerOnFake(t, f, h, nil)
 	if err := r.RunItem(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
@@ -363,7 +365,8 @@ func TestSessionsRunOnTheItemsModel(t *testing.T) {
 				mg.agents[agent] = c.agentModel
 			}
 			f := seed(t)
-			r, ws, item, row := runnerOnFake(t, f, h, func(g Gateway) Gateway { mg.Gateway = g; return mg })
+			f.HandedInVerdicts = map[string]map[string]any{item1: {"passed": true, "notes": "Fine."}}
+			r, ws, item, _ := runnerOnFake(t, f, h, func(g Gateway) Gateway { mg.Gateway = g; return mg })
 			var logs strings.Builder
 			r.Log = log.New(&logs, "", 0)
 			r.Model = c.nodeBuild
@@ -402,8 +405,8 @@ func TestSessionsRunOnTheItemsModel(t *testing.T) {
 			if len(mg.notes) == 0 || mg.notes[0] != "session started: mesh/ship-it-1 on "+build {
 				t.Fatalf("first progress note: %q", mg.notes)
 			}
-			if got := row(item1)["evaluation"]; got != "Fine.\n\nevaluators: one — normal/low goal, no protected path\n(evaluated on "+eval+")" {
-				t.Fatalf("evaluation = %q", got)
+			if got := evaluationClosed(t, f)["notes"]; got != "(evaluated on Claude "+eval+")" {
+				t.Fatalf("notes tail = %q", got)
 			}
 
 			// a rebase works on the builder's branch, so on its model

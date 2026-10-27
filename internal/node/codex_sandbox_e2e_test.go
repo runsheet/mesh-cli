@@ -133,7 +133,7 @@ func codexPodEvaluation(t *testing.T, rt sandbox.Runtime, image string, cred gat
 	ev := &Evaluator{GW: gw, Harness: claude, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MaxBudgetUSD: 2, Model: "sonnet",
 		Sandbox: sb, Declines: &Declines{}, Timeout: 10 * time.Minute,
 		Codex: ObserveLimits(codex, limits), CodexPreflight: codex.Preflight, CodexModel: CodexConfig{}.CodexModel,
-		CodexAccounts: loop.CodexCandidates, Waits: &OncePer{}, Blind: &OncePer{}, NoVerdict: &OncePer{}, Limits: limits,
+		CodexAccounts: loop.CodexCandidates, Waits: &OncePer{}, NoVerdict: &OncePer{}, Limits: limits,
 		Thresholds:  func() LimitsConfig { return LimitsConfig{} },
 		Credentials: &Credentials{GW: gw, Limits: limits, Known: known, Log: logger}, Log: logger}
 
@@ -153,20 +153,17 @@ func codexPodEvaluation(t *testing.T, rt sandbox.Runtime, image string, cred gat
 	if len(claude.jobs) != 0 {
 		t.Fatalf("the evaluation ran on Claude, not Codex:\n%s", logs)
 	}
-	calls := f.CallsNamed("evaluateWorkItem")
-	if len(calls) != 1 {
-		t.Fatalf("evaluateWorkItem calls: %+v\n%s", calls, logs)
+	// the session handed its verdict to the product's tool; the node
+	// closed the job with its notes tail (runsheet ADR 077)
+	if n := nodeVerdicts(f); n != 0 {
+		t.Fatalf("the node handed in a verdict of its own: %d\n%s", n, logs)
 	}
-	in := calls[0].Input
-	if nv, _ := in["noVerdict"].(bool); nv {
-		t.Fatalf("no verdict recorded: %v\n%s", in["noVerdictReason"], logs)
-	}
-	passed, ok := in["passed"].(bool)
-	if !ok {
-		t.Fatalf("no verdict in %+v", in)
-	}
+	in := evaluationClosed(t, f)
 	notes, _ := in["notes"].(string)
-	t.Logf("verdict recorded: passed=%v; notes: %s", passed, firstLine(notes))
+	if !strings.Contains(notes, "(evaluated on Codex") {
+		t.Fatalf("notes tail %q does not name Codex\n%s", notes, logs)
+	}
+	t.Logf("evaluation closed; notes tail: %s", firstLine(notes))
 
 	u := usageOf(t, f)
 	rec, _ := json.Marshal(u)

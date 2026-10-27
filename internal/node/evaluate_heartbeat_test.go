@@ -19,9 +19,9 @@ import (
 // output, stopped on every way out, a refused beat a lost claim.
 
 // beatGateway records, in order, every heartbeat the evaluator sends
-// and every command that ends its hold on the item — the verdict, the
-// no-verdict, the release — and when, whether or not the platform took
-// it.
+// and every command that ends its hold on the item — the job's close,
+// the node's own verdict or no-verdict, the release — and when, whether
+// or not the platform took it.
 type beatGateway struct {
 	Gateway
 	mu     sync.Mutex
@@ -53,6 +53,11 @@ func (g *beatGateway) EvaluateWorkItem(ctx context.Context, itemID string, passe
 func (g *beatGateway) EvaluateWorkItemNoVerdict(ctx context.Context, itemID, reason string, costCents int, usage *gateway.UsageReport, choice gateway.EvaluateChoice) error {
 	g.record("no-verdict", "")
 	return g.Gateway.EvaluateWorkItemNoVerdict(ctx, itemID, reason, costCents, usage, choice)
+}
+
+func (g *beatGateway) FinishJob(ctx context.Context, nodeID, kind string, subject gateway.JobSubject, finish map[string]any) (map[string]any, error) {
+	g.record("close", "")
+	return g.Gateway.FinishJob(ctx, nodeID, kind, subject, finish)
 }
 
 func (g *beatGateway) ReleaseWorkItem(ctx context.Context, itemID, nodeID, note string) error {
@@ -132,10 +137,11 @@ func heartbeatFixture(t *testing.T, d time.Duration, text string) (*gatewaytest.
 }
 
 // The heartbeat starts with the evaluation, beats through the session
-// with the phase in its note and cents 0, and stops before the verdict:
-// none after it, nor after Evaluate returns.
-func TestEvaluationHeartbeatRunsClaimToVerdict(t *testing.T) {
+// with the phase in its note and cents 0, and stops before the node
+// closes the job: none after it, nor after Evaluate returns.
+func TestEvaluationHeartbeatRunsClaimToClose(t *testing.T) {
 	f, bg, ev, logs := heartbeatFixture(t, 300*time.Millisecond, "Holds.\n\nVERDICT: PASS")
+	f.HandedInVerdicts = map[string]map[string]any{item1: {"passed": true, "notes": "Holds."}}
 	if err := ev.Evaluate(context.Background(), gatewaytestItem(f, item1)); err != nil {
 		t.Fatalf("evaluate: %v\n%s", err, logs)
 	}
@@ -144,7 +150,7 @@ func TestEvaluationHeartbeatRunsClaimToVerdict(t *testing.T) {
 	if n := bg.beats(); n < 5 {
 		t.Errorf("%d heartbeats over a 300ms session at 20ms, want at least 5: %+v", n, bg.snapshot())
 	}
-	bg.assertNoBeatAfter(t, "verdict", returned)
+	bg.assertNoBeatAfter(t, "close", returned)
 	sawSession := false
 	for _, ev := range bg.snapshot() {
 		if ev.name == "beat" && ev.note == "evaluation heartbeat: session" {
@@ -164,17 +170,18 @@ func TestEvaluationHeartbeatRunsClaimToVerdict(t *testing.T) {
 	}
 }
 
-// An evaluation that reaches no verdict stops the heartbeat before the
-// no-verdict goes.
-func TestEvaluationHeartbeatStopsAtNoVerdict(t *testing.T) {
+// A session that hands in no verdict still has the node close its job
+// (refused by the product): the heartbeat stops before that close.
+func TestEvaluationHeartbeatStopsAtAnUnhandedClose(t *testing.T) {
 	f, bg, ev, logs := heartbeatFixture(t, 150*time.Millisecond, "I looked around but say nothing.")
+	f.EvaluationNotHandedIn = "finishJob: call mesh_verdict first"
 	_ = ev.Evaluate(context.Background(), gatewaytestItem(f, item1))
 	returned := time.Now()
 	time.Sleep(100 * time.Millisecond)
 	if bg.beats() == 0 {
 		t.Errorf("no heartbeat during the session: %+v\n%s", bg.snapshot(), logs)
 	}
-	bg.assertNoBeatAfter(t, "no-verdict", returned)
+	bg.assertNoBeatAfter(t, "close", returned)
 }
 
 // A release — the evaluation's checkout could not take its token —

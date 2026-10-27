@@ -169,62 +169,6 @@ func TestCodexEvaluationPreflightsMeshContext(t *testing.T) {
 	}
 }
 
-// `<alias>: not found` (goal evaluation-reports-no-verdict): the
-// context tool answered every call with an error of its own — a
-// mesh_document slug it does not have — so it was reached, and the
-// session's verdict stands; nothing runs on the other family.
-func TestAContextToolThatAnsweredIsAVerdict(t *testing.T) {
-	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "Missing the test.\nVERDICT: FAIL")
-	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
-	codex.tools = map[string]*harness.ToolStat{"runsheet": {Calls: 2, Errors: 2, Answered: 2, FirstError: "not found"}}
-	in := evaluateItem1(t, f, ev)
-	if codex.runs() != 1 || len(claude.jobs) != 0 || in["passed"] != false {
-		t.Fatalf("runs claude %d codex %d, recorded %+v", len(claude.jobs), codex.runs(), in)
-	}
-	if strings.Contains(logs.String(), "saw no context") {
-		t.Fatalf("node.log:\n%s", logs.String())
-	}
-	// one call the tool never answered among them is still an answer
-	f, ev, claude, codex, _, _ = familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "Missing the test.\nVERDICT: FAIL")
-	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
-	codex.tools = map[string]*harness.ToolStat{"runsheet": {Calls: 2, Errors: 2, Answered: 1, FirstError: "timeout"}}
-	if in := evaluateItem1(t, f, ev); len(claude.jobs) != 0 || in["passed"] != false {
-		t.Fatalf("runs claude %d, recorded %+v", len(claude.jobs), in)
-	}
-	// none answered: no context, as before
-	f, ev, claude, codex, _, _ = familyFixture(t, "normal", "sonnet", "Holds.\nVERDICT: PASS", "VERDICT: FAIL")
-	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
-	codex.tools = map[string]*harness.ToolStat{"runsheet": {Calls: 2, Errors: 2, FirstError: "MCP tool call requires approval, but approval policy is never"}}
-	if in := evaluateItem1(t, f, ev); len(claude.jobs) != 1 || in["passed"] != true {
-		t.Fatalf("runs claude %d, recorded %+v", len(claude.jobs), in)
-	}
-}
-
-// The same, driven by the stream the mini recorded
-// (harness/testdata/codex_mcp_not_found.jsonl): its only context call
-// was answered `not found`. The mini's session named the built-in by its
-// old name (tools.BuiltinAlias); a live session names it `runsheet`, so the
-// parsed stat is the built-in's here. The Codex verdict is recorded as
-// it stands — no `no verdict — ` head, nothing on Claude.
-func TestAContextToolThatAnsweredNotFoundKeepsItsVerdict(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "harness", "testdata", "codex_mcp_not_found.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	stream := strings.ReplaceAll(string(raw), "{{alias}}", tools.BuiltinAlias())
-	parsed := harness.ParseCodexStream(strings.NewReader(stream), "gpt-6-luna", nil)
-	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "Missing the test.\nVERDICT: FAIL")
-	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
-	codex.tools = map[string]*harness.ToolStat{tools.Builtin: parsed.Tools[tools.BuiltinAlias()]}
-	in := evaluateItem1(t, f, ev)
-	if codex.runs() != 1 || len(claude.jobs) != 0 || in["passed"] != false {
-		t.Fatalf("runs claude %d codex %d, recorded %+v", len(claude.jobs), codex.runs(), in)
-	}
-	if notes, _ := in["notes"].(string); strings.Contains(notes, "no verdict — ") || !strings.Contains(notes, "Missing the test.") {
-		t.Fatalf("notes %q", notes)
-	}
-}
-
 // The Claude evaluation job's rendered mcpServers — what `claude -p
 // --mcp-config` reads — carry runsheet at the gateway's /mcp with
 // the node's bearer.

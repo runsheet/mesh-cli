@@ -35,21 +35,6 @@ func TestSecondOpinionGlobMatch(t *testing.T) {
 	}
 }
 
-// The checkout's .mesh/config.yml second_opinion; anything else is the
-// rule.
-func TestSecondOpinionSetting(t *testing.T) {
-	dir := t.TempDir()
-	if got := secondOpinionSetting(dir); got != "rule" {
-		t.Fatalf("no file: %q", got)
-	}
-	for body, want := range map[string]string{"second_opinion: always\n": "always", "second_opinion: rule\n": "rule", "second_opinion: sometimes\n": "rule", "other: 1\n": "rule", ":\n- not yaml": "rule"} {
-		writeMeshConfig(t, dir, body)
-		if got := secondOpinionSetting(dir); got != want {
-			t.Errorf("%q: %q, want %q", body, got, want)
-		}
-	}
-}
-
 func writeMeshConfig(t *testing.T, dir, body string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(dir, ".mesh"), 0o755); err != nil {
@@ -84,12 +69,12 @@ const correctnessFail = "No test covers it.\nFAILED: the evaluator has a test ||
 // second_opinion; absent or unreadable is none.
 func TestSecondOpinionCheckoutProtectedPaths(t *testing.T) {
 	dir := t.TempDir()
-	if got := readCheckoutConfig(dir); got.ProtectedPaths != nil || got.setting() != "rule" {
+	if got := readCheckoutConfig(dir); got.ProtectedPaths != nil {
 		t.Fatalf("no file: %+v", got)
 	}
 	writeMeshConfig(t, dir, "second_opinion: always\nprotected_paths:\n  - schema.json\n  - db/**\n")
 	got := readCheckoutConfig(dir)
-	if got.setting() != "always" || strings.Join(got.ProtectedPaths, ",") != "schema.json,db/**" {
+	if strings.Join(got.ProtectedPaths, ",") != "schema.json,db/**" {
 		t.Fatalf("read %+v", got)
 	}
 	writeMeshConfig(t, dir, ":\n- not yaml")

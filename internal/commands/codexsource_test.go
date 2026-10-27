@@ -71,7 +71,7 @@ func TestCodexFromNeither(t *testing.T) {
 	if second.codex != nil || second.h != nil {
 		t.Fatal("a Codex evaluator built with no codex anywhere")
 	}
-	if second.blind == nil || second.noVerdict == nil || second.left == nil {
+	if second.noVerdict == nil || second.left == nil {
 		t.Fatal("no Claude evaluation's once-per records without codex")
 	}
 	if len(lines) != 1 || !strings.HasPrefix(lines[0], "codex: no Codex evaluations: neither the node image nor the host has codex") {

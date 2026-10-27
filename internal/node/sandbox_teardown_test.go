@@ -108,8 +108,8 @@ func TestSandboxTeardownEvaluationFinish(t *testing.T) {
 	if err := ev.Evaluate(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
-	if n := len(f.CallsNamed("evaluateWorkItem")); n != 1 {
-		t.Fatalf("evaluateWorkItem calls = %d", n)
+	if n := evaluateJobsClosed(f); n != 1 || len(f.CallsNamed("evaluateWorkItem")) != 0 {
+		t.Fatalf("evaluate jobs closed = %d, node verdicts = %d", n, len(f.CallsNamed("evaluateWorkItem")))
 	}
 	assertTornDown(t, rt, sb)
 }

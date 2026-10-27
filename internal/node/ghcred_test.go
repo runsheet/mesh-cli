@@ -187,7 +187,9 @@ func TestCredentialRefusalLogNamesRepoAndExpiryNotToken(t *testing.T) {
 func TestEvaluatorRetriesAFetchRefusedOnceWithAFreshToken(t *testing.T) {
 	noSleep(t)
 	h := &fakeHarness{text: "Fine.\nVERDICT: PASS"}
-	r, fws, item, row := runnerOn(t, h, nil)
+	f := seed(t)
+	f.HandedInVerdicts = map[string]map[string]any{item1: {"passed": true, "notes": "Fine."}}
+	r, fws, item, row := runnerOnFake(t, f, h, nil)
 	if err := r.RunItem(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}

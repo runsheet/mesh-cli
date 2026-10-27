@@ -319,6 +319,9 @@ func evalFake(t *testing.T) (*gatewaytest.Fake, *Config) {
 	f.WorkItems[item1]["status"] = "evaluating"
 	f.WorkItems[item1]["nodeId"] = cfg.NodeID
 	f.WorkItems[item1]["branch"] = "mesh/ship-it-1"
+	// the verdict the session hands to the product's tool, applied when
+	// the node closes the job
+	f.HandedInVerdicts = map[string]map[string]any{item1: {"passed": true, "notes": "It holds."}}
 	return f, cfg
 }
 
@@ -338,7 +341,7 @@ func adoptedNotes(f *gatewaytest.Fake) int {
 // this node's — whose session never opened when the self-update swaps:
 // no claim file is written for it (the platform's record is its
 // record), and the next process's tick evaluates it from that record —
-// one session, one evaluateWorkItem, nothing adopted.
+// one session, one close, nothing adopted.
 func TestSelfUpdateRerunsAnUnopenedHeldEvaluation(t *testing.T) {
 	f, cfg := evalFake(t)
 	root := t.TempDir()
@@ -350,8 +353,8 @@ func TestSelfUpdateRerunsAnUnopenedHeldEvaluation(t *testing.T) {
 	waitFor(t, func() bool { return blocked.opened.Load() == 1 })
 	selfUpdateSwap(t, f, loop1, logs1)
 	loop1.wg.Wait()
-	if len(h1.jobs) != 0 || len(f.CallsNamed("evaluateWorkItem")) != 0 {
-		t.Fatalf("evaluated before the swap: %d jobs, %d verdicts", len(h1.jobs), len(f.CallsNamed("evaluateWorkItem")))
+	if len(h1.jobs) != 0 || evaluateJobsClosed(f) != 0 {
+		t.Fatalf("evaluated before the swap: %d jobs, %d closes", len(h1.jobs), evaluateJobsClosed(f))
 	}
 	if f.Item(item1)["status"] != "evaluating" || f.Item(item1)["nodeId"] != cfg.NodeID {
 		t.Fatalf("item after the swap: %v", f.Item(item1))
@@ -376,8 +379,8 @@ func TestSelfUpdateRerunsAnUnopenedHeldEvaluation(t *testing.T) {
 	if n := len(h2.jobs); n != 1 {
 		t.Fatalf("sessions on the new process: %d, want 1", n)
 	}
-	if calls := f.CallsNamed("evaluateWorkItem"); len(calls) != 1 || calls[0].Input["aggregateId"] != item1 || calls[0].Input["passed"] != true {
-		t.Fatalf("evaluateWorkItem calls: %+v", calls)
+	if n := evaluateJobsClosed(f); n != 1 || nodeVerdicts(f) != 0 || f.Item(item1)["status"] != "review" {
+		t.Fatalf("evaluate jobs closed %d, item %v", n, f.Item(item1))
 	}
 	if n := adoptedNotes(f); n != 0 {
 		t.Fatalf("an unopened evaluation was reported adopted: %d", n)
@@ -411,7 +414,7 @@ func TestSelfUpdateAdoptsAnOpenedEvaluation(t *testing.T) {
 	if syscall.Kill(pid, 0) != nil {
 		t.Fatalf("the evaluation (pid %d) died with its node", pid)
 	}
-	if n := len(f.CallsNamed("evaluateWorkItem")); n != 0 {
+	if n := evaluateJobsClosed(f); n != 0 {
 		t.Fatalf("evaluated before the swap: %d", n)
 	}
 	if claims, _ := FindClaims(root, []string{cfg.NodeID}); len(claims) != 0 {
@@ -431,7 +434,7 @@ func TestSelfUpdateAdoptsAnOpenedEvaluation(t *testing.T) {
 	// the tick sees item 1 in evaluating, held here, and leaves it to
 	// the adopted session
 	loop2.Tick(ctx)
-	waitFor(t, func() bool { return len(f.CallsNamed("evaluateWorkItem")) > 0 })
+	waitFor(t, func() bool { return evaluateJobsClosed(f) > 0 })
 	loop2.wg.Wait()
 	if n := adoptedNotes(f); n != 1 {
 		t.Fatalf("'session adopted by the restarted node' notes: %d\n%s", n, logs2.String())
@@ -439,7 +442,7 @@ func TestSelfUpdateAdoptsAnOpenedEvaluation(t *testing.T) {
 	if n := claude.starts.Load(); n != 1 {
 		t.Fatalf("claude started %d times", n)
 	}
-	if calls := f.CallsNamed("evaluateWorkItem"); len(calls) != 1 || calls[0].Input["aggregateId"] != item1 || calls[0].Input["passed"] != true {
-		t.Fatalf("evaluateWorkItem calls: %+v", calls)
+	if n := evaluateJobsClosed(f); n != 1 || nodeVerdicts(f) != 0 || f.Item(item1)["status"] != "review" {
+		t.Fatalf("evaluate jobs closed %d, item %v", n, f.Item(item1))
 	}
 }

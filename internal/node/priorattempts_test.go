@@ -69,8 +69,8 @@ func TestEvaluatePromptCarriesEarlierAttempts(t *testing.T) {
 			t.Fatalf("prompt lacks %q:\n%s", want, p)
 		}
 	}
-	if len(f.CallsNamed("evaluateWorkItem")) != 3 {
-		t.Fatalf("calls = %+v", f.CallsNamed("evaluateWorkItem"))
+	if len(f.CallsNamed("evaluateWorkItem")) != 2 || evaluateJobsClosed(f) != 3 {
+		t.Fatalf("calls = %+v", f.Calls)
 	}
 }
 
@@ -90,9 +90,8 @@ func TestEvaluateToleratesNoEvaluations(t *testing.T) {
 	if len(h.jobs) != 1 {
 		t.Fatalf("jobs = %d, want 1", len(h.jobs))
 	}
-	calls := f.CallsNamed("evaluateWorkItem")
-	if len(calls) != 3 || calls[2].Input["passed"] != true {
-		t.Fatalf("calls = %+v", calls)
+	if len(f.CallsNamed("evaluateWorkItem")) != 2 || evaluateJobsClosed(f) != 3 {
+		t.Fatalf("calls = %+v", f.Calls)
 	}
 	if !strings.Contains(logs.String(), "earlier evaluations unread") {
 		t.Fatalf("log lacks the unread notice:\n%s", logs.String())

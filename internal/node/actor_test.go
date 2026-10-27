@@ -121,8 +121,8 @@ func (g *actorGW) FinishJob(ctx context.Context, nodeID, kind string, subject ga
 	return g.Gateway.FinishJob(ctx, nodeID, kind, subject, finish)
 }
 
-// An evaluation's evaluateWorkItem acts as agent:evaluator@<slug>, on a
-// verdict and on no verdict alike (ADR-015's amendment 2026-10-03).
+// An evaluation's job close (finishJob) acts as agent:evaluator@<slug>,
+// whatever the session handed the product (ADR-015's amendment 2026-10-03).
 func TestEvaluateActsAsTheEvaluator(t *testing.T) {
 	for _, tc := range []struct{ name, text string }{
 		{"verdict", "It holds.\n\nVERDICT: PASS"},
@@ -147,9 +147,9 @@ func TestEvaluateActsAsTheEvaluator(t *testing.T) {
 			if err := ev.Evaluate(ctx, *item); err != nil {
 				t.Fatal(err)
 			}
-			got := rec.of("evaluateWorkItem")
+			got := rec.of("finishJob")
 			if len(got) != 1 || got[0] != "agent:evaluator@test-node" {
-				t.Fatalf("evaluateWorkItem actors %q, want [agent:evaluator@test-node]", got)
+				t.Fatalf("finishJob actors %q, want [agent:evaluator@test-node]", got)
 			}
 		})
 	}

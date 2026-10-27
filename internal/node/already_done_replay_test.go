@@ -210,6 +210,9 @@ func TestReplayStalledItem7EndsAlreadyDoneUnderADollar(t *testing.T) {
 		t.Fatal(err)
 	}
 	item.Outcome, item.Evidence = row["outcome"].(string), evidence
+	// the evaluator session hands its PASS to the product's tool
+	// (mesh_verdict); the node then closes the job (runsheet ADR 077)
+	f.HandedInVerdicts = map[string]map[string]any{stalledItem7: {"passed": true, "notes": "Item 3 already shows the badge on main."}}
 	if err := ev.Evaluate(ctx, *item); err != nil {
 		t.Fatal(err)
 	}
@@ -236,14 +239,19 @@ func TestReplayStalledItem7EndsAlreadyDoneUnderADollar(t *testing.T) {
 	}
 
 	// the cost: every cent the node recorded, build and evaluation
+	// (the evaluation's cents ride its job's close, for the product to
+	// charge)
 	var recorded int
-	for _, name := range []string{"reportWorkItemProgress", "finishWorkItem", "evaluateWorkItem"} {
+	for _, name := range []string{"reportWorkItemProgress", "finishWorkItem"} {
 		for _, c := range f.CallsNamed(name) {
 			recorded += toCents(c.Input["costCents"])
 		}
 	}
+	closed, _ := evaluationClosed(t, f)["finish"].(map[string]any)
+	res, _ := closed["result"].(map[string]any)
+	recorded += toCents(res["cost_cents"])
 	want := int(lookAtMainUSD*100) + int(confirmUSD*100)
-	if recorded != want || toCents(row["costCents"]) != want || recorded >= 100 {
+	if recorded != want || toCents(row["costCents"]) != int(lookAtMainUSD*100) || recorded >= 100 {
 		t.Fatalf("recorded %d cents (row %v), want %d, under 100", recorded, row["costCents"], want)
 	}
 

@@ -348,6 +348,20 @@ func (f *Fake) finishJobAliases(r *http.Request, in map[string]any, bearer strin
 			err = send("finishWorkItem", v)
 		}
 	case "runsheet/evaluate item":
+		// an evaluator session hands its verdict to the product's own
+		// tool (mesh_verdict); the node then closes the job with its notes
+		// tail, which the product refuses when no verdict reached that tool
+		// (EvaluationNotHandedIn). An older node's {verdict} is still served.
+		if _, ok := fin["result"]; ok {
+			if f.EvaluationNotHandedIn != "" {
+				err = fmt.Errorf("%s", f.EvaluationNotHandedIn)
+				break
+			}
+			if v := f.HandedInVerdicts[id]; v != nil {
+				err = send("evaluateWorkItem", v)
+			}
+			break
+		}
 		var v map[string]any
 		if v, err = part("verdict"); err == nil {
 			err = send("evaluateWorkItem", v)

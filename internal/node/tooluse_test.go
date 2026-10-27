@@ -169,7 +169,7 @@ func TestBuildNotesItsToolUse(t *testing.T) {
 	}
 }
 
-// An evaluation's notes carry the same tool-use note.
+// An evaluation's notes tail carries the same tool-use note.
 func TestEvaluationNotesItsToolUse(t *testing.T) {
 	f := seed(t)
 	issueClaude(f, item1)
@@ -189,8 +189,8 @@ func TestEvaluationNotesItsToolUse(t *testing.T) {
 	if err := ev.Evaluate(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
-	notes, _ := f.CallsNamed("evaluateWorkItem")[0].Input["notes"].(string)
-	if notes != "Fine.\n\nevaluators: one — normal/low goal, no protected path\n(evaluated on the CLI's default model)\ntools: brave: first call errored: 401 Unauthorized: token [redacted] is not valid; perplexity served, never called" {
+	notes, _ := evaluationClosed(t, f)["notes"].(string)
+	if notes != "(evaluated on Claude the CLI's default model)\ntools: brave: first call errored: 401 Unauthorized: token [redacted] is not valid; perplexity served, never called" {
 		t.Fatalf("notes = %q", notes)
 	}
 	if strings.Contains(logs.String(), braveSecret) {
@@ -199,7 +199,7 @@ func TestEvaluationNotesItsToolUse(t *testing.T) {
 }
 
 // An evaluation whose built-in context tool errored — no console tool
-// served at all — names it and its error text in the notes, and the
+// served at all — names it and its error text in the notes tail, and the
 // report's runsheet row carries that error. (One call answered: a
 // session whose every call errored is no verdict, ADR 011.)
 func TestEvaluationNotesTheBuiltinsError(t *testing.T) {
@@ -220,12 +220,11 @@ func TestEvaluationNotesTheBuiltinsError(t *testing.T) {
 	if err := ev.Evaluate(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
-	call := f.CallsNamed("evaluateWorkItem")[0]
-	notes, _ := call.Input["notes"].(string)
+	notes, _ := evaluationClosed(t, f)["notes"].(string)
 	if !strings.HasSuffix(notes, "\ntools: runsheet: first call errored: "+msg) {
 		t.Fatalf("notes = %q", notes)
 	}
-	usage, _ := call.Input["usage"].(map[string]any)
+	usage := usageOf(t, f)
 	rows, _ := usage["tools"].([]any)
 	if row, _ := rows[0].(map[string]any); len(rows) != 1 || row["tool"] != "runsheet" || row["error"] != msg {
 		t.Fatalf("usage tools = %#v", usage["tools"])

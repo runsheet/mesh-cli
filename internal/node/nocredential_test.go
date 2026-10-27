@@ -420,7 +420,7 @@ func TestNoCredentialEvaluationNeverRunsCodexOnItsOwnAccount(t *testing.T) {
 	if codex.runs() != 0 || len(claude.jobs) != 1 {
 		t.Fatalf("unpinned: runs claude %d, codex %d", len(claude.jobs), codex.runs())
 	}
-	if u := usageOf(t, f); u["adapter"] != "claude-code" || u["credentialId"] != "cred-claude" || in["passed"] != true {
+	if u := usageOf(t, f); u["adapter"] != "claude-code" || u["credentialId"] != "cred-claude" {
 		t.Fatalf("unpinned: usage %v, recorded %v", u, in)
 	}
 

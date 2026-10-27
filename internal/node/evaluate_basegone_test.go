@@ -48,7 +48,7 @@ func TestEvaluateBaseGoneDiffsFromTheDefaultBranch(t *testing.T) {
 
 	in := evaluateItem1(t, f, ev)
 	notes, _ := in["notes"].(string)
-	if in["passed"] != true || strings.Contains(notes, "could not diff") {
+	if strings.Contains(notes, "could not diff") {
 		t.Fatalf("verdict: %+v\n%s", in, logs.String())
 	}
 	if len(h.jobs) != 1 {
@@ -57,8 +57,10 @@ func TestEvaluateBaseGoneDiffsFromTheDefaultBranch(t *testing.T) {
 	if got := strings.Join(ws.diffs, ","); got != "mesh/g-1,main" {
 		t.Fatalf("Diff asked for %q, want mesh/g-1 then main", got)
 	}
-	if got := strings.Join(ws.paths, ","); got != "main" {
-		t.Fatalf("ChangedPaths asked for %q, want main alone", got)
+	// no protected-path rule reads the changed paths: the evaluation
+	// policy is the product's (runsheet ADR 077)
+	if got := strings.Join(ws.paths, ","); got != "" {
+		t.Fatalf("ChangedPaths asked for %q, want none", got)
 	}
 	prompt := h.jobs[0].Prompt
 	if !strings.Contains(prompt, "origin/main") || strings.Contains(prompt, "origin/mesh/g-1") || !strings.Contains(prompt, "item.txt") {

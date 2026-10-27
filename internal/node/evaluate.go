@@ -24,13 +24,15 @@ import (
 // Evaluator is the second fresh session an item gets on the node
 // (mesh-specs trd §3.4): the finished branch checked out, its diff from
 // the base, the acceptance, an adversarial review — and its verdict
-// recorded with EvaluateWorkItem. The platform opens the pull request on
-// a pass and readies the item again on a fail (with the notes for the
-// next builder), so the evaluator changes nothing itself. An item
-// finished already_done (mesh ADR 003 decision 1) is checked on the base
-// ref instead — its evidence and acceptance, no branch and no diff — and
-// the same EvaluateWorkItem confirms it (the platform marks it merged,
-// with no pull request) or readies it again.
+// handed by the session to the product's own tool (the brief's
+// finishTool, mesh_verdict); the node then closes the job with its notes
+// tail (runsheet ADR 077). The platform opens the pull request on a pass
+// and readies the item again on a fail (with the notes for the next
+// builder), so the evaluator changes nothing itself. An item finished
+// already_done (mesh ADR 003 decision 1) is checked on the base ref
+// instead — its evidence and acceptance, no branch and no diff — and the
+// same tool confirms it (the platform marks it merged, with no pull
+// request) or readies it again.
 type Evaluator struct {
 	GW Gateway
 	// noGuidance logs once per kind whose brief carries no guidance
@@ -218,7 +220,7 @@ func (e *Evaluator) failDiff(ctx context.Context, item gateway.WorkItem, label, 
 }
 
 // evaluationNotYours reports whether err is issueItemRepoToken or
-// evaluateWorkItem refused because another node already holds this
+// the job's close refused because another node already holds this
 // item's evaluation (ADR-009's "you are not the node evaluating the
 // item") — a gateway refusal naming "not yours", read the same way
 // owned.go's NotYoursLine reads a registration's.
@@ -609,7 +611,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	if ev.fam.codex && acct != nil {
 		acct.Model = ev.fam.model
 	}
-	acct.Report(result)
+	usage := acct.Report(result)
 	// the node's own facts, which runsheet appends to the evaluation the
 	// session recorded: who judged, what it ran without, what it left
 	// running, and a Codex preflight that moved it to Claude
@@ -633,11 +635,21 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	if result.KeptSessionDir != "" && hasToolError(result) {
 		e.logf("item %s: a tool errored%s", label, keptAt(result))
 	}
+	// the usage record keeps its goal priority and evaluator count (one:
+	// a second opinion is the product's to offer, runsheet ADR 077)
+	acct.SetEvaluation(ev.res.Goal.Priority, 1)
 	// no heartbeat after the verdict
 	stopHeartbeat(ctx)
 	nodeID := nodeIDOf(e.Scopes, item.OrgID, e.Cfg)
 	ctx = gateway.WithNodeID(ctx, nodeID)
-	if _, ferr := e.GW.FinishJob(ctx, nodeID, EvaluateKind, gateway.JobSubject{Type: "item", ID: item.ID}, map[string]any{"result": map[string]any{"notes_tail": truncate(tail, 2000)}}); ferr != nil {
+	// the session's cost and usage ride the result too: the session's
+	// verdict call carries neither, and a session's usage rides the
+	// command that ends it
+	res := map[string]any{"notes_tail": truncate(tail, 2000), "cost_cents": Cents(result.CostUSD)}
+	if usage != nil {
+		res["usage"] = usage
+	}
+	if _, ferr := e.GW.FinishJob(ctx, nodeID, EvaluateKind, gateway.JobSubject{Type: "item", ID: item.ID}, map[string]any{"result": res}); ferr != nil {
 		if evaluationNotYours(ferr) {
 			// another node converged on the evaluation while this session
 			// ran: its verdict is the one of record
@@ -645,6 +657,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 			e.logf("item %s: evaluation closed elsewhere: another node holds it", label)
 			return nil
 		}
+		_ = handInRefused(e.logf, acct.Redact, label, "FinishJob", ferr)
 		return fmt.Errorf("evaluator session (%s) ended; the product refused to close the job: %w", result.SessionID, ferr)
 	}
 	left.Forget(item.ID)
