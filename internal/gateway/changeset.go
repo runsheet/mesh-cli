@@ -38,6 +38,11 @@ type Changeset struct {
 	Tree              string   `json:"tree"`
 	PathsChanged      []string `json:"paths_changed"`
 	ParentChangesetID string   `json:"parent_changeset_id,omitempty"`
+	// Commit is the commit holding Tree the node pushed and pinned at
+	// refs/runsheet/changesets/<ChangesetID> (runsheet ADR 076): the
+	// platform reads the changeset from git and takes no upload. Empty,
+	// the objects are uploaded first, as before.
+	Commit string `json:"commit,omitempty"`
 }
 
 // ChangesetIDField is FinishWorkItemInput's key naming the recorded

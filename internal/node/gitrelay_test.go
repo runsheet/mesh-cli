@@ -109,6 +109,23 @@ func TestGitThroughTheRelay(t *testing.T) {
 		t.Fatalf("a push to main went through:\n%s", out)
 	}
 
+	// the finish's write: the branch and its pinned changeset in one push
+	if out, err := run(work, "checkout", "-q", "-b", "mesh/g-3"); err != nil {
+		t.Fatal(out)
+	}
+	g := &Git{GitHubURL: base}
+	pin := "refs/runsheet/changesets/7f4e0282-e04a-5639-ad32-d58275988f03"
+	pushed, err := g.PushPinned(tctx, work, "mesh/g-3", pin)
+	if err != nil {
+		t.Fatalf("PushPinned through the relay: %v", err)
+	}
+	for _, ref := range []string{"refs/heads/mesh/g-3", pin} {
+		out, err := exec.Command(gitBin, "-C", bare, "rev-parse", ref).Output()
+		if err != nil || strings.TrimSpace(string(out)) != pushed {
+			t.Fatalf("%s on the backend is %q, want %s (%v)", ref, out, pushed, err)
+		}
+	}
+
 	// read token: fetch only
 	rctx := withGitToken(ctx, base, &gateway.GitHubToken{Token: token + "r", Repository: "acme/app", Access: "read", ExpiresAt: time.Now().Add(time.Hour)})
 	cmd := hardenedGitCmdEnv(rctx, base, work, []string{"HOME=" + root}, "push", "-q", "origin", "HEAD:refs/heads/mesh/g-2")

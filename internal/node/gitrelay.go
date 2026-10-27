@@ -59,3 +59,10 @@ func relayFor(tok *gateway.GitHubToken, logf func(string, ...any)) string {
 	}
 	return base
 }
+
+// gitRelayOn says whether the node's git relay is on.
+func gitRelayOn() bool {
+	gitRelayState.Lock()
+	defer gitRelayState.Unlock()
+	return gitRelayState.srv != nil
+}
