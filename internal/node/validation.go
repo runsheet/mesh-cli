@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	sessionsteps "projectmesh.io/mesh-cli/internal/session"
 	"projectmesh.io/mesh-cli/internal/sessionunit"
+	"projectmesh.io/mesh-cli/internal/sigstore"
 	"projectmesh.io/mesh-cli/internal/validate"
 )
 
@@ -94,6 +96,64 @@ type validator struct {
 	// whose blobs/ a sandboxed run mounts read-only; "" is
 	// SharedCacheRoot().
 	CacheRoot string
+	// Signer and SigningTokens sign what the platform's attestation
+	// answer hands back (its statement) as the item's session; nil or
+	// unconfigured signs nothing (sessionSign).
+	Signer        *sigstore.Signer
+	SigningTokens SigningTokens
+}
+
+// SigningTokens mints a session's Fulcio token (SessionBearers).
+type SigningTokens interface {
+	SigningToken(ctx context.Context, itemID string, attempt int) (string, error)
+}
+
+// sessionSigner is the gateway's half of a session's signature.
+type sessionSigner interface {
+	AddAttestationSessionSignature(ctx context.Context, testEvidenceID, envelope, rekorEntry string) error
+}
+
+// sessionSign signs the statement a receipt hands back as the item's
+// session and adds that signature to the stored attestation. It never
+// fails the validation: the attestation already stands on the
+// platform's signature (fail-soft), so every failure is a log line.
+func (vr validator) sessionSign(ctx context.Context, t validationTarget, receipt map[string]any) {
+	if !vr.Signer.Enabled() || vr.SigningTokens == nil {
+		return
+	}
+	stmt, _ := receipt["statement"].(map[string]any)
+	payloadType, _ := stmt["payloadType"].(string)
+	payload64, _ := stmt["payload"].(string)
+	id, _ := receipt["testEvidenceId"].(string)
+	if payloadType == "" || payload64 == "" || id == "" {
+		return
+	}
+	add, ok := vr.GW.(sessionSigner)
+	if !ok {
+		return
+	}
+	payload, err := base64.StdEncoding.DecodeString(payload64)
+	if err != nil {
+		vr.logf("%s: session signature: the statement is not base64: %v", t.prefix, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	tok, err := vr.SigningTokens.SigningToken(ctx, t.item.ID, t.item.Attempts)
+	if err != nil {
+		vr.logf("%s: session signature: no signing token: %v (the attestation stands on the platform's signature)", t.prefix, err)
+		return
+	}
+	env, entry, err := vr.Signer.Sign(ctx, tok, payloadType, payload)
+	if err != nil {
+		vr.logf("%s: session signature: %v (the attestation stands on the platform's signature)", t.prefix, err)
+		return
+	}
+	if err := add.AddAttestationSessionSignature(ctx, id, env, entry); err != nil {
+		vr.logf("%s: session signature refused: %v (the attestation stands on the platform's signature)", t.prefix, err)
+		return
+	}
+	vr.logf("%s: session signature added to attestation %s", t.prefix, id)
 }
 
 // validationTarget is what a validation needs of the session it
@@ -154,7 +214,7 @@ type validationTarget struct {
 }
 
 func (r *Runner) validator() validator {
-	vr := validator{GW: r.GW, WS: r.WS, Scopes: r.Scopes, Sandbox: r.Sandbox, Inspect: r.Inspect, Notices: r.Notices, logf: r.logf, WorkRoot: r.WorkRoot, Layout: r.Layout, BuildCache: r.BuildCache}
+	vr := validator{GW: r.GW, WS: r.WS, Scopes: r.Scopes, Sandbox: r.Sandbox, Inspect: r.Inspect, Notices: r.Notices, logf: r.logf, WorkRoot: r.WorkRoot, Layout: r.Layout, BuildCache: r.BuildCache, Signer: r.Sigstore, SigningTokens: r.signingTokens()}
 	if r.Cache != nil {
 		vr.CacheRoot = r.Cache.Root
 	}
@@ -1023,6 +1083,9 @@ func (vr validator) record(ctx context.Context, t validationTarget, att validate
 	ga.ChangesetID = t.changesetID
 	receipt, err := rec.RecordValidationAttestation(ctx, t.item.ID, ga)
 	status, _ := receipt["status"].(string)
+	if err == nil {
+		vr.sessionSign(ctx, t, receipt)
+	}
 	return status, err
 }
 

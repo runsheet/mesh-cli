@@ -35,6 +35,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/selfupdate"
 	"projectmesh.io/mesh-cli/internal/sessionunit"
+	"projectmesh.io/mesh-cli/internal/sigstore"
 	"projectmesh.io/mesh-cli/internal/tripline"
 	"projectmesh.io/mesh-cli/internal/version"
 )
@@ -1344,7 +1345,14 @@ func runNode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gate
 		rs := st.Resumes()
 		resumes = &rs
 	}
-	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Layout: nodeLayout, MCPFunc: func(ctx context.Context) map[string]any { return meshContextMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, BatchFallback: &node.TokenFallback{}, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, RuntimeBroken: loop.NoteRuntimeBroken, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Sandbox: sessionSandbox, MeshBinary: meshBinary(), State: state, Notices: validationNotices, Machine: loop.Machine, Host: loop.HostThresholds, RetryTurns: loop.NoteRetryTurn, Resumes: resumes, Tripline: loop.Tripline, Bearers: sessionBearers, Proxies: sessionProxies, Log: logger}
+	// node.yaml's sigstore: a session signs what its product hands back
+	// to sign, certified for the session and logged; unset signs nothing
+	var signer *sigstore.Signer
+	if cfg.Sigstore.FulcioURL != "" && cfg.Sigstore.RekorURL != "" {
+		signer = &sigstore.Signer{FulcioURL: cfg.Sigstore.FulcioURL, RekorURL: cfg.Sigstore.RekorURL}
+		logger.Printf("sigstore: sessions sign through %s and log in %s (node.yaml sigstore)", cfg.Sigstore.FulcioURL, cfg.Sigstore.RekorURL)
+	}
+	runner := &node.Runner{Sigstore: signer, GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Layout: nodeLayout, MCPFunc: func(ctx context.Context) map[string]any { return meshContextMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, BatchFallback: &node.TokenFallback{}, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, RuntimeBroken: loop.NoteRuntimeBroken, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Sandbox: sessionSandbox, MeshBinary: meshBinary(), State: state, Notices: validationNotices, Machine: loop.Machine, Host: loop.HostThresholds, RetryTurns: loop.NoteRetryTurn, Resumes: resumes, Tripline: loop.Tripline, Bearers: sessionBearers, Proxies: sessionProxies, Log: logger}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		r := *runner
 		r.Scopes = loop.CurrentScopes() // an org served since start is known to its build

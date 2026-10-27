@@ -59,8 +59,30 @@ type SessionBearers struct {
 	fallbackOnce sync.Once
 	// jobs is each open claim's mesh session id, by item and attempt: a
 	// build job's id (runsheet ADR 075), which its usage is reported on.
-	mu   sync.Mutex
-	jobs map[string]string
+	mu       sync.Mutex
+	jobs     map[string]string
+	sessions map[string]*gateway.MeshSession
+}
+
+// SigstoreAudience is the audience of a session's signing token: what
+// Fulcio takes (Latchkey ADR 017 decision 3), never DPoP-bound.
+const SigstoreAudience = "sigstore"
+
+// SigningToken is an id token of item's claim at attempt for Fulcio —
+// the session's own identity, so what it signs is certified as the
+// session's — or an error when no mesh session is open for it.
+func (b *SessionBearers) SigningToken(ctx context.Context, itemID string, attempt int) (string, error) {
+	if b == nil || b.GW == nil {
+		return "", errors.New("no mesh sessions")
+	}
+	b.mu.Lock()
+	s := b.sessions[jobKey(itemID, attempt)]
+	b.mu.Unlock()
+	if s == nil {
+		return "", fmt.Errorf("no mesh session open for item %s attempt %d", itemID, attempt)
+	}
+	tok, _, _, err := b.GW.MeshSessionToken(ctx, s, SigstoreAudience, nil)
+	return tok, err
 }
 
 func jobKey(itemID string, attempt int) string { return itemID + " " + strconv.Itoa(attempt) }
@@ -148,8 +170,12 @@ func (b *SessionBearers) Open(ctx context.Context, item gateway.WorkItem, nodeID
 	if b.jobs == nil {
 		b.jobs = map[string]string{}
 	}
+	if b.sessions == nil {
+		b.sessions = map[string]*gateway.MeshSession{}
+	}
 	key := jobKey(item.ID, item.Attempts)
 	b.jobs[key], b.jobs[item.ID] = s.SessionID, s.SessionID
+	b.sessions[key] = s
 	b.mu.Unlock()
 	unbindTokens := b.Tokens.Bind(item.ID, item.Attempts, src, b.Key)
 	return func() {
@@ -159,6 +185,7 @@ func (b *SessionBearers) Open(ctx context.Context, item gateway.WorkItem, nodeID
 		if b.jobs[item.ID] == s.SessionID {
 			delete(b.jobs, item.ID)
 		}
+		delete(b.sessions, key)
 		b.mu.Unlock()
 	}, nil
 }

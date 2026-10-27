@@ -20,6 +20,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	sessionsteps "projectmesh.io/mesh-cli/internal/session"
+	"projectmesh.io/mesh-cli/internal/sigstore"
 	"projectmesh.io/mesh-cli/internal/tools"
 	"projectmesh.io/mesh-cli/internal/tripline"
 	"projectmesh.io/mesh-cli/internal/validate"
@@ -109,6 +110,9 @@ type Runner struct {
 	// bearer (ADR-035); nil keeps every session on the token keeper's
 	// machine bearer.
 	Bearers *SessionBearers
+	// Sigstore signs what a product hands back to sign as the item's
+	// session (node.yaml sigstore); nil or unconfigured signs nothing.
+	Sigstore *sigstore.Signer
 	// Fallback is the node's one old-platform notice (nil: every item).
 	Fallback *TokenFallback
 	// BatchFallback is its merge batch candidates' notice, a platform
@@ -1840,3 +1844,12 @@ func (r *Runner) bindSessionBearer(ctx context.Context, item gateway.WorkItem, n
 
 // BuildKind is runsheet's build kind, the job a build is.
 const BuildKind = "runsheet/build"
+
+// signingTokens is the Bearers as a validator mints a session's Fulcio
+// token from, or nil when the node opens no mesh sessions.
+func (r *Runner) signingTokens() SigningTokens {
+	if r.Bearers == nil {
+		return nil
+	}
+	return r.Bearers
+}
