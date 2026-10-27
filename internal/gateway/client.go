@@ -1399,7 +1399,6 @@ func (c *Client) AgentModel(ctx context.Context, agentID string) (string, error)
 	return out.Agent.Model, nil
 }
 
-
 // Goal is a GoalIndex row.
 type Goal struct {
 	ID         string `json:"id"`
@@ -4537,9 +4536,6 @@ type GoalDraft struct {
 	Acceptance string `json:"acceptance"`
 	RepoID     string `json:"repoId"`
 }
-
-
-
 
 // ApproveGraph approves the pending graph checkpoint.
 func (c *Client) ApproveGraph(ctx context.Context, goalID, by string) error {

@@ -151,12 +151,6 @@ func TestPlannerReplans(t *testing.T) {
 	}
 }
 
-
-
-
-
-
-
 // adr-004: the node checks the planner's graph before PlanGoal.
 const (
 	repo2 = "cccccccc-2222-4222-8222-cccccccccccc"
@@ -167,16 +161,6 @@ const (
 	otherRepoPlan = "```json\n{\"items\": [{\"seq\": 1, \"title\": \"Console route\", \"brief\": \"The route.\", \"acceptance\": \"go test ./... passes; a specs/console-trd.md diff in acme/mesh-specs describes the route.\", \"depends_on\": [], \"repo\": \"acme/widgets\"}]}\n```"
 	cleanPlan     = "```json\n{\"items\": [{\"seq\": 1, \"title\": \"Update from the console\", \"brief\": \"The update route.\", \"acceptance\": \"go test ./... passes and `grep -n Update internal/node/update.go` shows the handler.\", \"depends_on\": [], \"repo\": \"acme/widgets\"}]}\n```"
 )
-
-
-
-
-
-
-
-
-
-
 
 // twoOrgsServed is a node's served scopes of acme (sc) and beta, each
 // with its connection.
