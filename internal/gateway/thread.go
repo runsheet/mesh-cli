@@ -14,9 +14,9 @@ import (
 type ThreadTurn struct {
 	ID        string `json:"id"`
 	Product   string `json:"product"`
-	ThreadKey string `json:"thread_key"`
-	OrgID     string `json:"org_id"`
-	ProjectID string `json:"project_id"`
+	ThreadKey string `json:"threadKey"`
+	OrgID     string `json:"orgId"`
+	ProjectID string `json:"projectId"`
 	Role      string `json:"role"`
 	Status    string `json:"status"`
 }
@@ -43,7 +43,7 @@ func (c *Client) RaisedThreadTurns(ctx context.Context, orgID, product string) (
 	if product != "" {
 		wh += ", " + where("product", product)
 	}
-	q := fmt.Sprintf(`{ threadSessionIndexs(namespace: %q, where: [%s]) { id product thread_key org_id project_id role status } }`, NS, wh)
+	q := fmt.Sprintf(`{ threadSessionIndexs(namespace: %q, where: [%s]) { %s } }`, NS, wh, threadSessionFields)
 	if err := c.Query(ctx, q, nil, &out); err != nil {
 		return nil, err
 	}

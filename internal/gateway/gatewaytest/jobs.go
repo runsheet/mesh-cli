@@ -98,13 +98,19 @@ func (f *Fake) jobAPI(w http.ResponseWriter, r *http.Request, q string, vars map
 	w = &downstreamWriter{ResponseWriter: w, f: f}
 	switch {
 	case strings.Contains(q, "threadSessionIndexs("):
+		// The gateway's ThreadSessionIndex is camelCase; a selection of a
+		// field it does not serve is refused as the gateway refuses it.
+		if bad := unservedThreadField(q); bad != "" {
+			writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type \"ThreadSessionIndex\".", bad))
+			return true
+		}
 		rows := []map[string]any{}
 		for _, t := range f.ThreadTurns {
 			if t.Status != "raised" || !strings.Contains(q, fmt.Sprintf("%q", t.OrgID)) {
 				continue
 			}
-			rows = append(rows, map[string]any{"id": t.ID, "product": t.Product, "thread_key": t.ThreadKey, "org_id": t.OrgID,
-				"project_id": t.ProjectID, "role": t.Role, "status": t.Status})
+			rows = append(rows, map[string]any{"id": t.ID, "product": t.Product, "threadKey": t.ThreadKey, "orgId": t.OrgID,
+				"projectId": t.ProjectID, "role": t.Role, "status": t.Status})
 		}
 		writeData(w, map[string]any{"threadSessionIndexs": rows})
 	case strings.Contains(q, "claimJob(input") && isThread:
@@ -543,4 +549,35 @@ func (d *downstreamWriter) passed() bool {
 		_, _ = d.ResponseWriter.Write(rec.Body.Bytes())
 	}
 	return true
+}
+
+// threadSessionFields are the ThreadSessionIndex fields the gateway
+// serves (its schema.json type).
+var threadSessionFields = map[string]bool{"answeredAt": true, "claimedAt": true, "id": true, "namespace": true,
+	"nodeId": true, "orgId": true, "product": true, "projectId": true, "raisedAt": true, "role": true,
+	"status": true, "threadKey": true, "updatedAt": true}
+
+// unservedThreadField is the first field a threadSessionIndexs query
+// selects that the gateway does not serve, or "".
+func unservedThreadField(q string) string {
+	i := strings.Index(q, "threadSessionIndexs(")
+	if i < 0 {
+		return ""
+	}
+	// The selection opens after the arguments' close, past any { in a
+	// where filter.
+	open := strings.Index(q[i:], ") {")
+	if open < 0 {
+		return ""
+	}
+	sel := q[i+open+3:]
+	if end := strings.Index(sel, "}"); end >= 0 {
+		sel = sel[:end]
+	}
+	for _, field := range strings.Fields(sel) {
+		if !threadSessionFields[field] {
+			return field
+		}
+	}
+	return ""
 }
