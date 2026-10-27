@@ -119,6 +119,12 @@ func (f *Fake) jobAPI(w http.ResponseWriter, r *http.Request, q string, vars map
 		f.threadJobAccess(w, in)
 	case strings.Contains(q, "finishJob(input") && isThread:
 		f.finishThreadJob(w, in)
+	case strings.Contains(q, "claimJob(input") && subject == nil:
+		// the one claim (runsheet ADR 075, one job queue): with no Queue
+		// set the fake is a platform from before it and refuses as that
+		// platform did
+		f.Calls = append(f.Calls, Call{Name: "claimJob", Input: in, At: time.Now(), Bearer: bearer})
+		f.claimNext(w, r, in, bearer)
 	case strings.Contains(q, "claimJob(input"):
 		f.Calls = append(f.Calls, Call{Name: "claimJob", Input: in, At: time.Now(), Bearer: bearer})
 		if err := jobHarness(in); err != nil {
@@ -607,4 +613,50 @@ func unservedThreadField(q string) string {
 		}
 	}
 	return ""
+}
+
+// QueuedJob is one offer on the fake's queue (Fake.Queue): the kind and
+// subject the one claim hands out, in Queue's order.
+type QueuedJob struct {
+	Kind        string
+	SubjectType string
+	SubjectID   string
+}
+
+// claimNext is the one claim: the first job on f.Queue of the kind the
+// claim names (any when none), claimed by its own kind's claim and taken
+// off the queue; status none when there is none. With f.Queue nil it
+// refuses as a platform from before the one claim did.
+func (f *Fake) claimNext(w http.ResponseWriter, r *http.Request, in map[string]any, bearer string) {
+	if f.Queue == nil {
+		writeErrors(w, 200, "claimJob: subject names the job's subject, {type, id}: a node polls for the next one until the one loop lands")
+		return
+	}
+	want, _ := in["kind"].(string)
+	for i, j := range f.Queue {
+		if want != "" && j.Kind != want {
+			continue
+		}
+		named := map[string]any{"nodeId": in["nodeId"], "kind": j.Kind, "subject": map[string]any{"type": j.SubjectType, "id": j.SubjectID}}
+		if h, _ := in["harness"].(string); h != "" {
+			named["harness"] = h
+		}
+		field, args, err := jobClaimAlias(named)
+		if err != nil {
+			writeErrors(w, 200, err.Error())
+			return
+		}
+		f.Queue = append(f.Queue[:i:i], f.Queue[i+1:]...)
+		if _, errs := f.call(r, mutationQuery(field), map[string]any{"in": args}, bearer); errs != nil {
+			writeErrors(w, 200, errs[0])
+			return
+		}
+		job := map[string]any{"kind": j.Kind, "subject": map[string]any{"type": j.SubjectType, "id": j.SubjectID},
+			"code": map[string]any{"form": "commit"}, "claim": field, "finish": kindFinishes[j.Kind], "finishTool": kindFinishTools[j.Kind]}
+		writeData(w, map[string]any{"claimJob": map[string]any{"status": "claimed", "job": job}})
+		return
+	}
+	// runsheet's answer also counts offers and tried; the contract the
+	// fake checks against names status alone until it is pulled again
+	writeData(w, map[string]any{"claimJob": map[string]any{"status": "none"}})
 }

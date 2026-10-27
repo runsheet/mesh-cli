@@ -44,6 +44,10 @@ type Call struct {
 // Fake is the server and its state. Rows are maps with camelCase keys,
 // as the gateway returns them.
 type Fake struct {
+	// Queue is the one claim's queue (runsheet ADR 075): nil is a platform
+	// from before it, which refuses a claimJob naming no subject.
+	Queue []QueuedJob
+
 	Server *httptest.Server
 	Token  string
 
