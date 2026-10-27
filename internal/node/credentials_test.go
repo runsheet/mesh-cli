@@ -9,13 +9,14 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"projectmesh.io/mesh-cli/internal/dpop"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/dpop"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
@@ -211,10 +212,18 @@ func TestEvaluationReportsUsage(t *testing.T) {
 	if err := ev.Evaluate(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
-	if calls := f.CallsNamed("evaluateWorkItem"); len(calls) != 1 || calls[0].Input["passed"] != true {
-		t.Fatalf("verdicts: %+v", calls)
+	// the verdict reached the product's tool; the job's close carries
+	// the session's report, on the issued credential (runsheet ADR 077)
+	u := usageOf(t, f)
+	for k, want := range map[string]any{"sessionId": "s-usage", "adapter": "claude-code", "credentialId": "cred-1", "credentialKind": "subscription",
+		"inputTokens": float64(60600), "outputTokens": float64(789), "listCostCents": float64(43)} {
+		if u[k] != want {
+			t.Errorf("usage %s = %v, want %v", k, u[k], want)
+		}
 	}
-	checkSessionUsage(t, f, "evaluateWorkItem")
+	if len(f.SessionUsage) != 0 {
+		t.Errorf("usage on a node hand-in: %+v", f.SessionUsage)
+	}
 }
 
 // Against a platform whose finishing commands take no `usage`, a node
@@ -251,7 +260,8 @@ func TestCredentialsLogUsageWithoutTheLedgerOncePerRun(t *testing.T) {
 			t.Fatalf("item %s: %v", it.ID, row(it.ID))
 		}
 	}
-	// and an evaluation: its verdict lands without the report
+	// and an evaluation: its verdict goes to the product's tool, and the
+	// job's close carries its report
 	h.text = "Fine.\nVERDICT: PASS"
 	ev := &Evaluator{GW: r.GW, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, Credentials: r.Credentials, Log: r.Log}
 	evItem := item
@@ -259,8 +269,8 @@ func TestCredentialsLogUsageWithoutTheLedgerOncePerRun(t *testing.T) {
 	if err := ev.Evaluate(context.Background(), evItem); err != nil {
 		t.Fatal(err)
 	}
-	if calls := f.CallsNamed("evaluateWorkItem"); len(calls) != 1 || calls[0].Input["passed"] != true {
-		t.Fatalf("verdicts: %+v", calls)
+	if u := usageOf(t, f); u["credentialId"] != "cred-1" {
+		t.Fatalf("evaluation usage: %v", u)
 	}
 	for _, job := range h.Jobs() {
 		if v, _ := envOf(job.Env, "CLAUDE_CODE_OAUTH_TOKEN"); v != local || Account(job.Env) != "max-cloud" {

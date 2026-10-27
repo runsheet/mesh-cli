@@ -59,14 +59,13 @@ func TestEvaluateTokenRefusedNotYoursLeavesItToTheOtherNode(t *testing.T) {
 	}
 }
 
-// A node whose evaluateWorkItem is refused "not yours", with no
-// mesh_verdict call recorded by the hosted tool, has lost the race to
-// another node after its own session already ran: the verdict is
+// A node whose closing finishJob is refused "not yours" has lost the
+// race to another node after its own session already ran: the close is
 // dropped, not retried forever, and the item is forgotten rather than
-// held for a next no-verdict note.
-func TestEvaluateVerdictRefusedNotYoursIsNotRetried(t *testing.T) {
+// held for a next note.
+func TestEvaluateCloseRefusedNotYoursIsNotRetried(t *testing.T) {
 	f, ev, logs := notYoursFixture(t)
-	f.Refuse["evaluateWorkItem"] = "evaluateWorkItem: you are not the node evaluating the item: not yours"
+	f.EvaluationNotHandedIn = "finishJob: you are not the node evaluating the item: not yours"
 	item, err := ev.GW.WorkItem(context.Background(), item1)
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +73,10 @@ func TestEvaluateVerdictRefusedNotYoursIsNotRetried(t *testing.T) {
 	if err := ev.Evaluate(context.Background(), *item); err != nil {
 		t.Fatalf("Evaluate returned an error, want nil: %v", err)
 	}
-	want := "item ship-it/1: verdict refused: another node holds the evaluation"
+	if n := len(f.CallsNamed("evaluateWorkItem")); n != 0 {
+		t.Fatalf("the node sent %d verdicts of its own", n)
+	}
+	want := "item ship-it/1: evaluation closed elsewhere: another node holds it"
 	if !strings.Contains(logs.String(), want) {
 		t.Fatalf("log lacks %q:\n%s", want, logs.String())
 	}

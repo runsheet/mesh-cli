@@ -237,12 +237,11 @@ func TestEvaluateVerdictCarriesKilled(t *testing.T) {
 	if !strings.Contains(logs.String(), "item ship-it/1: "+own+"\n") {
 		t.Fatalf("log = %q", logs.String())
 	}
-	calls := f.CallsNamed("evaluateWorkItem")
-	if len(calls) != 1 {
-		t.Fatalf("verdicts = %d", len(calls))
+	if n := len(f.CallsNamed("evaluateWorkItem")); n != 0 {
+		t.Fatalf("the node sent %d verdicts of its own", n)
 	}
-	if n, _ := calls[0].Input["notes"].(string); !strings.HasSuffix(n, "\n"+earlier+"\n"+own) {
-		t.Fatalf("verdict notes = %q", n)
+	if n, _ := evaluationClosed(t, f)["notes"].(string); !strings.HasSuffix(n, "\n"+earlier+"\n"+own) {
+		t.Fatalf("notes tail = %q", n)
 	}
 	if held := left.Hold(item1, ""); held != "" {
 		t.Fatalf("still held after the verdict: %q", held)

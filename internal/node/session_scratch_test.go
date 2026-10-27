@@ -138,8 +138,8 @@ func TestHostEvaluationSessionScratchDiesWithTheSession(t *testing.T) {
 	if err := ev.Evaluate(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
-	if calls := f.CallsNamed("evaluateWorkItem"); len(calls) != 1 || calls[0].Input["passed"] != true {
-		t.Fatalf("verdicts: %+v", calls)
+	if n := evaluateJobsClosed(f); n != 1 || len(f.CallsNamed("evaluateWorkItem")) != 0 {
+		t.Fatalf("evaluate jobs closed = %d, calls: %+v", n, f.Calls)
 	}
 	scratch := checkSessionScratch(t, job, ws.root, cache)
 	checkScratchGone(t, ws.root, scratch, before, tmpNow)

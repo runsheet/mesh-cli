@@ -105,6 +105,13 @@ type Fake struct {
 	// PlanNotHandedIn, when set, is the refusal finishJob answers a plan
 	// job's empty result with: no plan reached the product's tool.
 	PlanNotHandedIn string
+	// EvaluationNotHandedIn, when set, is the refusal finishJob answers
+	// an evaluate job's result with: no verdict reached the product's
+	// tool (mesh_verdict). HandedInVerdicts is what an evaluator session
+	// handed the product's tool, by item id: the evaluate job's result
+	// applies it as evaluateWorkItem would.
+	EvaluationNotHandedIn string
+	HandedInVerdicts      map[string]map[string]any
 	// DPoP checks every mint's proof (meshsessions.go); DPoPNonce, set,
 	// is the nonce a proof must carry, asked for with use_dpop_nonce.
 	DPoP      dpoptest.Verifier

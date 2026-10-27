@@ -286,33 +286,6 @@ func (p *Planner) projectRepoMap(ctx context.Context, goal gateway.Goal, scope S
 	return project, repos, nil
 }
 
-// goalRepo is the goal's own repo for the repo rule (ADR-023 (d),
-// planRepoRule, item 6): Goal.RepoID among the project's repos when the
-// platform names one (GoalIndex.repoId — always "" today, since the
-// field is not yet in fields/GoalIndex.txt: ADR-010, a field the
-// platform has not shipped cannot be selected), else the project's one
-// repo when it has exactly one. ok is false when neither resolves one —
-// several repos and no named one — and the rule does not apply (the
-// project's own check, that an item names one of the project's repos,
-// stands either way).
-func goalRepo(goal gateway.Goal, project *gateway.Project, repos map[string]gateway.Repo) (gateway.Repo, bool) {
-	if id := strings.TrimSpace(goal.RepoID); id != "" {
-		for _, r := range repos {
-			if r.ID == id {
-				return r, true
-			}
-		}
-	}
-	if len(project.RepoIDs) == 1 {
-		for _, r := range repos {
-			if r.ID == project.RepoIDs[0] {
-				return r, true
-			}
-		}
-	}
-	return gateway.Repo{}, false
-}
-
 func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) error {
 	project, repos, err := p.projectRepoMap(ctx, goal, scope)
 	if err != nil {

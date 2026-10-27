@@ -150,8 +150,8 @@ func TestCodexPodSessionAdopted(t *testing.T) {
 			t.Fatalf("state.json carries a secret: %s", raw)
 		}
 	}
-	if n := len(f.CallsNamed("evaluateWorkItem")); n != 0 {
-		t.Fatalf("a verdict before the restart: %d", n)
+	if n := evaluateJobsClosed(f); n != 0 {
+		t.Fatalf("an evaluation closed before the restart: %d", n)
 	}
 
 	// the next process finds it, keeps its pod through the sweep, adopts
@@ -168,18 +168,22 @@ func TestCodexPodSessionAdopted(t *testing.T) {
 	}
 	loop2.Tick(ctx2) // the adopted evaluation is in flight: none started again
 	time.Sleep(100 * time.Millisecond)
+	// the adopted session hands its PASS to the product's tool, which
+	// takes the item out of evaluating
+	f.HandedInVerdicts = map[string]map[string]any{item1: {"passed": true, "notes": "Holds."}}
 	closeOnce(release)
-	waitFor(t, func() bool { return len(f.CallsNamed("evaluateWorkItem")) >= 1 })
+	waitFor(t, func() bool { return evaluateJobsClosed(f) >= 1 })
 	loop2.wg.Wait()
 	loop2.Tick(ctx2)
 	loop2.wg.Wait()
 
-	calls := f.CallsNamed("evaluateWorkItem")
-	if len(calls) != 1 || calls[0].Input["aggregateId"] != item1 || calls[0].Input["passed"] != true {
-		t.Fatalf("evaluateWorkItem calls: %+v\n%s", calls, logs2)
+	// one evaluateWorkItem: the product applying the session's PASS
+	// (HandedInVerdicts), on the one close the node sent
+	if n := len(f.CallsNamed("evaluateWorkItem")); n != 1 {
+		t.Fatalf("evaluateWorkItem calls: %d\n%s", n, logs2)
 	}
-	if notes, _ := calls[0].Input["notes"].(string); !strings.Contains(notes, "(evaluated on Codex gpt-6-luna)") {
-		t.Fatalf("notes %q do not name Codex", notes)
+	if notes, _ := evaluationClosed(t, f)["notes"].(string); !strings.Contains(notes, "(evaluated on Codex gpt-6-luna)") {
+		t.Fatalf("notes tail %q does not name Codex", notes)
 	}
 	if n := len(rt.Detached); n != 1 {
 		t.Fatalf("%d detached agents, want the one adopted", n)

@@ -290,7 +290,7 @@ func TestRequiredToolWithAMissingRuntimeReleasesAndIsNotReclaimed(t *testing.T) 
 // An evaluator whose required tool needs a runtime the node lacks
 // records no verdict (an item in evaluating is not released) and is
 // remembered as declined; a nice-to-have one is left out and named in
-// the verdict's notes.
+// the notes tail the node closes the job with.
 func TestEvaluatorTools(t *testing.T) {
 	f := seed(t)
 	issueClaude(f, item1)
@@ -321,8 +321,8 @@ func TestEvaluatorTools(t *testing.T) {
 	if len(h.jobs) != 1 || h.jobs[0].MCPServers["search"] == nil || h.jobs[0].MCPServers["runsheet"] == nil || h.jobs[0].MCPServers["git-tools"] != nil {
 		t.Fatalf("jobs: %+v", h.jobs)
 	}
-	notes := f.CallsNamed("evaluateWorkItem")[0].Input["notes"]
-	if notes != "Fine.\n\nevaluators: one — normal/low goal, no protected path\n(evaluated on the CLI's default model)\ntools: tool git-tools omitted: this node lacks uvx\ntools: search served, never called" {
+	notes := evaluationClosed(t, f)["notes"]
+	if notes != "(evaluated on Claude the CLI's default model)\ntools: tool git-tools omitted: this node lacks uvx\ntools: search served, never called" {
 		t.Fatalf("notes = %q", notes)
 	}
 	if strings.Contains(logs.String(), searchSecret) {

@@ -120,8 +120,8 @@ func hostScratchLeavesNothing(t *testing.T) {
 	if err := ev.Evaluate(context.Background(), *evItem); err != nil {
 		t.Fatalf("Evaluate: %v\n%s", err, logs.String())
 	}
-	if evals := f.CallsNamed("evaluateWorkItem"); len(evals) != 1 || evals[0].Input["passed"] != true {
-		t.Fatalf("evaluations = %+v, want one passing\n%s", evals, logs.String())
+	if n := evaluateJobsClosed(f); n != 1 || len(f.CallsNamed("evaluateWorkItem")) != 0 {
+		t.Fatalf("evaluate jobs closed = %d, want one and no verdict of the node's own\n%s", n, logs.String())
 	}
 	evScratch := checkSessionScratch(t, evJob, r.WorkRoot, cache)
 	checkScratchGone(t, r.WorkRoot, evScratch, before, tmpNow)

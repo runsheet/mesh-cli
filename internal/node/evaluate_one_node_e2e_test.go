@@ -76,6 +76,9 @@ func (s *syncBuffer) String() string {
 func oneNodeFixture(t *testing.T, open chan struct{}) (*gatewaytest.Fake, *oneNodeNode, *oneNodeNode) {
 	t.Helper()
 	f := seed(t)
+	// the evaluator session hands its PASS to the product's tool, which
+	// records it as evaluateWorkItem would (runsheet ADR 077)
+	f.HandedInVerdicts = map[string]map[string]any{item1: {"passed": true, "notes": "The test fails as asked."}}
 	mk := func(name string, takes Takes) *oneNodeNode {
 		cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: name,
 			NodeID: gateway.NodeID(mustUUID(orgID), name).String(), Capacity: Fixed(2), Takes: takes}
@@ -118,7 +121,8 @@ func (n *oneNodeNode) tick() { n.loop.Tick(context.Background()) }
 func (n *oneNodeNode) wait() { n.loop.wg.Wait() }
 
 // assertOneEvaluation checks both logs and the gateway: one `evaluate
-// on` for item 1, no `not yours`, one evaluateWorkItem, the item out of
+// on` for item 1, no `not yours`, one verdict recorded (the session's,
+// through the product's tool), the item out of
 // evaluating, and the session run by want alone.
 func assertOneEvaluation(t *testing.T, f *gatewaytest.Fake, want *oneNodeNode, nodes ...*oneNodeNode) {
 	t.Helper()

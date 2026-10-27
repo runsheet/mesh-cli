@@ -52,12 +52,15 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 	cfg.Capacity = Fixed(0)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	// the session hands its PASS to the product's tool, which moves the
+	// item on; the node closes the job with its notes tail (runsheet ADR 077)
+	f.HandedInVerdicts = map[string]map[string]any{item1: {"passed": true, "notes": "The test exists and fails for the right reason."}}
 	loop.Tick(ctx)
 	waitFor(t, func() bool { return f.Item(item1)["status"] == "review" })
+	loop.wg.Wait()
 
-	calls := f.CallsNamed("evaluateWorkItem")
-	if len(calls) != 1 || calls[0].Input["aggregateId"] != item1 || calls[0].Input["passed"] != true || calls[0].Input["notes"] != "The test exists and fails for the right reason.\n\nevaluators: one — normal/low goal, no protected path\n(evaluated on the CLI's default model)" || calls[0].Input["costCents"] != float64(125) {
-		t.Fatalf("evaluate calls: %+v", calls)
+	if in := evaluationClosed(t, f); in["notes"] != "(evaluated on Claude the CLI's default model)" || in["costCents"] != float64(125) {
+		t.Fatalf("closed %+v", in)
 	}
 	if f.Item(item2)["status"] != "evaluating" {
 		t.Fatal("another node's item is not ours to evaluate")
@@ -78,7 +81,7 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 		t.Fatal("no ADR is on disk: it is fetched")
 	}
 	p := h.jobs[0].Prompt
-	for _, want := range []string{"Write the failing test", "the test fails", "go test ./... passes", "+func TestThing", "origin/main...HEAD", "# How this job finishes", "{verdict}", "Change nothing",
+	for _, want := range []string{"Write the failing test", "the test fails", "go test ./... passes", "+func TestThing", "origin/main...HEAD", "# How this job finishes", "mesh_verdict", "Change nothing",
 		".mesh/context/", "instructions-acme-widgets-agents.md", "goes against an ADR", "mesh_document", `project "acme/mesh"`} {
 		if !strings.Contains(p, want) {
 			t.Fatalf("prompt lacks %q:\n%s", want, p)
@@ -91,28 +94,21 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 		t.Fatalf("a reviewed item was evaluated again: %d jobs", len(h.jobs))
 	}
 
-	// a failing verdict readies it again with the notes; no verdict leaves it
+	// a failing verdict the session handed in readies it again; a session
+	// that handed nothing in is refused at the close and leaves it
+	// evaluating
 	f.WorkItems[item1]["status"] = "evaluating"
-	h.text = "The test passes already, so it proves nothing.\nVERDICT: FAIL"
+	f.HandedInVerdicts = map[string]map[string]any{item1: {"passed": false, "notes": "The test passes already, so it proves nothing."}}
 	loop.Tick(ctx)
 	waitFor(t, func() bool { return f.Item(item1)["status"] == "ready" })
-	if f.Item(item1)["evaluation"] != "The test passes already, so it proves nothing.\n\nevaluators: one — normal/low goal, no protected path\n(evaluated on the CLI's default model)" {
-		t.Fatalf("notes: %v", f.Item(item1)["evaluation"])
-	}
-	// no VERDICT line is no verdict, with its reason and its cost: never
-	// a fail, and the item stays in evaluating (ADR 011's amendment
-	// 2026-09-29)
+	loop.wg.Wait()
 	f.WorkItems[item1]["status"] = "evaluating"
-	h.text = "I could not tell."
+	f.HandedInVerdicts = nil
+	f.EvaluationNotHandedIn = "finishJob: call mesh_verdict first"
 	loop.Tick(ctx)
 	loop.wg.Wait()
-	calls = f.CallsNamed("evaluateWorkItem")
-	if f.Item(item1)["status"] != "evaluating" || len(calls) != 3 {
-		t.Fatalf("no verdict must leave the item in evaluating: %v, %d calls", f.Item(item1)["status"], len(calls))
-	}
-	in := calls[2].Input
-	if !sentNoVerdict(in) || in["notes"] != "no result: the session made no mesh_result call" || in["costCents"] != float64(125) {
-		t.Fatalf("no-verdict call: %+v", in)
+	if f.Item(item1)["status"] != "evaluating" {
+		t.Fatalf("no verdict must leave the item in evaluating: %v", f.Item(item1)["status"])
 	}
 }
 
@@ -223,6 +219,24 @@ func evaluateItem1(t *testing.T, f *gatewaytest.Fake, ev *Evaluator) map[string]
 	if err := ev.Evaluate(context.Background(), *item); err != nil {
 		t.Fatal(err)
 	}
+	if n := nodeVerdicts(f); n != 0 {
+		t.Fatalf("the node handed in %d verdicts of its own", n)
+	}
+	return evaluationClosed(t, f)
+}
+
+// failedByTheNode evaluates item 1 when no session can run — the branch
+// cannot be diffed — and returns the one evaluateWorkItem the node sent:
+// the item's own failure, which needs no evaluator to judge.
+func failedByTheNode(t *testing.T, f *gatewaytest.Fake, ev *Evaluator) map[string]any {
+	t.Helper()
+	item, err := ev.GW.WorkItem(context.Background(), item1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ev.Evaluate(context.Background(), *item); err != nil {
+		t.Fatal(err)
+	}
 	calls := f.CallsNamed("evaluateWorkItem")
 	if len(calls) != 1 {
 		t.Fatalf("evaluate calls: %+v", calls)
@@ -230,127 +244,39 @@ func evaluateItem1(t *testing.T, f *gatewaytest.Fake, ev *Evaluator) map[string]
 	return calls[0].Input
 }
 
-// A high goal whose evaluation passes is evaluated again on Codex, with
-// the same prompt in the same workspace; both pass, so it passes, with
-// both verdicts labelled and the cost of both.
-func TestSecondOpinionBothPass(t *testing.T) {
-	codex := &fakeCodexH{text: "The test fails for the right reason.\nVERDICT: PASS", cost: 0.40,
-		rl: &harness.RateLimit{Status: "allowed", ObservedAt: time.Now()}}
-	f, ev, claude, limits := secondFixture(t, "high", "Holds.\n\nVERDICT: PASS", codex)
-	in := evaluateItem1(t, f, ev)
-	want := "Claude (first evaluation, sonnet): VERDICT: PASS\nHolds.\n\nCodex (second opinion, gpt-6-astra): VERDICT: PASS\nThe test fails for the right reason.\n\nevaluators: two — urgent/high goal\n(evaluated on sonnet; second opinion on Codex gpt-6-astra)"
-	if in["passed"] != true || in["notes"] != want || in["costCents"] != float64(165) {
-		t.Fatalf("recorded %+v\nwant notes %q", in, want)
-	}
-	if len(codex.jobs) != 1 || len(claude.jobs) != 1 {
-		t.Fatalf("runs: claude %d, codex %d", len(claude.jobs), len(codex.jobs))
-	}
-	cj, xj := claude.jobs[0], codex.jobs[0]
-	if xj.Prompt != cj.Prompt || xj.Workspace != cj.Workspace || xj.Kind != harness.KindEvaluate || xj.Model != "gpt-6-astra" {
-		t.Fatalf("codex job %+v", xj)
-	}
-	// its reading is kept under its own key, apart from Claude's
-	if _, ok := limits.Reading("codex:plan"); !ok {
-		t.Fatal("the Codex reading is not kept under codex:plan")
-	}
-	if len(limits.Readings()) != 0 {
-		t.Fatalf("a Codex reading is among Claude's: %+v", limits.Readings())
-	}
-}
-
-// An urgent goal: Claude passes, Codex fails — a disagreement fails the
-// evaluation, with both notes for the builder. Codex is replayed from
-// the recorded stream, its final message a failing verdict.
-func TestSecondOpinionDisagreementFails(t *testing.T) {
-	codex := replayCodex(t, "Nothing asserts the error path.\\nVERDICT: FAIL")
-	f, ev, _, _ := secondFixture(t, "urgent", "Holds.\n\nVERDICT: PASS", codex)
-	in := evaluateItem1(t, f, ev)
-	notes, _ := in["notes"].(string)
-	if in["passed"] != false || !strings.Contains(notes, "Claude (first evaluation, sonnet): VERDICT: PASS\nHolds.") ||
-		!strings.Contains(notes, "Codex (second opinion, gpt-6-astra): VERDICT: FAIL\nNothing asserts the error path.") {
-		t.Fatalf("recorded %+v", in)
-	}
-	// the cost is Claude's and Codex's, at gpt-6-astra's list price
-	want := Cents(1.25 + replayedCost(t))
-	if in["costCents"] != float64(want) || want <= 125 {
-		t.Fatalf("cost %v, want %d", in["costCents"], want)
-	}
-	if f.Item(item1)["status"] != "ready" {
-		t.Fatalf("a failed evaluation readies the item: %v", f.Item(item1)["status"])
-	}
-}
-
-// A normal or low goal's pass touching no protected path never runs
-// Codex.
-func TestSecondOpinionNotRun(t *testing.T) {
-	for _, c := range []struct{ priority, first string }{
-		{"normal", "Holds.\nVERDICT: PASS"},
-		{"", "Holds.\nVERDICT: PASS"},
-		{"low", "Holds.\nVERDICT: PASS"},
-	} {
-		codex := &fakeCodexH{text: "VERDICT: FAIL"}
-		f, ev, _, _ := secondFixture(t, c.priority, c.first, codex)
-		in := evaluateItem1(t, f, ev)
-		if codex.runs() != 0 {
-			t.Errorf("%q %q: Codex ran", c.priority, c.first)
-		}
-		notes, _ := in["notes"].(string)
-		if strings.Contains(notes, "Codex") || in["costCents"] != float64(125) || in["passed"] != strings.HasSuffix(c.first, "PASS") {
-			t.Errorf("%q: recorded %+v", c.priority, in)
-		}
-		if !strings.Contains(notes, "\n\nevaluators: one — normal/low goal, no protected path\n(evaluated on ") {
-			t.Errorf("%q: notes lack the evaluators line:\n%s", c.priority, notes)
+// evaluateJobsClosed counts the evaluate jobs the node closed.
+func evaluateJobsClosed(f *gatewaytest.Fake) int {
+	n := 0
+	for _, c := range f.CallsNamed("finishJob") {
+		if c.Input["kind"] == EvaluateKind {
+			n++
 		}
 	}
+	return n
 }
 
-// A second opinion that errors or reaches no verdict keeps the first
-// verdict and says so. The no-verdict one is the recorded stream as it
-// is ("hello from codex").
-func TestSecondOpinionUnavailable(t *testing.T) {
-	for name, c := range map[string]struct {
-		h    harness.Harness
-		want string
-	}{
-		"error":      {&fakeCodexH{err: errors.New("harness codex: stream disconnected"), cost: 0.1}, "Codex second opinion unavailable: harness codex: stream disconnected"},
-		"no verdict": {replayCodex(t, ""), "Codex second opinion unavailable: no result: the session made no mesh_result call"},
-	} {
-		f, ev, _, _ := secondFixture(t, "high", "Holds.\n\nVERDICT: PASS", c.h)
-		in := evaluateItem1(t, f, ev)
-		want := "Holds.\n\n" + c.want + "\n\nevaluators: two — urgent/high goal\n(evaluated on sonnet)"
-		if in["passed"] != true || in["notes"] != want {
-			t.Errorf("%s: recorded %+v\nwant notes %q", name, in, want)
+// evaluationClosed is the one evaluate job the node closed: the session
+// handed its verdict to the product's tool, and the node's finishJob
+// carries only its notes tail (runsheet ADR 077). Its "notes" is that
+// tail, and "finish" the whole finish.
+func evaluationClosed(t *testing.T, f *gatewaytest.Fake) map[string]any {
+	t.Helper()
+	var closed []map[string]any
+	for _, c := range f.CallsNamed("finishJob") {
+		if c.Input["kind"] != EvaluateKind {
+			continue
 		}
+		fin, _ := c.Input["finish"].(map[string]any)
+		res, ok := fin["result"].(map[string]any)
+		if !ok {
+			t.Fatalf("an evaluate job closed with no result: %+v", fin)
+		}
+		closed = append(closed, map[string]any{"notes": res["notes_tail"], "costCents": res["cost_cents"], "finish": fin})
 	}
-}
-
-// A Codex account that is stopped skips the second opinion, which the
-// notes say — and never paces or stops a Claude session: the node's own
-// pace and its choice of account read Claude's readings only.
-func TestSecondOpinionAccountStopped(t *testing.T) {
-	codex := &fakeCodexH{text: "VERDICT: FAIL"}
-	f, ev, _, limits := secondFixture(t, "urgent", "Holds.\n\nVERDICT: PASS", codex)
-	now := time.Now()
-	limits.Observe("codex:plan", &harness.RateLimit{Status: "rejected", ResetsAt: now.Add(time.Hour), ObservedAt: now,
-		FiveHour: harness.RateLimitWindow{Utilization: 1, ResetsAt: now.Add(time.Hour)}})
-	in := evaluateItem1(t, f, ev)
-	notes, _ := in["notes"].(string)
-	if codex.runs() != 0 || in["passed"] != true || !strings.Contains(notes, "Codex second opinion unavailable: no Codex account has headroom") {
-		t.Fatalf("codex runs %d, recorded %+v", codex.runs(), in)
+	if len(closed) != 1 {
+		t.Fatalf("evaluate jobs closed: %+v", closed)
 	}
-	// the loop — no Claude accounts configured, and so judged by its
-	// strictest reading — is not paced by Codex's
-	loop := &Loop{Cfg: &Config{}, Limits: limits}
-	if p := loop.pacing(); p.mode != paceNormal {
-		t.Fatalf("Claude paced by the Codex account: %+v", p)
-	}
-	if _, ok := loop.accountFor(context.Background(), "normal", false, ""); !ok {
-		t.Fatal("no Claude account for normal work while only Codex is stopped")
-	}
-	// and on the heartbeat all the same
-	if hb := limits.Heartbeat(nil, time.Now(), LimitsConfig{}); len(hb) != 1 || hb[0].Account != "codex:plan" {
-		t.Fatalf("heartbeat %+v", hb)
-	}
+	return closed[0]
 }
 
 // replayCodex is the real Codex adapter on a `codex` that replays the
@@ -396,21 +322,6 @@ func replayedCost(t *testing.T) float64 {
 	return harness.ParseCodexStream(fh, "gpt-6-astra", nil).CostUSD
 }
 
-// Two long notes are truncated together: neither is cut out, and a
-// short one leaves its room to the other.
-func TestBothNotesTruncatedTogether(t *testing.T) {
-	long := strings.Repeat("a", 5000)
-	claude, codex := family{model: "sonnet"}, family{codex: true, model: "gpt-6-astra"}
-	got := bothNotes(claude, long, true, codex, strings.Repeat("b", 5000), false, 3800)
-	if len(got) > 3800 || strings.Count(got, "a") < 1800 || strings.Count(got, "b") < 1800 || !strings.Contains(got, "Codex (second opinion, gpt-6-astra): VERDICT: FAIL\nbbb") {
-		t.Fatalf("len %d, a %d, b %d", len(got), strings.Count(got, "a"), strings.Count(got, "b"))
-	}
-	got = bothNotes(claude, long, true, codex, "short", true, 3800)
-	if len(got) > 3800 || strings.Count(got, "a") < 3600 || !strings.HasSuffix(got, "VERDICT: PASS\nshort") {
-		t.Fatalf("len %d: %q", len(got), got[len(got)-60:])
-	}
-}
-
 // diffWS is a workspace whose Diff answers err.
 type diffWS struct {
 	*fakeWS
@@ -431,9 +342,9 @@ func diffFailFixture(t *testing.T, err error) (*gatewaytest.Fake, *Evaluator, *f
 // returns rather than loops.
 func TestEvaluateNoMergeBaseFailsTheItem(t *testing.T) {
 	f, ev, h := diffFailFixture(t, &NoMergeBaseError{Base: "main", Branch: "mesh/ship-it-1"})
-	in := evaluateItem1(t, f, ev)
+	in := failedByTheNode(t, f, ev)
 	notes, _ := in["notes"].(string)
-	if in["passed"] != false || in["costCents"] != float64(0) || !strings.Contains(notes, "shares no history with origin/main") || !strings.Contains(notes, "rebuilt from scratch") || !strings.Contains(notes, "Rebuild it on origin/main") {
+	if in["costCents"] != float64(0) || !strings.Contains(notes, "shares no history with origin/main") || !strings.Contains(notes, "rebuilt from scratch") || !strings.Contains(notes, "Rebuild it on origin/main") {
 		t.Fatalf("verdict: %+v", in)
 	}
 	if len(h.jobs) != 0 {
@@ -452,8 +363,8 @@ func TestEvaluateNoMergeBaseFailsTheItem(t *testing.T) {
 
 func TestEvaluateOtherDiffErrorFailsTheItem(t *testing.T) {
 	f, ev, h := diffFailFixture(t, errors.New("git diff: exit status 128: bad object"))
-	in := evaluateItem1(t, f, ev)
-	if in["passed"] != false || in["notes"] != "the evaluation could not diff the branch against origin/main: git diff: exit status 128: bad object" {
+	in := failedByTheNode(t, f, ev)
+	if in["notes"] != "the evaluation could not diff the branch against origin/main: git diff: exit status 128: bad object" {
 		t.Fatalf("verdict: %+v", in)
 	}
 	if len(h.jobs) != 0 {
@@ -519,6 +430,8 @@ func alreadyDoneItem1(t *testing.T, f *gatewaytest.Fake, ev *Evaluator) gateway.
 func TestEvaluateAlreadyDoneConfirmed(t *testing.T) {
 	f, ev, h, _ := secondFixture(t, "normal", "PR 41 is on main and go test ./... passes there.\n\nVERDICT: PASS", &fakeCodexH{})
 	ws := ev.WS.(*fakeWS)
+	// the session hands its PASS to the product's tool (runsheet ADR 077)
+	f.HandedInVerdicts = map[string]map[string]any{item1: {"passed": true, "notes": "PR 41 is on main and go test ./... passes there."}}
 	if err := ev.Evaluate(context.Background(), alreadyDoneItem1(t, f, ev)); err != nil {
 		t.Fatal(err)
 	}
@@ -543,7 +456,7 @@ func TestEvaluateAlreadyDoneConfirmed(t *testing.T) {
 		"every cited pull request is merged into main",
 		"every cited SHA is on it (`git merge-base --is-ancestor <sha> origin/main`)",
 		"run the acceptance check yourself on main",
-		"goes against an ADR", ".mesh/context/", "# How this job finishes", "{verdict}", "Change nothing",
+		"goes against an ADR", ".mesh/context/", "# How this job finishes", "mesh_verdict", "Change nothing",
 	} {
 		if !strings.Contains(p, want) {
 			t.Fatalf("prompt lacks %q:\n%s", want, p)
@@ -554,9 +467,8 @@ func TestEvaluateAlreadyDoneConfirmed(t *testing.T) {
 			t.Fatalf("prompt has %q:\n%s", not, p)
 		}
 	}
-	calls := f.CallsNamed("evaluateWorkItem")
-	if len(calls) != 1 || calls[0].Input["passed"] != true || calls[0].Input["notes"] != "PR 41 is on main and go test ./... passes there.\n\nevaluators: one — normal/low goal, no protected path\n(evaluated on sonnet)" {
-		t.Fatalf("evaluate calls: %+v", calls)
+	if in := evaluationClosed(t, f); in["notes"] != "(evaluated on Claude sonnet)" {
+		t.Fatalf("closed %+v", in)
 	}
 	if n := len(f.CallsNamed("openPullRequest")); n != 0 || len(ws.pushed) != 0 {
 		t.Fatalf("an already_done item opens no pull request: %d calls, pushed %v", n, ws.pushed)
@@ -570,39 +482,16 @@ func TestEvaluateAlreadyDoneConfirmed(t *testing.T) {
 // evaluation, the notes saying what is missing on main.
 func TestEvaluateAlreadyDoneRejected(t *testing.T) {
 	f, ev, h, _ := secondFixture(t, "normal", "PR 41 is on main but TestThing is not: the acceptance does not hold there.\n\nVERDICT: FAIL", &fakeCodexH{})
+	f.HandedInVerdicts = map[string]map[string]any{item1: {"passed": false, "notes": "PR 41 is on main but TestThing is not: the acceptance does not hold there."}}
 	if err := ev.Evaluate(context.Background(), alreadyDoneItem1(t, f, ev)); err != nil {
 		t.Fatal(err)
 	}
-	calls := f.CallsNamed("evaluateWorkItem")
-	want := "PR 41 is on main but TestThing is not: the acceptance does not hold there.\n\nevaluators: one — normal/low goal, no protected path\n(evaluated on sonnet)"
-	if len(calls) != 1 || calls[0].Input["aggregateId"] != item1 || calls[0].Input["passed"] != false || calls[0].Input["notes"] != want || calls[0].Input["costCents"] != float64(125) {
-		t.Fatalf("evaluate calls: %+v", calls)
+	if in := evaluationClosed(t, f); in["notes"] != "(evaluated on Claude sonnet)" || in["costCents"] != float64(125) {
+		t.Fatalf("closed %+v", in)
 	}
 	if f.Item(item1)["status"] != "ready" || len(h.jobs) != 1 {
 		t.Fatalf("a rejected claim readies the item: %v", f.Item(item1)["status"])
 	}
-}
-
-// An evaluation whose Codex second opinion also ran hands in one report
-// for both: Codex's tokens and cost added to Claude's, as the cost is.
-func TestSecondOpinionUsageInTheOneReport(t *testing.T) {
-	codex := &fakeCodexH{text: "Holds.\nVERDICT: PASS", cost: 0.40,
-		usage: &harness.Usage{Model: "gpt-6-astra", InputTokens: 1000, CachedInputTokens: 200, OutputTokens: 50}}
-	f, ev, _, _ := secondFixture(t, "high", "Holds.\n\nVERDICT: PASS", codex)
-	issueClaude(f, item1)
-	in := evaluateItem1(t, f, ev)
-	if in["costCents"] != float64(165) {
-		t.Fatalf("recorded %+v", in)
-	}
-	if len(f.SessionUsage) != 1 || f.SessionUsage[0].Name != "evaluateWorkItem" {
-		t.Fatalf("usage: %+v", f.SessionUsage)
-	}
-	u := f.SessionUsage[0].Input
-	if u["listCostCents"] != float64(165) || u["inputTokens"] != float64(1000) || u["cacheReadTokens"] != float64(200) ||
-		u["outputTokens"] != float64(50) || u["adapter"] != "claude-code" || u["credentialId"] != "cred-1" || u["credentialKind"] != "subscription" || u["actualCostCents"] != float64(0) {
-		t.Fatalf("usage: %v", u)
-	}
-	checkNoOldUsage(t, f)
 }
 
 // The evaluation's usage record carries the goal's priority and the
@@ -632,14 +521,14 @@ func TestEvaluationUsageRecordsPriorityAndEvaluators(t *testing.T) {
 	f, ev, _, _ = secondFixture(t, "high", "Holds.\n\nVERDICT: PASS", codex)
 	ev.Credentials.Log = log.New(&buf, "", log.LstdFlags)
 	evaluateItem1(t, f, ev)
-	if line := buf.String(); !strings.Contains(line, ": usage evaluate priority=high evaluators=2 {") {
-		t.Fatalf("logged record lacks priority=high evaluators=2:\n%s", line)
+	if line := buf.String(); !strings.Contains(line, ": usage evaluate priority=high evaluators=1 {") {
+		t.Fatalf("logged record lacks priority=high evaluators=1:\n%s", line)
 	}
 	recs, err = ReadUsage(&buf, UsageQuery{From: day("2000-01-01"), To: day("2100-01-01"), Kind: "evaluate"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(recs.Records) != 1 || recs.Records[0].Priority != "high" || recs.Records[0].Evaluators != 2 {
+	if len(recs.Records) != 1 || recs.Records[0].Priority != "high" || recs.Records[0].Evaluators != 1 {
 		t.Fatalf("records: %+v", recs.Records)
 	}
 }
@@ -651,196 +540,6 @@ func sentNoVerdict(in map[string]any) bool {
 	_, outcome := in["outcome"]
 	return !outcome && in["passed"] == false && in[gateway.NoVerdictField] == true &&
 		in[gateway.NoVerdictReasonField] != "" && in[gateway.NoVerdictReasonField] == in["notes"]
-}
-
-// The rule, with the reason each case is recorded under (goal
-// one-evaluator-for-ordinary-work).
-func TestSecondOpinionWanted(t *testing.T) {
-	correctness := []harness.FailedClause{{Clause: "the evaluator has a test", Satisfy: "add TestSecondOpinionWanted"}}
-	host := []harness.FailedClause{{Clause: "the mini's load p90 under 1.5 × cores", Satisfy: "a quieter mini"}}
-	for _, c := range []struct {
-		name string
-		d    evalDecision
-		want bool
-		why  string
-	}{
-		{"urgent", evalDecision{Priority: "urgent", FirstPassed: true}, true, "urgent/high goal"},
-		{"high", evalDecision{Priority: "high", FirstPassed: true}, true, "urgent/high goal"},
-		{"high, first fail", evalDecision{Priority: "high", FailedClauses: host}, true, "urgent/high goal"},
-		{"normal pass", evalDecision{Priority: "normal", FirstPassed: true, Changed: []string{"internal/node/evaluate.go"}}, false, oneEvaluatorReason},
-		{"low docs pass", evalDecision{Priority: "low", FirstPassed: true, Changed: []string{"docs/handbook.md"}}, false, oneEvaluatorReason},
-		{"no priority", evalDecision{FirstPassed: true}, false, oneEvaluatorReason},
-		{"protectedFiles", evalDecision{Priority: "normal", FirstPassed: true, ProtectedFiles: []string{"schema.sql"}}, true, "protected path schema.sql"},
-		{"protectedRulePaths", evalDecision{Priority: "normal", FirstPassed: true, ProtectedRulePaths: []string{"db/**/*.sql"}, Changed: []string{"README.md", "db/migrations/0042_items.sql"}}, true, "protected path db/migrations/0042_items.sql"},
-		{"protectedPaths", evalDecision{Priority: "low", FirstPassed: true, ProtectedPaths: []string{".github/workflows/*"}, Changed: []string{".github/workflows/release.yml"}}, true, "protected path .github/workflows/release.yml"},
-		{"protectedPaths, no match", evalDecision{Priority: "low", FirstPassed: true, ProtectedPaths: []string{".github/workflows/*"}, Changed: []string{"docs/handbook.md"}}, false, oneEvaluatorReason},
-		{"first fail, correctness", evalDecision{Priority: "normal", FailedClauses: correctness}, true, "first verdict FAIL on a correctness clause"},
-		{"first fail, correctness beside a reading", evalDecision{Priority: "normal", FailedClauses: append(append([]harness.FailedClause(nil), host...), correctness...)}, true, "first verdict FAIL on a correctness clause"},
-		{"first fail, host reading only", evalDecision{Priority: "normal", FailedClauses: host}, false, oneEvaluatorReason},
-		{"always", evalDecision{Priority: "low", FirstPassed: true, Setting: secondOpinionAlways}, true, "second_opinion: always"},
-		{"rule", evalDecision{Priority: "low", FirstPassed: true, Setting: "rule"}, false, oneEvaluatorReason},
-	} {
-		got, why := secondOpinionWanted(c.d)
-		if got != c.want || why != c.why {
-			t.Errorf("%s: (%v, %q), want (%v, %q)", c.name, got, why, c.want, c.why)
-		}
-	}
-}
-
-// A low goal's docs-only item is evaluated once, and the notes and
-// node.log say why.
-func TestOneEvaluatorForALowDocsItem(t *testing.T) {
-	f, ev, claude, codex, _, logs := familyFixture(t, "low", "sonnet", "Also holds.\nVERDICT: PASS", "Holds.\nVERDICT: PASS")
-	ev.WS.(*fakeWS).changed = []string{"docs/handbook.md", "docs/adr/adr-099.md"}
-	evaluateItem1(t, f, ev)
-	if codex.runs() != 1 || len(claude.jobs) != 0 {
-		t.Fatalf("runs: codex %d, claude %d", codex.runs(), len(claude.jobs))
-	}
-	in := assertChoice(t, f, "gpt-6-luna", "evaluators: one — normal/low goal, no protected path")
-	if in["passed"] != true {
-		t.Fatalf("recorded %+v", in)
-	}
-	if !strings.Contains(logs.String(), "item ship-it/1: evaluators: one — normal/low goal, no protected path") {
-		t.Errorf("node.log:\n%s", logs.String())
-	}
-}
-
-// A high goal's platform item is evaluated twice.
-func TestTwoEvaluatorsForAHighPlatformItem(t *testing.T) {
-	f, ev, claude, codex, _, logs := familyFixture(t, "high", "opus", "Also holds.\nVERDICT: PASS", "Holds.\nVERDICT: PASS")
-	ev.WS.(*fakeWS).changed = []string{"internal/gateway/client.go"}
-	evaluateItem1(t, f, ev)
-	if codex.runs() != 1 || len(claude.jobs) != 1 {
-		t.Fatalf("runs: codex %d, claude %d", codex.runs(), len(claude.jobs))
-	}
-	in := assertChoice(t, f, "gpt-6-sol", "evaluators: two — urgent/high goal")
-	if in["passed"] != true {
-		t.Fatalf("recorded %+v", in)
-	}
-	if !strings.Contains(logs.String(), "item ship-it/1: evaluators: two — urgent/high goal") {
-		t.Errorf("node.log:\n%s", logs.String())
-	}
-}
-
-// A normal item whose first verdict fails a correctness clause is
-// evaluated twice: both failing records the union of their clauses, and
-// a second pass passes it with both notes.
-func TestTwoEvaluatorsWhenTheFirstVerdictFails(t *testing.T) {
-	second := "Vet fails too.\nFAILED: the evaluator has a test || SATISFY: add it\nFAILED: go vet passes || SATISFY: fix the vet finding\nVERDICT: FAIL"
-	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", second, correctnessFail)
-	evaluateItem1(t, f, ev)
-	if codex.runs() != 1 || len(claude.jobs) != 1 {
-		t.Fatalf("runs: codex %d, claude %d", codex.runs(), len(claude.jobs))
-	}
-	in := assertChoice(t, f, "gpt-6-luna", "evaluators: two — first verdict FAIL on a correctness clause")
-	got, _ := in[gateway.FailedClausesField].([]any)
-	if in["passed"] != false || len(got) != 2 {
-		t.Fatalf("recorded %+v", in)
-	}
-	for i, want := range []string{"the evaluator has a test", "go vet passes"} {
-		if c, _ := got[i].(map[string]any); c["clause"] != want {
-			t.Errorf("clause %d = %v, want %q", i, c, want)
-		}
-	}
-	notes, _ := in["notes"].(string)
-	if !strings.Contains(notes, "Codex (first evaluation, gpt-6-luna): VERDICT: FAIL\nNo test covers it.") || !strings.Contains(notes, "Claude (second opinion, sonnet): VERDICT: FAIL") {
-		t.Fatalf("notes:\n%s", notes)
-	}
-
-	// a second pass passes it, both notes kept
-	f, ev, _, _, _, _ = familyFixture(t, "normal", "sonnet", "The test is there.\nVERDICT: PASS", correctnessFail)
-	evaluateItem1(t, f, ev)
-	in = assertChoice(t, f, "gpt-6-luna", "evaluators: two — first verdict FAIL on a correctness clause")
-	notes, _ = in["notes"].(string)
-	if in["passed"] != true || in[gateway.FailedClausesField] != nil || !strings.Contains(notes, "VERDICT: FAIL\nNo test covers it.") || !strings.Contains(notes, "Claude (second opinion, sonnet): VERDICT: PASS\nThe test is there.") {
-		t.Fatalf("recorded %+v", in)
-	}
-}
-
-// A normal item whose first fail names only a reading of the host is
-// evaluated once (ADR-020: never failed for the host's number, and not
-// worth a second judge).
-func TestOneEvaluatorOnAHostReadingFail(t *testing.T) {
-	first := "The mini was busy.\nFAILED: the mini's load p90 under 1.5 × cores || SATISFY: a quieter mini\nVERDICT: FAIL"
-	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: PASS", first)
-	evaluateItem1(t, f, ev)
-	if codex.runs() != 1 || len(claude.jobs) != 0 {
-		t.Fatalf("runs: codex %d, claude %d", codex.runs(), len(claude.jobs))
-	}
-	if in := assertChoice(t, f, "gpt-6-luna", "evaluators: one — normal/low goal, no protected path"); in["passed"] != false {
-		t.Fatalf("recorded %+v", in)
-	}
-}
-
-// A normal item with protectedFiles is evaluated twice, as is one whose
-// changed file matches the project's protectedPaths.
-func TestTwoEvaluatorsOnAProtectedPath(t *testing.T) {
-	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "Also holds.\nVERDICT: PASS", "Holds.\nVERDICT: PASS")
-	f.WorkItems[item1]["protectedFiles"] = []any{"schema.sql"}
-	f.WorkItems[item1]["protectedRulePaths"] = []any{"*.sql"}
-	evaluateItem1(t, f, ev)
-	if codex.runs() != 1 || len(claude.jobs) != 1 {
-		t.Fatalf("protectedFiles: runs codex %d, claude %d", codex.runs(), len(claude.jobs))
-	}
-	if in := assertChoice(t, f, "gpt-6-luna", "evaluators: two — protected path schema.sql"); in["passed"] != true {
-		t.Fatalf("recorded %+v", in)
-	}
-
-	f, ev, claude, codex, _, _ = familyFixture(t, "low", "sonnet", "Also holds.\nVERDICT: PASS", "Holds.\nVERDICT: PASS")
-	f.Projects[projID]["protectedPaths"] = []any{"db/migrations/**"}
-	ev.WS.(*fakeWS).changed = []string{"docs/x.md", "db/migrations/0042.sql"}
-	evaluateItem1(t, f, ev)
-	if codex.runs() != 1 || len(claude.jobs) != 1 {
-		t.Fatalf("protectedPaths: runs codex %d, claude %d", codex.runs(), len(claude.jobs))
-	}
-	if in := assertChoice(t, f, "gpt-6-luna", "evaluators: two — protected path db/migrations/0042.sql"); in["passed"] != true {
-		t.Fatalf("recorded %+v", in)
-	}
-
-	// the checkout's own .mesh/config.yml protected_paths
-	f, ev, claude, codex, _, _ = familyFixture(t, "normal", "sonnet", "Also holds.\nVERDICT: PASS", "Holds.\nVERDICT: PASS")
-	ws := ev.WS.(*fakeWS)
-	writeMeshConfig(t, EvalWorkspaceSpec(ws.root, "ship-it", 1, "", "", "").Dir(), "protected_paths:\n  - schema.json\n  - internal/gateway/fields/\n")
-	ws.changed = []string{"README.md", "internal/gateway/fields/WorkItemIndex.txt"}
-	evaluateItem1(t, f, ev)
-	if codex.runs() != 1 || len(claude.jobs) != 1 {
-		t.Fatalf("protected_paths: runs codex %d, claude %d", codex.runs(), len(claude.jobs))
-	}
-	if in := assertChoice(t, f, "gpt-6-luna", "evaluators: two — protected path internal/gateway/fields/WorkItemIndex.txt"); in["passed"] != true {
-		t.Fatalf("recorded %+v", in)
-	}
-
-	// and a checkout whose protected_paths the diff misses gets one
-	f, ev, claude, codex, _, _ = familyFixture(t, "normal", "sonnet", "Also holds.\nVERDICT: PASS", "Holds.\nVERDICT: PASS")
-	ws = ev.WS.(*fakeWS)
-	writeMeshConfig(t, EvalWorkspaceSpec(ws.root, "ship-it", 1, "", "", "").Dir(), "protected_paths: [schema.json]\n")
-	ws.changed = []string{"docs/handbook.md"}
-	evaluateItem1(t, f, ev)
-	if codex.runs() != 1 || len(claude.jobs) != 0 {
-		t.Fatalf("protected_paths, no match: runs codex %d, claude %d", codex.runs(), len(claude.jobs))
-	}
-	if in := assertChoice(t, f, "gpt-6-luna", "evaluators: one — normal/low goal, no protected path"); in["passed"] != true {
-		t.Fatalf("recorded %+v", in)
-	}
-}
-
-// A normal item under a checkout whose .mesh/config.yml says
-// second_opinion: always is evaluated twice.
-func TestSecondOpinionAlways(t *testing.T) {
-	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "Also holds.\nVERDICT: PASS", "Holds.\nVERDICT: PASS")
-	ws := ev.WS.(*fakeWS)
-	dir := EvalWorkspaceSpec(ws.root, "ship-it", 1, "", "", "").Dir()
-	writeMeshConfig(t, dir, "second_opinion: always\n")
-	evaluateItem1(t, f, ev)
-	if len(ws.prepared) != 1 || ws.prepared[0].Dir() != dir {
-		t.Fatalf("prepared %+v, want %s", ws.prepared, dir)
-	}
-	if codex.runs() != 1 || len(claude.jobs) != 1 {
-		t.Fatalf("runs: codex %d, claude %d", codex.runs(), len(claude.jobs))
-	}
-	if in := assertChoice(t, f, "gpt-6-luna", "evaluators: two — second_opinion: always"); in["passed"] != true {
-		t.Fatalf("recorded %+v", in)
-	}
 }
 
 // An evaluation prepares and authorizes a checkout of its own, never
