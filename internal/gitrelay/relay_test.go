@@ -148,6 +148,11 @@ func TestRelayPushOnlyItsRef(t *testing.T) {
 	if !bytes.Equal(gh.body[0], ok) {
 		t.Fatal("the push body was not replayed byte for byte")
 	}
+	pinned := pushBody("2222222222222222222222222222222222222222 1111111111111111111111111111111111111111 refs/heads/mesh/g-1",
+		zeroID+" 1111111111111111111111111111111111111111 refs/runsheet/changesets/7f4e0282-e04a-5639-ad32-d58275988f03")
+	if rec := do(r, "POST", "/git/acme/app.git/git-receive-pack", pinned, nil); rec.Code != 200 {
+		t.Fatalf("branch and pinned changeset ref: got %d %s", rec.Code, rec.Body.String())
+	}
 	for name, body := range map[string][]byte{
 		"main":       pushBody("2222222222222222222222222222222222222222 1111111111111111111111111111111111111111 refs/heads/main"),
 		"second ref": pushBody("2222222222222222222222222222222222222222 1111111111111111111111111111111111111111 refs/heads/mesh/g-1", zeroID+" 1111111111111111111111111111111111111111 refs/tags/v9"),
@@ -163,8 +168,8 @@ func TestRelayPushOnlyItsRef(t *testing.T) {
 			t.Fatalf("%s: got %d", name, rec.Code)
 		}
 	}
-	if len(gh.reqs) != 1 {
-		t.Fatalf("%d pushes reached GitHub, want 1", len(gh.reqs))
+	if len(gh.reqs) != 2 {
+		t.Fatalf("%d pushes reached GitHub, want 2", len(gh.reqs))
 	}
 	if last := (*evs)[len(*evs)-1]; last.Outcome != "refused" {
 		t.Fatalf("last audit %+v", last)

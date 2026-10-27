@@ -98,7 +98,11 @@ func TestRelayWithRealGit(t *testing.T) {
 	os.WriteFile(filepath.Join(work, "b.txt"), []byte("two\n"), 0o644)
 	run(work, "add", ".")
 	run(work, "commit", "-qm", "two")
-	run(work, "push", "-q", "origin", "mesh/g-1")
+	pin := "refs/runsheet/changesets/7f4e0282-e04a-5639-ad32-d58275988f03"
+	run(work, "push", "-q", "origin", "mesh/g-1", "HEAD:"+pin)
+	if got := strings.TrimSpace(run(bare, "rev-parse", pin)); got != strings.TrimSpace(run(work, "rev-parse", "HEAD")) {
+		t.Fatalf("the pinned changeset ref on the backend is %s", got)
+	}
 	if got := strings.TrimSpace(run(bare, "rev-parse", "refs/heads/mesh/g-1")); got != strings.TrimSpace(run(work, "rev-parse", "HEAD")) {
 		t.Fatalf("the job's branch on the backend is %s", got)
 	}

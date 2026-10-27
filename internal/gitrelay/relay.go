@@ -40,7 +40,9 @@ type Policy struct {
 	Repo string
 	// Access is read or write; read refuses git-receive-pack.
 	Access Access
-	// PushRef is the only ref a push may update, refs/heads/<branch>.
+	// PushRef is the branch a push may update, refs/heads/<branch>;
+	// beside it a push may only create pinned changeset refs
+	// (ChangesetRefPrefix).
 	// Whether the update may be a non-fast-forward is left to git and
 	// GitHub's branch rules; what a pushed head holds is judged by
 	// runsheet against the changeset's tree (ADR 076 decision 5).
@@ -136,12 +138,20 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			refuse("reading the push: " + err.Error())
 			return
 		}
+		pins := 0
 		for _, c := range cmds {
 			ev.Refs = append(ev.Refs, c.ref)
 			if reason := r.Policy.check(c); reason != "" {
 				refuse(reason)
 				return
 			}
+			if strings.HasPrefix(c.ref, ChangesetRefPrefix) {
+				pins++
+			}
+		}
+		if pins > 1 {
+			refuse("a push pins one changeset, not several")
+			return
 		}
 		body = replay
 	}
@@ -228,15 +238,51 @@ type command struct {
 
 const zeroID = "0000000000000000000000000000000000000000"
 
-// check refuses a ref update the policy does not allow.
+// ChangesetRefPrefix is where a job pins the commit of a changeset it
+// records (runsheet ADR 076 decision 5): refs/runsheet/changesets/<id>,
+// so the commit is never collected and runsheet reads the changeset's
+// content from git.
+const ChangesetRefPrefix = "refs/runsheet/changesets/"
+
+// check refuses a ref update the policy does not allow: a push may
+// update the job's branch and create pinned changeset refs, nothing
+// else, and may delete neither.
 func (p Policy) check(c command) string {
-	if c.ref != p.PushRef {
-		return fmt.Sprintf("this job may push only %s, not %s", p.PushRef, c.ref)
-	}
 	if strings.Trim(c.new, "0") == "" {
 		return "this job may not delete " + c.ref
 	}
-	return ""
+	if c.ref == p.PushRef {
+		return ""
+	}
+	if id, ok := strings.CutPrefix(c.ref, ChangesetRefPrefix); ok {
+		if !isUUID(id) {
+			return "a changeset ref names a changeset id: " + c.ref
+		}
+		if strings.Trim(c.old, "0") != "" {
+			return "a changeset ref is pinned once and never moved: " + c.ref
+		}
+		return ""
+	}
+	return fmt.Sprintf("this job may push only %s and %s<changeset>, not %s", p.PushRef, ChangesetRefPrefix, c.ref)
+}
+
+func isUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, r := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if r != '-' {
+				return false
+			}
+		default:
+			if !strings.ContainsRune("0123456789abcdef", r) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // readCommands reads a receive-pack request's command list (pkt-lines up
