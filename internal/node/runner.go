@@ -1225,6 +1225,10 @@ func (t *buildTail) finish(ctx context.Context, state *sessionsteps.State) error
 	r, b, item, label := t.r, t.b, t.b.item, t.b.label
 	result := t.result
 	b.reportHandoff(ctx, result)
+	// the run's usage goes to Mesh on its job before the finish ends the
+	// job (runsheet ADR 078); the finish carries a usage report only on a
+	// platform that takes none there
+	ledger := r.meshUsage(ctx, item, b.acct.Report(result))
 	var pushErr error
 	f := &sessionsteps.Finish{
 		ItemID:      item.ID,
@@ -1252,7 +1256,7 @@ func (t *buildTail) finish(ctx context.Context, state *sessionsteps.State) error
 				}
 			}
 			ctx = gateway.WithNodeID(ctx, nodeIDOf(r.Scopes, item.OrgID, r.Cfg))
-			return handInRefused(r.logf, b.acct.Redact, label, "FinishWorkItem", b.acct.Carried(r.validationUsage(r.GW.FinishWorkItem(ctx, itemID, branch, sha, b.cost.delta(), b.acct.Report(result), b.description(ctx)))))
+			return handInRefused(r.logf, b.acct.Redact, label, "FinishWorkItem", b.acct.Carried(r.validationUsage(r.GW.FinishWorkItem(ctx, itemID, branch, sha, b.cost.delta(), ledger, b.description(ctx)))))
 		},
 	}
 	if cg, ok := r.GW.(changesetGateway); ok && cg.TakesChangesets(ctx) {
@@ -1272,7 +1276,7 @@ func (t *buildTail) finish(ctx context.Context, state *sessionsteps.State) error
 		}
 		f.Gateway = &carriedChangesets{ChangesetGateway: cg, carried: b.acct.Carried, logf: r.logf, redact: b.acct.Redact, label: label}
 		f.CostCents = b.cost.delta()
-		f.Usage = b.acct.Report(result)
+		f.Usage = ledger
 	}
 	err := f.Run(ctx, state)
 	if pushErr != nil {
@@ -1291,6 +1295,40 @@ func (t *buildTail) finish(ctx context.Context, state *sessionsteps.State) error
 		r.logf("item %s: changeset %s recorded (%d path(s), %d object(s) uploaded) on %s; finished %s ($%.2f)", label, fr.ChangesetID, len(fr.PathsChanged), len(fr.Uploaded), short(fr.BaseSHA), b.spec.Branch, result.CostUSD)
 	}
 	return nil
+}
+
+// noMeshUsage says once per run that the platform takes no job usage.
+var noMeshUsage sync.Once
+
+// meshUsageReporter is a gateway that reports a job's usage to Mesh
+// (gateway.Client.ReportJobUsage).
+type meshUsageReporter interface {
+	ReportJobUsage(ctx context.Context, nodeID, jobID string, u gateway.JobUsage) error
+}
+
+// meshUsage reports rep, the build's usage, on its job — the claim's
+// mesh session (SessionBearers.JobID) — and answers the report the
+// finish still carries: nil once Mesh took it, rep where there is no job
+// to report on, no account to name, or a platform without the route
+// (said once per run). A refusal is logged and the finish carries rep.
+func (r *Runner) meshUsage(ctx context.Context, item gateway.WorkItem, rep *gateway.UsageReport) *gateway.UsageReport {
+	mu, ok := r.GW.(meshUsageReporter)
+	if !ok || rep == nil || rep.CredentialID == "" {
+		return rep
+	}
+	job := r.Bearers.JobID(item.ID, item.Attempts)
+	if job == "" {
+		return rep
+	}
+	switch err := mu.ReportJobUsage(ctx, nodeIDOf(r.Scopes, item.OrgID, r.Cfg), job, gateway.JobUsageOf(rep)); {
+	case err == nil:
+		return nil
+	case gateway.IsUnsupported(err):
+		noMeshUsage.Do(func() { r.logf("usage: %v; the finish carries it as before (said once per run)", err) })
+	default:
+		r.logf("item %s: usage report to Mesh refused: %v; the finish carries it", item.ID, err)
+	}
+	return rep
 }
 
 // changesetBase is the ref the changeset's base tree is read from: the

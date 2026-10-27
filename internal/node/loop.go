@@ -1,7 +1,9 @@
 package node
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -487,6 +489,11 @@ type Loop struct {
 	// probe runs a dozen commands).
 	manifest   *nodecaps.Manifest
 	manifestAt time.Time
+	// accountsSent is the last accounts report Mesh took, and when
+	// (reportAccounts); noMeshAccounts says once that it takes none.
+	accountsSent   string
+	accountsAt     time.Time
+	noMeshAccounts sync.Once
 }
 
 type goalsRead struct {
@@ -1279,6 +1286,7 @@ func (l *Loop) Tick(ctx context.Context) {
 		}
 	}
 	if beat {
+		l.reportAccounts(ctx, extras.Limits)
 		l.confirmUpdate()
 		if l.FirstBeat != nil {
 			l.firstBeat.Do(func() { l.FirstBeat(ctx, l.CurrentScopes()) })
@@ -2122,6 +2130,74 @@ func (l *Loop) probe() {
 	l.mu.Unlock()
 	if !slices.Equal(wasR, runtimes) || !slices.Equal(wasA, adapters) {
 		l.logf("tools: runtimes [%s], adapters [%s]", strings.Join(runtimes, " "), strings.Join(adapters, " "))
+	}
+}
+
+// meshAccountsReporter is a gateway that takes the node's accounts'
+// windows (gateway.Client.ReportNodeAccounts).
+type meshAccountsReporter interface {
+	ReportNodeAccounts(ctx context.Context, nodeID string, accounts []gateway.NodeAccount, seenAt time.Time) error
+}
+
+// AccountsEvery is how often the node sends its accounts' windows to
+// Mesh when they have not changed.
+const AccountsEvery = 5 * time.Minute
+
+// reportAccounts sends the heartbeat's limit readings to Mesh, each
+// account by reference (its credential id), so Mesh keeps them per
+// account rather than per node (runsheet ADR 078): on a change, else
+// every AccountsEvery. An account the node knows no reference for is
+// left out; a platform without the route is said once per run.
+func (l *Loop) reportAccounts(ctx context.Context, limits []gateway.Limits) {
+	mr, ok := l.GW.(meshAccountsReporter)
+	if !ok || len(limits) == 0 || l.Known == nil {
+		return
+	}
+	now := l.now()
+	refs := map[string]string{}
+	for _, a := range l.Known.Accounts(now) {
+		if a.ID != "" {
+			refs[limitsAccountKey(a.Adapter, a.Label)] = a.ID
+		}
+	}
+	var accounts []gateway.NodeAccount
+	for _, lim := range limits {
+		ref := refs[lim.Account]
+		if ref == "" {
+			continue
+		}
+		acc := gateway.NodeAccount{AccountRef: ref, Overage: cmp.Or(lim.OverageStatus, "unknown"), Windows: []gateway.AccountWindow{}}
+		if w := lim.FiveHour; w != nil {
+			acc.Windows = append(acc.Windows, gateway.AccountWindow{Window: "five_hour", UsedPct: w.Utilization * 100, ResetsAt: w.ResetsAt})
+		}
+		if w := lim.SevenDay; w != nil {
+			acc.Windows = append(acc.Windows, gateway.AccountWindow{Window: "seven_day", UsedPct: w.Utilization * 100, ResetsAt: w.ResetsAt})
+		}
+		accounts = append(accounts, acc)
+	}
+	if len(accounts) == 0 {
+		return
+	}
+	sent, _ := json.Marshal(accounts)
+	l.mu.Lock()
+	same := string(sent) == l.accountsSent && now.Sub(l.accountsAt) < AccountsEvery
+	l.mu.Unlock()
+	if same {
+		return
+	}
+	nodeID := l.Cfg.NodeID
+	if owned := l.owned(); owned != nil {
+		nodeID = owned.NodeID
+	}
+	switch err := mr.ReportNodeAccounts(ctx, nodeID, accounts, now); {
+	case err == nil:
+		l.mu.Lock()
+		l.accountsSent, l.accountsAt = string(sent), now
+		l.mu.Unlock()
+	case gateway.IsUnsupported(err):
+		l.noMeshAccounts.Do(func() { l.logf("accounts: %v (said once per run)", err) })
+	default:
+		l.logf("accounts: report to Mesh refused: %v", err)
 	}
 }
 
