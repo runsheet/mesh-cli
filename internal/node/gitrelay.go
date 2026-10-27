@@ -52,3 +52,16 @@ func relayFor(tok *gateway.GitHubToken, logf func(string, ...any)) string {
 	}
 	return base
 }
+
+// GitRelayCounts is every request the node's git relay has answered since
+// the node started, by repository, service and outcome; nil when the
+// relay is off or keeps no counts.
+func GitRelayCounts() []gitrelay.Count {
+	gitRelayState.Lock()
+	srv := gitRelayState.srv
+	gitRelayState.Unlock()
+	if srv == nil || srv.Counts == nil {
+		return nil
+	}
+	return srv.Counts.Total()
+}

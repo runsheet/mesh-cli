@@ -24,6 +24,9 @@ type Server struct {
 	HTTP     *http.Client
 	// Audit takes every relay's events.
 	Audit func(Event)
+	// Counts, when set, counts every relay's events by repository,
+	// service and outcome.
+	Counts *Counts
 	// Now is the clock; time.Now when nil.
 	Now func() time.Time
 
@@ -89,7 +92,7 @@ func (s *Server) Register(policy Policy, token Token) (string, error) {
 	c := hex.EncodeToString(b[:])
 	tok := token
 	s.entries[c] = &entry{key: key, expires: token.ExpiresAt, relay: &Relay{
-		Policy: policy, Upstream: s.Upstream, HTTP: s.HTTP, Audit: s.Audit, Now: s.Now,
+		Policy: policy, Upstream: s.Upstream, HTTP: s.HTTP, Audit: s.audit, Now: s.Now,
 		Mint: func(context.Context) (Token, error) { return tok, nil },
 		// the node renews the job's token and registers the new one; a
 		// relay serves its own until it expires
@@ -127,4 +130,14 @@ func (s *Server) now() time.Time {
 		return s.Now()
 	}
 	return time.Now()
+}
+
+// audit counts e and hands it to Audit.
+func (s *Server) audit(e Event) {
+	if s.Counts != nil {
+		s.Counts.Add(e)
+	}
+	if s.Audit != nil {
+		s.Audit(e)
+	}
 }
