@@ -90,16 +90,6 @@ func TestBuildCommandsActAsTheBuilder(t *testing.T) {
 	}
 }
 
-func (g *actorGW) EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, clauses []gateway.FailedClause, costCents int, usage *gateway.UsageReport, choice gateway.EvaluateChoice) error {
-	g.note("evaluateWorkItem", ctx)
-	return g.Gateway.EvaluateWorkItem(ctx, itemID, passed, notes, clauses, costCents, usage, choice)
-}
-
-func (g *actorGW) EvaluateWorkItemNoVerdict(ctx context.Context, itemID, reason string, costCents int, usage *gateway.UsageReport, choice gateway.EvaluateChoice) error {
-	g.note("evaluateWorkItem", ctx)
-	return g.Gateway.EvaluateWorkItemNoVerdict(ctx, itemID, reason, costCents, usage, choice)
-}
-
 // JobBriefOf and JobKindOf pass the briefs and catalogue through, so a
 // session started on the recorder reads its kind's brief as on the client.
 func (g *actorGW) JobBriefOf(kind string, subject gateway.JobSubject) (*gateway.JobBrief, bool) {

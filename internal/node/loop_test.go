@@ -873,10 +873,14 @@ func TestLoopPoisonedItemDoesNotStarveTheQueue(t *testing.T) {
 			}
 		}
 	}
-	// and every evaluation of it fails
+	// and every evaluation of it fails: the product records the verdict
+	// (its session's mesh_verdict), standing in for here on the client
+	verdict := gw.(interface {
+		EvaluateWorkItem(context.Context, string, bool, string, []gateway.FailedClause, int, *gateway.UsageReport, gateway.EvaluateChoice) error
+	})
 	loop.Evaluate = func(ctx context.Context, it gateway.WorkItem) {
 		ctx = gateway.WithNodeID(ctx, nodeIDOf(loop.Scopes, it.OrgID, loop.Cfg))
-		if err := gw.EvaluateWorkItem(ctx, it.ID, false, "VERDICT: FAIL", nil, 0, nil, gateway.EvaluateChoice{}); err != nil {
+		if err := verdict.EvaluateWorkItem(ctx, it.ID, false, "VERDICT: FAIL", nil, 0, nil, gateway.EvaluateChoice{}); err != nil {
 			t.Errorf("evaluate: %v", err)
 		}
 	}

@@ -61,18 +61,18 @@ type evalRecorder struct {
 	noVerdicts []string
 }
 
-func (g *evalRecorder) EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, clauses []gateway.FailedClause, costCents int, usage *gateway.UsageReport, choice gateway.EvaluateChoice) error {
+func (g *evalRecorder) FinishJob(ctx context.Context, nodeID, kind string, subject gateway.JobSubject, finish map[string]any) (map[string]any, error) {
+	r, _ := finish["result"].(map[string]any)
 	g.mu.Lock()
-	g.verdicts++
+	switch r["outcome"] {
+	case "failed":
+		g.verdicts++
+	case "no_verdict":
+		reason, _ := r["reason"].(string)
+		g.noVerdicts = append(g.noVerdicts, reason)
+	}
 	g.mu.Unlock()
-	return g.Gateway.EvaluateWorkItem(ctx, itemID, passed, notes, clauses, costCents, usage, choice)
-}
-
-func (g *evalRecorder) EvaluateWorkItemNoVerdict(ctx context.Context, itemID, reason string, costCents int, usage *gateway.UsageReport, choice gateway.EvaluateChoice) error {
-	g.mu.Lock()
-	g.noVerdicts = append(g.noVerdicts, reason)
-	g.mu.Unlock()
-	return g.Gateway.EvaluateWorkItemNoVerdict(ctx, itemID, reason, costCents, usage, choice)
+	return g.Gateway.FinishJob(ctx, nodeID, kind, subject, finish)
 }
 
 // runtimeReleaseOK asserts the one release is runtime_broken naming
@@ -154,7 +154,7 @@ func TestRuntimeReleaseOfAnEvaluation(t *testing.T) {
 		t.Fatalf("evaluate: %v ran=%v\n%s", err, seen.ran, buf.String())
 	}
 	if rec.verdicts != 0 {
-		t.Fatalf("EvaluateWorkItem called %d times", rec.verdicts)
+		t.Fatalf("a failed outcome sent %d times", rec.verdicts)
 	}
 	if len(rec.noVerdicts) != 1 || !strings.HasPrefix(rec.noVerdicts[0], "runtime_broken: ") || !strings.Contains(rec.noVerdicts[0], "error opening storage") {
 		t.Fatalf("no verdicts = %q", rec.noVerdicts)
