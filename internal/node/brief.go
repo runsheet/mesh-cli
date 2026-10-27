@@ -43,7 +43,7 @@ func jobBriefOf(ctx context.Context, gw any, kind, id string) gateway.JobBrief {
 	}
 	if r, ok := gw.(kindReader); ok {
 		if k, ok := r.JobKindOf(ctx, kind); ok {
-			return gateway.JobBrief{Kind: kind, Subject: gateway.JobSubject{Type: subjectTypes[kind], ID: id}, Finish: k.Finish, Guidance: k.Guidance, FinishSchema: k.FinishSchema}
+			return gateway.JobBrief{Kind: kind, Subject: gateway.JobSubject{Type: subjectTypes[kind], ID: id}, Finish: k.Finish, Guidance: k.Guidance, FinishSchema: k.FinishSchema, FinishTool: k.FinishTool, BriefTool: k.BriefTool}
 		}
 	}
 	return gateway.JobBrief{}

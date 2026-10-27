@@ -151,3 +151,25 @@ func TestLoadRefusesABadFinishSchema(t *testing.T) {
 		t.Errorf("review.yml refused:\n%s", probs.Error())
 	}
 }
+
+// TestLoadCarriesTheProductsTools: a kind's finish_tool and brief_tool
+// are the product's tool names, carried as written; the CLI reads no
+// meaning into them (a kind that names neither carries neither).
+func TestLoadCarriesTheProductsTools(t *testing.T) {
+	files := acme()
+	files[".mesh/jobs/triage.yml"] += "finish_tool: hand_in\nbrief_tool: subject\n"
+	b, err := Load(checkout(t, files), Source{Commit: "c1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Kinds[2].FinishTool != "hand_in" || b.Kinds[2].BriefTool != "subject" {
+		t.Fatalf("triage's tools: %+v", b.Kinds[2])
+	}
+	if b.Kinds[1].FinishTool != "" || b.Kinds[1].BriefTool != "" {
+		t.Fatalf("review names no tool: %+v", b.Kinds[1])
+	}
+	raw, _ := json.Marshal(b.Kinds[2])
+	if !strings.Contains(string(raw), `"finish_tool":"hand_in"`) || !strings.Contains(string(raw), `"brief_tool":"subject"`) {
+		t.Fatalf("published kind: %s", raw)
+	}
+}

@@ -264,7 +264,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	if brief.Guidance == "" {
 		r.noGuidance.Note(RebaseKind, r.logf)
 	}
-	in.Guidance, in.Finish = brief.Guidance, holder.FinishSection()
+	in.Guidance, in.Finish = brief.ProductGuidance(), holder.FinishSection()
 	job.Prompt = harness.RebasePrompt(in)
 	relayBin, _, _ := harness.RelayOf(r.MCP[tools.Builtin])
 	endTools, err := SessionTools{NodeTools: holder.Tools()}.serveNodeToolsAlone(mcpRootFor(r.Layout, item.ID), relayBin, &job, nil)

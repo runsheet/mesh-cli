@@ -373,7 +373,7 @@ func (e *Evaluator) evaluate(ctx context.Context, item gateway.WorkItem, res *Re
 		ContextDir: contextDir, ContextFiles: files, Project: orgName + "/" + res.Project.Slug, MeshContext: len(e.MCP) > 0,
 		AlreadyDone: alreadyDone, Evidence: item.Evidence,
 		PriorAttempts: prior,
-		Guidance:      brief.Guidance, Finish: holder.FinishSection(),
+		Guidance:      brief.ProductGuidance(), Finish: holder.FinishSection(),
 	}
 	model := fam.model
 	budget, budgetSource := e.budgetWithSource(res.Goal, model)
