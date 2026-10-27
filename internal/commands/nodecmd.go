@@ -1197,7 +1197,8 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 	if cfg.GitRelay {
 		// node.yaml's git_relay: a read token stays in the node's relay,
 		// and git commands on it reach GitHub through it
-		rel := &gitrelay.Server{Audit: func(e gitrelay.Event) {
+		counts := &gitrelay.Counts{}
+		rel := &gitrelay.Server{Counts: counts, Audit: func(e gitrelay.Event) {
 			if e.Outcome != "ok" {
 				logger.Printf("git relay: %s %s %s: %s (refs %v)", e.Repo, e.Service, e.Outcome, e.Reason, e.Refs)
 			}
@@ -1207,6 +1208,22 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 		}
 		node.SetGitRelay(rel, logger.Printf)
 		logger.Printf("git relay: on (node.yaml git_relay)")
+		// one line an hour of what went through it, by repository, read
+		// or write, and outcome
+		counts.Window(time.Now())
+		go func() {
+			t := time.NewTicker(time.Hour)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case now := <-t.C:
+					since, window := counts.Window(now)
+					logger.Printf("git relay: since %s: %s", since.UTC().Format("15:04Z"), gitrelay.Line(window))
+				}
+			}
+		}()
 	}
 	if sb != nil {
 		// a runtime that cannot start a pod latches the node: it claims
