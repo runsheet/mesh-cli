@@ -406,6 +406,9 @@ type Loop struct {
 	// noEvaluationClaimSaid is set once the run has said the platform
 	// takes no claimWorkItemEvaluation (evaluateHeld, ADR-025).
 	noEvaluationClaimSaid bool
+	// queueOffUntil is when the node next tries the one claim, after the
+	// platform answered it has none (queueclaim.go).
+	queueOffUntil time.Time
 	// evaluationElsewhereSaid are the items this node built whose
 	// evaluation another node claimed, each said once (evaluateHeld).
 	evaluationElsewhereSaid map[string]bool
@@ -1329,10 +1332,16 @@ func (l *Loop) Tick(ctx context.Context) {
 			// (laneTakes). It says why when it skips (low disk or
 			// memory among them)
 			inUse += l.validateBatches(ctx, l.Capacity()-inUse, lanes.Validate-l.ValidatingInLane())
+			// the one claim (queueclaim.go): Mesh orders builds,
+			// evaluations, rebases, main validations and plans across
+			// kinds; with it the node's own per-kind passes stand down
+			qc, qnode, queued := l.queueOn()
 			if !low {
-				l.evaluateHeld(ctx)
-				l.rebaseRequested(ctx)
-				l.planRequested(ctx)
+				if !queued {
+					l.evaluateHeld(ctx)
+					l.rebaseRequested(ctx)
+					l.planRequested(ctx)
+				}
 				l.researchDue(ctx)
 				l.threadsDue(ctx)
 			}
@@ -1360,7 +1369,28 @@ func (l *Loop) Tick(ctx context.Context) {
 				normalFree = min(normalFree, free)
 			}
 			// a hot host claims nothing new; what runs runs on
-			if (free > 0 || l.buildCapped()) && !l.hostHot() && !low {
+			switch {
+			case queued && !low:
+				slots := 0
+				if !l.hostHot() && !l.atMin() {
+					// a ranged node at its min keeps to urgent and high:
+					// the queue cannot be told so, so it claims kind by
+					// kind there (claimReady's maxRank)
+					slots = max(free, 0)
+				}
+				if !l.claimFromQueue(ctx, qc, qnode, slots) {
+					// the platform has no one claim after all: this tick
+					// claims kind by kind
+					l.evaluateHeld(ctx)
+					l.rebaseRequested(ctx)
+					l.planRequested(ctx)
+					if (free > 0 || l.buildCapped()) && !l.hostHot() {
+						l.claimReady(ctx, free, normalFree, claimRank)
+					}
+				} else if l.atMin() && (free > 0 || l.buildCapped()) && !l.hostHot() {
+					l.claimReady(ctx, free, normalFree, claimRank)
+				}
+			case (free > 0 || l.buildCapped()) && !l.hostHot() && !low:
 				l.claimReady(ctx, free, normalFree, claimRank)
 			}
 			l.logWaiting()
