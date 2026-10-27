@@ -16,9 +16,7 @@ import (
 // mainvalidation_loop.go puts a merge batch candidate's validation
 // (validateCandidate, runsheet ADR 048 decision 3) on the loop: on the
 // evaluation cadence the node reads mainValidations, claims each batch
-// of an org it serves while it has a free slot — or its validation lane
-// (capacity.reserve, ADR 069 decision 2b) when builds fill the rest —
-// runs the candidate's
+// of an org it serves while it has a free slot, runs the candidate's
 // suites in its own goroutine — counted as a running session against
 // the capacity, as a build is — and ends the claim: the attestation is
 // the verdict (ADR 054's amendment 2026-10-13), so green and red alike
@@ -109,8 +107,7 @@ func pullRequestLabel(p gateway.MainValidationPullRequest) string {
 // the platform.
 type mainJob struct {
 	id, label, claimed string
-	// kind is what the job validates, which decides whether it may take
-	// the validation lane (laneTakes)
+	// kind is what the job validates
 	kind   jobKind
 	run    func(ctx context.Context) (validate.Attestation, error)
 	claim  func(ctx context.Context) error
@@ -214,33 +211,6 @@ const (
 	jobPullRequest
 )
 
-// ValidatingInLane is the validations running now that started in the
-// validation lane's slots (laneHeld). One that started in a free slot
-// of the capacity — a hand-opened pull request always does — leaves the
-// lane's slots as they were.
-func (l *Loop) ValidatingInLane() int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return len(l.laneHeld)
-}
-
-// laneTakes is whether a job of kind may start in the validation lane
-// (goal merge-candidates-have-a-lane): the lane is a merge batch
-// candidate's first — it lands work already built and attested, and
-// every item behind it waits on it. A merged item's main validation
-// takes it only when no candidate this tick is left waiting for a slot;
-// a hand-opened pull request lands nothing and never takes it. A free
-// slot of the capacity is anyone's.
-func laneTakes(kind jobKind, candidateWaits bool) bool {
-	switch kind {
-	case jobCandidate:
-		return true
-	case jobMain:
-		return !candidateWaits
-	}
-	return false
-}
-
 // mainValidation is the gateway's main-validation half when the loop can
 // validate batches and the platform serves them; each reason it cannot
 // is said once (skipValidation).
@@ -303,16 +273,13 @@ const maxValidationNotes = 512
 // batch candidate, then for each served merged item's request, then for
 // each served hand-opened pull request, while slots remain, the host is
 // not hot and node.yaml's evaluate cap has room, and answers how many
-// it started. free is the capacity's free slots, anyone's; lane is the
-// validation lane's slots no lane job holds, which only laneTakes'
-// jobs start in: candidates, then a main validation while no candidate
-// waits, never a pull request. Every batch is offered before any
-// request, and every request before any pull request: a pull request
-// lands nothing. A skip says its cause once (skipValidation); a job of
+// it started. free is the capacity's free slots. Every batch is offered
+// before any request, and every request before any pull request: a pull
+// request lands nothing. A skip says its cause once (skipValidation); a job of
 // an org the node does not serve, and a claim refused — another node
 // holds it, or it waits on none — each say so once per job.
-func (l *Loop) validateBatches(ctx context.Context, free, lane int) int {
-	free, lane = max(free, 0), max(lane, 0)
+func (l *Loop) validateBatches(ctx context.Context, free int) int {
+	free = max(free, 0)
 	gw, ok := l.mainValidation(ctx)
 	switch {
 	case !ok:
@@ -326,8 +293,8 @@ func (l *Loop) validateBatches(ctx context.Context, free, lane int) int {
 	case l.holdingValidations():
 		l.skipValidation("update", "main validation: a self-update waits for the running validations; validating no new one")
 		return 0
-	case free <= 0 && lane <= 0:
-		l.skipValidation("full", "main validation: no free slot and the validation lane is taken (capacity %d, %d validating); validating no merge batch", l.Capacity(), l.Validating())
+	case free <= 0:
+		l.skipValidation("full", "main validation: no free slot (capacity %d, %d validating); validating no merge batch", l.Capacity(), l.Validating())
 		return 0
 	}
 	l.skipValidation("", "")
@@ -392,38 +359,22 @@ func (l *Loop) validateBatches(ctx context.Context, free, lane int) int {
 		}
 	}
 	capped := l.takesCap(harness.KindEvaluate)
-	started, candidateWaits := 0, false
+	started := 0
 	for _, j := range append(append(batches, requests...), pulls...) {
-		if capped.capped && capped.room <= 0 {
+		if free <= 0 || (capped.capped && capped.room <= 0) {
 			break
 		}
 		if l.isValidating(j.id) {
-			continue // running here already: it neither waits nor takes a slot
+			continue // running here already: it takes no new slot
 		}
-		// a candidate starts in its lane first, so a free slot is left
-		// for whatever else waits; the rest start in a free slot first
-		inLane := free <= 0 || (j.kind == jobCandidate && lane > 0)
-		if inLane && (lane <= 0 || !laneTakes(j.kind, candidateWaits)) {
-			// no slot this job may take: a candidate left here waits,
-			// and the lane stays its own
-			candidateWaits = candidateWaits || j.kind == jobCandidate
-			if j.kind == jobPullRequest || (lane <= 0 && j.kind != jobCandidate) {
-				break
-			}
-			continue
-		}
-		if l.startMainJob(ctx, j, inLane) {
+		if l.startMainJob(ctx, j) {
 			capped.started()
 			started++
-			if inLane {
-				lane--
-			} else {
-				free--
-			}
+			free--
 		}
 	}
-	if candidateWaits {
-		l.sayValidationOnce("candidate waits "+l.waitingCandidates(batches), "main validation: a merge batch candidate waits for the validation lane (capacity %d, %d validating)", l.Capacity(), l.Validating())
+	if waiting := l.waitingCandidates(batches); free <= 0 && waiting != "" {
+		l.sayValidationOnce("candidate waits "+waiting, "main validation: a merge batch candidate waits for a free slot (capacity %d, %d validating)", l.Capacity(), l.Validating())
 	}
 	return started
 }
@@ -448,9 +399,8 @@ func (l *Loop) isValidating(id string) bool {
 }
 
 // startMainJob claims j and, granted, runs it in its own goroutine,
-// marked validating — a session against the capacity — and, inLane,
-// holding a slot of the validation lane, until it ends.
-func (l *Loop) startMainJob(ctx context.Context, j mainJob, inLane bool) bool {
+// marked validating — a session against the capacity — until it ends.
+func (l *Loop) startMainJob(ctx context.Context, j mainJob) bool {
 	l.mu.Lock()
 	if l.validating[j.id] {
 		l.mu.Unlock()
@@ -460,17 +410,10 @@ func (l *Loop) startMainJob(ctx context.Context, j mainJob, inLane bool) bool {
 		l.validating = map[string]bool{}
 	}
 	l.validating[j.id] = true
-	if inLane {
-		if l.laneHeld == nil {
-			l.laneHeld = map[string]bool{}
-		}
-		l.laneHeld[j.id] = true
-	}
 	l.mu.Unlock()
 	if err := j.claim(ctx); err != nil {
 		l.mu.Lock()
 		delete(l.validating, j.id)
-		delete(l.laneHeld, j.id)
 		l.mu.Unlock()
 		if !gateway.IsRefusal(err) {
 			l.logf("%s: claim: %v", j.label, err)
@@ -489,7 +432,6 @@ func (l *Loop) startMainJob(ctx context.Context, j mainJob, inLane bool) bool {
 		defer func() {
 			l.mu.Lock()
 			delete(l.validating, j.id)
-			delete(l.laneHeld, j.id)
 			l.mu.Unlock()
 			l.notify()
 		}()

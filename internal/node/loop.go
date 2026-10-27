@@ -313,9 +313,6 @@ type Loop struct {
 	// for a merged item's, workItemId: each a session against the
 	// capacity (Running).
 	validating map[string]bool
-	// laneHeld is those of validating that started in a slot of the
-	// validation lane, by the same key (ValidatingInLane)
-	laneHeld map[string]bool
 	// sessionOrg is the org each build, plan and research session counts
 	// toward, by subject (item, goal or direction id): heldByOrg's count
 	// against the org's floor (ADR-023).
@@ -469,7 +466,9 @@ type Loop struct {
 	// validationHold is set while an update waits out the running
 	// validations (waitValidations): no new one is claimed
 	validationHold bool
-	updateWG       sync.WaitGroup
+	// reserveSaid is whether sayReserveRetired has said its line
+	reserveSaid bool
+	updateWG    sync.WaitGroup
 	// stoppables are the sessions the platform's stop list can end, by
 	// kind and item (stops.go)
 	stoppables map[string]stoppable
@@ -1326,27 +1325,19 @@ func (l *Loop) Tick(ctx context.Context) {
 			// the slots taken are the tracked builds or, when more run on
 			// the host, the live agent sessions, orphans included (LiveProbe)
 			inUse := l.inUse(ctx)
-			// the lanes (ADR 069 decision 2b): slots no build takes,
-			// kept for validations and evaluations
-			lanes := l.Lanes()
-			// a merge batch candidate's and a merged item's validation
-			// are asked for first, every tick, before any new build or
-			// plan: they land work already built and attested. They take
-			// any free slot and, when builds fill the rest, their lane —
-			// a candidate first, a main validation only while no
-			// candidate waits, a hand-opened pull request never
-			// (laneTakes). It says why when it skips (low disk or
-			// memory among them)
+			l.sayReserveRetired()
 			// the one claim (queueclaim.go): Mesh orders builds,
 			// evaluations, rebases, validations of every subject, plans and
-			// research across kinds; with it the node's own per-kind passes
-			// stand down, and so do the lanes — Mesh ranks validations
-			// first, and a lane the queue cannot fill would sit idle
+			// research across kinds, validations first; with it the node's
+			// own per-kind passes stand down. Without it a merge batch
+			// candidate's, a merged item's and a pull request's validation
+			// are asked for first, every tick, before any new build or
+			// plan, and take the first free slots: they land work already
+			// built and attested. It says why when it skips (low disk or
+			// memory among them)
 			qc, qnode, queued := l.queueOn()
-			if queued {
-				lanes = Reserve{}
-			} else {
-				inUse += l.validateBatches(ctx, l.Capacity()-inUse, lanes.Validate-l.ValidatingInLane())
+			if !queued {
+				inUse += l.validateBatches(ctx, l.Capacity()-inUse)
 			}
 			if !low {
 				if !queued {
@@ -1357,15 +1348,10 @@ func (l *Loop) Tick(ctx context.Context) {
 				}
 				l.threadsDue(ctx)
 			}
-			// a build never takes a lane: the validation lane while no
-			// validation fills it, the evaluation lane always (an
-			// evaluation is not counted in inUse)
-			kept := max(lanes.Validate-l.ValidatingInLane(), 0) + lanes.Evaluate
 			free := l.Capacity() - inUse
 			if p.mode == pacePaced {
 				free = pacedFree(free, l.Capacity(), inUse)
 			}
-			free = min(free, l.Capacity()-kept-inUse)
 			// a ranged node at its min builds only urgent and high goals
 			claimRank := gateway.PriorityRank("low")
 			if l.atMin() {
@@ -1373,7 +1359,7 @@ func (l *Loop) Tick(ctx context.Context) {
 			}
 			// the urgent-only slots (the reserve at the end of an api key's
 			// day) are not for normal and low work
-			normalFree := min(free, l.Capacity()-l.urgentOnly()-kept-inUse)
+			normalFree := min(free, l.Capacity()-l.urgentOnly()-inUse)
 			// node.yaml's takes: cap on build bounds the free slots inside
 			// the capacity; claimReady passes over what it holds back
 			if room, ok := l.kindRoom(harness.KindBuild); ok && room < free {
@@ -1393,7 +1379,7 @@ func (l *Loop) Tick(ctx context.Context) {
 				if !l.claimFromQueue(ctx, qc, qnode, slots) {
 					// the platform has no one claim after all: this tick
 					// claims kind by kind
-					n := l.validateBatches(ctx, free, 0)
+					n := l.validateBatches(ctx, free)
 					free, normalFree = free-n, normalFree-n
 					l.evaluateHeld(ctx)
 					l.rebaseRequested(ctx)
@@ -1405,7 +1391,7 @@ func (l *Loop) Tick(ctx context.Context) {
 				} else if l.atMin() && !l.hostHot() {
 					// the queue was asked for nothing: validations, which
 					// a node at its min still takes, come by their pass
-					n := l.validateBatches(ctx, free, 0)
+					n := l.validateBatches(ctx, free)
 					free, normalFree = free-n, normalFree-n
 					if free > 0 || l.buildCapped() {
 						l.claimReady(ctx, free, normalFree, claimRank)
@@ -1420,7 +1406,6 @@ func (l *Loop) Tick(ctx context.Context) {
 		// one implicit account: normal, and unknown until a reading
 		accounts, readings := l.accounts()
 		h := HoldingReport(l.now(), accounts, readings, l.Thresholds(), l.Capacity(), p, l.unclaimed, l.shareRows(), l.Takes().Kinds())
-		h.Summary += laneSummary(l.Lanes())
 		if rt != nil {
 			h = runtimeHolding(h, rt)
 		}
@@ -1488,23 +1473,17 @@ func (l *Loop) Capacity() int {
 	return l.inForceLocked(l.planLocked())
 }
 
-// Lanes is the reserve in force (runsheet ADR 069 decision 2b): the
-// slots of the capacity in force no build takes, kept for validations
-// and evaluations — node.yaml's `capacity.reserve`, else Capacity.Lanes'
-// default.
-func (l *Loop) Lanes() Reserve {
+// sayReserveRetired says once that node.yaml's capacity.reserve is
+// ignored: the per-kind lanes are retired now that claims come from
+// Mesh's priority queue, which ranks validations first.
+func (l *Loop) sayReserveRetired() {
 	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.rangeLocked().Lanes(l.inForceLocked(l.planLocked()))
-}
-
-// laneSummary is the lanes as the holding summary closes on them:
-// "; lanes kept: 1 validation, 1 evaluation", empty with none.
-func laneSummary(r Reserve) string {
-	if r.Total() == 0 {
-		return ""
+	say := !l.reserveSaid && l.rangeLocked().ReserveRetired()
+	l.reserveSaid = l.reserveSaid || say
+	l.mu.Unlock()
+	if say {
+		l.logf("node.yaml: capacity.reserve is retired and ignored — claims come from Mesh's queue, which ranks validations first; remove it")
 	}
-	return fmt.Sprintf("; lanes kept: %d validation, %d evaluation", r.Validate, r.Evaluate)
 }
 
 // Thresholds are the limits thresholds in force, as last read.

@@ -471,7 +471,7 @@ func (l *Loop) startQueuedValidation(ctx context.Context, nodeID, subject, id st
 		// of its own
 		j.claim = func(context.Context) error { return nil }
 		j.claimed = "claimed from the queue"
-		l.startMainJob(ctx, j, false)
+		l.startMainJob(ctx, j)
 		return
 	}
 	giveBack(fmt.Sprintf("not in this node's validation read, before the claim or %d after", queueReadTries))
