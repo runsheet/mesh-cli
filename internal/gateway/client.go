@@ -204,6 +204,9 @@ type Client struct {
 	// resumedSchema is whether the gateway's HeartbeatNodeInput was last
 	// found to have `resumed` (see takesResumed).
 	resumedSchema holdingProbe
+	// manifestSchema is whether the gateway's HeartbeatNodeInput was
+	// last seen to take `manifest` (takesManifest).
+	manifestSchema holdingProbe
 	// attestationSchema is whether the gateway's Mutation was last found
 	// to have recordValidationAttestation (see takesAttestations).
 	attestationSchema attestationProbe
@@ -2333,6 +2336,12 @@ type HeartbeatExtras struct {
 	// Sandbox is whether the node's sessions run in their own pods, on
 	// which runtime and image (trd §1 Node, ADR 007); nil sends none.
 	Sandbox *SandboxInfo
+	// Manifest is what the node has to run work on — its os and arch
+	// and the toolchains it found with their versions (internal/nodecaps)
+	// — beside the runtimes, adapters and sandbox above, so the platform
+	// can offer it only work it can run. nil sends none; it is sent only
+	// when the gateway's HeartbeatNodeInput takes it (takesManifest).
+	Manifest *NodeManifest
 	// Status is the node's liveness when it is not the ordinary one:
 	// harness_unavailable — alive, but its harness cannot run a session
 	// (out of credit, rate-limited; trd §1 Node, §3), with why in Reason,
@@ -2676,6 +2685,9 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 		}
 		if x.Sandbox != nil {
 			in["sandbox"] = x.Sandbox
+		}
+		if x.Manifest != nil && c.takesManifest(ctx) {
+			in["manifest"] = x.Manifest
 		}
 		if x.Status != "" {
 			in["status"] = x.Status
@@ -3429,6 +3441,54 @@ func (c *Client) takesResumed(ctx context.Context) bool {
 	}
 	for _, f := range out.Type.InputFields {
 		if f.Name == "resumed" {
+			p.takes = true
+		}
+	}
+	return p.takes
+}
+
+// NodeManifest is the heartbeat's `manifest` (runsheet's
+// NodeManifestInput): the node's os and arch, the toolchains it found,
+// and the runtimes, harnesses and sandbox it already reports beside them.
+type NodeManifest struct {
+	OS        string       `json:"os"`
+	Arch      string       `json:"arch"`
+	Tools     []NodeTool   `json:"tools"`
+	Runtimes  []string     `json:"runtimes,omitempty"`
+	Harnesses []string     `json:"harnesses,omitempty"`
+	Sandbox   *SandboxInfo `json:"sandbox,omitempty"`
+}
+
+// NodeTool is one toolchain of a NodeManifest and its version.
+type NodeTool struct {
+	Name    string `json:"name"`
+	Version string `json:"version,omitempty"`
+}
+
+// takesManifest says whether the gateway's HeartbeatNodeInput has
+// `manifest`, asked and kept as takesResumed is.
+func (c *Client) takesManifest(ctx context.Context) bool {
+	p := &c.manifestSchema
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := c.now()
+	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
+		return p.takes
+	}
+	var out struct {
+		Type *struct {
+			InputFields []struct {
+				Name string `json:"name"`
+			} `json:"inputFields"`
+		} `json:"__type"`
+	}
+	p.at, p.takes = now, false
+	q := `{ __type(name: "HeartbeatNodeInput") { inputFields { name } } }`
+	if err := c.Query(ctx, q, nil, &out); err != nil || out.Type == nil {
+		return false
+	}
+	for _, f := range out.Type.InputFields {
+		if f.Name == "manifest" {
 			p.takes = true
 		}
 	}

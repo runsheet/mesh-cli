@@ -1549,7 +1549,7 @@ func (f *Fake) heartbeatInputType() map[string]any {
 		return map[string]any{"name": name}
 	}
 	var fields []any
-	for _, name := range []string{"aggregateId", "namespace", "version", "running", "draining", "updateError", "limits", "scaling", "runtimes", "adapters", "holding", "commit", "adopted", "resumed", "findings"} {
+	for _, name := range []string{"aggregateId", "namespace", "version", "running", "draining", "updateError", "limits", "scaling", "runtimes", "adapters", "holding", "commit", "adopted", "resumed", "findings", "manifest"} {
 		if f.UnknownFields[name] {
 			continue
 		}
@@ -2377,7 +2377,7 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		f.Nodes[id]["version"] = in["version"]
 		// what the node found on the machine this heartbeat; a heartbeat
 		// without them leaves the last ones, as the platform does
-		for _, k := range []string{"runtimes", "adapters", "sandbox", "reason"} {
+		for _, k := range []string{"runtimes", "adapters", "sandbox", "reason", "manifest"} {
 			if v, ok := in[k]; ok {
 				f.Nodes[id][k] = v
 			}
