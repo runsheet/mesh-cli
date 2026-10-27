@@ -118,6 +118,9 @@ func (s *Session) Start(ctx context.Context, services []Service, timeout time.Du
 	if len(services) == 0 {
 		return sts, nil
 	}
+	s.mu.Lock()
+	s.services = &pod
+	s.mu.Unlock()
 	if timeout <= 0 {
 		timeout = DefaultServiceTimeout
 	}

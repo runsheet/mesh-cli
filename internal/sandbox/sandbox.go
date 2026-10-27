@@ -324,6 +324,14 @@ type Session struct {
 	pods  []Pod
 	// started is the pod Start made, which the next Run runs in.
 	started *Pod
+	// services is the pod Start made when it started sidecars: every
+	// Run runs in it, beside them, and none removes it — Close does. A
+	// validation runs its steps one Run each, and the second step on
+	// must reach the services as the first did.
+	services *Pod
+	// runs counts the Runs made in the services pod, naming each its
+	// own container.
+	runs int
 	// hooks is the checkout's hooks directory, mounted beside it.
 	hooks string
 	// image is the image ref the session's agent runs, the Sandbox's
@@ -726,10 +734,16 @@ type RunSpec struct {
 // pids cap.
 var pidsExhausted = regexp.MustCompile(`(?i)fork: (retry: )?resource temporarily unavailable|cannot fork|pthread_create failed|EAGAIN.*(fork|clone|spawn)`)
 
-// Run runs the command in the agent's container of the session's pod —
-// the one Start made with its services, else a new one — to its end and
-// removes the pod. A cancelled ctx returns ctx.Err(); a kill by a limit
-// a *LimitError; any other non-zero exit an *ExitError.
+// Run runs the command to its end in a container of the session's pod.
+// A session whose Start started sidecars runs every Run in that pod,
+// beside them, each in a container of its own (RunName), and keeps the
+// pod for the next — Close removes it: a validation's steps are one Run
+// each, and every step must reach the services, not the first alone
+// (runsheet's integration suite skipped every database test on dl360
+// from its second step on, 2026-10-28). Otherwise it runs in the pod
+// Start made, else a new one, and removes the pod. A cancelled ctx
+// returns ctx.Err(); a kill by a limit a *LimitError; any other non-zero
+// exit an *ExitError.
 func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 	cfg := s.sb.Config
 	// every mount is checked before a pod is made: a refused one starts
@@ -741,16 +755,30 @@ func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 	s.mu.Lock()
 	started := s.started
 	s.started = nil
+	services := s.services
+	if services != nil {
+		s.runs++
+	}
+	n := s.runs
 	s.mu.Unlock()
 	var pod Pod
-	if started != nil {
+	name := ""
+	switch {
+	case services != nil:
+		// the pod with the session's sidecars: kept for the next Run, its
+		// container named for this one (RunName)
+		pod, name = *services, RunName(*services, n)
+	case started != nil:
 		pod = *started
-	} else {
+	default:
 		if pod, err = s.createPod(ctx); err != nil {
 			return err
 		}
 	}
-	defer s.remove(ctx, pod)
+	if name == "" {
+		name = AgentName(pod)
+		defer s.remove(ctx, pod)
+	}
 
 	env := s.Env(spec.Env)
 	if c := spec.Cache; c != nil {
@@ -768,7 +796,7 @@ func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 	}
 	start := time.Now()
 	exit, err := s.sb.Runtime.RunAgent(ctx, pod, AgentSpec{
-		Name:           AgentName(pod),
+		Name:           name,
 		Image:          cfg.Image,
 		Workdir:        spec.Workspace,
 		Mounts:         mounts,
@@ -851,6 +879,10 @@ func (s *Session) Exec(ctx context.Context, spec RunSpec) error {
 
 // ExecName is the container name of the session's nth Exec in a pod.
 func ExecName(pod Pod, n int) string { return fmt.Sprintf("%s-exec-%d", pod.Name, n) }
+
+// RunName is the container name of the session's nth Run in its
+// services pod, which every Run shares.
+func RunName(pod Pod, n int) string { return fmt.Sprintf("%s-run-%d", pod.Name, n) }
 
 // AgentName is the name of the agent's container in a pod.
 func AgentName(pod Pod) string { return pod.Name + "-agent" }

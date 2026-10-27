@@ -114,11 +114,73 @@ func TestStartWaitsForHealth(t *testing.T) {
 	if err := sess.Run(context.Background(), RunSpec{Workspace: t.TempDir()}); err != nil {
 		t.Fatal(err)
 	}
-	if len(rt.Pods) != 1 || rt.Calls[len(rt.Calls)-1] != "remove "+rt.Pods[0].Name {
-		t.Fatalf("the agent runs in the services' pod, removed after: %v", rt.Calls)
+	if len(rt.Pods) != 1 || !strings.HasPrefix(rt.Calls[len(rt.Calls)-1], "agent "+rt.Pods[0].Name) {
+		t.Fatalf("the agent runs in the services' pod, which is kept for the next Run: %v", rt.Calls)
 	}
-	if !strings.HasPrefix(rt.Calls[len(rt.Calls)-2], "agent "+rt.Pods[0].Name) {
-		t.Fatalf("calls: %v", rt.Calls)
+}
+
+// Every Run of a session with sidecars runs in their pod, each in a
+// container of its own, and the pod stands until Close: a validation's
+// second step on reaches the services as its first did (runsheet's
+// integration suite skipped every database test on dl360 because its
+// steps after the first ran in fresh pods, 2026-10-28).
+func TestEveryRunSharesTheServicesPod(t *testing.T) {
+	rt := &Fake{}
+	sess := newFakeSession(t, rt)
+	if _, err := sess.Start(context.Background(), []Service{
+		{Name: "pg", Image: "postgres:16", Ports: []string{"5432:5432"}},
+	}, 100*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if err := sess.Run(context.Background(), RunSpec{Workspace: t.TempDir()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(rt.Pods) != 1 {
+		t.Fatalf("pods %v, want the services' pod alone", rt.Pods)
+	}
+	pod := Pod{Name: rt.Pods[0].Name}
+	var names []string
+	for _, a := range rt.Agents {
+		names = append(names, a.Name)
+	}
+	want := []string{RunName(pod, 1), RunName(pod, 2), RunName(pod, 3)}
+	if strings.Join(names, " ") != strings.Join(want, " ") {
+		t.Fatalf("containers %v, want %v", names, want)
+	}
+	for _, c := range rt.Calls {
+		if c == "remove "+pod.Name {
+			t.Fatalf("a Run removed the services' pod: %v", rt.Calls)
+		}
+	}
+	if err := sess.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(rt.Calls, "|"), "remove "+pod.Name) {
+		t.Fatalf("Close did not remove the services' pod: %v", rt.Calls)
+	}
+}
+
+// A session with no sidecars runs each Run in a pod of its own, removed
+// after, as before.
+func TestRunWithoutServicesRemovesItsPod(t *testing.T) {
+	rt := &Fake{}
+	sess := newFakeSession(t, rt)
+	defer sess.Close()
+	for range 2 {
+		if err := sess.Run(context.Background(), RunSpec{Workspace: t.TempDir()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	removes := 0
+	for _, c := range rt.Calls {
+		if strings.HasPrefix(c, "remove ") {
+			removes++
+		}
+	}
+	if removes != 2 {
+		t.Fatalf("removes %d, want one per Run: %v", removes, rt.Calls)
 	}
 }
 
@@ -155,4 +217,14 @@ func TestSidecarAndProbeArgs(t *testing.T) {
 	if probe != "run --rm --pod mesh-g-1-ab12cd34-0 --cap-drop all --security-opt no-new-privileges --pull missing --unsetenv-all img bash -c exec 3<>/dev/tcp/127.0.0.1/5432" {
 		t.Fatalf("probe = %s", probe)
 	}
+}
+
+func newFakeSession(t *testing.T, rt *Fake) *Session {
+	t.Helper()
+	sb := &Sandbox{Runtime: rt, TempDir: t.TempDir(), Config: Config{Image: "node-image"}}
+	sess, err := sb.Open("g/1", "build", GitIdentity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sess
 }
