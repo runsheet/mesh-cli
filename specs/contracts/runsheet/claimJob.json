@@ -23,6 +23,7 @@
         "wardroom",
         "model"
       ],
+      "briefTool": "",
       "budget": {},
       "claim": "claimThreadSession",
       "code": {

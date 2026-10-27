@@ -116,6 +116,37 @@ func TestGitThroughTheRelay(t *testing.T) {
 	if strings.Contains(env, "insteadOf") || !strings.Contains(env, "password="+token+"w") {
 		t.Fatalf("a write token was relayed: %s", env)
 	}
+
+	// with the claim's push rules it is relayed, held to them: the
+	// branch and the create-only pin push, a pin moved or any other ref
+	// is refused (runsheet ADR 076, option (c))
+	const pin = "refs/runsheet/changesets/0f0e0d0c-0b0a-4908-8706-050403020100"
+	rctx := WithPushRules(ctx, []gateway.JobPushRef{{Ref: "refs/heads/mesh/g-1"}, {Ref: pin, CreateOnly: true}})
+	wtok := &gateway.GitHubToken{Token: token + "w", Repository: "acme/app", Access: "write", ExpiresAt: time.Now().Add(time.Hour)}
+	pctx := withGitToken(rctx, base, wtok)
+	if env := strings.Join(gitTokenEnv(pctx), "\n"); !strings.Contains(env, "insteadOf") || strings.Contains(env, token) {
+		t.Fatalf("a write token with push rules is not relayed: %s", env)
+	}
+	push := func(args ...string) (string, error) {
+		cmd := hardenedGitCmdEnv(pctx, base, work, []string{"HOME=" + root}, args...)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	if out, err := push("push", "-q", "origin", "HEAD:refs/heads/mesh/g-1"); err != nil {
+		t.Fatalf("the branch through the relay: %v\n%s", err, out)
+	}
+	if out, err := push("push", "-q", "origin", "HEAD:"+pin); err != nil {
+		t.Fatalf("the pin through the relay: %v\n%s", err, out)
+	}
+	if out, err := push("push", "-q", "origin", "HEAD:refs/heads/main"); err == nil {
+		t.Fatalf("a ref the claim did not grant was pushed:\n%s", out)
+	}
+	os.WriteFile(filepath.Join(work, "c.txt"), []byte("three\n"), 0o644)
+	run(work, "add", ".")
+	run(work, "commit", "-qm", "three")
+	if out, err := push("push", "-q", "-f", "origin", "HEAD:"+pin); err == nil {
+		t.Fatalf("a pin was moved:\n%s", out)
+	}
 }
 
 // TestGitRelayOffKeepsTheHelper: with no relay, withGitToken is the

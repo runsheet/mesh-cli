@@ -1,0 +1,21 @@
+{
+  "args": {
+    "method": "GET",
+    "path": "/mesh/v1/jobs/00000000-0000-4000-8000-0000000fffff"
+  },
+  "field": "mesh-job",
+  "kind": "http",
+  "list": false,
+  "sample": {
+    "credential_ref": "00000000-0000-4000-8000-0000000fffff",
+    "job_id": "00000000-0000-4000-8000-0000000fffff",
+    "kind": "runsheet/build",
+    "node_id": "00000000-0000-4000-8000-0000000fffff",
+    "node_owner": {
+      "id": "00000000-0000-4000-8000-0000000fffff",
+      "kind": "person"
+    },
+    "product": "runsheet",
+    "status": "ended"
+  }
+}

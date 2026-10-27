@@ -107,6 +107,7 @@
           "from": "installation",
           "id": 98710,
           "last_hour": {},
+          "last_hour_by_endpoint": {},
           "limit": 5000,
           "observed_at": "2026-01-01T00:00:00Z",
           "remaining": 3210,

@@ -1,0 +1,20 @@
+{
+  "args": {
+    "body": {
+      "account_ref": "acct-c",
+      "cost_list_cents": 21,
+      "duration_ms": 30000,
+      "harness": "claude-code",
+      "model": "opus",
+      "tokens_input": 900,
+      "tokens_output": 90,
+      "turns": 4
+    },
+    "method": "POST",
+    "path": "/mesh/v1/jobs/00000000-0000-4000-8000-0000000fffff/usage"
+  },
+  "field": "mesh-job-usage",
+  "kind": "http",
+  "list": false,
+  "sample": null
+}

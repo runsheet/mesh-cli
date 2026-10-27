@@ -1225,6 +1225,15 @@ func (t *buildTail) finish(ctx context.Context, state *sessionsteps.State) error
 	r, b, item, label := t.r, t.b, t.b.item, t.b.label
 	result := t.result
 	b.reportHandoff(ctx, result)
+	// the job's pin, when the claim grants one (runsheet ADR 076, option
+	// (c)): the node pushes the branch and the pin through its relay, held
+	// to the claim's refs, and the product reads its result from the pin;
+	// the node records no changeset of its own
+	brief := jobBriefOf(ctx, r.GW, BuildKind, item.ID)
+	pin := brief.Pin()
+	if pin != "" {
+		ctx = WithPushRules(ctx, brief.Git.Push)
+	}
 	// the run's usage goes to Mesh on its job before the finish ends the
 	// job (runsheet ADR 078); the finish carries a usage report only on a
 	// platform that takes none there
@@ -1242,6 +1251,12 @@ func (t *buildTail) finish(ctx context.Context, state *sessionsteps.State) error
 			// returned the head it pushed, and a refused push is the
 			// build's failure, named, never a finish
 			sha, err := r.pushBuild(ctx, b)
+			if err == nil && pin != "" {
+				var pinned string
+				if pinned, err = r.pushPin(ctx, b, pin); err == nil && pinned != sha {
+					err = fmt.Errorf("pin %s holds %s, not the pushed head %s", pin, short(pinned), short(sha))
+				}
+			}
 			pushErr = err
 			return sha, err
 		},
@@ -1256,10 +1271,11 @@ func (t *buildTail) finish(ctx context.Context, state *sessionsteps.State) error
 				}
 			}
 			ctx = gateway.WithNodeID(ctx, nodeIDOf(r.Scopes, item.OrgID, r.Cfg))
+			ctx = gateway.WithFinishPin(ctx, pin)
 			return handInRefused(r.logf, b.acct.Redact, label, "FinishWorkItem", b.acct.Carried(r.validationUsage(r.GW.FinishWorkItem(ctx, itemID, branch, sha, b.cost.delta(), ledger, b.description(ctx)))))
 		},
 	}
-	if cg, ok := r.GW.(changesetGateway); ok && cg.TakesChangesets(ctx) {
+	if cg, ok := r.GW.(changesetGateway); ok && cg.TakesChangesets(ctx) && pin == "" {
 		if t.v != nil && len(t.v.runs) > 0 {
 			att := t.v.runs[len(t.v.runs)-1]
 			if rep := b.acct.Report(result); rep != nil {
@@ -1440,6 +1456,35 @@ func (r *Runner) pushBuild(ctx context.Context, b *buildRun) (string, error) {
 	}
 	r.logf("item %s: push %s: %v; not finished", b.label, branch, err)
 	return "", fmt.Errorf("push %s: %w", branch, err)
+}
+
+// pinPusher is a workspace that pushes a job's pin (Git.PushPin).
+type pinPusher interface {
+	PushPin(ctx context.Context, dir, ref string) (string, error)
+}
+
+// pushPin pushes the build's HEAD to the job's pin on the item's write
+// token — through the relay, held to the claim's refs, when the relay is
+// on — and answers the commit it pinned.
+func (r *Runner) pushPin(ctx context.Context, b *buildRun, pin string) (string, error) {
+	pp, ok := r.WS.(pinPusher)
+	if !ok {
+		return "", fmt.Errorf("pin %s: this workspace pushes no pin", pin)
+	}
+	tok, err := b.cred.ForPush(ctx)
+	if err != nil {
+		r.logf("item %s: %v", b.label, err)
+	}
+	sha, err := pp.PushPin(OnItemToken(ctx, r.WS, tok), b.dir, pin)
+	if err != nil {
+		var seen []string
+		if tok != nil {
+			seen = append(seen, tok.Token)
+		}
+		return "", fmt.Errorf("push pin %s: %w", pin, scrubbed(err, seen))
+	}
+	r.logf("item %s: pinned %s at %s", b.label, short(sha), pin)
+	return sha, nil
 }
 
 // finishCall is a build session's end as its mesh-work tool calls say

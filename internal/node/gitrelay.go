@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"strings"
 	"sync"
 
@@ -29,20 +30,43 @@ func SetGitRelay(srv *gitrelay.Server, logf func(string, ...any)) {
 	gitRelayLogf = logf
 }
 
+// pushRulesKey carries the refs a job's push may touch (WithPushRules).
+type pushRulesKey struct{}
+
+// WithPushRules marks ctx's git commands as a job's whose brief grants
+// rules: a write token is then relayed too, its pushes held to them.
+func WithPushRules(ctx context.Context, rules []gateway.JobPushRef) context.Context {
+	if len(rules) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, pushRulesKey{}, rules)
+}
+
 // relayFor registers tok's repository on the node's relay and answers
 // the base URL a command's insteadOf points GitHub at, or "" when the
-// relay is off, the token names no repository, or the token may write:
-// which refs a push may touch is the product's to say, in the claim, and
-// until a claim says so a write token's commands carry its helper as
-// before. A read token is relayed read-only.
-func relayFor(tok *gateway.GitHubToken, logf func(string, ...any)) string {
+// relay is off or the token names no repository. A read token is
+// relayed read-only. A write token is relayed only when ctx carries the
+// claim's push rules (WithPushRules) — which refs a push may touch is the
+// product's to say — and is held to exactly those; without them its
+// commands carry its helper as before.
+func relayFor(ctx context.Context, tok *gateway.GitHubToken, logf func(string, ...any)) string {
 	gitRelayState.Lock()
 	srv := gitRelayState.srv
 	gitRelayState.Unlock()
-	if srv == nil || tok == nil || tok.Repository == "" || !strings.EqualFold(tok.Access, "read") {
+	if srv == nil || tok == nil || tok.Repository == "" {
 		return ""
 	}
 	p := gitrelay.Policy{Repo: tok.Repository, Access: gitrelay.Read}
+	if !strings.EqualFold(tok.Access, "read") {
+		rules, _ := ctx.Value(pushRulesKey{}).([]gateway.JobPushRef)
+		if len(rules) == 0 {
+			return ""
+		}
+		p.Access = gitrelay.Write
+		for _, r := range rules {
+			p.Push = append(p.Push, gitrelay.RefRule{Ref: r.Ref, CreateOnly: r.CreateOnly})
+		}
+	}
 	base, err := srv.Register(p, gitrelay.Token{Value: tok.Token, ExpiresAt: tok.ExpiresAt})
 	if err != nil {
 		if logf != nil {

@@ -135,9 +135,13 @@ func (f *Fake) jobAPI(w http.ResponseWriter, r *http.Request, q string, vars map
 			return true
 		}
 		kind, _ := in["kind"].(string)
-		writeData(w, map[string]any{"claimJob": map[string]any{"status": "claimed", "job": map[string]any{
+		job := map[string]any{
 			"kind": kind, "subject": subject, "code": map[string]any{"form": "commit"}, "claim": field,
-			"finish": kindFinishes[kind], "guidance": f.KindGuidance[kind], "finishSchema": f.KindFinishSchema[kind], "finishTool": kindFinishTools[kind]}}})
+			"finish": kindFinishes[kind], "guidance": f.KindGuidance[kind], "finishSchema": f.KindFinishSchema[kind], "finishTool": kindFinishTools[kind]}
+		if g := f.KindGit[kind]; g != nil {
+			job["git"] = g
+		}
+		writeData(w, map[string]any{"claimJob": map[string]any{"status": "claimed", "job": job}})
 	case strings.Contains(q, "finishJob(input"):
 		f.Calls = append(f.Calls, Call{Name: "finishJob", Input: in, At: time.Now(), Bearer: bearer})
 		answers, err := f.finishJobAliases(r, in, bearer)

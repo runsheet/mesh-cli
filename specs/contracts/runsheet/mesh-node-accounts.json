@@ -1,0 +1,30 @@
+{
+  "args": {
+    "body": {
+      "accounts": [
+        {
+          "account_ref": "acct-c",
+          "overage": "rejected",
+          "windows": [
+            {
+              "resets_at": "2026-01-01T00:00:00Z",
+              "used_pct": 41,
+              "window": "five_hour"
+            },
+            {
+              "used_pct": 12,
+              "window": "seven_day"
+            }
+          ]
+        }
+      ],
+      "seen_at": "2026-01-01T00:00:00Z"
+    },
+    "method": "POST",
+    "path": "/mesh/v1/nodes/00000000-0000-4000-8000-0000000fffff/accounts"
+  },
+  "field": "mesh-node-accounts",
+  "kind": "http",
+  "list": false,
+  "sample": null
+}

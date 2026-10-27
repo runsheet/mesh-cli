@@ -39,3 +39,27 @@ func TestBriefNamesTheProductsTools(t *testing.T) {
 		t.Fatalf("no guidance runs the built-in prompt, got %q", got)
 	}
 }
+
+// TestBriefPin: a brief's pin is the one exact, create-only ref its git
+// policy grants; none, a prefix, or two of them is no pin.
+func TestBriefPin(t *testing.T) {
+	var b JobBrief
+	if err := json.Unmarshal([]byte(`{"kind":"acme/build","git":{"repo":"acme/app","access":"write","push":[{"ref":"refs/heads/b","create_only":false},{"ref":"refs/x/pins/1","create_only":true}]}}`), &b); err != nil {
+		t.Fatal(err)
+	}
+	if b.Pin() != "refs/x/pins/1" {
+		t.Fatalf("pin %q", b.Pin())
+	}
+	for _, push := range [][]JobPushRef{
+		nil,
+		{{Ref: "refs/x/pins/*", CreateOnly: true}},
+		{{Ref: "refs/x/pins/1", CreateOnly: true}, {Ref: "refs/x/pins/2", CreateOnly: true}},
+	} {
+		if p := (JobBrief{Git: &JobGit{Push: push}}).Pin(); p != "" {
+			t.Fatalf("%+v: pin %q, want none", push, p)
+		}
+	}
+	if (JobBrief{}).Pin() != "" {
+		t.Fatal("a brief with no git has a pin")
+	}
+}

@@ -177,7 +177,7 @@ func withGitToken(ctx context.Context, base string, tok *gateway.GitHubToken) co
 		return ctx
 	}
 	base = strings.TrimRight(base, "/")
-	if relay := relayFor(tok, gitRelayLogf); relay != "" {
+	if relay := relayFor(ctx, tok, gitRelayLogf); relay != "" {
 		return context.WithValue(ctx, gitTokenKey{}, gitToken{base: base, relay: relay})
 	}
 	return context.WithValue(ctx, gitTokenKey{}, gitToken{base: base, helper: credentialHelper(tok.Token)})

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1129,5 +1130,41 @@ func TestBuildLogsItsContextWritten(t *testing.T) {
 	want := fmt.Sprintf("item ship-it/1: context %d bytes in %d files, %d documents to fetch\n", bytes, files, fetch)
 	if bytes == 0 || files == 0 || fetch < 1 || strings.Count(logs.String(), ": context ") != 1 || !strings.Contains("\n"+logs.String(), "\n"+want) {
 		t.Fatalf("node.log lacks the line %q once:\n%s", want, logs.String())
+	}
+}
+
+// A build whose claim grants a pin — one exact, create-only ref — pushes
+// its branch and then the pin, both at the head it validated, and
+// finishes saying the pin ({pin: {ref}}); it records no changeset of its
+// own, the product reading its result from the pin (runsheet ADR 076,
+// option (c)). A claim granting none is finished as before.
+func TestBuildPushesTheClaimsPinAndSaysSo(t *testing.T) {
+	const pin = "refs/runsheet/changesets/0f0e0d0c-0b0a-4908-8706-050403020100"
+	f := seed(t)
+	f.KindGit = map[string]map[string]any{"runsheet/build": {"repo": "acme/widgets", "access": "write", "push": []any{
+		map[string]any{"ref": "refs/heads/mesh/ship-it-1", "create_only": false},
+		map[string]any{"ref": pin, "create_only": true},
+	}}}
+	h := &fakeHarness{text: "done"}
+	r, ws, item, row := runnerOnFake(t, f, h, nil)
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(ws.events, "push") || !slices.Contains(ws.events, "pin "+pin) || slices.Index(ws.events, "pin "+pin) < slices.Index(ws.events, "push") {
+		t.Fatalf("events: %v, want the branch push then the pin", ws.events)
+	}
+	fin := f.CallsNamed("finishJob")
+	if len(fin) != 1 {
+		t.Fatalf("finishJob calls: %+v", fin)
+	}
+	finish, _ := fin[0].Input["finish"].(map[string]any)
+	if p, _ := finish["pin"].(map[string]any); p["ref"] != pin {
+		t.Fatalf("finish: %+v, want pin %s", finish, pin)
+	}
+	if n := len(f.CallsNamed("recordChangeset")); n != 0 {
+		t.Fatalf("the node recorded a changeset of its own: %d", n)
+	}
+	if row(item1)["status"] != "evaluating" {
+		t.Fatalf("item: %v", row(item1))
 	}
 }

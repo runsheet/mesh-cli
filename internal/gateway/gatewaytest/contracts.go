@@ -123,11 +123,15 @@ func finishParts() map[string]any {
 	gaps := FixtureGaps["recordValidationAttestation"]
 	attestation = withGaps(gaps.Ahead, withGaps(gaps.Request, map[string]any{"input": attestation})).(map[string]any)["input"]
 	return map[string]any{
-		"answer":       "",
-		"proposal":     "",
-		"result":       nil, // the product's own object, held to its finishSchema
-		"attestation":  attestation,
-		"changeset":    commandInput("finishWorkItem", "FinishWorkItemInput"),
+		"answer":      "",
+		"proposal":    "",
+		"result":      nil, // the product's own object, held to its finishSchema
+		"attestation": attestation,
+		"changeset":   commandInput("finishWorkItem", "FinishWorkItemInput"),
+		// a build node that pushed the claim's pin says so (runsheet
+		// gateway/finishjob.go finishShapes: changeset's optional "pin";
+		// finishjob_pin.go, ADR 076 option (c))
+		"pin":          map[string]any{"ref": ""},
 		"verdict":      commandInput("evaluateWorkItem", "EvaluateWorkItemInput"),
 		"plan":         commandInput("planGoal", "PlanGoalInput"),
 		"research":     commandInput("recordDirectionResearch", "RecordDirectionResearchInput"),

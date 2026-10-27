@@ -74,6 +74,17 @@
       "retry_cap": 3,
       "seq": 1,
       "sharpened": false,
+      "spec_change": {
+        "contract_paths": [],
+        "coverage": "covered: no public contract changed",
+        "coverage_ok": true,
+        "evaluator_input": "Validation on head-work-1: no validation yet — no attestation of this head exists\nAcceptance\n1. [test] go test ./... passes — expected: passes\n   result: not run\n",
+        "head_sha": "head-work-1",
+        "number": 0,
+        "paths": [],
+        "state": "",
+        "uncovered": false
+      },
       "stalled": false,
       "status": "evaluating",
       "title": "Build me",
