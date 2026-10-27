@@ -335,15 +335,15 @@
                   "missingShare": 0.5,
                   "repo": "contractco/api",
                   "repoId": "7dacfd73-80d2-5f33-94d6-54f222403404",
-                  "validations": 2,
-                  "validationsPerMergedPr": 2,
+                  "validations": 3,
+                  "validationsPerMergedPr": 3,
                   "verifications": 2
                 }
               ],
               "byRepoDay": [
                 {
                   "day": "2026-01-01",
-                  "received": 3,
+                  "received": 4,
                   "refused": 1,
                   "refusedByReason": {
                     "not_head": 1
@@ -351,11 +351,12 @@
                   "repo": "contractco/api",
                   "repoId": "7dacfd73-80d2-5f33-94d6-54f222403404",
                   "reused": 1,
-                  "signed": 1,
+                  "signed": 2,
                   "verified": 1
                 }
               ],
               "ciMinutesSaved": 1,
+              "personAttested": 0,
               "skippedRuns": 1,
               "verified": 1,
               "verifiedPrs": 1
@@ -437,6 +438,7 @@
                 "mergeToRunningP90Minutes": 0,
                 "mergesCovered": 1,
                 "mergesUncovered": 0,
+                "nodeHoursRefused": 0,
                 "weeks": [
                   {
                     "deployBlockMedianHeldMinutes": null,
@@ -447,6 +449,7 @@
                     "mergeToRunningP90Minutes": 0,
                     "mergesCovered": 1,
                     "mergesUncovered": 0,
+                    "nodeHoursRefused": 0,
                     "week": "2026-01-01"
                   }
                 ]
@@ -697,15 +700,15 @@
                   "missingShare": 0.5,
                   "repo": "contractco/api",
                   "repoId": "7dacfd73-80d2-5f33-94d6-54f222403404",
-                  "validations": 2,
-                  "validationsPerMergedPr": 2,
+                  "validations": 3,
+                  "validationsPerMergedPr": 3,
                   "verifications": 2
                 }
               ],
               "byRepoDay": [
                 {
                   "day": "2026-01-01",
-                  "received": 3,
+                  "received": 4,
                   "refused": 1,
                   "refusedByReason": {
                     "not_head": 1
@@ -713,11 +716,12 @@
                   "repo": "contractco/api",
                   "repoId": "7dacfd73-80d2-5f33-94d6-54f222403404",
                   "reused": 1,
-                  "signed": 1,
+                  "signed": 2,
                   "verified": 1
                 }
               ],
               "ciMinutesSaved": 1,
+              "personAttested": 0,
               "skippedRuns": 1,
               "verified": 1,
               "verifiedPrs": 1
@@ -799,6 +803,7 @@
                 "mergeToRunningP90Minutes": 0,
                 "mergesCovered": 1,
                 "mergesUncovered": 0,
+                "nodeHoursRefused": 0,
                 "weeks": [
                   {
                     "deployBlockMedianHeldMinutes": null,
@@ -809,6 +814,7 @@
                     "mergeToRunningP90Minutes": 0,
                     "mergesCovered": 1,
                     "mergesUncovered": 0,
+                    "nodeHoursRefused": 0,
                     "week": "2026-01-01"
                   }
                 ]

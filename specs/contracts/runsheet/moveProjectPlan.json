@@ -7,11 +7,11 @@
   "kind": "query",
   "list": false,
   "sample": {
-    "activityRows": 111,
+    "activityRows": 112,
     "agents": [],
     "collisions": [],
     "counts": {
-      "activityRows": 111,
+      "activityRows": 112,
       "agents": 0,
       "directions": 1,
       "goals": 13,

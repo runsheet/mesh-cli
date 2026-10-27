@@ -26,8 +26,9 @@ func hostedWorld(t *testing.T, served bool) (*joinWorld, *bytes.Buffer) {
 }
 
 // With the platform serving the hosted work tools, join → finish goes
-// through hosted mesh_claim and mesh_finish: no claimWorkItem or
-// finishWorkItem mutation, nothing said on stderr.
+// claims with claimWorkItem (mesh_claim is no MCP tool, runsheet ADR 069)
+// and finishes through hosted mesh_finish: no finishWorkItem mutation,
+// nothing said on stderr.
 func TestHostedJoinFinish(t *testing.T) {
 	w, stderr := hostedWorld(t, true)
 	a := decodeJoin(t, w.join(t, map[string]any{"goal": "ship-it"}))
@@ -37,27 +38,18 @@ func TestHostedJoinFinish(t *testing.T) {
 		t.Fatalf("mesh_finish = %q, want %q", out, want)
 	}
 
-	claims := w.fake.CallsNamed("mesh_claim")
-	if len(claims) != 1 {
-		t.Fatalf("mesh_claim %d times", len(claims))
-	}
-	if in := claims[0].Input; in["goal"] != "ship-it" || in["item"] != float64(1) || in["pair"] != false || in["node"] != jNodeID {
-		t.Fatalf("mesh_claim %v", in)
+	if n := len(w.fake.CallsNamed("claimWorkItem")); n != 1 {
+		t.Fatalf("claimWorkItem %d times: the claim is the mutation (mesh_claim is no MCP tool)", n)
 	}
 	finishes := w.fake.CallsNamed("mesh_finish")
 	if len(finishes) != 1 {
 		t.Fatalf("mesh_finish %d times", len(finishes))
 	}
-	if in := finishes[0].Input; in["item"] != jItemID || in["branch"] != "mesh/ship-it-1" || in["headSha"] != head {
+	if in := finishes[0].Input; in["item_id"] != jItemID || in["branch"] != "mesh/ship-it-1" || in["head_sha"] != head {
 		t.Fatalf("mesh_finish %v", in)
 	}
-	for _, m := range []string{"claimWorkItem", "finishWorkItem"} {
-		if n := len(w.fake.CallsNamed(m)); n != 0 {
-			t.Fatalf("%s sent %d times on the hosted path", m, n)
-		}
-	}
-	if len(w.fake.Claims) != 0 {
-		t.Fatalf("claimWorkItem asked: %v", w.fake.Claims)
+	if n := len(w.fake.CallsNamed("finishWorkItem")); n != 0 {
+		t.Fatalf("finishWorkItem sent %d times on the hosted path", n)
 	}
 	if got := w.fake.Item(jItemID)["status"]; got != "evaluating" {
 		t.Fatalf("item is %v", got)
@@ -108,7 +100,7 @@ func TestHostedAsk(t *testing.T) {
 			t.Fatalf("mesh_ask = %q", out)
 		}
 		asks := w.fake.CallsNamed("mesh_ask")
-		if len(asks) != 1 || asks[0].Input["question"] != q || asks[0].Input["item"] != jItemID {
+		if len(asks) != 1 || asks[0].Input["question"] != q || asks[0].Input["item_id"] != jItemID {
 			t.Fatalf("mesh_ask calls %v", asks)
 		}
 		if n := len(w.fake.CallsNamed("reportWorkItemProgress")); n != 0 {
@@ -129,10 +121,11 @@ func TestHostedAsk(t *testing.T) {
 	})
 }
 
-// A hosted refusal is the tool's answer, the hosted text relayed.
+// A refused claim is the join's answer, the platform's text relayed (the
+// claim is claimWorkItem even on the hosted path).
 func TestHostedRefusalIsTheAnswer(t *testing.T) {
 	w, _ := hostedWorld(t, true)
-	w.fake.Refuse["mesh_claim"] = "the goal is paused"
+	w.fake.Refuse["claimWorkItem"] = "the goal is paused"
 	out := w.join(t, map[string]any{"goal": "ship-it"})
 	if !strings.Contains(out, "claim refused: the goal is paused") {
 		t.Fatalf("mesh_join = %q", out)

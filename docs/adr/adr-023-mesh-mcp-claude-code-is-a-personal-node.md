@@ -279,3 +279,19 @@ Code's channel capability, a flag value, not the server's identity.
 - Usage of a `mesh mcp` session is the person's Claude Code's own; it
   goes to their personal subscription credential once the node is
   registered.
+
+## Amendment 2026-10-27: no hosted claim, and the Mesh server is no person's
+
+runsheet ADR 069 split the platform's MCP in two. `mesh_claim` is no MCP
+tool any more, so `mesh_join` always claims with `claimWorkItem` (a
+pair's join claims nothing), and `HostedWorkTools` is mesh_progress,
+mesh_ask, mesh_finish and mesh_release, sent with the argument names
+runsheet publishes (`job_id` for progress and release, `item_id` for ask
+and finish; specs/contracts/hostedworktools.json). The job's work tools
+live on the Mesh server (`/mesh/mcp`), which serves apps and sessions
+alone: once runsheet's `/mcp` stops listing them, a person's hosted path
+is not served and the mutations are used, as before the hosted tools.
+A node's own session reaches the Mesh server as `mesh`, beside
+`runsheet`, through its session proxy on its own DPoP-bound session
+token (tools.Mesh, tools.WithMesh); a session on the operator's bearer
+gets no `mesh` server, since `/mesh/mcp` refuses that bearer.

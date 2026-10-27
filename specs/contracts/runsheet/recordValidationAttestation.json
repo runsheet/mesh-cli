@@ -43,6 +43,8 @@
         }
       ],
       "commit": "6fea9e4254fc80130d82c3777b35607d344d412a",
+      "envelope": "ENVELOPE",
+      "rekorEntry": "REKOR_ENTRY",
       "reports": [
         {
           "content": "{\"Action\":\"pass\"}",

@@ -15,7 +15,8 @@
         "behind": true,
         "busy": 4,
         "capacity": 1,
-        "claims_refused": 0,
+        "claims_refused": 1,
+        "claims_refused_since": "2026-01-01T00:00:00Z",
         "commits_behind_main": 2,
         "credential_id": "00000000-0000-4000-8000-00000000c1d0",
         "desired_version_auto": false,
@@ -51,6 +52,7 @@
           ],
           "until": "2026-01-01T00:00:00Z"
         },
+        "hours_refused": 0,
         "id": "d1f6c904-510f-5905-a598-8ea0b41f837a",
         "in_flight": {
           "building": 1,
@@ -81,6 +83,7 @@
             "age_seconds": 0,
             "cost_cents": 0,
             "harness": "claude-code",
+            "job_id": "00000000-0000-4000-8000-0000000c0003",
             "kind": "build",
             "model": "opus",
             "project": "mesh",

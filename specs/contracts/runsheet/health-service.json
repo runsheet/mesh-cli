@@ -12,7 +12,7 @@
       "days": [
         {
           "day": "2026-01-01",
-          "received": 3,
+          "received": 4,
           "refused": 1,
           "refused_by_reason": {
             "not_head": 1
@@ -20,7 +20,7 @@
           "repo": "contractco/api",
           "repo_id": "7dacfd73-80d2-5f33-94d6-54f222403404",
           "reused": 1,
-          "signed": 1,
+          "signed": 2,
           "verified": 1
         }
       ],
@@ -35,8 +35,8 @@
               "missing_share": 0.5,
               "repo": "contractco/api",
               "repo_id": "7dacfd73-80d2-5f33-94d6-54f222403404",
-              "validations": 2,
-              "validations_per_merged_pr": 2,
+              "validations": 3,
+              "validations_per_merged_pr": 3,
               "verifications": 2
             }
           ],
@@ -51,8 +51,8 @@
               "missing_share": 0.5,
               "repo": "contractco/api",
               "repo_id": "7dacfd73-80d2-5f33-94d6-54f222403404",
-              "validations": 2,
-              "validations_per_merged_pr": 2,
+              "validations": 3,
+              "validations_per_merged_pr": 3,
               "verifications": 2
             }
           ],

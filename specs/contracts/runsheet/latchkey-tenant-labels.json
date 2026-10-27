@@ -1,0 +1,60 @@
+{
+  "adr": "specs/adr-047-a-token-names-an-org-by-ref-or-slug.md",
+  "call": "SetTenantLabelsKeyed",
+  "consumer": "latchkeyid/latchkey; the e2e fake Latchkey (e2e/)",
+  "field": "latchkey-tenant-labels",
+  "kind": "latchkey",
+  "label": "runsheet.dev/provisioning-request",
+  "note": "The platform puts a tenant's whole label set: the PUT replaces it, so a redelivery or a replay converges, and an empty object clears it. The tenant goes by its ref when the platform holds one and by slug otherwise (ADR 047). The label runsheet.dev/provisioning-request (latchkey.ProvisioningRequestLabel) carries the id of the provisioning request whose plan and yes made the tenant. The GET answers the set as it is stored.",
+  "read": {
+    "body": {
+      "labels": {
+        "runsheet.dev/provisioning-request": "6f1c2a9e-4b7d-5e3a-9c8f-2d1b0a7e6c54"
+      },
+      "slug": "grapevine"
+    },
+    "example": "/org/anythink/tenants/grapevine/labels",
+    "method": "GET",
+    "path": "/org/{slug}/tenants/{tenant}/labels",
+    "status": 200
+  },
+  "refusals": [
+    {
+      "body": {
+        "error": "unknown tenant"
+      },
+      "platform": "an *OrgError: the reaction errors and retries, the tenant is made first",
+      "status": 404
+    },
+    {
+      "body": {
+        "error": "labels must be an object of strings"
+      },
+      "platform": "an *OrgError that is Refused(): the reaction parks",
+      "status": 400
+    }
+  ],
+  "request": {
+    "body": {
+      "labels": {
+        "runsheet.dev/provisioning-request": "6f1c2a9e-4b7d-5e3a-9c8f-2d1b0a7e6c54"
+      }
+    },
+    "example": "/org/anythink/tenants/grapevine/labels",
+    "headers": {
+      "Authorization": "Bearer <the org's service client token>",
+      "Content-Type": "application/json"
+    },
+    "method": "PUT",
+    "path": "/org/{slug}/tenants/{tenant}/labels"
+  },
+  "response": {
+    "body": {
+      "labels": {
+        "runsheet.dev/provisioning-request": "6f1c2a9e-4b7d-5e3a-9c8f-2d1b0a7e6c54"
+      },
+      "slug": "grapevine"
+    },
+    "status": 200
+  }
+}

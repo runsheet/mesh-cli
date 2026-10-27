@@ -1,116 +1,13 @@
 {
   "args": {
     "method": "tools/list",
-    "path": "/mcp",
+    "path": "/mesh/mcp",
     "server": "mesh"
   },
   "field": "mcp-tools-mesh",
   "kind": "mcp-tools",
   "list": true,
   "sample": [
-    {
-      "inputSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "goal": {
-            "description": "the goal's slug (see mesh_goals); with project and seq, or give item_id alone",
-            "type": "string"
-          },
-          "item_id": {
-            "description": "the item's id, instead of project, goal and seq",
-            "type": "string"
-          },
-          "project": {
-            "description": "the project as org/slug (see mesh_projects); with goal and seq, or give item_id alone",
-            "type": "string"
-          },
-          "question": {
-            "description": "the question for a person: recorded on the item as the progress note 'asks: <question>'",
-            "type": "string"
-          },
-          "role": {
-            "description": "for a machine's bearer, the role its agent plays — agent:<role>@<node slug> (default builder); a person's bearer is always user:<id>",
-            "type": "string"
-          },
-          "seq": {
-            "description": "the item's seq (see mesh_items); with project and goal, or give item_id alone",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "question"
-        ],
-        "type": "object"
-      },
-      "name": "mesh_ask"
-    },
-    {
-      "inputSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "goal": {
-            "description": "the goal's slug (see mesh_goals); with project and seq, or give item_id alone",
-            "type": "string"
-          },
-          "harness": {
-            "description": "what is doing the work (default claude-code)",
-            "type": "string"
-          },
-          "item_id": {
-            "description": "the item's id, instead of project, goal and seq",
-            "type": "string"
-          },
-          "pair": {
-            "description": "whoever else is at work alongside you, each user:<id> or agent:<role>@<slug>; kept on the item as paired, in this order",
-            "items": {
-              "type": "string"
-            },
-            "type": [
-              "null",
-              "array"
-            ]
-          },
-          "project": {
-            "description": "the project as org/slug (see mesh_projects); with goal and seq, or give item_id alone",
-            "type": "string"
-          },
-          "role": {
-            "description": "for a machine's bearer, the role its agent plays — agent:<role>@<node slug> (default builder); a person's bearer is always user:<id>",
-            "type": "string"
-          },
-          "seq": {
-            "description": "the item's seq (see mesh_items); with project and goal, or give item_id alone",
-            "type": "integer"
-          }
-        },
-        "type": "object"
-      },
-      "name": "mesh_claim"
-    },
-    {
-      "inputSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "project": {
-            "description": "the project as org/slug (see mesh_projects) whose open forecast rounds to claim a sample of",
-            "type": "string"
-          },
-          "role": {
-            "description": "for a machine's bearer, the role its agent plays — agent:<role>@<node slug> (default builder)",
-            "type": "string"
-          },
-          "session_id": {
-            "description": "the score session's id, a uuid; a new one when unset. The same session again answers its claim",
-            "type": "string"
-          }
-        },
-        "required": [
-          "project"
-        ],
-        "type": "object"
-      },
-      "name": "mesh_claim_score"
-    },
     {
       "inputSchema": {
         "additionalProperties": false,
@@ -138,25 +35,13 @@
             "description": "code or environment; empty is the platform's call",
             "type": "string"
           },
-          "goal": {
-            "description": "the goal's slug (see mesh_goals); with project and seq, or give item_id alone",
-            "type": "string"
-          },
           "item_id": {
-            "description": "the item's id, instead of project, goal and seq",
+            "description": "the job's id under its old name, read as job_id until mesh-cli sends job_id",
             "type": "string"
           },
-          "project": {
-            "description": "the project as org/slug (see mesh_projects); with goal and seq, or give item_id alone",
+          "job_id": {
+            "description": "the job's id: the one whose claim you hold; a session's own job may be left out",
             "type": "string"
-          },
-          "role": {
-            "description": "for a machine's bearer, the role its agent plays — agent:<role>@<node slug> (default builder); a person's bearer is always user:<id>",
-            "type": "string"
-          },
-          "seq": {
-            "description": "the item's seq (see mesh_items); with project and goal, or give item_id alone",
-            "type": "integer"
           },
           "step": {
             "description": "the step that failed: validate: check, workspace, push, …",
@@ -175,11 +60,7 @@
         "additionalProperties": false,
         "properties": {
           "org": {
-            "description": "only this org's projects, by its login",
-            "type": "string"
-          },
-          "project": {
-            "description": "only this project, as org/slug (see mesh_projects)",
+            "description": "only this org's nodes, by its login or tenant slug",
             "type": "string"
           }
         },
@@ -193,91 +74,6 @@
         "type": "object"
       },
       "name": "mesh_health_service"
-    },
-    {
-      "inputSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "org": {
-            "description": "only this org's projects, by its login",
-            "type": "string"
-          },
-          "project": {
-            "description": "only this project, as org/slug (see mesh_projects)",
-            "type": "string"
-          }
-        },
-        "type": "object"
-      },
-      "name": "mesh_health_stalls"
-    },
-    {
-      "inputSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "cursor": {
-            "description": "the previous answer's next, to read the page after it; omitted, the first page. A cursor belongs to the arguments that gave it",
-            "type": "string"
-          },
-          "detail": {
-            "description": "concise (the default): each row's identifying fields alone; full: every field",
-            "type": "string"
-          },
-          "fields": {
-            "description": "only these top-level fields of each row, e.g. [\"slug\",\"title\"]; overrides detail",
-            "items": {
-              "type": "string"
-            },
-            "type": [
-              "null",
-              "array"
-            ]
-          },
-          "idle_seconds": {
-            "description": "estate only: name database sessions idle in a transaction longer than this many seconds (default 60)",
-            "type": "integer"
-          },
-          "limit": {
-            "description": "at most this many rows on the page (default 50, or as the tool's description says; at most 200)",
-            "type": "integer"
-          },
-          "org": {
-            "description": "only this org's projects, by its login",
-            "type": "string"
-          },
-          "project": {
-            "description": "only this project, as org/slug (see mesh_projects)",
-            "type": "string"
-          }
-        },
-        "type": "object"
-      },
-      "name": "mesh_health_stuck"
-    },
-    {
-      "inputSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "days": {
-            "description": "the window, in days back from now: default 30, at most 90",
-            "type": "integer"
-          },
-          "goal": {
-            "description": "a goal's id, or its slug with project: the answer's goal then gives each of its items' context tokens and the totals per item and per merged item",
-            "type": "string"
-          },
-          "org": {
-            "description": "only the calls naming this org's projects, by its login",
-            "type": "string"
-          },
-          "project": {
-            "description": "only the calls naming this project, as org/slug (see mesh_projects)",
-            "type": "string"
-          }
-        },
-        "type": "object"
-      },
-      "name": "mesh_health_usage"
     },
     {
       "inputSchema": {
@@ -321,29 +117,17 @@
             "description": "what the session has cost so far, in cents",
             "type": "integer"
           },
-          "goal": {
-            "description": "the goal's slug (see mesh_goals); with project and seq, or give item_id alone",
+          "item_id": {
+            "description": "the job's id under its old name, read as job_id until mesh-cli sends job_id",
             "type": "string"
           },
-          "item_id": {
-            "description": "the item's id, instead of project, goal and seq",
+          "job_id": {
+            "description": "the job's id: the one whose claim you hold; a session's own job may be left out",
             "type": "string"
           },
           "note": {
             "description": "what has happened since the last note: one line",
             "type": "string"
-          },
-          "project": {
-            "description": "the project as org/slug (see mesh_projects); with goal and seq, or give item_id alone",
-            "type": "string"
-          },
-          "role": {
-            "description": "for a machine's bearer, the role its agent plays — agent:<role>@<node slug> (default builder); a person's bearer is always user:<id>",
-            "type": "string"
-          },
-          "seq": {
-            "description": "the item's seq (see mesh_items); with project and goal, or give item_id alone",
-            "type": "integer"
           }
         },
         "required": [
@@ -357,29 +141,17 @@
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
-          "goal": {
-            "description": "the goal's slug (see mesh_goals); with project and seq, or give item_id alone",
+          "item_id": {
+            "description": "the job's id under its old name, read as job_id until mesh-cli sends job_id",
             "type": "string"
           },
-          "item_id": {
-            "description": "the item's id, instead of project, goal and seq",
+          "job_id": {
+            "description": "the job's id: the one whose claim you hold; a session's own job may be left out",
             "type": "string"
           },
           "note": {
             "description": "why the claim is given back",
             "type": "string"
-          },
-          "project": {
-            "description": "the project as org/slug (see mesh_projects); with goal and seq, or give item_id alone",
-            "type": "string"
-          },
-          "role": {
-            "description": "for a machine's bearer, the role its agent plays — agent:<role>@<node slug> (default builder); a person's bearer is always user:<id>",
-            "type": "string"
-          },
-          "seq": {
-            "description": "the item's seq (see mesh_items); with project and goal, or give item_id alone",
-            "type": "integer"
           }
         },
         "type": "object"

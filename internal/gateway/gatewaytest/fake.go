@@ -665,6 +665,7 @@ func New(token string) *Fake {
 	mux.HandleFunc("/graphql", f.contractedGraphQL(f.graphql))
 	mux.HandleFunc("/mesh/v1/", f.contractedREST(f.mesh))
 	mux.HandleFunc("/mcp", f.mcp)
+	mux.HandleFunc("/mesh/mcp", f.mcp)
 	f.Server = httptest.NewServer(mux)
 	return f
 }

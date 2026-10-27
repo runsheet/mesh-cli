@@ -11,6 +11,7 @@
               "kind": "test"
             }
           ],
+          "acceptance_from": null,
           "agent_slug": "",
           "atomic": true,
           "base_ref": "main",
@@ -67,6 +68,7 @@
       "retry_cap": 3,
       "slug": "work",
       "spent_cents": 0,
+      "statement": "Make it.",
       "status": "running",
       "title": "Work"
     },

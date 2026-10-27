@@ -26,6 +26,7 @@
     "reruns": [],
     "runner_image": "ghcr.io/runsheet/mesh-node@sha256:0123",
     "session_id": "build-1",
+    "sigstore_bundle": "",
     "suite_hash": "abababababababababababababababababababababababababababababababab",
     "tests_failed": 0,
     "tests_passed": 12,

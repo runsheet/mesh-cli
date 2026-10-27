@@ -1,10 +1,9 @@
 {
   "args": {
     "arguments": {
-      "goal": "work",
-      "project": "contractwork/work",
+      "blocking_reason": "the brief names 8080 and the acceptance 9090",
       "question": "which port does the service listen on?",
-      "seq": 1
+      "to": "planner"
     },
     "tool": "mesh_ask"
   },
@@ -12,66 +11,68 @@
   "kind": "mcp",
   "list": false,
   "sample": {
-    "actor": "user:00000000-0000-4000-8000-0000000fffff",
+    "actor": "agent:builder@mini",
     "goal": "work",
     "item": {
-      "acceptance_checks": [
+      "acceptance_checks": [],
+      "acceptance_results": [],
+      "asks": [
         {
-          "check": "go test ./... passes",
-          "expected": "passes",
-          "index": 1,
-          "kind": "test"
+          "answer": "",
+          "answered_at": null,
+          "answered_by": "",
+          "asked_at": "2026-01-01T00:00:00Z",
+          "attempt": 0,
+          "blocking_reason": "the brief names 8080 and the acceptance 9090",
+          "question": "which port does the service listen on?",
+          "to": "planner"
         }
       ],
-      "acceptance_results": [
-        {
-          "head_sha": "",
-          "index": 1,
-          "output": "",
-          "verdict": "not_run"
-        }
-      ],
-      "atomic": "true",
       "attempts": 0,
       "build_context_bytes": 0,
       "build_context_files": 0,
-      "claim_actor": "user:00000000-0000-4000-8000-0000000fffff",
-      "cost_cents": 40,
+      "cost_cents": 0,
       "empty_ok": false,
       "eval_context_bytes": 0,
       "eval_context_files": 0,
       "evaluation_passed": false,
-      "files": [
-        "main.go"
-      ],
-      "heartbeat_at": "2026-01-01T00:00:00Z",
-      "last_note": "asks: which port does the service listen on?",
+      "held_reason": "asked the planner: which port does the service listen on?",
+      "hold": {
+        "deadline": "2026-01-01T00:00:00Z",
+        "holder": "planner",
+        "kind": "asked",
+        "reason": "asked the planner: which port does the service listen on?",
+        "recovery": "starts when the planner answers (answerWorkItem): the item is ready, offered first to the node that asked",
+        "since": "2026-01-01T00:00:00Z"
+      },
+      "hold_deadline": "2026-01-01T00:00:00Z",
+      "hold_holder": "planner",
+      "hold_kind": "asked",
+      "hold_since": "2026-01-01T00:00:00Z",
+      "last_note": "reading the brief",
       "lineage": {
         "attempts": 1,
-        "cost_cents": 40,
-        "root_seq": 1,
+        "cost_cents": 0,
+        "root_seq": 3,
         "seqs": [
-          1
+          3
         ]
       },
       "lineage_attempt": 1,
-      "lineage_root_seq": 1,
-      "model": "sonnet",
-      "model_reason": "a mechanical change",
+      "lineage_root_seq": 3,
       "no_change_count": 0,
-      "paired": [
-        "agent:builder@mini"
-      ],
-      "planned_model": "sonnet",
+      "paired": [],
       "retries": 0,
       "retry_cap": 3,
-      "seq": 1,
+      "seq": 3,
       "sharpened": false,
       "stalled": false,
-      "status": "running",
-      "title": "Build me",
+      "status": "pending",
+      "title": "Ask me",
+      "waiting_reason": "asked the planner: which port does the service listen on?",
       "writes_shared_docs": false
     },
+    "note": "asked the planner: End your turn now: stop working, commit nothing more and call no finish. Your node resumes this same session with the answer as your next message.",
     "project": "contractwork/work"
   }
 }

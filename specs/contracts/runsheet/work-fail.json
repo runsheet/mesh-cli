@@ -3,9 +3,7 @@
     "arguments": {
       "error": "validate: check: --- FAIL: TestMine (0.1s)",
       "exit_code": 1,
-      "goal": "work",
-      "project": "contractwork/work",
-      "seq": 2,
+      "job_id": "00000000-0000-4000-8000-0000000fffff",
       "step": "validate: check"
     },
     "tool": "mesh_fail"
@@ -15,57 +13,8 @@
   "list": false,
   "sample": {
     "actor": "user:00000000-0000-4000-8000-0000000fffff",
-    "goal": "work",
-    "item": {
-      "acceptance_checks": [
-        {
-          "check": "go vet ./... passes",
-          "expected": "passes",
-          "index": 1,
-          "kind": "test"
-        }
-      ],
-      "acceptance_results": [
-        {
-          "head_sha": "",
-          "index": 1,
-          "output": "",
-          "verdict": "not_run"
-        }
-      ],
-      "attempts": 1,
-      "build_context_bytes": 0,
-      "build_context_files": 0,
-      "cost_cents": 0,
-      "empty_ok": false,
-      "eval_context_bytes": 0,
-      "eval_context_files": 0,
-      "evaluation_passed": false,
-      "failure_cause": "work",
-      "heartbeat_at": "2026-01-01T00:00:00Z",
-      "last_error": "validate: check: --- FAIL: TestMine (0.1s)",
-      "last_note": "not today",
-      "lineage": {
-        "attempts": 1,
-        "cost_cents": 0,
-        "root_seq": 2,
-        "seqs": [
-          2
-        ]
-      },
-      "lineage_attempt": 1,
-      "lineage_root_seq": 2,
-      "no_change_count": 0,
-      "paired": [],
-      "retries": 0,
-      "retry_cap": 3,
-      "seq": 2,
-      "sharpened": false,
-      "stalled": false,
-      "status": "failed",
-      "title": "Release me",
-      "writes_shared_docs": false
-    },
-    "project": "contractwork/work"
+    "job_id": "00000000-0000-4000-8000-0000000fffff",
+    "last_note": "not today",
+    "status": "failed"
   }
 }

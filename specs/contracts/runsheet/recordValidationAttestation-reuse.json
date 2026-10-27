@@ -11,6 +11,8 @@
   "inputType": "(workItemId: UUID, input: Map!)",
   "kind": "mutation",
   "result": {
+    "attestedBy": "Box",
+    "attesterKind": "node",
     "branch": "mesh/zeta-1",
     "commit": "f865c9442f88371363b8c8daac6ea0f6cfbe9b11",
     "green": true,

@@ -17,12 +17,16 @@
     "failures": 0,
     "flaky_reruns": 0,
     "id": "00000000-0000-4000-8000-0000000fffff",
+    "job_workflow_ref": "contractco/api/.github/workflows/ci.yml@refs/heads/main",
     "passes": 1,
+    "ref": "refs/heads/main",
     "repo": "contractco/api",
     "retention_until": "2026-01-01T00:00:00Z",
     "run_id": "5150",
     "skips": 1,
     "suites": 1,
-    "tests": 2
+    "tests": 2,
+    "unverified_reason": "",
+    "verified": true
   }
 }

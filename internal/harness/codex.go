@@ -971,6 +971,10 @@ func codexEnd(ctx context.Context, res Result, failure string, waitErr error, er
 // itself: the platform's context server (tools.Builtin).
 const BuiltinMCP = tools.Builtin
 
+// MeshMCP is the Mesh server a session on its own mesh session reaches
+// beside BuiltinMCP (runsheet ADR 069, tools.Mesh).
+const MeshMCP = tools.Mesh
+
 // PreflightTimeout caps each step of a Codex preflight.
 const PreflightTimeout = 10 * time.Second
 

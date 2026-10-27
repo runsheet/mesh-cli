@@ -52,7 +52,7 @@
         "main.go"
       ],
       "heartbeat_at": "2026-01-01T00:00:00Z",
-      "last_note": "asks: which port does the service listen on?",
+      "last_note": "the tests run",
       "lineage": {
         "attempts": 1,
         "cost_cents": 160,
