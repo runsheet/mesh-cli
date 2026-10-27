@@ -117,7 +117,10 @@ func TestRelayRefusesAnotherRepository(t *testing.T) {
 	if (*evs)[0].Outcome != "refused" {
 		t.Fatalf("audit %+v", *evs)
 	}
-	for _, p := range []string{"/git/acme/app/info/refs", "/git/../app.git/info/refs", "/git/a/b/c.git/info/refs", "/mcp/x"} {
+	if rec := do(r, "GET", "/git/acme/app/info/refs?service=git-upload-pack", nil, nil); rec.Code != 200 {
+		t.Fatalf("a remote named without .git: got %d", rec.Code)
+	}
+	for _, p := range []string{"/git/../app.git/info/refs", "/git/acme/..", "/git/acme", "/mcp/x"} {
 		if rec := do(r, "GET", p+"?service=git-upload-pack", nil, nil); rec.Code != http.StatusNotFound {
 			t.Fatalf("%s: got %d", p, rec.Code)
 		}
