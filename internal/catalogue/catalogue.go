@@ -96,6 +96,12 @@ type Kind struct {
 	Pods         string   `json:"pods,omitempty"`
 	Guidance     string   `json:"guidance,omitempty"`
 	FinishSchema string   `json:"finish_schema,omitempty"`
+	// FinishTool and BriefTool name tools on the product's own MCP
+	// server: the one a session hands its result to, and the one it reads
+	// its subject from. The node passes them through without knowing
+	// what either does.
+	FinishTool string `json:"finish_tool,omitempty"`
+	BriefTool  string `json:"brief_tool,omitempty"`
 }
 
 // Role is a kind with a trigger, an identity and powers.
@@ -146,6 +152,8 @@ type kindFile struct {
 	Pods         string   `yaml:"pods"`
 	Guidance     string   `yaml:"guidance"`
 	FinishSchema string   `yaml:"finish_schema"`
+	FinishTool   string   `yaml:"finish_tool"`
+	BriefTool    string   `yaml:"brief_tool"`
 	Trigger      string   `yaml:"trigger"`
 	Identity     string   `yaml:"identity"`
 	Powers       []string `yaml:"powers"`
@@ -236,7 +244,7 @@ func Load(root string, src Source) (*Bundle, error) {
 		if k.Trigger != "" || k.Identity != "" || len(k.Powers) > 0 {
 			add("%s%s.yml: a kind has no trigger, identity or powers: a role lives in the roles directory", JobsDir, k.Kind)
 		}
-		b.Kinds = append(b.Kinds, Kind{Kind: k.Kind, Harness: k.Harness, Finish: k.Finish, Access: k.Access, Needs: k.Needs, Pods: k.Pods, Guidance: k.Guidance, FinishSchema: k.FinishSchema})
+		b.Kinds = append(b.Kinds, Kind{Kind: k.Kind, Harness: k.Harness, Finish: k.Finish, Access: k.Access, Needs: k.Needs, Pods: k.Pods, Guidance: k.Guidance, FinishSchema: k.FinishSchema, FinishTool: k.FinishTool, BriefTool: k.BriefTool})
 	}
 	rolesDir := strings.TrimSuffix(cleanDir(m.Roles, DefaultRolesDir), "/") + "/"
 	for _, k := range read(rolesDir) {
@@ -251,7 +259,7 @@ func Load(root string, src Source) (*Bundle, error) {
 			add("%s: `identity` is required", rel)
 		}
 		b.Roles = append(b.Roles, Role{
-			Kind:    Kind{Kind: k.Kind, Harness: k.Harness, Finish: k.Finish, Access: k.Access, Needs: k.Needs, Pods: k.Pods, Guidance: k.Guidance, FinishSchema: k.FinishSchema},
+			Kind:    Kind{Kind: k.Kind, Harness: k.Harness, Finish: k.Finish, Access: k.Access, Needs: k.Needs, Pods: k.Pods, Guidance: k.Guidance, FinishSchema: k.FinishSchema, FinishTool: k.FinishTool, BriefTool: k.BriefTool},
 			Trigger: k.Trigger, Identity: k.Identity, Powers: k.Powers,
 		})
 	}

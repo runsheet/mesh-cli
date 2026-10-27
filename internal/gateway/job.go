@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -67,6 +68,13 @@ type JobBrief struct {
 	// result (runsheet ADR 067 decision 10): the proposal of an
 	// answer-or-proposal kind. "" when the kind has none.
 	FinishSchema string `json:"finishSchema"`
+	// FinishTool and BriefTool are tools on the product's own MCP server
+	// (the server whose name is the kind's product): the one the session
+	// hands its result to, and the one it reads its subject from. The node
+	// names them to the session and knows nothing else of them; "" when
+	// the kind names none.
+	FinishTool string `json:"finishTool,omitempty"`
+	BriefTool  string `json:"briefTool,omitempty"`
 	// Claim is the older claim the platform routed this one to.
 	Claim string `json:"claim"`
 	// Thread is a thread job's turn: the product, the role, the project
@@ -96,6 +104,43 @@ type JobThread struct {
 
 // HasHarness says the job runs an agent.
 func (b JobBrief) HasHarness() bool { return b.Harness != "" && b.Harness != "none" }
+
+// Product is the product a kind belongs to: the part of a qualified
+// kind ("<product>/<kind>") before the slash, "" for a bare kind.
+func (b JobBrief) Product() string {
+	if i := strings.IndexByte(b.Kind, '/'); i > 0 {
+		return b.Kind[:i]
+	}
+	return ""
+}
+
+// ProductGuidance is the brief's guidance with one line after it naming
+// the product's tools: where the session reads its subject and where it
+// hands its result in. The node passes the names through; what they do
+// is the product's to say. Guidance alone when the brief names neither,
+// and "" when it carries no guidance (the built-in prompt runs).
+func (b JobBrief) ProductGuidance() string {
+	g := strings.TrimSpace(b.Guidance)
+	if g == "" {
+		return ""
+	}
+	server := b.Product()
+	if server == "" {
+		server = "product"
+	}
+	var parts []string
+	if b.BriefTool != "" {
+		parts = append(parts, fmt.Sprintf("read your subject with `%s` on the %s MCP server", b.BriefTool, server))
+	}
+	if b.FinishTool != "" {
+		parts = append(parts, fmt.Sprintf("hand your result in with `%s` on the %s MCP server", b.FinishTool, server))
+	}
+	if len(parts) == 0 {
+		return g
+	}
+	line := strings.Join(parts, "; ")
+	return g + "\n\n" + strings.ToUpper(line[:1]) + line[1:] + "."
+}
 
 // Reaches says the job's access names entry.
 func (b JobBrief) Reaches(entry string) bool {
@@ -418,6 +463,10 @@ type JobKind struct {
 	// FinishSchema is the product's schema for its part of the result
 	// (ADR 067 decision 10); "" when the kind has none.
 	FinishSchema string `json:"finishSchema"`
+	// FinishTool and BriefTool are the kind's tools on its product's MCP
+	// server, as JobBrief carries them.
+	FinishTool string `json:"finishTool,omitempty"`
+	BriefTool  string `json:"briefTool,omitempty"`
 }
 
 // jobKindsEvery is how long a client's read of the catalogue answers

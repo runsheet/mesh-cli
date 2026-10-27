@@ -901,7 +901,7 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, scope Scope, dir s
 	if brief.Guidance == "" {
 		p.noGuidance.Note(PlanKind, p.logf)
 	}
-	in.Guidance, in.Finish = brief.Guidance, holder.FinishSection()
+	in.Guidance, in.Finish = brief.ProductGuidance(), holder.FinishSection()
 	st.NodeTools = holder.Tools()
 	kept, err := keptRootFor(p.Layout, goal.ID)
 	if err != nil {
