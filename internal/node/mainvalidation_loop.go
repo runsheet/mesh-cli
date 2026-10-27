@@ -323,6 +323,9 @@ func (l *Loop) validateBatches(ctx context.Context, free, lane int) int {
 	case l.hostHot():
 		l.skipValidation("hot", "main validation: host hot; validating no merge batch")
 		return 0
+	case l.holdingValidations():
+		l.skipValidation("update", "main validation: a self-update waits for the running validations; validating no new one")
+		return 0
 	case free <= 0 && lane <= 0:
 		l.skipValidation("full", "main validation: no free slot and the validation lane is taken (capacity %d, %d validating); validating no merge batch", l.Capacity(), l.Validating())
 		return 0

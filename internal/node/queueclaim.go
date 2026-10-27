@@ -76,6 +76,11 @@ func (l *Loop) queueOn() (queueClaimer, string, bool) {
 // — claims evaluations and rebases as their passes did. It answers false
 // when the platform has no one claim: the caller claims kind by kind.
 func (l *Loop) claimFromQueue(ctx context.Context, qc queueClaimer, nodeID string, free int) bool {
+	if l.holdingValidations() {
+		// an update waits out the running validations: the free slots
+		// claim nothing, since the queue may hand any of them a validation
+		free = 0
+	}
 	// the validations waiting, read before any claim: a claimed one
 	// leaves the read (it lists requested runs only), so the run a
 	// queued validation names is found here
