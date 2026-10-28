@@ -245,9 +245,25 @@ func SidecarRunArgs(pod Pod, spec SidecarSpec) []string {
 	args := []string{"run", "-d", "--pod", pod.Name, "--name", SidecarName(pod, spec.Name),
 		"--security-opt", "no-new-privileges", "--pull", "missing"}
 	args = append(args, LimitArgs(spec.Limits)...)
+	args = append(args, TmpfsArgs(spec.Tmpfs)...)
 	args = append(args, envArgs(ContainerEnv(spec.Limits, spec.Env))...)
 	args = append(args, spec.Image)
 	return append(args, spec.Command...)
+}
+
+// TmpfsArgs are a container's `--tmpfs <path>:rw,size=<n>,mode=1777`:
+// world-writable and sticky, as /tmp is, so the image's own user —
+// whichever keep-id maps it to — can make its data directory there.
+func TmpfsArgs(mounts []Tmpfs) []string {
+	var args []string
+	for _, m := range mounts {
+		opts := "rw"
+		if m.Size != "" {
+			opts += ",size=" + m.Size
+		}
+		args = append(args, "--tmpfs", m.Path+":"+opts+",mode=1777")
+	}
+	return args
 }
 
 // MemoryGuardFactor is how far past its soft memory limit a container

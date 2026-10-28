@@ -45,7 +45,8 @@ func TestE2EFixturesResolve(t *testing.T) {
 		Command: sandbox.PostgresTuning, Tuned: true,
 		Health:   &sandbox.HealthCheck{Cmd: "pg_isready -U postgres", Interval: 5 * time.Second, Timeout: 5 * time.Second, Retries: 10},
 		Required: false, From: ".github/workflows/test.yml",
-		Notes: []string{"defaulted PGDATA, POSTGRES_INITDB_ARGS so the data directory is writable under keep-id"},
+		Tmpfs: []sandbox.Tmpfs{{Path: "/tmp"}},
+		Notes: []string{"defaulted PGDATA, POSTGRES_INITDB_ARGS so the data directory is writable under keep-id", "data on a tmpfs at /tmp (RAM, not the container overlay): tmpfs: false turns it off"},
 	}}
 	if pg.Source != sandbox.SourceWorkflow || !reflect.DeepEqual(pg.Services, want) {
 		t.Errorf("runsheet-postgres: %s %+v\nwant %s %+v", pg.Source, pg.Services, sandbox.SourceWorkflow, want)

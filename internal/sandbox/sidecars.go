@@ -136,7 +136,7 @@ func (s *Session) Start(ctx context.Context, services []Service, timeout time.Du
 		if svc.Refused {
 			continue
 		}
-		spec := SidecarSpec{Name: svc.Name, Image: svc.Image, Env: sortedEnv(svc.Env), Command: svc.Command, Limits: limits}
+		spec := SidecarSpec{Name: svc.Name, Image: svc.Image, Env: sortedEnv(svc.Env), Command: svc.Command, Limits: limits, Tmpfs: s.sb.Config.tmpfsOf(svc)}
 		if err := s.sb.Runtime.AddSidecar(ctx, pod, spec); err != nil {
 			if ctx.Err() != nil {
 				return sts, ctx.Err()
@@ -343,4 +343,24 @@ func ServicesListing(sts []ServiceStatus) []byte {
 		fmt.Fprintf(&b, "%s\t%s\t%s\t%s\n", st.Name, st.Image, at, state)
 	}
 	return []byte(b.String())
+}
+
+// tmpfsOf is svc's tmpfs mounts with each size filled in: its own, else
+// ServicesTmpfs, else DefaultServicesTmpfs.
+func (c Config) tmpfsOf(svc Service) []Tmpfs {
+	if len(svc.Tmpfs) == 0 {
+		return nil
+	}
+	size := c.ServicesTmpfs
+	if size == "" {
+		size = DefaultServicesTmpfs
+	}
+	out := make([]Tmpfs, len(svc.Tmpfs))
+	for i, m := range svc.Tmpfs {
+		if m.Size == "" {
+			m.Size = size
+		}
+		out[i] = m
+	}
+	return out
 }

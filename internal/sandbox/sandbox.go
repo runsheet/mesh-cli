@@ -219,6 +219,9 @@ type Config struct {
 	// ServiceTimeout bounds the wait for the services' health checks
 	// (DefaultServiceTimeout when 0).
 	ServiceTimeout time.Duration
+	// ServicesTmpfs is the size of a service's tmpfs that names none
+	// (DefaultServicesTmpfs when "").
+	ServicesTmpfs string
 	// Stores are the package store and cache every session installs
 	// against (ADR 017 §3): the node's, or one org's (WithStores).
 	Stores Stores

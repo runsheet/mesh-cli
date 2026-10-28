@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -30,7 +31,8 @@ func TestResolve(t *testing.T) {
 				Command: pgTuning, Tuned: true,
 				Health:   &HealthCheck{Cmd: "pg_isready -U postgres", Interval: 2 * time.Second, Timeout: 5 * time.Second, Retries: 30},
 				Required: true, From: ".mesh/services.yml",
-				Notes: []string{"defaulted PGDATA, POSTGRES_INITDB_ARGS so the data directory is writable under keep-id"},
+				Tmpfs: []Tmpfs{{Path: "/tmp"}},
+				Notes: []string{"defaulted PGDATA, POSTGRES_INITDB_ARGS so the data directory is writable under keep-id", "data on a tmpfs at /tmp (RAM, not the container overlay): tmpfs: false turns it off"},
 			}},
 		},
 		{
@@ -337,5 +339,105 @@ func write(t *testing.T, dir, name, body string) {
 	}
 	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// resolveFile resolves a .mesh/services.yml of body.
+func resolveFile(t *testing.T, body string) ([]Service, error) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".mesh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ServicesFile), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Resolve(dir, nil)
+	return got.Services, err
+}
+
+// A Postgres the node tunes keeps its data on a tmpfs at PGDATA's parent
+// (dl360's syncfs stall, 2026-10-28), saying so; `tmpfs: false`,
+// `tuning: false` or a command of its own leaves it on the overlay; a
+// declared list is any service's, sizes as given; a bad entry is refused.
+func TestServiceTmpfs(t *testing.T) {
+	tests := []struct {
+		name, body string
+		want       []Tmpfs
+	}{
+		{"tuned postgres, default PGDATA", "db:\n  image: postgres:17-alpine\n", []Tmpfs{{Path: "/tmp"}}},
+		{"tuned postgres, own PGDATA", "db:\n  image: postgis/postgis:16\n  env:\n    PGDATA: /data/pg/main\n", []Tmpfs{{Path: "/data/pg"}}},
+		{"opted out", "db:\n  image: postgres:17\n  tmpfs: false\n", nil},
+		{"not tuned", "db:\n  image: postgres:17\n  tuning: false\n", nil},
+		{"own command", "db:\n  image: postgres:17\n  command: [-c, max_connections=200]\n", nil},
+		{"declared, any service", "cache:\n  image: redis:7\n  tmpfs: [/data, \"/scratch:512m\"]\n", []Tmpfs{{Path: "/data"}, {Path: "/scratch", Size: "512m"}}},
+		{"declared wins over the default", "db:\n  image: postgres:17\n  tmpfs: [\"/var/lib/postgresql:1g\"]\n", []Tmpfs{{Path: "/var/lib/postgresql", Size: "1g"}}},
+		{"redis gets none", "cache:\n  image: redis:7\n", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveFile(t, tt.body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got[0].Tmpfs, tt.want) {
+				t.Fatalf("tmpfs %+v, want %+v", got[0].Tmpfs, tt.want)
+			}
+			noted := false
+			for _, n := range got[0].Notes {
+				noted = noted || strings.Contains(n, "data on a tmpfs at")
+			}
+			if isDefault := tt.want != nil && !strings.Contains(tt.body, "tmpfs:"); noted != isDefault {
+				t.Fatalf("notes %q: a default tmpfs noted %v, want %v", got[0].Notes, noted, isDefault)
+			}
+		})
+	}
+	for _, bad := range []string{"tmpfs: true", "tmpfs: [relative]", "tmpfs: [\"/x:lots\"]", "tmpfs: [\"/x,y\"]"} {
+		if _, err := resolveFile(t, "db:\n  image: postgres:17\n  "+bad+"\n"); err == nil || !strings.Contains(err.Error(), "tmpfs") {
+			t.Fatalf("%s: err %v, want a refusal naming tmpfs", bad, err)
+		}
+	}
+}
+
+// A service's tmpfs reaches podman as --tmpfs <path>:rw,size=<n>,mode=1777,
+// a path naming no size taking the node's services_tmpfs (default 4g);
+// none is no flag at all.
+func TestSidecarTmpfsArgs(t *testing.T) {
+	pod := Pod{Name: "mesh-pr-1-ab-0"}
+	c := Config{}
+	svc := Service{Name: "postgres", Image: "postgres:17", Tmpfs: []Tmpfs{{Path: "/tmp"}, {Path: "/scratch", Size: "512m"}}}
+	args := strings.Join(SidecarRunArgs(pod, SidecarSpec{Name: svc.Name, Image: svc.Image, Tmpfs: c.tmpfsOf(svc)}), " ")
+	for _, want := range []string{"--tmpfs /tmp:rw,size=4g,mode=1777", "--tmpfs /scratch:rw,size=512m,mode=1777"} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("args %q lack %q", args, want)
+		}
+	}
+	if i, j := strings.Index(args, "--tmpfs"), strings.Index(args, "postgres:17"); i > j {
+		t.Fatalf("--tmpfs after the image: %q", args)
+	}
+	c.ServicesTmpfs = "2g"
+	if got := c.tmpfsOf(Service{Tmpfs: []Tmpfs{{Path: "/tmp"}}}); got[0].Size != "2g" {
+		t.Fatalf("size %q, want the node's 2g", got[0].Size)
+	}
+	if args := SidecarRunArgs(pod, SidecarSpec{Name: "redis", Image: "redis:7", Tmpfs: c.tmpfsOf(Service{})}); strings.Contains(strings.Join(args, " "), "--tmpfs") {
+		t.Fatalf("a service without tmpfs got one: %q", args)
+	}
+}
+
+// Start hands each started sidecar its tmpfs, sized.
+func TestStartGivesASidecarItsTmpfs(t *testing.T) {
+	f := &Fake{}
+	sb := testSandbox(t, f)
+	sb.Config.ServicesTmpfs = "3g"
+	sess, err := sb.Open("pr-1", "validate", GitIdentity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if _, err := sess.Start(context.Background(), []Service{{Name: "postgres", Image: "postgres:17", Tmpfs: []Tmpfs{{Path: "/tmp"}}}}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Sidecars) != 1 || !reflect.DeepEqual(f.Sidecars[0].Tmpfs, []Tmpfs{{Path: "/tmp", Size: "3g"}}) {
+		t.Fatalf("sidecars %+v", f.Sidecars)
 	}
 }
