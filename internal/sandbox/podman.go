@@ -250,15 +250,32 @@ func SidecarRunArgs(pod Pod, spec SidecarSpec) []string {
 	return append(args, spec.Command...)
 }
 
-// LimitArgs are --cpus, --memory (swap the same, so memory is a hard
-// cap) and --pids-limit, each only when set.
+// MemoryGuardFactor is how far past its soft memory limit a container
+// may grow before the kernel kills it: memory.max is the runaway guard,
+// memory.high the limit a container is reclaimed and slowed at.
+const MemoryGuardFactor = 2
+
+// LimitArgs are --cpus, the memory limits and --pids-limit, each only
+// when set. Memory is a soft limit: cgroup v2's memory.high at l.Memory
+// (--cgroup-conf), where the kernel reclaims the container's pages and
+// slows it rather than killing it, and memory.max (--memory, swap the
+// same) at MemoryGuardFactor times that, only a runaway guard. A host
+// with memory to spare lets a job past its estimate run slower, not die
+// (Chris, 2026-10-28: share memory rather than limit it). A size podman
+// takes but parseSize does not stays the old hard cap.
 func LimitArgs(l Limits) []string {
 	var args []string
 	if l.CPUs > 0 {
 		args = append(args, "--cpus", strconv.FormatFloat(l.CPUs, 'f', -1, 64))
 	}
 	if l.Memory != "" {
-		args = append(args, "--memory", l.Memory, "--memory-swap", l.Memory)
+		if high, ok := parseSize(l.Memory); ok {
+			guard := strconv.FormatInt(high*MemoryGuardFactor>>20, 10) + "m"
+			args = append(args, "--memory", guard, "--memory-swap", guard,
+				"--cgroup-conf", "memory.high="+strconv.FormatInt(high, 10))
+		} else {
+			args = append(args, "--memory", l.Memory, "--memory-swap", l.Memory)
+		}
 	}
 	if l.Pids > 0 {
 		args = append(args, "--pids-limit", strconv.Itoa(l.Pids))

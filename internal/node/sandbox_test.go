@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -51,14 +52,14 @@ func TestSandboxLimitsFromNodeYAML(t *testing.T) {
 	} {
 		s := sandboxOf(t, tc.doc).Settings("v1.2.3")
 		args := sandbox.AgentRunArgs(sandbox.Pod{Name: "p"}, sandbox.AgentSpec{Name: "a", Image: s.Image, Limits: s.Limits})
-		if got := [3]string{flagValue(args, "--cpus"), flagValue(args, "--memory"), flagValue(args, "--pids-limit")}; got != [3]string{tc.cpus, tc.memory, tc.pids} {
-			t.Errorf("%q: agent limits = %v, want %s %s %s", tc.doc, got, tc.cpus, tc.memory, tc.pids)
+		if got := [3]string{flagValue(args, "--cpus"), flagValue(args, "--cgroup-conf"), flagValue(args, "--pids-limit")}; got != [3]string{tc.cpus, "memory.high=" + bytesOf(t, tc.memory), tc.pids} {
+			t.Errorf("%q: agent limits = %v, want %s memory.high=%s %s", tc.doc, got, tc.cpus, tc.memory, tc.pids)
 		}
-		if flagValue(args, "--memory-swap") != tc.memory {
-			t.Errorf("%q: swap must equal memory: %v", tc.doc, args)
+		if flagValue(args, "--memory") != guardOf(t, tc.memory) || flagValue(args, "--memory-swap") != guardOf(t, tc.memory) {
+			t.Errorf("%q: memory.max and swap must be the guard: %v", tc.doc, args)
 		}
 		svc := sandbox.LimitArgs(s.ServicesLimits)
-		if flagValue(svc, "--cpus") != tc.svcCPUs || flagValue(svc, "--memory") != tc.svcMem {
+		if flagValue(svc, "--cpus") != tc.svcCPUs || flagValue(svc, "--cgroup-conf") != "memory.high="+bytesOf(t, tc.svcMem) {
 			t.Errorf("%q: services budget = %v", tc.doc, svc)
 		}
 		if s.Image != "ghcr.io/runsheet/mesh-node:v1.2.3" {
@@ -357,4 +358,30 @@ func TestOpenSandboxHasNoStoreOfItsOwn(t *testing.T) {
 	if sb.Config.Stores != (sandbox.Stores{}) {
 		t.Errorf("stores = %+v, want none", sb.Config.Stores)
 	}
+}
+
+// bytesOf is a test size ("6g", "512m") in bytes, as LimitArgs writes
+// memory.high.
+func bytesOf(t *testing.T, size string) string {
+	t.Helper()
+	n, err := strconv.ParseInt(size[:len(size)-1], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	switch size[len(size)-1] {
+	case 'g':
+		n <<= 30
+	case 'm':
+		n <<= 20
+	default:
+		t.Fatalf("size %q", size)
+	}
+	return strconv.FormatInt(n, 10)
+}
+
+// guardOf is LimitArgs' memory.max for a soft limit of size.
+func guardOf(t *testing.T, size string) string {
+	t.Helper()
+	n, _ := strconv.ParseInt(bytesOf(t, size), 10, 64)
+	return strconv.FormatInt(n*sandbox.MemoryGuardFactor>>20, 10) + "m"
 }
