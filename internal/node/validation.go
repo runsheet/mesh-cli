@@ -52,6 +52,10 @@ type buildValidation struct {
 	// baseGoneSaid: the build's base was found gone and said so, once
 	// for every run of the build's validation
 	baseGoneSaid bool
+	// cpu is the run's share of the CPU budget, and pod one of its
+	// lanes' pods' CPUs (ADR-043)
+	cpu *CPUJob
+	pod float64
 }
 
 // validationFailure is a step that failed on the commit the build
@@ -105,6 +109,10 @@ type validator struct {
 	// unconfigured signs nothing (sessionSign).
 	Signer        *sigstore.Signer
 	SigningTokens SigningTokens
+	// CPU is the node's CPU budget: the run's pods reserve their CPUs
+	// against it, its groups and shards in waves when they do not all
+	// fit (ADR-043); nil is none.
+	CPU *CPUBudget
 }
 
 // SigningTokens mints a session's Fulcio token (SessionBearers).
@@ -224,7 +232,7 @@ type validationTarget struct {
 }
 
 func (r *Runner) validator() validator {
-	vr := validator{GW: r.GW, WS: r.WS, Scopes: r.Scopes, Sandbox: r.Sandbox, Inspect: r.Inspect, Notices: r.Notices, logf: r.logf, WorkRoot: r.WorkRoot, Layout: r.Layout, BuildCache: r.BuildCache, Signer: r.Sigstore, SigningTokens: r.signingTokens()}
+	vr := validator{GW: r.GW, WS: r.WS, Scopes: r.Scopes, Sandbox: r.Sandbox, Inspect: r.Inspect, Notices: r.Notices, logf: r.logf, WorkRoot: r.WorkRoot, Layout: r.Layout, BuildCache: r.BuildCache, Signer: r.Sigstore, SigningTokens: r.signingTokens(), CPU: r.CPU}
 	if r.Cache != nil {
 		vr.CacheRoot = r.Cache.Root
 	}
@@ -371,12 +379,27 @@ func (vr validator) start(ctx context.Context, t validationTarget) (*buildValida
 		vr.logf("%s: validation: shared go module cache not used: %s", t.prefix, why)
 	}
 	base := sandboxRunner{sess: sess, dir: t.dir, env: env, vars: t.served.env(), cache: vc}
+	// the run's share of the CPU budget: a claimed validation's job
+	// (startMainJob), else one of its own — a build's or a rebase's run,
+	// whose first lane runs in the session's pod — ended with the run
+	cj := CPUJobOf(ctx)
+	if cj == nil && vr.CPU != nil {
+		cj = vr.CPU.Job(t.prefix, "", 0)
+		closeRun := v.close
+		v.close = func() {
+			closeRun()
+			cj.End()
+		}
+	}
+	v.cpu, v.pod = cj, PodCPUs(vr.Sandbox, t.dir)
 	v.runner = laneSandboxRunner{sandboxRunner: base, open: func(ctx context.Context, name string) (*SessionPod, error) {
 		var git sandbox.GitIdentity
 		if t.job != nil {
 			git = sandbox.GitIdentityFromEnv(t.job.Env)
 		}
-		return OpenSessionPod(ctx, vr.Sandbox, t.dir, t.label+"-"+name, "validate", git, vr.logf)
+		// each lane's pod waits for room in the budget: shards past it
+		// start in waves as others end
+		return OpenSessionPod(WithCPUJob(ctx, cj), vr.Sandbox, t.dir, t.label+"-"+name, "validate", git, vr.logf)
 	}, releaseFirst: t.releasePod}
 	image := vr.Sandbox.Config.Image
 	run := vr.Inspect
@@ -523,6 +546,7 @@ func (vr validator) runSteps(ctx context.Context, t validationTarget, v *buildVa
 		ran = "no suite affected"
 	}
 	vr.logf("%s: validation on %s: %s", t.prefix, short(head), ran)
+	vr.estimate(t, v, steps)
 	results, err := validate.Run(ctx, steps, v.runner, validate.Options{Dir: t.dir, Redact: func(out string) string { return tools.Redact(out, secretEnv(v.env)) }})
 	if err != nil {
 		return validate.Attestation{}, err

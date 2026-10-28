@@ -225,6 +225,13 @@ func lanes(steps []Step, split bool) []lane {
 	return out
 }
 
+// Lanes is how many lanes steps run in on a LaneRunner: one per group
+// and one per shard of each sharded step — each a pod of its own, the
+// first the run's. The node's CPU budget estimates a run by it.
+func Lanes(steps []Step) int {
+	return len(lanes(steps, true))
+}
+
 // shardCommand is a shard's command: its index and the shard count
 // exported before it.
 func shardCommand(cmd string, u unit) string {

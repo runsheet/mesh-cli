@@ -813,9 +813,16 @@ func (t ToolResults) KB() int {
 // runsheet ADR 069 decision 2b — is retired: claims come from Mesh's
 // priority queue, which ranks validations first. It is still read
 // without error, and ignored (ReserveRetired).
+//
+// The mapping's `cpu_budget` is the CPUs the node's pods may reserve at
+// once (ADR-043): every pod its --cpus, its sidecars their
+// services_cpus. Left out (or a plain N) it is DefaultCPUBudgetFactor ×
+// the host's cores (CPUBudgetFor).
 type Capacity struct {
 	Min int `yaml:"min"`
 	Max int `yaml:"max"`
+	// CPUBudget is capacity.cpu_budget; 0 is the default.
+	CPUBudget float64 `yaml:"cpu_budget,omitempty"`
 	// reserveNamed is whether node.yaml still names capacity.reserve
 	reserveNamed bool
 }
@@ -862,9 +869,10 @@ func (c *Capacity) UnmarshalYAML(n *yaml.Node) error {
 		return nil
 	}
 	var r struct {
-		Min     *int       `yaml:"min"`
-		Max     *int       `yaml:"max"`
-		Reserve *yaml.Node `yaml:"reserve"`
+		Min       *int       `yaml:"min"`
+		Max       *int       `yaml:"max"`
+		Reserve   *yaml.Node `yaml:"reserve"`
+		CPUBudget float64    `yaml:"cpu_budget"`
 	}
 	if err := n.Decode(&r); err != nil {
 		return fmt.Errorf("capacity: want a number or {min, max}: %w", err)
@@ -872,7 +880,10 @@ func (c *Capacity) UnmarshalYAML(n *yaml.Node) error {
 	if r.Min == nil || r.Max == nil {
 		return errors.New("capacity: a range needs both min and max")
 	}
-	v := Capacity{Min: *r.Min, Max: *r.Max, reserveNamed: r.Reserve != nil}
+	if r.CPUBudget < 0 {
+		return errors.New("capacity: cpu_budget cannot be negative")
+	}
+	v := Capacity{Min: *r.Min, Max: *r.Max, CPUBudget: r.CPUBudget, reserveNamed: r.Reserve != nil}
 	if err := v.Validate(); err != nil {
 		return err
 	}
@@ -884,13 +895,14 @@ func (c *Capacity) UnmarshalYAML(n *yaml.Node) error {
 // from, so a file that never used a range saves back unchanged. The
 // retired reserve is not written back.
 func (c Capacity) MarshalYAML() (any, error) {
-	if !c.IsRange() {
+	if !c.IsRange() && c.CPUBudget == 0 {
 		return c.Max, nil
 	}
 	return struct {
-		Min int `yaml:"min"`
-		Max int `yaml:"max"`
-	}{c.Min, c.Max}, nil
+		Min       int     `yaml:"min"`
+		Max       int     `yaml:"max"`
+		CPUBudget float64 `yaml:"cpu_budget,omitempty"`
+	}{c.Min, c.Max, c.CPUBudget}, nil
 }
 
 // Models names a model per kind of session: Default when a kind has

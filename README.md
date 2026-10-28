@@ -1408,6 +1408,33 @@ tick logs it in place of the ordinary no-headroom line:
 accounts: max-ci held back for urgent work (the others within 10% of stop); 2 item(s) left unclaimed until 2026-10-10T14:00:00Z
 ```
 
+### The CPU budget
+
+A sandboxed node counts the CPUs its pods ask for, not only its jobs
+(ADR-043). Every pod — a session's, a validation's own and each of its
+groups' and shards' — reserves its `--cpus` (`sandbox.cpus`, and
+`sandbox.services_cpus` when it runs sidecars) against
+`capacity.cpu_budget`, which defaults to 1.25 × the host's cores:
+
+```yaml
+capacity: {min: 4, max: 16, cpu_budget: 120}
+```
+
+The node claims a job only when its estimate fits beside what running
+jobs hold: a session's pod, or for a validation every group and shard
+its repo's `validate.yml` ran last time (four pods before it is known).
+A claimed validation holds its estimate until it ends; shards past what
+fits start in waves as others finish, each still in its own pod with
+its own Postgres, never above the budget. A job bigger than the whole
+budget still runs, alone. The job-count `capacity` stays as an outer
+limit. The budget in use is on the health line, in the node.s admin
+status and metrics (`mesh_node_cpu_*`), in the heartbeat (`cpuBudget`, when
+the platform takes it), and logged once a minute while near its limit:
+
+```
+cpu budget: near its limit: 112 of 120 cpus reserved by 9 pod(s), 120 committed, 2 waiting
+```
+
 ### Capacity that scales with headroom
 
 `capacity` in `~/.mesh/node.yaml` is a plain number or a range:

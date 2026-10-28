@@ -24,6 +24,9 @@ type SessionPod struct {
 	// closed makes Close run once: a validation gives its pod back when
 	// its first lane ends and closes it again on the way out
 	closed sync.Once
+	// release gives back the CPUs a job's pod reserved (CPUJob.Pod), nil
+	// for a pod the sandbox reserved itself
+	release func()
 }
 
 // openOrgSessionPod is OpenSessionPod for a session of the org whose id
@@ -55,12 +58,27 @@ func OpenSessionPod(ctx context.Context, sb *sandbox.Sandbox, dir, label string,
 	// a checkout in a job gets a pod confined to the job and its
 	// connection's caches: every mount outside them refused (ADR-039)
 	sb = confineTo(sb, dir)
+	var release func()
+	if cj := CPUJobOf(ctx); cj != nil {
+		// a validation's pod is its job's: it waits for room in the CPU
+		// budget (ADR-043) and reserves its agent's and services' CPUs at
+		// once, the sandbox reserving nothing more for it
+		rel, err := cj.Pod(ctx, PodCPUs(sb, dir))
+		if err != nil {
+			return nil, err
+		}
+		release = rel
+		sb = sb.WithReserve(nil)
+	}
 	sess, err := sb.Open(label, string(kind), git)
 	if err != nil {
+		if release != nil {
+			release()
+		}
 		return nil, err
 	}
 	logf("sandbox: %s", sess.Describe())
-	p := &SessionPod{Session: sess, logf: logf}
+	p := &SessionPod{Session: sess, logf: logf, release: release}
 	svcs, err := sandbox.Resolve(dir, sb.Config.Registries)
 	if err != nil {
 		p.Statuses = []sandbox.ServiceStatus{{Name: sandbox.ServicesFile, Image: "-", Required: true, Why: err.Error()}}
@@ -107,6 +125,9 @@ func (p *SessionPod) Close() {
 	p.closed.Do(func() {
 		if err := p.Session.Close(); err != nil && p.logf != nil {
 			p.logf("%s", sandbox.CloseLine(p.Session.Label, err))
+		}
+		if p.release != nil {
+			p.release()
 		}
 	})
 }

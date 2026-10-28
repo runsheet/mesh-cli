@@ -82,6 +82,9 @@ type Rebaser struct {
 	// services its checkout declares (as Runner.Sandbox): the acceptance
 	// is re-run on the rebased head.
 	Sandbox *sandbox.Sandbox
+	// CPU is the node's CPU budget, which the rebased head's validation
+	// opens its groups' and shards' pods against (ADR-043); nil is none.
+	CPU *CPUBudget
 	// Inspect runs `podman image inspect` for a sandboxed validation's
 	// image digest (nil: the real podman), as Runner.Inspect.
 	Inspect sandbox.Runner
@@ -654,7 +657,7 @@ func (r *Rebaser) contextBudget() ContextConfig {
 }
 
 func (r *Rebaser) validator() validator {
-	return validator{GW: r.GW, WS: r.WS, Scopes: r.Scopes, Sandbox: r.Sandbox, Inspect: r.Inspect, Notices: r.Notices, logf: r.logf, WorkRoot: r.WorkRoot, Layout: r.Layout, BuildCache: r.BuildCache}
+	return validator{GW: r.GW, WS: r.WS, Scopes: r.Scopes, Sandbox: r.Sandbox, Inspect: r.Inspect, Notices: r.Notices, logf: r.logf, WorkRoot: r.WorkRoot, Layout: r.Layout, BuildCache: r.BuildCache, CPU: r.CPU}
 }
 
 // validateRebased runs the checkout's declared validation on the head

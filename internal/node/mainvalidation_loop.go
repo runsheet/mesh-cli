@@ -127,6 +127,9 @@ func pullRequestLabel(p gateway.MainValidationPullRequest) string {
 // the platform.
 type mainJob struct {
 	id, label, claimed string
+	// repo is the repository validated (owner/name): its validations'
+	// CPU estimate is learnt by it (CPUBudget.Learn)
+	repo string
 	// kind is what the job validates
 	kind jobKind
 	// window is how long the claimed run may take (runWindow)
@@ -151,7 +154,7 @@ func validationStopKey(id string) string { return stopKey("validate", id) }
 
 func batchJob(l *Loop, gw mainValidationGateway, b gateway.MainValidationBatch, nodeID string) mainJob {
 	return mainJob{
-		id: b.MergeBatchID, label: batchLabel(b), kind: jobCandidate, window: runWindow(b.BudgetSeconds),
+		id: b.MergeBatchID, label: batchLabel(b), kind: jobCandidate, window: runWindow(b.BudgetSeconds), repo: b.RepoFullName,
 		claimed: fmt.Sprintf("claimed candidate %s@%s", b.CandidateBranch, short(b.SHA)),
 		run:     func(ctx context.Context) (validate.Attestation, error) { return l.ValidateBatch(ctx, b) },
 		claim: func(ctx context.Context) error {
@@ -169,7 +172,7 @@ func batchJob(l *Loop, gw mainValidationGateway, b gateway.MainValidationBatch, 
 
 func requestJob(l *Loop, gw mainValidationGateway, r gateway.MainValidationRequest, nodeID string) mainJob {
 	return mainJob{
-		id: r.WorkItemID, label: mainRequestLabel(r), claimed: "claimed", kind: jobMain, window: runWindow(r.BudgetSeconds),
+		id: r.WorkItemID, label: mainRequestLabel(r), claimed: "claimed", kind: jobMain, window: runWindow(r.BudgetSeconds), repo: r.RepoFullName,
 		run: func(ctx context.Context) (validate.Attestation, error) { return l.ValidateMain(ctx, r) },
 		claim: func(ctx context.Context) error {
 			return gw.ClaimWorkItemMainValidation(ctx, r.WorkItemID, nodeID, validationHarness)
@@ -195,7 +198,7 @@ func pullRequestJob(l *Loop, gw mainValidationGateway, pgw pullRequestValidation
 		claimed = fmt.Sprintf("claimed head %s (%s)", p.HeadBranch, p.Ref)
 	}
 	return mainJob{
-		id: id, label: pullRequestLabel(p), claimed: claimed, kind: jobPullRequest, window: runWindow(p.BudgetSeconds),
+		id: id, label: pullRequestLabel(p), claimed: claimed, kind: jobPullRequest, window: runWindow(p.BudgetSeconds), repo: p.RepoFullName,
 		run: func(ctx context.Context) (validate.Attestation, error) { return l.ValidatePullRequest(ctx, p) },
 		claim: func(ctx context.Context) error {
 			return pgw.ClaimPullRequestValidation(ctx, id, nodeID, validationHarness)
@@ -401,6 +404,9 @@ func (l *Loop) validateBatches(ctx context.Context, free int) int {
 		if l.isValidating(j.id) {
 			continue // running here already: it takes no new slot
 		}
+		if !l.cpuFits(l.CPU.ValidationEstimate(j.repo), "a validation") {
+			break
+		}
 		if l.startMainJob(ctx, j) {
 			capped.started()
 			started++
@@ -464,10 +470,15 @@ func (l *Loop) startMainJob(ctx context.Context, j mainJob) bool {
 		return false
 	}
 	l.logf("%s: %s", j.label, j.claimed)
+	// its estimate is held from the claim, before its checkout: the next
+	// claim is weighed against it (ADR-043)
+	cj := l.CPU.Job(j.label, j.repo, l.CPU.ValidationEstimate(j.repo))
 	l.wg.Add(1)
 	go func() {
 		defer crash.Guard()
 		defer l.wg.Done()
+		defer cj.End()
+		ctx := WithCPUJob(ctx, cj)
 		defer func() {
 			l.mu.Lock()
 			delete(l.validating, j.id)

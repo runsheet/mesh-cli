@@ -34,6 +34,7 @@ type NodeStatus struct {
 	Capacity   int                   `json:"capacity"`
 	Running    int                   `json:"running"`
 	Validating int                   `json:"validating"`
+	CPUBudget  *gateway.CPUBudget    `json:"cpuBudget,omitempty"`
 	Health     string                `json:"health,omitempty"`
 	Update     string                `json:"updateError,omitempty"`
 	Connection []StatusConnection    `json:"connections"`
@@ -107,7 +108,7 @@ func StatusOf(l *Loop, started time.Time) NodeStatus {
 	st := NodeStatus{
 		Version: l.Version, Commit: l.Commit, PID: os.Getpid(), Started: started,
 		Condition: l.Condition(), Draining: l.Draining(), Runtime: l.RuntimeBroken(),
-		Capacity: l.Capacity(), Running: l.Running(), Validating: l.Validating(),
+		Capacity: l.Capacity(), Running: l.Running(), Validating: l.Validating(), CPUBudget: l.cpuHeartbeat(),
 		Health: l.HealthLine(), Update: l.UpdateError(),
 		Connection: []StatusConnection{}, Sessions: l.Sessions(), Held: []StatusHeld{}, Findings: l.LatestFindings(),
 	}
@@ -168,6 +169,12 @@ func metricsOf(st NodeStatus, layout *Layout) string {
 	gauge("mesh_node_capacity", "Sessions the node runs at once.", float64(st.Capacity))
 	gauge("mesh_node_running", "Builds running.", float64(st.Running))
 	gauge("mesh_node_validating", "Validations running.", float64(st.Validating))
+	if c := st.CPUBudget; c != nil {
+		gauge("mesh_node_cpu_budget", "CPUs the node's pods may reserve (capacity.cpu_budget).", c.Budget)
+		gauge("mesh_node_cpu_reserved", "CPUs the node's open pods reserve.", c.Reserved)
+		gauge("mesh_node_cpu_committed", "CPUs reserved plus held for running jobs.", c.Committed)
+		gauge("mesh_node_cpu_waiting", "Pods waiting for room in the CPU budget.", float64(c.Waiting))
+	}
 	gauge("mesh_node_draining", "1 while the node drains.", bool01(st.Draining))
 	gauge("mesh_node_runtime_broken", "1 while the node's runtime is broken.", bool01(st.Runtime != nil))
 	gauge("mesh_node_held_goals", "Goals held off the node.", float64(len(st.Held)))

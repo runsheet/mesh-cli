@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -1193,6 +1194,13 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 	}
 	if sb != nil {
 		sb.Config.TZ = os.Getenv("TZ")
+		// the CPU budget (ADR-043): every pod reserves the CPUs it asks
+		// for, and the node claims a job only when its estimate fits
+		cpu := node.NewCPUBudget(node.CPUBudgetFor(cfg.Capacity.CPUBudget, runtime.NumCPU()), sb.Config.Limits.CPUs+sb.Config.ServicesLimits.CPUs)
+		cpu.SetLogf(logger.Printf)
+		sb.Reserve = cpu.Reserve
+		loop.CPU = cpu
+		logger.Printf("capacity: cpu budget %g cpus (%d cores); a session's pod %g cpus", cpu.Total(), runtime.NumCPU(), cpu.Pod)
 	}
 	sessionSandbox, loop.Sandbox = sb, sbInfo
 	if cfg.GitRelay {
@@ -1352,7 +1360,7 @@ func runNode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gate
 		signer = &sigstore.Signer{FulcioURL: cfg.Sigstore.FulcioURL, RekorURL: cfg.Sigstore.RekorURL}
 		logger.Printf("sigstore: sessions sign through %s and log in %s (node.yaml sigstore)", cfg.Sigstore.FulcioURL, cfg.Sigstore.RekorURL)
 	}
-	runner := &node.Runner{Sigstore: signer, GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Layout: nodeLayout, MCPFunc: func(ctx context.Context) map[string]any { return meshContextMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, BatchFallback: &node.TokenFallback{}, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, RuntimeBroken: loop.NoteRuntimeBroken, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Sandbox: sessionSandbox, MeshBinary: meshBinary(), State: state, Notices: validationNotices, Machine: loop.Machine, Host: loop.HostThresholds, RetryTurns: loop.NoteRetryTurn, Resumes: resumes, Tripline: loop.Tripline, Bearers: sessionBearers, Proxies: sessionProxies, Log: logger}
+	runner := &node.Runner{Sigstore: signer, GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Layout: nodeLayout, MCPFunc: func(ctx context.Context) map[string]any { return meshContextMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, BatchFallback: &node.TokenFallback{}, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, RuntimeBroken: loop.NoteRuntimeBroken, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Sandbox: sessionSandbox, CPU: loop.CPU, MeshBinary: meshBinary(), State: state, Notices: validationNotices, Machine: loop.Machine, Host: loop.HostThresholds, RetryTurns: loop.NoteRetryTurn, Resumes: resumes, Tripline: loop.Tripline, Bearers: sessionBearers, Proxies: sessionProxies, Log: logger}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		r := *runner
 		r.Scopes = loop.CurrentScopes() // an org served since start is known to its build
@@ -2033,7 +2041,7 @@ func evaluator(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harn
 var validationNotices = &node.ValidationNotices{}
 
 func rebaser(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, scopes func() node.Scopes, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) *node.Rebaser {
-	return &node.Rebaser{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes(), WorkRoot: workRoot, Layout: nodeLayout, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeRebaseBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("rebase"), Fallback: fallback, Credentials: accounts, Sandbox: sessionSandbox, Notices: validationNotices, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Tripline: loop.Tripline, Log: logger}
+	return &node.Rebaser{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes(), WorkRoot: workRoot, Layout: nodeLayout, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeRebaseBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("rebase"), Fallback: fallback, Credentials: accounts, Sandbox: sessionSandbox, CPU: loop.CPU, Notices: validationNotices, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Tripline: loop.Tripline, Log: logger}
 }
 
 func planner(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, workRoot string, accounts *node.Credentials, logger *log.Logger) *node.Planner {
