@@ -457,6 +457,17 @@ const (
 	DefaultQuietFraction   = 0.8
 )
 
+// DefaultCPUPressureMinLoadPerCore is host.cpu_pressure_min_load_per_core's
+// default: the 1-minute load per core under which the slice's CPU
+// pressure does not make the host hot. Pressure with most cores idle is
+// a session or sidecar stalled on its own --cpus quota (cgroup v2 counts
+// cpu.max throttling as pressure), not contention for the machine, and
+// claiming more work does not worsen it. On dl360, 2026-10-28, one
+// Postgres sidecar throttled at its 2-CPU quota held the slice's
+// pressure at 70% with load 0.3 on 96 cores, and the scaler sat at its
+// minimum all day.
+const DefaultCPUPressureMinLoadPerCore = 0.5
+
 // DefaultStarveAfter is host.starve_after's default: a build silent
 // this long on an overloaded host is stopped and released, a third of
 // the platform's 45-minute stall.
@@ -481,6 +492,12 @@ type HostConfig struct {
 	// is hot. When the slice's pressure is read it judges the host in
 	// place of LoadPerCoreMax (ADR-031). Default DefaultCPUSomeAvg60Max.
 	CPUSomeAvg60Max float64 `yaml:"cpu_some_avg60_max,omitempty"`
+	// CPUPressureMinLoadPerCore is host.cpu_pressure_min_load_per_core:
+	// the slice's CPU pressure judges the host only at or above this
+	// 1-minute load per core; under it the pressure is quota throttling
+	// inside a session, not a busy machine. Default
+	// DefaultCPUPressureMinLoadPerCore.
+	CPUPressureMinLoadPerCore float64 `yaml:"cpu_pressure_min_load_per_core,omitempty"`
 	// QuietFraction is host.quiet_fraction: once hot, the host stays hot
 	// until its pressure (or, without PSI, its load per core) falls
 	// below this fraction of the threshold. At most 1. Default
@@ -523,6 +540,9 @@ func (h HostConfig) Effective() HostConfig {
 	if h.QuietFraction == 0 {
 		h.QuietFraction = DefaultQuietFraction
 	}
+	if h.CPUPressureMinLoadPerCore == 0 {
+		h.CPUPressureMinLoadPerCore = DefaultCPUPressureMinLoadPerCore
+	}
 	if h.StarveAfter == 0 {
 		h.StarveAfter = DefaultStarveAfter
 	}
@@ -545,6 +565,9 @@ func (h HostConfig) Validate() error {
 	}
 	if h.QuietFraction < 0 {
 		return errors.New("host.quiet_fraction: cannot be negative")
+	}
+	if h.CPUPressureMinLoadPerCore < 0 {
+		return errors.New("host.cpu_pressure_min_load_per_core: cannot be negative")
 	}
 	if h.QuietFraction > 1 {
 		return errors.New("host.quiet_fraction: cannot be more than 1")

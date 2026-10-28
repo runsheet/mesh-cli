@@ -330,7 +330,7 @@ func TestLoadConfigHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Host.Effective(); got != (HostConfig{LoadPerCoreMax: 1.5, PackageTempMaxC: 90, OverloadPerCore: 1, CPUSomeAvg60Max: 25, QuietFraction: 0.8, StarveAfter: 15 * time.Minute}) {
+	if got := cfg.Host.Effective(); got != (HostConfig{LoadPerCoreMax: 1.5, PackageTempMaxC: 90, OverloadPerCore: 1, CPUSomeAvg60Max: 25, CPUPressureMinLoadPerCore: DefaultCPUPressureMinLoadPerCore, QuietFraction: 0.8, StarveAfter: 15 * time.Minute}) {
 		t.Fatalf("no host: section, defaults %+v, want 1.5/90/1", got)
 	}
 
@@ -339,7 +339,7 @@ func TestLoadConfigHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Host.Effective(); got != (HostConfig{LoadPerCoreMax: 2, PackageTempMaxC: 85, OverloadPerCore: 1, CPUSomeAvg60Max: 25, QuietFraction: 0.8, StarveAfter: 15 * time.Minute}) {
+	if got := cfg.Host.Effective(); got != (HostConfig{LoadPerCoreMax: 2, PackageTempMaxC: 85, OverloadPerCore: 1, CPUSomeAvg60Max: 25, CPUPressureMinLoadPerCore: DefaultCPUPressureMinLoadPerCore, QuietFraction: 0.8, StarveAfter: 15 * time.Minute}) {
 		t.Fatalf("host: {2, 85} loaded as %+v, want 2/85/1", got)
 	}
 
@@ -348,7 +348,7 @@ func TestLoadConfigHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Host.Effective(); got != (HostConfig{LoadPerCoreMax: 1.5, PackageTempMaxC: 90, OverloadPerCore: 1.2, CPUSomeAvg60Max: 25, QuietFraction: 0.8, OverloadCPUSomeAvg60: 70, StarveAfter: 10 * time.Minute}) {
+	if got := cfg.Host.Effective(); got != (HostConfig{LoadPerCoreMax: 1.5, PackageTempMaxC: 90, OverloadPerCore: 1.2, CPUSomeAvg60Max: 25, CPUPressureMinLoadPerCore: DefaultCPUPressureMinLoadPerCore, QuietFraction: 0.8, OverloadCPUSomeAvg60: 70, StarveAfter: 10 * time.Minute}) {
 		t.Fatalf("host: {overload_per_core: 1.2, overload_cpu_some_avg60: 70} loaded as %+v", got)
 	}
 

@@ -209,6 +209,11 @@ func TestMachineReadingHot(t *testing.T) {
 		{"load over threshold", MachineReading{Load1: 55, CPUs: 18}, defaults, true, "host hot: load 55/18 cores"},
 		{"temp over threshold", MachineReading{Load1: 9, CPUs: 18, PackageTempC: 101, HasTemp: true}, defaults, true, "host hot: 101°C"},
 		{"quiet", MachineReading{Load1: 9, CPUs: 18, PackageTempC: 70, HasTemp: true}, defaults, false, ""},
+		{"pressure with busy cores", MachineReading{Load1: 60, CPUs: 96, SliceCPUSomeAvg60: 40, HasSliceCPUPressure: true}, defaults, true, "host hot: cpu pressure 40%/25%"},
+		// dl360, 2026-10-28: one sidecar throttled at its 2-CPU quota,
+		// pressure 71% with load 0.3 on 96 cores
+		{"pressure from quota throttling on idle cores", MachineReading{Load1: 0.3, CPUs: 96, SliceCPUSomeAvg60: 71, HasSliceCPUPressure: true}, defaults, false, ""},
+		{"pressure under a raised load floor", MachineReading{Load1: 60, CPUs: 96, SliceCPUSomeAvg60: 40, HasSliceCPUPressure: true}, HostConfig{CPUPressureMinLoadPerCore: 0.8}.Effective(), false, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hot, reason := tc.m.Hot(tc.h, false)
