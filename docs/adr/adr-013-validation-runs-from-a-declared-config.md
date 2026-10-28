@@ -162,6 +162,48 @@ This repository's `.runsheet/validate.yml` is `suites:`, `vet` kind
 `lint`, `build` kind `build`, `unit` kind `unit`, keeping `always`,
 `timeout` and `results`.
 
+## Amended 2026-10-28: groups and shards run at once
+
+runsheet's `integration` suite (`go test ./e2e`, 682 tests) takes about
+40 minutes as one step, while dl360's 96 cores sit at a load of 12–19:
+a validation's suites ran one after another in one pod, and a suite was
+one command. Two keys, both the platform's to read and neither hashed
+(where a suite runs is not what it runs):
+
+**`group:`** is runsheet ADR 061 §6's suite group. Suites of one group
+run one after another in one pod, the first failing one stopping its
+group; each group runs beside the others. Empty is the default group.
+
+**`shards: N`** (1 to 32) runs N copies of the suite's command at once,
+each with `MESH_SHARD_INDEX` (0-based) and `MESH_SHARD_TOTAL` exported
+before it. The command picks its own slice, so any language shards:
+
+| Runner | Command |
+|---|---|
+| Jest, Vitest, Playwright | `npx vitest run --shard=$((MESH_SHARD_INDEX+1))/$MESH_SHARD_TOTAL` |
+| go test | a list cut by the index, e.g. runsheet's `RUNSHEET_E2E_SHARD=$((MESH_SHARD_INDEX+1))/$MESH_SHARD_TOTAL go test ./e2e` (a plan over measured durations), or `go test -list` hashed into `-run` |
+| pytest | `pytest --splits $MESH_SHARD_TOTAL --group $((MESH_SHARD_INDEX+1))` (pytest-split) |
+
+A shard that writes its results to a file names `{shard}` in the path
+(`results: go-test-json:e2e-{shard}.json`), which each shard reads as
+its own index.
+
+**Each group and each shard is a lane** (`validate.LaneRunner`): the
+first runs in the validation's own pod, every other in a session of its
+own with the checkout's own services (`OpenSessionPod`) — its own
+Postgres, never one shared by every shard — removed when the lane ends.
+A lane whose required service did not start is the lane failing, never
+a shard run without its database. A runner that cannot make lanes (the
+host runner) runs everything in the file's order, a sharded suite's
+shards one after another, as before.
+
+**A sharded suite is one result.** It fails when a shard does (the
+first failing shard's exit and environment kind), its duration is the
+longest shard's, its tests and reports the shards' sums, and its output
+a line per shard and then the failing shard's output. node.log has a
+line per shard (`validation step <suite> shard i/n exited …`). The
+attestation's shape is unchanged.
+
 ## Consequences
 
 - `internal/validate`'s `Attestation`/`StepResult` json shape is

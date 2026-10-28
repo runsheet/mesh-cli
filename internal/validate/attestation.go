@@ -34,6 +34,9 @@ type StepResult struct {
 	// stdout and stderr, redacted, for the node's log; never part of the
 	// signed attestation (Output carries its share there).
 	Tail string `json:"-"`
+	// Shards are a sharded step's shards' own results, for the node's
+	// log; the attestation carries the merged step alone.
+	Shards []ShardResult `json:"-"`
 }
 
 // Artifact is one digested file a step named on Step.Artifacts.

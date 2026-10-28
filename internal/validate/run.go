@@ -2,14 +2,18 @@ package validate
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -139,73 +143,279 @@ func lastLines(s string, n, max int) string {
 	return out
 }
 
-// Run runs each step through runner in order, recording a StepResult for
-// each. The first step whose command errors or exits non-zero stops the
-// run (its result is still recorded) unless opts.ContinueOnFailure.
+// LaneRunner is a Runner that can make another runner beside itself:
+// a pod of its own, with its own services, for a group or a shard to run
+// in while the others run (Run). release removes it.
+type LaneRunner interface {
+	Runner
+	Lane(ctx context.Context, name string) (r Runner, release func(), err error)
+}
+
+// unit is one command Run runs: a step, or one shard of it.
+type unit struct {
+	step  int
+	shard int
+	total int
+}
+
+// ran is what one unit's command did.
+type ran struct {
+	stdout, stderr bytes.Buffer
+	exitCode       int
+	runErr         error
+	duration       time.Duration
+}
+
+// lane is the units that run one after another in one runner.
+type lane struct {
+	name  string
+	units []unit
+}
+
+// lanes is the steps cut into lanes: one per group, in the order the
+// groups first appear, and one per shard of each sharded step. The
+// groups are the platform's (validatespec.Spec.Groups): with no step
+// naming a group every step is in one, "validate"; once one does, a step
+// naming none is in the group of its kind. Without a LaneRunner (split
+// false) every unit is in one lane, in the file's order, shards one
+// after another.
+func lanes(steps []Step, split bool) []lane {
+	var out []lane
+	at := map[string]int{}
+	grouped := slices.ContainsFunc(steps, func(st Step) bool { return st.Group != "" })
+	for i, st := range steps {
+		n := max(st.Shards, 1)
+		if !split {
+			if len(out) == 0 {
+				out = append(out, lane{})
+			}
+			for k := range n {
+				out[0].units = append(out[0].units, unit{step: i, shard: k, total: n})
+			}
+			continue
+		}
+		if n > 1 {
+			for k := range n {
+				out = append(out, lane{name: fmt.Sprintf("%s-%d", st.Name, k), units: []unit{{step: i, shard: k, total: n}}})
+			}
+			continue
+		}
+		name := "validate"
+		switch {
+		case st.Group != "":
+			name = st.Group
+		case grouped:
+			name = cmp.Or(string(st.Kind), "validate")
+		}
+		j, ok := at[name]
+		if !ok {
+			j = len(out)
+			at[name] = j
+			out = append(out, lane{name: name})
+		}
+		out[j].units = append(out[j].units, unit{step: i, total: 1})
+	}
+	return out
+}
+
+// shardCommand is a shard's command: its index and the shard count
+// exported before it.
+func shardCommand(cmd string, u unit) string {
+	if u.total <= 1 {
+		return cmd
+	}
+	return fmt.Sprintf("export %s=%d %s=%d; %s", ShardIndexEnv, u.shard, ShardTotalEnv, u.total, cmd)
+}
+
+// Run runs the steps through runner, recording a StepResult for each in
+// the steps' order. Steps of one group run one after another, the first
+// one failing (its command erring or exiting non-zero) stopping its
+// group unless opts.ContinueOnFailure; when runner is a LaneRunner each
+// group, and each shard of a step declaring shards, runs beside the
+// others in a lane of its own (LaneRunner.Lane), the first in runner
+// itself. Otherwise every step runs in runner in the file's order, a
+// sharded step's shards one after another, as before groups and shards.
+// A sharded step is one StepResult: it fails when a shard does, its
+// duration the longest shard's (the wall), its tests the shards' sum,
+// its output each shard's line and then a failing shard's output.
 // A failing step carries its EnvironmentKind (EnvironmentKindOf of its
-// exit and the runner's error), and the runner's error is returned
-// classified (Classify).
-// Each step's report is cut to what is left of reportCap after the
-// steps before it.
+// exit and the runner's error), and a runner's error is returned
+// classified (Classify). Each step's report is cut to what is left of
+// reportCap after the steps before it.
 func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]StepResult, error) {
-	results := make([]StepResult, 0, len(steps))
-	room := reportCap
-	for _, step := range steps {
-		var stdout, stderr bytes.Buffer
-		start := time.Now()
-		exitCode, runErr := runner.Run(ctx, step.Command, step.Timeout, &stdout, &stderr)
-		duration := time.Since(start)
-
-		artifacts, err := digestArtifacts(opts.Dir, step.Artifacts)
-		if err != nil {
-			return results, err
-		}
-		run, passed, failed, report, err := parseResults(opts.Dir, step, stdout.Bytes())
-		if err != nil {
-			return results, err
-		}
-		if len(report) > room {
-			report = report[:room]
-		}
-		room -= len(report)
-
-		sr := StepResult{
-			Name:        step.Name,
-			Command:     step.Command,
-			ExitCode:    exitCode,
-			DurationMs:  duration.Milliseconds(),
-			TestsRun:    run,
-			TestsPassed: passed,
-			TestsFailed: failed,
-			Output:      "",
-			Report:      report,
-			TimedOut:    exitCode == 124,
-			Artifacts:   artifacts,
-		}
-		combined := RedactTokens(stdout.String() + stderr.String())
-		if opts.Redact != nil {
-			combined = opts.Redact(combined)
-		}
-		failing := exitCode != 0 || runErr != nil
-		if failing {
-			sr.Output = failTail(combined)
-			sr.Tail = failureTail(combined)
-		} else {
-			sr.Output = headTail(combined)
-		}
-		if failing {
-			sr.EnvironmentKind = EnvironmentKindOf(sr, runErr)
-		}
-		results = append(results, sr)
-
-		if runErr != nil {
-			return results, Classify(runErr)
-		}
-		if exitCode != 0 && !opts.ContinueOnFailure {
-			return results, nil
+	lr, split := runner.(LaneRunner)
+	ls := lanes(steps, split)
+	if len(ls) <= 1 {
+		split = false
+	}
+	done := make(map[unit]*ran)
+	var mu sync.Mutex
+	var laneErr error
+	runLane := func(r Runner, l lane) {
+		for _, u := range l.units {
+			st := steps[u.step]
+			out := &ran{}
+			start := time.Now()
+			out.exitCode, out.runErr = r.Run(ctx, shardCommand(st.Command, u), st.Timeout, &out.stdout, &out.stderr)
+			out.duration = time.Since(start)
+			mu.Lock()
+			done[u] = out
+			mu.Unlock()
+			if out.runErr != nil || (out.exitCode != 0 && !opts.ContinueOnFailure) {
+				return
+			}
 		}
 	}
+	if split {
+		var wg sync.WaitGroup
+		for i, l := range ls {
+			wg.Add(1)
+			go func(i int, l lane) {
+				defer wg.Done()
+				if i == 0 {
+					runLane(runner, l)
+					return
+				}
+				r, release, err := lr.Lane(ctx, l.name)
+				if err != nil {
+					mu.Lock()
+					laneErr = cmp.Or(laneErr, fmt.Errorf("lane %s: %w", l.name, err))
+					mu.Unlock()
+					return
+				}
+				defer release()
+				runLane(r, l)
+			}(i, l)
+		}
+		wg.Wait()
+	} else if len(ls) == 1 {
+		// one lane: the first failure stops the whole run, as before
+		runLane(runner, ls[0])
+	}
+
+	results := make([]StepResult, 0, len(steps))
+	room := reportCap
+	var runErr error
+	for i, st := range steps {
+		n := max(st.Shards, 1)
+		var shards []ShardResult
+		for k := range n {
+			out, ok := done[unit{step: i, shard: k, total: n}]
+			if !ok {
+				continue
+			}
+			sh := st
+			if n > 1 {
+				sh = st.shard(k)
+			}
+			artifacts, err := digestArtifacts(opts.Dir, st.Artifacts)
+			if err != nil {
+				return results, err
+			}
+			run, passed, failed, report, err := parseResults(opts.Dir, sh, out.stdout.Bytes())
+			if err != nil {
+				return results, err
+			}
+			sr := StepResult{
+				Name:        st.Name,
+				Command:     st.Command,
+				ExitCode:    out.exitCode,
+				DurationMs:  out.duration.Milliseconds(),
+				TestsRun:    run,
+				TestsPassed: passed,
+				TestsFailed: failed,
+				Report:      report,
+				TimedOut:    out.exitCode == 124,
+				Artifacts:   artifacts,
+			}
+			combined := RedactTokens(out.stdout.String() + out.stderr.String())
+			if opts.Redact != nil {
+				combined = opts.Redact(combined)
+			}
+			if out.exitCode != 0 || out.runErr != nil {
+				sr.Output = failTail(combined)
+				sr.Tail = failureTail(combined)
+				sr.EnvironmentKind = EnvironmentKindOf(sr, out.runErr)
+			} else {
+				sr.Output = headTail(combined)
+			}
+			if out.runErr != nil && runErr == nil {
+				runErr = Classify(out.runErr)
+			}
+			shards = append(shards, ShardResult{Index: k, Total: n, StepResult: sr})
+		}
+		if len(shards) == 0 {
+			continue
+		}
+		sr := merge(shards, split)
+		if len(sr.Report) > room {
+			sr.Report = sr.Report[:room]
+		}
+		room -= len(sr.Report)
+		results = append(results, sr)
+	}
+	if runErr != nil {
+		return results, runErr
+	}
+	if laneErr != nil {
+		return results, Classify(laneErr)
+	}
 	return results, nil
+}
+
+// ShardResult is one shard's result, kept on its step's StepResult for
+// the node's log (StepResult.Shards); the attestation carries the merged
+// step alone.
+type ShardResult struct {
+	Index int
+	Total int
+	StepResult
+}
+
+// merge is a step's one StepResult from its shards' (one, for a step
+// with no shards): the first failing shard's exit, environment kind and
+// output after a line per shard; the wall (the longest shard when they
+// ran at once, else their sum); the tests and reports summed in shard
+// order.
+func merge(shards []ShardResult, concurrent bool) StepResult {
+	if len(shards) == 1 && shards[0].Total <= 1 {
+		return shards[0].StepResult
+	}
+	out := StepResult{Name: shards[0].Name, Command: shards[0].Command, Artifacts: shards[0].Artifacts, Shards: shards}
+	var lines, report strings.Builder
+	failed := -1
+	for i, s := range shards {
+		fmt.Fprintf(&lines, "shard %d/%d: exit %d in %dms, %d tests (%d failed)\n", s.Index+1, s.Total, s.ExitCode, s.DurationMs, s.TestsRun, s.TestsFailed)
+		if concurrent {
+			out.DurationMs = max(out.DurationMs, s.DurationMs)
+		} else {
+			out.DurationMs += s.DurationMs
+		}
+		out.TestsRun += s.TestsRun
+		out.TestsPassed += s.TestsPassed
+		out.TestsFailed += s.TestsFailed
+		out.TimedOut = out.TimedOut || s.TimedOut
+		report.WriteString(s.Report)
+		if s.ExitCode != 0 && failed < 0 {
+			failed = i
+		}
+	}
+	out.Report = report.String()
+	if len(shards) < shards[0].Total && failed < 0 {
+		// a shard that never ran (its lane did not open) is no pass
+		out.ExitCode = -1
+	}
+	if failed >= 0 {
+		f := shards[failed]
+		// a failing shard's tail is the step's: what the node logs
+		out.ExitCode, out.EnvironmentKind, out.Tail = f.ExitCode, f.EnvironmentKind, f.Tail
+		lines.WriteString(fmt.Sprintf("shard %d/%d failed:\n", f.Index+1, f.Total))
+		lines.WriteString(f.Output)
+		out.Output = failTail(lines.String())
+		return out
+	}
+	out.Output = headTail(lines.String())
+	return out
 }
 
 // reportCap is the most of a run's raw reports kept on its StepResults,
