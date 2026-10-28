@@ -31,7 +31,7 @@ import (
 // work already built and attested.
 
 // MainValidationRunAfter is how long the platform lets a claimed batch
-// validation run before its timer fails it (runsheet
+// validation that names no budget run before its timer fails it (runsheet
 // platform/aggregates/workitem_mainvalidation.go MainValidationRunAfter,
 // mergebatch_validation.go MarkMergeBatchValidationStalled): a run still
 // going then is stopped here and its slot freed. The platform's
@@ -40,6 +40,18 @@ import (
 // mirroring that one here stopped runsheet's own twelve-minute suites
 // at ten (dl360, 2026-10-14: batches 33, 35, 36 abandoned).
 var MainValidationRunAfter = 60 * time.Minute
+
+// runWindow is a claimed run's window: the budget the platform served
+// with it (budgetSeconds, the repo's validate.yml budget), else
+// MainValidationRunAfter — the platform's MainValidationRunWindow. A
+// constant hour stopped runsheet's 80-minute suite at 60 (#5637,
+// 2026-10-28).
+func runWindow(budgetSeconds int64) time.Duration {
+	if budgetSeconds > 0 {
+		return time.Duration(budgetSeconds) * time.Second
+	}
+	return MainValidationRunAfter
+}
 
 // DefaultBatchCheckEvery is how often a running batch validation reads
 // mainValidations back to see its claim is still the node's.
@@ -108,7 +120,9 @@ func pullRequestLabel(p gateway.MainValidationPullRequest) string {
 type mainJob struct {
 	id, label, claimed string
 	// kind is what the job validates
-	kind   jobKind
+	kind jobKind
+	// window is how long the claimed run may take (runWindow)
+	window time.Duration
 	run    func(ctx context.Context) (validate.Attestation, error)
 	claim  func(ctx context.Context) error
 	finish func(ctx context.Context, att validate.Attestation) error
@@ -117,7 +131,7 @@ type mainJob struct {
 
 func batchJob(l *Loop, gw mainValidationGateway, b gateway.MainValidationBatch, nodeID string) mainJob {
 	return mainJob{
-		id: b.MergeBatchID, label: batchLabel(b), kind: jobCandidate,
+		id: b.MergeBatchID, label: batchLabel(b), kind: jobCandidate, window: runWindow(b.BudgetSeconds),
 		claimed: fmt.Sprintf("claimed candidate %s@%s", b.CandidateBranch, short(b.SHA)),
 		run:     func(ctx context.Context) (validate.Attestation, error) { return l.ValidateBatch(ctx, b) },
 		claim: func(ctx context.Context) error {
@@ -135,7 +149,7 @@ func batchJob(l *Loop, gw mainValidationGateway, b gateway.MainValidationBatch, 
 
 func requestJob(l *Loop, gw mainValidationGateway, r gateway.MainValidationRequest, nodeID string) mainJob {
 	return mainJob{
-		id: r.WorkItemID, label: mainRequestLabel(r), claimed: "claimed", kind: jobMain,
+		id: r.WorkItemID, label: mainRequestLabel(r), claimed: "claimed", kind: jobMain, window: runWindow(r.BudgetSeconds),
 		run: func(ctx context.Context) (validate.Attestation, error) { return l.ValidateMain(ctx, r) },
 		claim: func(ctx context.Context) error {
 			return gw.ClaimWorkItemMainValidation(ctx, r.WorkItemID, nodeID, validationHarness)
@@ -161,7 +175,7 @@ func pullRequestJob(l *Loop, gw mainValidationGateway, pgw pullRequestValidation
 		claimed = fmt.Sprintf("claimed head %s (%s)", p.HeadBranch, p.Ref)
 	}
 	return mainJob{
-		id: id, label: pullRequestLabel(p), claimed: claimed, kind: jobPullRequest,
+		id: id, label: pullRequestLabel(p), claimed: claimed, kind: jobPullRequest, window: runWindow(p.BudgetSeconds),
 		run: func(ctx context.Context) (validate.Attestation, error) { return l.ValidatePullRequest(ctx, p) },
 		claim: func(ctx context.Context) error {
 			return pgw.ClaimPullRequestValidation(ctx, id, nodeID, validationHarness)
@@ -443,12 +457,16 @@ func (l *Loop) startMainJob(ctx context.Context, j mainJob) bool {
 // runMainJob validates j under its claim and ends the claim: finished
 // on the attested sha whatever the attestation's colour, failed with
 // the reason on anything else. A claim the platform refuses again
-// (watchMainClaim) stops the run and sends nothing; a run past
-// MainValidationRunAfter is stopped and failed.
+// (watchMainClaim) stops the run and sends nothing; a run past its
+// window (the claim's budget, runWindow) is stopped and failed.
 func (l *Loop) runMainJob(ctx context.Context, j mainJob) {
 	lost, stop := context.WithCancelCause(ctx)
 	defer stop(nil)
-	rctx, cancel := context.WithTimeoutCause(lost, MainValidationRunAfter, errBatchOverrun)
+	window := j.window
+	if window <= 0 {
+		window = MainValidationRunAfter
+	}
+	rctx, cancel := context.WithTimeoutCause(lost, window, errBatchOverrun)
 	defer cancel()
 	done := make(chan struct{})
 	defer close(done)
@@ -463,7 +481,7 @@ func (l *Loop) runMainJob(ctx context.Context, j mainJob) {
 			l.logf("%s: stopped: %v", j.label, cause)
 			return
 		}
-		reason := fmt.Sprintf("ran past %s, the platform's run limit; stopped", MainValidationRunAfter)
+		reason := fmt.Sprintf("ran past %s, the platform's run limit; stopped", window)
 		l.logf("%s: stopped: %s", j.label, reason)
 		l.failMainJob(context.WithoutCancel(ctx), j, reason)
 		return
