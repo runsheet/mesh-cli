@@ -46,9 +46,12 @@ func TestAJobWorkspaceUnderTheReposRootIsRemovable(t *testing.T) {
 	if err := g.RemoveWorkspace(context.Background(), shared); err == nil {
 		t.Fatal("removed a shared clone under the repos root")
 	}
-	for _, dir := range []string{jobs, filepath.Dir(clone)} {
+	for _, dir := range []string{"/home/mesh/.mesh/jobs", "/home/mesh/.mesh/jobs/0c1f0f34-fd14-562b-80d1-7961612fe78f", "/home/mesh/repos/acme/widgets"} {
 		if inJobWorkspace(dir) {
 			t.Fatalf("%s counts as a job's workspace", dir)
 		}
+	}
+	if !inJobWorkspace("/home/mesh/.mesh/jobs/0c1f0f34-fd14-562b-80d1-7961612fe78f/pr-1") {
+		t.Fatal("a job's pr-1 is not its workspace")
 	}
 }

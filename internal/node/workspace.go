@@ -631,12 +631,14 @@ func (g *Git) RemoveWorkspace(ctx context.Context, dir string) error {
 	// defaults to the node's home, which holds .mesh/jobs, so the guard
 	// below refused every job workspace (dl360, 2026-10-28: 539 refusals,
 	// and the next claim of each job failed at its fetch)
-	inJob := inJobWorkspace(dir)
 	reposRoot := ""
-	if !inJob {
-		if r := g.reposRootFor(dir); r != "" {
-			reposRoot, _ = filepath.Abs(r)
-		}
+	if r := g.reposRootFor(dir); r != "" {
+		reposRoot, _ = filepath.Abs(r)
+	}
+	if job, ok := jobWorkspaceRoot(dir); ok && (reposRoot == "" || !pathWithin(job, reposRoot)) {
+		// the job's own: a repos root inside the job (a test run in a
+		// job's scratch) still guards what is beneath it
+		reposRoot = ""
 	}
 	if rel, err := filepath.Rel(reposRoot, dir); reposRoot != "" && err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("remove workspace %s: under the repos root %s; a shared clone is never removed", dir, reposRoot)
@@ -674,23 +676,36 @@ func (g *Git) RemoveWorkspace(ctx context.Context, dir string) error {
 	return nil
 }
 
-// inJobWorkspace is whether dir lies inside a job's directory, at least
-// one level below <jobs>/<job> — a workspace the job owns — whether or
-// not the job's meta can still be read (a cancelled run's may be gone).
-// The jobs dir and a job's own root are never one.
-func inJobWorkspace(dir string) bool {
+// jobWorkspaceRoot is the job dir (<jobs>/<job>) dir lies inside, at
+// least one level below it — a workspace the job owns — whether or not
+// the job's meta can still be read (a cancelled run's may be gone); ok
+// is false for the jobs dir, a job's own root and anything outside.
+func jobWorkspaceRoot(dir string) (string, bool) {
 	dir = filepath.Clean(dir)
 	depth := 0
 	for p := dir; ; depth++ {
 		parent := filepath.Dir(p)
 		if parent == p {
-			return false
+			return "", false
 		}
 		if filepath.Base(parent) == JobsDirName {
-			return depth >= 1
+			return p, depth >= 1
 		}
 		p = parent
 	}
+}
+
+// inJobWorkspace is whether dir is a job's own workspace
+// (jobWorkspaceRoot).
+func inJobWorkspace(dir string) bool {
+	_, ok := jobWorkspaceRoot(dir)
+	return ok
+}
+
+// pathWithin is whether path is root or beneath it.
+func pathWithin(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // removeWorktree unlocks the worktree at dir, runs `git worktree remove
