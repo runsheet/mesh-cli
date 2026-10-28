@@ -187,10 +187,11 @@ func (b *CPUBudget) committedLocked() float64 {
 	return n
 }
 
-// Fits says whether a new job estimated at est CPUs may be claimed: no
-// pod waits for room, and est fits beside what is committed — or nothing
-// is committed at all, so a job bigger than the whole budget still
-// runs, alone.
+// Fits says whether a new job estimated at est CPUs may be claimed: est
+// fits beside what is committed — the open pods, the running jobs' holds
+// not yet started and the claimed sessions' pods not yet open — or
+// nothing is committed at all, so a job bigger than the whole budget
+// still runs, alone.
 func (b *CPUBudget) Fits(est float64) bool {
 	if b == nil {
 		return true
@@ -204,9 +205,10 @@ func (b *CPUBudget) fitsLocked(est float64) bool {
 	if b.total <= 0 {
 		return true
 	}
-	if len(b.queue) > 0 {
-		return false
-	}
+	// a waiting pod alone holds no claim back: what is committed is the
+	// open pods, the running jobs' holds not yet started and the claimed
+	// sessions' pods not yet open (dl360, v0.2.633: one validation's
+	// waiting shards stalled every claim for 30 minutes)
 	c := b.committedLocked()
 	return c <= cpuEps || c+est <= b.total+cpuEps
 }
@@ -297,12 +299,15 @@ func (b *CPUBudget) Job(name, repo string, est float64) *CPUJob {
 	defer b.mu.Unlock()
 	j := &CPUJob{b: b, name: name, repo: repo}
 	c := b.committedLocked()
+	// a hold is never above the budget: a job bigger than it holds the
+	// whole budget, which still keeps every other claim off (alone)
 	switch {
 	case c <= cpuEps:
 		j.hold = est
 	default:
 		j.hold = math.Max(math.Min(est, b.total-c), 0)
 	}
+	j.hold = math.Min(j.hold, b.total)
 	if b.jobs == nil {
 		b.jobs = map[*CPUJob]struct{}{}
 	}
@@ -368,20 +373,21 @@ func (j *CPUJob) Estimate(cpus float64) {
 	}
 	others := b.committedLocked() - j.committed()
 	if others <= cpuEps {
-		j.hold = cpus
+		j.hold = math.Min(cpus, b.total)
 		return
 	}
 	j.hold = math.Max(j.hold, math.Min(cpus, b.total-others))
 }
 
 // Pod reserves cpus for one of the job's pods, waiting while they do not
-// fit: within the job's hold, they fit while every pod's CPUs stay within
-// the budget; past it, in turn with the other requests past their holds,
-// once what is committed leaves room. A pod fits whatever its size when
-// no pod is open at all, and — so sessions waiting on their validations'
-// shards cannot hold the node forever — the first request in turn fits
-// once it has waited CPUValveAfter with no job's pod open. The func
-// gives the CPUs back, once; the error is ctx's.
+// fit: a pod starts whenever what the open pods reserve, and it, stay
+// within the budget — holds weigh claims, never a pod — so a
+// validation's shards start in waves as room comes. A pod fits whatever
+// its size when no pod is open at all, and — so sessions waiting on
+// their validations' shards cannot hold the node forever — the first
+// waiter fits once it has waited CPUValveAfter with no job's pod open.
+// Every start wakes the other waiters. The func gives the CPUs back,
+// once; the error is ctx's.
 func (j *CPUJob) Pod(ctx context.Context, cpus float64) (func(), error) {
 	if j == nil || cpus <= 0 {
 		return func() {}, nil
@@ -395,6 +401,8 @@ func (j *CPUJob) Pod(ctx context.Context, cpus float64) (func(), error) {
 		if ok {
 			if w != nil {
 				b.dequeueLocked(w)
+				// the next waiter looks again: it may fit too
+				b.broadcastLocked()
 			}
 			j.pods += cpus
 			j.npods++
@@ -416,7 +424,7 @@ func (j *CPUJob) Pod(ctx context.Context, cpus float64) (func(), error) {
 				})
 			}, nil
 		}
-		if w == nil && j.pods+cpus > j.hold+cpuEps {
+		if w == nil {
 			w = &cpuWaiter{cpus: cpus, since: b.now()}
 			b.queue = append(b.queue, w)
 		}
@@ -459,18 +467,14 @@ func (j *CPUJob) fitsLocked(cpus float64, w *cpuWaiter) (ok, valve bool) {
 	if b.total <= 0 || inUse <= cpuEps {
 		return true, false
 	}
-	if j.pods+cpus <= j.hold+cpuEps {
-		return inUse+cpus <= b.total+cpuEps, false
-	}
-	first := len(b.queue) == 0 || (w != nil && b.queue[0] == w)
-	if !first {
-		return false, false
-	}
-	after := b.committedLocked() - j.committed() + math.Max(j.hold, j.pods+cpus)
-	if after <= b.total+cpuEps && inUse+cpus <= b.total+cpuEps {
+	// a pod starts whenever what the open pods reserve leaves room for
+	// it: holds weigh claims, never a pod (dl360, v0.2.633: shards waited
+	// on committed holds with 256 of 320 cpus free)
+	if inUse+cpus <= b.total+cpuEps {
 		return true, false
 	}
-	if w != nil && b.now().Sub(w.since) >= CPUValveAfter && b.jobPodsLocked() <= cpuEps {
+	first := len(b.queue) == 0 || (w != nil && b.queue[0] == w)
+	if first && w != nil && b.now().Sub(w.since) >= CPUValveAfter && b.jobPodsLocked() <= cpuEps {
 		return true, true
 	}
 	return false, false
