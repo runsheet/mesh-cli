@@ -306,3 +306,37 @@ func TestBatchOverrunIsStoppedAndFailed(t *testing.T) {
 		t.Errorf("Running() = %d after the overrun", loop.Running())
 	}
 }
+
+// A run's window is the budget its claim names, not the default hour:
+// runsheet's 80-minute suite was stopped at 60 (#5637, 2026-10-28). A
+// run past the default but inside its budget finishes; the default
+// holds only for a claim that names none.
+func TestARunsWindowIsItsClaimsBudget(t *testing.T) {
+	if got := runWindow(4800); got != 80*time.Minute {
+		t.Fatalf("runWindow(4800) = %s, want 80m", got)
+	}
+	if got := runWindow(0); got != MainValidationRunAfter {
+		t.Fatalf("runWindow(0) = %s, want the default %s", got, MainValidationRunAfter)
+	}
+	old := MainValidationRunAfter
+	MainValidationRunAfter = 50 * time.Millisecond
+	t.Cleanup(func() { MainValidationRunAfter = old })
+	loop, f, _, logs := batchLoop(t, oneStepYML("true"), 1)
+	row := f.MergeBatches[batchID]
+	row["budgetSeconds"] = 30
+	release := make(chan struct{})
+	started := make(chan string, 1)
+	loop.ValidateBatch = blockingBatch(started, release)
+	go func() {
+		<-started
+		time.Sleep(300 * time.Millisecond) // past the default, inside the budget
+		close(release)
+	}()
+	tick(loop)
+	if fails := f.CallsNamed("failMergeBatchValidation"); len(fails) != 0 {
+		t.Fatalf("stopped inside its budget: %+v\n%s", fails, logs.String())
+	}
+	if strings.Contains(logs.String(), "ran past") {
+		t.Fatalf("an overrun inside the budget:\n%s", logs.String())
+	}
+}

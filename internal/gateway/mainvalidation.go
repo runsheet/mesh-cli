@@ -29,6 +29,10 @@ type MainValidationBatch struct {
 	OrgID           string    `json:"orgId"`
 	DefaultBranch   string    `json:"defaultBranch"`
 	RequestedAt     time.Time `json:"requestedAt"`
+	// BudgetSeconds is how long the platform lets the claimed run take
+	// before its timer fails it: the repo's validate.yml budget, or the
+	// platform's 3600 for none.
+	BudgetSeconds int64 `json:"budgetSeconds"`
 }
 
 // MainValidationRequest is one merged item's merge commit waiting on a
@@ -45,6 +49,8 @@ type MainValidationRequest struct {
 	OrgID         string    `json:"orgId"`
 	DefaultBranch string    `json:"defaultBranch"`
 	RequestedAt   time.Time `json:"requestedAt"`
+	// BudgetSeconds is the claimed run's window, as a batch's.
+	BudgetSeconds int64 `json:"budgetSeconds"`
 }
 
 // MainValidationPullRequest is one pull request a person opened by hand
