@@ -313,6 +313,9 @@ type Loop struct {
 	// for a merged item's, workItemId: each a session against the
 	// capacity (Running).
 	validating map[string]bool
+	// validatingUntil is when each of validating's runs reaches the end
+	// of its window (runWindow): what a self-update waits for
+	validatingUntil map[string]time.Time
 	// sessionOrg is the org each build, plan and research session counts
 	// toward, by subject (item, goal or direction id): heldByOrg's count
 	// against the org's floor (ADR-023).

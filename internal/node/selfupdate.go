@@ -319,12 +319,37 @@ func (l *Loop) desiredVersion(ctx context.Context) (string, bool) {
 	return "", ok
 }
 
-// updateValidationWait bounds how long a verified update waits for the
+// updateValidationWait caps how long a verified update waits for the
 // node's running validations before it swaps: a validation runs in the
 // node's own process, so unlike a session it does not outlive the node,
 // and one cut short is abandoned (batch #262 died mid-materialise when
-// dl360 updated, 2026-10-27 20:21:58Z). Past it the update swaps anyway.
-var updateValidationWait = 30 * time.Minute
+// dl360 updated, 2026-10-27 20:21:58Z). The wait is the running
+// validations' own windows — each claim's budget (runWindow), the
+// longest left plus updateValidationGrace — up to this cap: a flat 30
+// minutes cut runsheet's 80-minute validations short at 49 (dl360,
+// 2026-10-28 06:48Z). Past it the update swaps anyway.
+var updateValidationWait = 90 * time.Minute
+
+// updateValidationGrace is the time past a validation's window the
+// update still waits: the run's own stop and its hand-in.
+const updateValidationGrace = 2 * time.Minute
+
+// validationWaitFor is how long an update waits at now for the running
+// validations: the longest window still left among them plus
+// updateValidationGrace, at most updateValidationWait.
+func (l *Loop) validationWaitFor(now time.Time) time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var left time.Duration
+	for id := range l.validating {
+		until, ok := l.validatingUntil[id]
+		if !ok {
+			until = now.Add(MainValidationRunAfter)
+		}
+		left = max(left, until.Sub(now))
+	}
+	return min(max(left, 0)+updateValidationGrace, updateValidationWait)
+}
 
 // holdingValidations is whether an update is waiting out the running
 // validations: no new one is claimed meanwhile.
@@ -334,8 +359,8 @@ func (l *Loop) holdingValidations() bool {
 	return l.validationHold
 }
 
-// waitValidations holds new validations and waits, up to
-// updateValidationWait, for the running ones to end. It answers false
+// waitValidations holds new validations and waits, for as long as their
+// windows have left (validationWaitFor), for the running ones to end. It answers false
 // when ctx ends first: the node is stopping.
 func (l *Loop) waitValidations(ctx context.Context, to string) bool {
 	n := l.Validating()
@@ -350,8 +375,9 @@ func (l *Loop) waitValidations(ctx context.Context, to string) bool {
 		l.validationHold = false
 		l.mu.Unlock()
 	}()
-	l.logf("self-update: %s verified; waiting up to %s for %d running validation(s) to finish first — a validation does not outlive the node — and claiming no new one", to, updateValidationWait, n)
-	deadline := time.NewTimer(updateValidationWait)
+	wait := l.validationWaitFor(l.now())
+	l.logf("self-update: %s verified; waiting up to %s — the running validations' windows — for %d running validation(s) to finish first (a validation does not outlive the node), and claiming no new one", to, wait.Round(time.Second), n)
+	deadline := time.NewTimer(wait)
 	defer deadline.Stop()
 	t := time.NewTicker(drainPoll)
 	defer t.Stop()
@@ -360,7 +386,7 @@ func (l *Loop) waitValidations(ctx context.Context, to string) bool {
 		case <-ctx.Done():
 			return false
 		case <-deadline.C:
-			l.logf("self-update: %d validation(s) still running after %s; swapping anyway, they end with this process", l.Validating(), updateValidationWait)
+			l.logf("self-update: %d validation(s) still running after %s; swapping anyway, they end with this process", l.Validating(), wait.Round(time.Second))
 			return true
 		case <-t.C:
 			if l.Validating() == 0 {
