@@ -68,15 +68,15 @@ type JobBrief struct {
 	// windows by; "" when Mesh picked none.
 	AccountRef string         `json:"account_ref,omitempty"`
 	Subject    JobSubject     `json:"subject"`
-	Code          JobCode        `json:"code"`
-	Needs         string         `json:"needs"`
-	Access        []string       `json:"access"`
-	Harness       string         `json:"harness"`
-	Harnesses     []string       `json:"harnesses"`
-	Budget        map[string]any `json:"budget"`
-	Pods          []JobPod       `json:"pods"`
-	Finish        string         `json:"finish"`
-	Guidance      string         `json:"guidance"`
+	Code       JobCode        `json:"code"`
+	Needs      string         `json:"needs"`
+	Access     []string       `json:"access"`
+	Harness    string         `json:"harness"`
+	Harnesses  []string       `json:"harnesses"`
+	Budget     map[string]any `json:"budget"`
+	Pods       []JobPod       `json:"pods"`
+	Finish     string         `json:"finish"`
+	Guidance   string         `json:"guidance"`
 	// FinishSchema is the product's JSON Schema for its part of the
 	// result (runsheet ADR 067 decision 10): the proposal of an
 	// answer-or-proposal kind. "" when the kind has none.

@@ -108,14 +108,14 @@ func (c *Credentials) readings() map[string]harness.RateLimit {
 // session it is, the credential, when it started and the windows then.
 type SessionAccount struct {
 	*AccountSession
-	creds   *Credentials
-	ref     gateway.SessionRef
-	nodeID  string
+	creds  *Credentials
+	ref    gateway.SessionRef
+	nodeID string
 	// meshJob and accountRef are the Mesh job the claim opened and the
 	// account Mesh picked (WithJob): the session's usage is reported on
 	// the job, by the account, when it ends (Report).
 	meshJob, accountRef string
-	account AccountConfig
+	account             AccountConfig
 	// remaining is an api credential's room under its caps (0: none known).
 	remaining float64
 	started   time.Time
