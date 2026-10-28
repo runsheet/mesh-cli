@@ -206,7 +206,7 @@ func TestServicesLineAndListing(t *testing.T) {
 func TestSidecarAndProbeArgs(t *testing.T) {
 	pod := Pod{Name: "mesh-g-1-ab12cd34-0"}
 	args := strings.Join(SidecarRunArgs(pod, SidecarSpec{Name: "Postgres", Image: "postgres:16", Env: []string{"POSTGRES_PASSWORD=pw"}, Command: []string{"-c", "fsync=off"}, Limits: Limits{CPUs: 1, Memory: "2048m", Pids: 1024}}), " ")
-	want := "run -d --pod mesh-g-1-ab12cd34-0 --name mesh-g-1-ab12cd34-0-postgres --security-opt no-new-privileges --pull missing --cpus 1 --memory 2048m --memory-swap 2048m --pids-limit 1024 --env POSTGRES_PASSWORD --env GOMAXPROCS --env OMP_NUM_THREADS --env MAKEFLAGS postgres:16 -c fsync=off"
+	want := "run -d --pod mesh-g-1-ab12cd34-0 --name mesh-g-1-ab12cd34-0-postgres --security-opt no-new-privileges --pull missing --cpus 1 --memory 4096m --memory-swap 4096m --cgroup-conf memory.high=2147483648 --pids-limit 1024 --env POSTGRES_PASSWORD --env GOMAXPROCS --env OMP_NUM_THREADS --env MAKEFLAGS postgres:16 -c fsync=off"
 	if args != want {
 		t.Fatalf("sidecar args =\n%s\nwant\n%s", args, want)
 	}

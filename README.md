@@ -2359,7 +2359,7 @@ node.yaml's `sandbox:` — every key optional:
 sandbox:
   mode: on             # on | off; left out: on when `podman --version` answers, else off
   cpus: 2              # the agent's --cpus
-  memory: 6g           # the agent's --memory (and --memory-swap)
+  memory: 6g           # the agent's soft limit (memory.high); 2x is the hard guard
   pids: 4096           # the agent's --pids-limit
   services_cpus: 2     # the services' budget together
   services_memory: 4g
@@ -2372,7 +2372,7 @@ sandbox:
 |-----|---------|------|
 | `mode` | on if podman answers, else off | `sandbox: off` (or `on`) alone is the mode |
 | `cpus` | `2` | the agent container's CPUs |
-| `memory` | `6g` | the agent container's memory, swap included |
+| `memory` | `6g` | the agent container's soft memory limit (cgroup memory.high): past it the kernel reclaims and slows the container; memory.max and swap are twice it, only a runaway guard |
 | `pids` | `4096` | the agent container's process cap |
 | `services_cpus` | `2` | the service sidecars' CPUs, together |
 | `services_memory` | `4g` | the service sidecars' memory, together |
