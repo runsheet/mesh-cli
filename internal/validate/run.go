@@ -256,7 +256,8 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 			st := steps[u.step]
 			out := &ran{}
 			start := time.Now()
-			out.exitCode, out.runErr = r.Run(ctx, shardCommand(st.Command, u), st.Timeout, &out.stdout, &out.stderr)
+			// the suite's own cpus and memory, every shard alike
+			out.exitCode, out.runErr = r.Run(WithResources(ctx, st.Resources()), shardCommand(st.Command, u), st.Timeout, &out.stdout, &out.stderr)
 			out.duration = time.Since(start)
 			mu.Lock()
 			done[u] = out

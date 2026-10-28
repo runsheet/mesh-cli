@@ -5,7 +5,9 @@
 //
 // The file is the platform's (runsheet ADR 032, The file:
 // .runsheet/validate.yml; platform/validatespec) plus the node's own
-// keys — timeout, always, artifacts, results:
+// keys — timeout, always, artifacts, results, and a suite's own
+// container cpus and memory (in place of node.yaml's sandbox.cpus and
+// sandbox.memory, clamped to its max_cpus and max_memory):
 //
 //	suites:
 //	  - name: vet
@@ -17,6 +19,8 @@
 //	    paths: ["**/*.go", "go.mod", "go.sum"]
 //	    timeout: 15m
 //	    results: stdout
+//	    cpus: 8
+//	    memory: 12g
 //
 // `steps:` is read as a deprecated alias of `suites:`.
 //

@@ -1376,7 +1376,10 @@ func (s laneSandboxRunner) Lane(ctx context.Context, name string) (validate.Runn
 }
 
 func (s sandboxRunner) Run(ctx context.Context, cmd string, timeout time.Duration, stdout, stderr io.Writer) (int, error) {
-	err := s.sess.Run(ctx, sandbox.RunSpec{Workspace: s.dir, Env: s.env, Vars: s.vars, Cache: s.cache, Command: []string{"sh", "-c", cmd}, Timeout: timeout, Stdout: stdout, Stderr: stderr})
+	// the suite's own cpus and memory, when it names any
+	// (validate.WithResources); else the node's
+	res := validate.ResourcesOf(ctx)
+	err := s.sess.Run(ctx, sandbox.RunSpec{Workspace: s.dir, Env: s.env, Vars: s.vars, Cache: s.cache, Command: []string{"sh", "-c", cmd}, Timeout: timeout, Limits: sandbox.Limits{CPUs: res.CPUs, Memory: res.Memory}, Stdout: stdout, Stderr: stderr})
 	var ee *sandbox.ExitError
 	var le *sandbox.LimitError
 	switch {

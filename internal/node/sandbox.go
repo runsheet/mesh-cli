@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +39,12 @@ type SandboxConfig struct {
 	// (default 2, 4g).
 	ServicesCPUs   float64 `yaml:"services_cpus,omitempty"`
 	ServicesMemory string  `yaml:"services_memory,omitempty"`
+	// MaxCPUs and MaxMemory bound a validation suite's own `cpus:` and
+	// `memory:` (validate.yml): a suite asking for more is clamped to
+	// them. MaxCPUs left out is the host's CPU count; MaxMemory left out
+	// bounds nothing (a container's memory is a soft limit, memory.high).
+	MaxCPUs   float64 `yaml:"max_cpus,omitempty"`
+	MaxMemory string  `yaml:"max_memory,omitempty"`
 	// Registries are where service images may come from (default
 	// docker.io, ghcr.io, *.pkg.dev, quay.io).
 	Registries []string `yaml:"registries,omitempty"`
@@ -71,7 +78,7 @@ func (c *SandboxConfig) UnmarshalYAML(n *yaml.Node) error {
 
 // IsZero leaves an unset block out of a saved node.yaml.
 func (c SandboxConfig) IsZero() bool {
-	return c.Mode == "" && c.CPUs == 0 && c.Memory == "" && c.Pids == 0 && c.ServicesCPUs == 0 && c.ServicesMemory == "" && len(c.Registries) == 0 && c.Image == "" && c.ServiceTimeout == 0
+	return c.Mode == "" && c.CPUs == 0 && c.Memory == "" && c.Pids == 0 && c.ServicesCPUs == 0 && c.ServicesMemory == "" && c.MaxCPUs == 0 && c.MaxMemory == "" && len(c.Registries) == 0 && c.Image == "" && c.ServiceTimeout == 0
 }
 
 // Validate refuses a mode other than on or off and negative limits.
@@ -81,8 +88,8 @@ func (c SandboxConfig) Validate() error {
 	default:
 		return fmt.Errorf("sandbox.mode %q: want on or off", c.Mode)
 	}
-	if c.CPUs < 0 || c.ServicesCPUs < 0 || c.Pids < 0 || c.ServiceTimeout < 0 {
-		return errors.New("sandbox: cpus, services_cpus, pids and service_timeout cannot be negative")
+	if c.CPUs < 0 || c.ServicesCPUs < 0 || c.MaxCPUs < 0 || c.Pids < 0 || c.ServiceTimeout < 0 {
+		return errors.New("sandbox: cpus, services_cpus, max_cpus, pids and service_timeout cannot be negative")
 	}
 	return nil
 }
@@ -98,12 +105,17 @@ func (c SandboxConfig) Settings(version string) sandbox.Config {
 		Image:          image,
 		Limits:         sandbox.Limits{CPUs: c.CPUs, Memory: c.Memory, Pids: c.Pids},
 		ServicesLimits: sandbox.Limits{CPUs: c.ServicesCPUs, Memory: c.ServicesMemory},
+		MaxCPUs:        c.MaxCPUs,
+		MaxMemory:      c.MaxMemory,
 		Registries:     c.Registries,
 		Network:        sandbox.DefaultNetwork(),
 		ServiceTimeout: c.ServiceTimeout,
 	}
 	if s.Limits.CPUs == 0 {
 		s.Limits.CPUs = sandbox.DefaultCPUs
+	}
+	if s.MaxCPUs == 0 {
+		s.MaxCPUs = float64(runtime.NumCPU())
 	}
 	if s.Limits.Memory == "" {
 		s.Limits.Memory = sandbox.DefaultMemory

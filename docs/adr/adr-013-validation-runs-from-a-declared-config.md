@@ -204,6 +204,38 @@ a line per shard and then the failing shard's output. node.log has a
 line per shard (`validation step <suite> shard i/n exited …`). The
 attestation's shape is unchanged.
 
+## Amended 2026-10-28: a suite's own cpus and memory
+
+Every step ran with the node's `sandbox.cpus` and `sandbox.memory` (2
+and 6g by default), so runsheet's `integration` suite had two CPUs for
+682 tests on a 96-core host. Two more keys, the node's own:
+
+```yaml
+suites:
+  - name: integration
+    kind: integration
+    command: go test ./e2e
+    cpus: 16      # the suite's --cpus (and GOMAXPROCS), in place of sandbox.cpus
+    memory: 24g   # the suite's soft memory limit, in place of sandbox.memory
+```
+
+**`cpus:`** (a number) and **`memory:`** (a podman size: `24g`,
+`512m`) are the limits of each of the suite's containers — every
+step's, and every shard's in its own lane — in place of the node's.
+Either alone replaces only its own; neither is the node's, exactly as
+before. A negative `cpus` or a `memory` that is not a size is refused.
+
+**The node bounds them.** node.yaml's `sandbox.max_cpus` (default: the
+host's CPU count) and `sandbox.max_memory` (default: no bound, the
+memory being a soft memory.high limit) clamp a request past them, with
+one node.log line: `sandbox: <container> asked for 64 cpus, past
+sandbox.max_cpus; clamped to 12`.
+
+**Neither is hashed.** How much room a suite runs with is not what it
+runs; the suite hash stays the platform's name, kind, command and
+paths. The node takes no CPU count of its own into its capacity: it
+paces by the host's load and pressure, which a wider suite raises.
+
 ## Consequences
 
 - `internal/validate`'s `Attestation`/`StepResult` json shape is
