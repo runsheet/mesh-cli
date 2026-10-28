@@ -29,6 +29,7 @@
       "code": {
         "form": "none"
       },
+      "credential_ref": "3abb0726-e444-5cb0-b9b6-2dec9961a32e",
       "finish": "answer-or-proposal",
       "finishSchema": "",
       "finishTool": "",

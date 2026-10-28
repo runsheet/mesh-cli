@@ -192,6 +192,11 @@ func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID, 
 		adapter = AdapterClaudeCode
 	}
 	s := &SessionAccount{creds: c, ref: ref, nodeID: nodeID, started: c.now(), Adapter: adapter}
+	if forJob := jobCredentialFrom(ctx); forJob != nil {
+		if done, err := c.openForJob(ctx, s, ref, nodeID, adapter, forJob); done {
+			return s, err
+		}
+	}
 	var issued []gateway.Credential
 	read, err := c.GW.Session(ctx, ref, nodeID)
 	unsupported := gateway.IsUnsupported(err)
@@ -290,6 +295,53 @@ func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID, 
 		s.before = &r
 	}
 	return s, nil
+}
+
+// openForJob opens s on the account Mesh picked for the claim (runsheet
+// ADR 078 decision 5), read from Latchkey by forJob, with the platform's
+// read for the session's tools alone. done is false only when Latchkey
+// serves no for-job route: Open then takes the node's own path, said
+// once. A refusal, an account of another adapter or a failed read is
+// ErrNoAccount — the build is released, never run on another account —
+// and its error names why; the secret is in none of it.
+func (c *Credentials) openForJob(ctx context.Context, s *SessionAccount, ref gateway.SessionRef, nodeID, adapter string, forJob JobCredentialFunc) (done bool, err error) {
+	cr, err := forJob(ctx)
+	if errors.Is(err, ErrForJobUnsupported) {
+		if c.unsupported.First("for-job") {
+			c.logf("credentials: Latchkey serves no credentials/for-job; a build Mesh picked an account for runs on the node's own accounts until it does")
+		}
+		return false, nil
+	}
+	if err != nil {
+		return true, fmt.Errorf("%w: the job's account: %v", ErrNoAccount, err)
+	}
+	a := IssuedAccount(cr)
+	if a.AdapterOf() != adapter {
+		return true, fmt.Errorf("%w: the job's account %s is for %s, not %s", ErrNoAccount, a.Label, a.AdapterOf(), adapter)
+	}
+	read, err := c.GW.Session(ctx, ref, nodeID)
+	switch {
+	case gateway.IsUnsupported(err):
+	case err != nil:
+		return true, fmt.Errorf("session tools: %w", err)
+	case read != nil:
+		s.Tools = read.Tools
+	}
+	// known by its Latchkey account ref, so the node reports its windows
+	// to Mesh under the ref Mesh picks by (reportAccounts)
+	if err := c.Known.NoteFor(a, subjectFrom(ctx).projectID, c.now()); err != nil {
+		c.logf("known accounts: %v", err)
+	}
+	acct, err := OpenAccount(a)
+	if err != nil {
+		return true, err
+	}
+	c.logf("credentials: %s session on account %s, Mesh's pick, read from Latchkey for the job", cmp.Or(ref.Kind, "a"), a.Label)
+	s.AccountSession, s.account = acct, a
+	if r, ok := c.reading(s.limitsKey()); ok {
+		s.before = &r
+	}
+	return true, nil
 }
 
 // noHeadroom is the ErrNoHeadroom of a session refused on every one of

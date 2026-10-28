@@ -168,7 +168,7 @@ func (l *Loop) anyAccount(ctx context.Context) bool {
 func (l *Loop) startQueued(ctx context.Context, nodeID string, job gateway.JobBrief) {
 	switch job.Kind {
 	case queueBuild:
-		l.startQueuedBuild(ctx, nodeID, job.Subject.ID)
+		l.startQueuedBuild(WithCredentialRef(ctx, job.CredentialRef), nodeID, job.Subject.ID)
 	case queueEvaluate:
 		l.startQueuedEvaluation(ctx, job.Subject.ID)
 	case queueRebase:
