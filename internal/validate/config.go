@@ -106,7 +106,9 @@ type Step struct {
 	// go test -json on the step's own stdout, "go-test-json:<path>"
 	// for a go test -json log at that path (relative to the repo
 	// root), or "junit:<path>" for a JUnit XML file there. Empty
-	// parses no tests.
+	// counts whatever go test -json events the step's stdout carries
+	// (none, for a command that prints none) and keeps Reports as the
+	// report.
 	Results string
 	// Group is the suite group the step runs in (runsheet ADR 061 §6,
 	// validatespec.Spec.Groups): steps of one group run one after

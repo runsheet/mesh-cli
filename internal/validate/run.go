@@ -445,12 +445,15 @@ func merge(shards []ShardResult, concurrent bool) StepResult {
 // (runsheet ADR 032).
 const reportCap = 256 * 1024
 
-// parseResults parses a step's test output per its Results field: empty
-// parses nothing, "stdout" reads stdout as go test -json, "go-test-json:
-// <path>" and "junit:<path>" read that file (relative to dir). The raw
-// report it parsed is returned beside the counts, cut at reportCap. A
-// step with no results but reports is the files it names that exist,
-// one after another, counted as no tests.
+// parseResults parses a step's test output per its Results field:
+// "stdout" reads stdout as go test -json, "go-test-json:<path>" and
+// "junit:<path>" read that file (relative to dir). The raw report it
+// parsed is returned beside the counts, cut at reportCap. A step with no
+// results is the files its reports name that exist, one after another,
+// and its tests are the go test -json events on its stdout, if any: a
+// suite running `go test -json` with no results: line (runsheet's unit
+// and integration, 2026-10-29) counted 0 tests on every shard, green or
+// red, though the events were all there.
 func parseResults(dir string, step Step, stdout []byte) (run, passed, failed int, report string, err error) {
 	var raw []byte
 	parse := ParseGoTestJSON
@@ -467,7 +470,8 @@ func parseResults(dir string, step Step, stdout []byte) (run, passed, failed int
 		}
 		parse = ParseJUnit
 	default:
-		return 0, 0, 0, readReports(dir, step.Reports), nil
+		run, passed, failed, err = ParseGoTestJSON(bytes.NewReader(stdout))
+		return run, passed, failed, readReports(dir, step.Reports), err
 	}
 	run, passed, failed, err = parse(bytes.NewReader(raw))
 	if len(raw) > reportCap {
