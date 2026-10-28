@@ -468,8 +468,12 @@ func (l *Loop) startQueuedValidation(ctx context.Context, nodeID, subject, id st
 			continue
 		}
 		// the one claim already claimed it: the job starts with no claim
-		// of its own
-		j.claim = func(context.Context) error { return nil }
+		// of its own, but its kind's claim, which converges on this
+		// node, still checks it every minute while it runs — without
+		// it a superseded head's run went on to its end (dl360,
+		// 2026-10-28: four runs past their withdrawal, 30 minutes and
+		// more each)
+		j.check, j.claim = j.claim, func(context.Context) error { return nil }
 		j.claimed = "claimed from the queue"
 		l.startMainJob(ctx, j)
 		return
