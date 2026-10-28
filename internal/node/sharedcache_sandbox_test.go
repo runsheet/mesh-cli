@@ -199,10 +199,10 @@ func TestSharedCacheSandboxMountsCloseOnAReadOnlyTree(t *testing.T) {
 	if err != nil || v == nil {
 		t.Fatalf("start: %v, %v", v, err)
 	}
-	gr, _ := v.runner.(goCacheRunner)
-	sr, ok := gr.Runner.(sandboxRunner)
+	lr, ok := v.runner.(laneSandboxRunner)
+	sr := lr.sandboxRunner
 	if !ok || sr.cache == nil {
-		t.Fatalf("runner = %#v, want a sandboxRunner with the cache", v.runner)
+		t.Fatalf("runner = %#v, want a laneSandboxRunner with the cache", v.runner)
 	}
 	for _, d := range []string{sr.cache.Scratch, dir} {
 		ro := filepath.Join(d, "ro")

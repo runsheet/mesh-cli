@@ -356,7 +356,14 @@ func (vr validator) start(ctx context.Context, t validationTarget) (*buildValida
 		env = t.job.Env
 	}
 	v.env = sandbox.SetEnv(append([]string(nil), env...), t.served.env())
-	v.runner = goCacheRunner{sandboxRunner{sess: sess, dir: t.dir, env: env, vars: t.served.env(), cache: &sandbox.ValidationCache{Scratch: scratch, GoCache: cache, Blobs: blobs}}}
+	base := sandboxRunner{sess: sess, dir: t.dir, env: env, vars: t.served.env(), cache: &sandbox.ValidationCache{Scratch: scratch, GoCache: cache, Blobs: blobs}}
+	v.runner = laneSandboxRunner{sandboxRunner: base, open: func(ctx context.Context, name string) (*SessionPod, error) {
+		var git sandbox.GitIdentity
+		if t.job != nil {
+			git = sandbox.GitIdentityFromEnv(t.job.Env)
+		}
+		return OpenSessionPod(ctx, vr.Sandbox, t.dir, t.label+"-"+name, "validate", git, vr.logf)
+	}}
 	image := vr.Sandbox.Config.Image
 	run := vr.Inspect
 	if run == nil {
@@ -520,6 +527,9 @@ func (vr validator) runSteps(ctx context.Context, t validationTarget, v *buildVa
 		}
 		vr.logf("%s: validation step %s exited %d in %dms%s", t.prefix, s.Name, s.ExitCode, s.DurationMs, kind)
 		logStepTail(vr.logf, t.prefix, s)
+		for _, sh := range s.Shards {
+			vr.logf("%s: validation step %s shard %d/%d exited %d in %dms, %d tests (%d failed)", t.prefix, s.Name, sh.Index+1, sh.Total, sh.ExitCode, sh.DurationMs, sh.TestsRun, sh.TestsFailed)
+		}
 	}
 	if err := writeAttestation(sessionunit.Dir(t.dir), att); err != nil {
 		vr.logf("%s: validation: %v", t.prefix, err)
@@ -1317,6 +1327,44 @@ type sandboxRunner struct {
 	// vars are the node's own facts of the run (a served checkout's
 	// HEAD_SHA and BASE_SHA), set in the pod past the allow-list.
 	vars []string
+}
+
+// laneSandboxRunner is sandboxRunner that can run a suite group or a
+// shard beside the others (validate.LaneRunner): a session of its own,
+// its pod with the checkout's own services (OpenSessionPod), the
+// workspace, env and cache the same as the run's first pod's. A lane
+// whose required service did not start is the lane failing, never a
+// shard run without its database.
+type laneSandboxRunner struct {
+	sandboxRunner
+	open func(ctx context.Context, name string) (*SessionPod, error)
+}
+
+// Run runs a step of the run's first lane holding the node's Go cache
+// (holdGoCache), as goCacheRunner does for an unlaned run.
+func (s laneSandboxRunner) Run(ctx context.Context, cmd string, timeout time.Duration, stdout, stderr io.Writer) (int, error) {
+	defer holdGoCache()()
+	return s.sandboxRunner.Run(ctx, cmd, timeout, stdout, stderr)
+}
+
+// Lane's runner holds the node's Go cache for each step too
+// (goCacheRunner): the hourly clean waits for every shard.
+func (s laneSandboxRunner) Lane(ctx context.Context, name string) (validate.Runner, func(), error) {
+	p, err := s.open(ctx, name)
+	if err == nil && p == nil {
+		err = errors.New("no sandbox")
+	}
+	if err != nil {
+		p.Close()
+		return nil, nil, err
+	}
+	if st, failed := p.RequiredFailure(); failed {
+		p.Close()
+		return nil, nil, fmt.Errorf("service %s: %s", st.Describe(), st.Why)
+	}
+	r := s.sandboxRunner
+	r.sess = p.Session
+	return goCacheRunner{r}, p.Close, nil
 }
 
 func (s sandboxRunner) Run(ctx context.Context, cmd string, timeout time.Duration, stdout, stderr io.Writer) (int, error) {

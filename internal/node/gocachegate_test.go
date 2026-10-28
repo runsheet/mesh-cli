@@ -87,3 +87,20 @@ func TestATrimWaitsForARunningStep(t *testing.T) {
 		t.Fatalf("no wait line:\n%s", logs.String())
 	}
 }
+
+// A lane of a sharded or grouped validation holds the Go cache for each
+// of its steps, as the run's first lane does: the clean waits for every
+// shard.
+func TestALanesStepsHoldTheGoCache(t *testing.T) {
+	lr := laneSandboxRunner{open: func(context.Context, string) (*SessionPod, error) {
+		return &SessionPod{Session: nil}, nil
+	}}
+	r, release, err := lr.Lane(context.Background(), "e2e-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if _, ok := r.(goCacheRunner); !ok {
+		t.Fatalf("a lane's runner is %T, want it holding the Go cache (goCacheRunner)", r)
+	}
+}

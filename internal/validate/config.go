@@ -108,7 +108,34 @@ type Step struct {
 	// root), or "junit:<path>" for a JUnit XML file there. Empty
 	// parses no tests.
 	Results string
+	// Group is the suite group the step runs in (runsheet ADR 061 §6,
+	// validatespec.Spec.Groups): steps of one group run one after
+	// another in one pod, and each group runs beside the others, in its
+	// own pod with its own services, when the runner can make one
+	// (LaneRunner). Once any step names a group, a step naming none is
+	// in the group of its kind.
+	Group string
+	// Shards is how many copies of the command run at once, each in its
+	// own pod with its own services, each told which it is by
+	// MESH_SHARD_INDEX (0-based) and MESH_SHARD_TOTAL. The command picks
+	// its own slice, so any language shards: `--shard=$((MESH_SHARD_INDEX+1))/$MESH_SHARD_TOTAL`
+	// for Jest, Vitest or Playwright, a test list cut by the index for
+	// go test or pytest. The suite passes only when every shard does.
+	// 0 (the file leaving it out) and 1 are one run; never more than
+	// MaxShards.
+	Shards int
 }
+
+// MaxShards bounds a suite's shards: each is a pod with its own
+// services on the one node.
+const MaxShards = 32
+
+// ShardIndexEnv and ShardTotalEnv name a shard's index (0-based) and the
+// suite's shard count in its command's environment.
+const (
+	ShardIndexEnv = "MESH_SHARD_INDEX"
+	ShardTotalEnv = "MESH_SHARD_TOTAL"
+)
 
 // rawConfig is the file: `suites:`, the platform's key, or `steps:`,
 // the deprecated alias of the same shape an older file still uses,
@@ -138,6 +165,8 @@ type rawStep struct {
 	Always    bool     `yaml:"always"`
 	Artifacts []string `yaml:"artifacts"`
 	Results   string   `yaml:"results"`
+	Group     string   `yaml:"group"`
+	Shards    int      `yaml:"shards"`
 }
 
 // Load reads <dir>/.runsheet/validate.yml. A missing file is
@@ -189,6 +218,8 @@ func Parse(data []byte) (Config, error) {
 			Always:    s.Always,
 			Artifacts: s.Artifacts,
 			Results:   s.Results,
+			Group:     strings.TrimSpace(s.Group),
+			Shards:    s.Shards,
 		}
 		if step.Name == "" {
 			return Config{}, fmt.Errorf("suite %d has no name", i+1)
@@ -202,6 +233,9 @@ func Parse(data []byte) (Config, error) {
 		}
 		if step.Command == "" {
 			return Config{}, fmt.Errorf("suite %q has no command", step.Name)
+		}
+		if s.Shards < 0 || s.Shards > MaxShards {
+			return Config{}, fmt.Errorf("suite %q has shards %d, not 1 to %d", step.Name, s.Shards, MaxShards)
 		}
 		paths, err := cleanPaths(s.Paths)
 		if err != nil {
@@ -305,4 +339,17 @@ func validGlob(p string) error {
 		}
 	}
 	return nil
+}
+
+// shard is the step as shard k runs it: "{shard}" in its results and
+// reports paths is k, so each shard writes and reads its own file.
+func (s Step) shard(k int) Step {
+	idx := fmt.Sprint(k)
+	s.Results = strings.ReplaceAll(s.Results, "{shard}", idx)
+	reports := make([]string, len(s.Reports))
+	for i, r := range s.Reports {
+		reports[i] = strings.ReplaceAll(r, "{shard}", idx)
+	}
+	s.Reports = reports
+	return s
 }
