@@ -123,3 +123,43 @@ func TestSelfUpdateWithNoValidationDoesNotWait(t *testing.T) {
 		t.Fatal("an update with no validation running waited or held")
 	}
 }
+
+// The update waits for the running validations' own windows — the
+// longest left plus the grace — not a flat half hour, and never past
+// its cap: a flat 30 minutes cut runsheet's 80-minute validations short
+// at 49 (dl360, 2026-10-28 06:48Z).
+func TestSelfUpdateWaitsForTheValidationsWindows(t *testing.T) {
+	now := time.Date(2026, 10, 28, 6, 18, 0, 0, time.UTC)
+	loop := &Loop{validating: map[string]bool{"pr-5637": true, "batch-270": true},
+		validatingUntil: map[string]time.Time{"pr-5637": now.Add(80 * time.Minute), "batch-270": now.Add(10 * time.Minute)}}
+	if got, want := loop.validationWaitFor(now), 80*time.Minute+updateValidationGrace; got != want {
+		t.Fatalf("wait = %s, want the longest window left plus the grace, %s", got, want)
+	}
+	loop.validatingUntil["pr-5637"] = now.Add(200 * time.Minute)
+	if got := loop.validationWaitFor(now); got != updateValidationWait {
+		t.Fatalf("wait = %s, want the cap %s", got, updateValidationWait)
+	}
+	delete(loop.validatingUntil, "pr-5637")
+	if got, want := loop.validationWaitFor(now), MainValidationRunAfter+updateValidationGrace; got != want {
+		t.Fatalf("a run with no known window: wait = %s, want the default window's %s", got, want)
+	}
+}
+
+// A claimed validation's window is recorded when it starts and dropped
+// when it ends.
+func TestAValidationsWindowIsRecordedWhileItRuns(t *testing.T) {
+	loop, _, finish, _ := validatingUpdateLoop(t)
+	loop.mu.Lock()
+	until, ok := loop.validatingUntil[batchID]
+	loop.mu.Unlock()
+	if !ok || until.Before(time.Now().Add(MainValidationRunAfter-time.Minute)) {
+		t.Fatalf("validatingUntil = %v, %v; want the run's window from its start", until, ok)
+	}
+	close(finish)
+	loop.wg.Wait()
+	loop.mu.Lock()
+	defer loop.mu.Unlock()
+	if _, ok := loop.validatingUntil[batchID]; ok {
+		t.Fatal("the window outlived its run")
+	}
+}

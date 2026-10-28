@@ -53,6 +53,14 @@ func runWindow(budgetSeconds int64) time.Duration {
 	return MainValidationRunAfter
 }
 
+// runWindowOf is j's window, the default for a job that names none.
+func runWindowOf(j mainJob) time.Duration {
+	if j.window > 0 {
+		return j.window
+	}
+	return MainValidationRunAfter
+}
+
 // DefaultBatchCheckEvery is how often a running batch validation reads
 // mainValidations back to see its claim is still the node's.
 const DefaultBatchCheckEvery = time.Minute
@@ -424,10 +432,15 @@ func (l *Loop) startMainJob(ctx context.Context, j mainJob) bool {
 		l.validating = map[string]bool{}
 	}
 	l.validating[j.id] = true
+	if l.validatingUntil == nil {
+		l.validatingUntil = map[string]time.Time{}
+	}
+	l.validatingUntil[j.id] = l.now().Add(runWindowOf(j))
 	l.mu.Unlock()
 	if err := j.claim(ctx); err != nil {
 		l.mu.Lock()
 		delete(l.validating, j.id)
+		delete(l.validatingUntil, j.id)
 		l.mu.Unlock()
 		if !gateway.IsRefusal(err) {
 			l.logf("%s: claim: %v", j.label, err)
@@ -446,6 +459,7 @@ func (l *Loop) startMainJob(ctx context.Context, j mainJob) bool {
 		defer func() {
 			l.mu.Lock()
 			delete(l.validating, j.id)
+			delete(l.validatingUntil, j.id)
 			l.mu.Unlock()
 			l.notify()
 		}()
@@ -462,10 +476,7 @@ func (l *Loop) startMainJob(ctx context.Context, j mainJob) bool {
 func (l *Loop) runMainJob(ctx context.Context, j mainJob) {
 	lost, stop := context.WithCancelCause(ctx)
 	defer stop(nil)
-	window := j.window
-	if window <= 0 {
-		window = MainValidationRunAfter
-	}
+	window := runWindowOf(j)
 	rctx, cancel := context.WithTimeoutCause(lost, window, errBatchOverrun)
 	defer cancel()
 	done := make(chan struct{})
