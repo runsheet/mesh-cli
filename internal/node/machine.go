@@ -103,7 +103,9 @@ func (m MachineReading) Busy() bool {
 // host is judged by it — some avg60 past h.CPUSomeAvg60Max, `host hot:
 // cpu pressure 31%/25%` — and load per core is not looked at; without
 // it, by the 1-minute load per core past h.LoadPerCoreMax, `host hot:
-// load 55/18 cores`. Either wins over the package temperature past
+// load 55/18 cores`. The pressure counts only at or above
+// h.CPUPressureMinLoadPerCore: with the cores idle it is a session's own
+// --cpus quota being throttled, which is no reason to claim less. Either wins over the package temperature past
 // h.PackageTempMaxC, `host hot: 101°C`. wasHot is the last judgement:
 // once hot, the pressure (or load) keeps the host hot down to
 // h.QuietFraction of its threshold, so a reading that flaps around the
@@ -118,7 +120,9 @@ func (m MachineReading) Hot(h HostConfig, wasHot bool) (bool, Reason) {
 		return v > threshold
 	}
 	if m.HasSliceCPUPressure {
-		if over(m.SliceCPUSomeAvg60, h.CPUSomeAvg60Max) {
+		// pressure with the cores mostly idle is quota throttling
+		// inside a session, not a busy host
+		if m.CPUs > 0 && m.PerCore() >= h.CPUPressureMinLoadPerCore && over(m.SliceCPUSomeAvg60, h.CPUSomeAvg60Max) {
 			return true, Reason(fmt.Sprintf("host hot: cpu pressure %.0f%%/%s%%", m.SliceCPUSomeAvg60, hostNum(h.CPUSomeAvg60Max)))
 		}
 	} else if m.CPUs > 0 && over(m.PerCore(), h.LoadPerCoreMax) {
