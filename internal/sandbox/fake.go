@@ -50,8 +50,11 @@ type Fake struct {
 	// remove.
 	RemovedContainers []string
 	// RemoveErr fails Remove; RemoveTreeErr fails RemoveTree.
+	// RemoveFails fails that many Removes first, as a busy store's
+	// timing-out removal does, before they work.
 	RemoveErr     error
 	RemoveTreeErr error
+	RemoveFails   int
 	// Agent is the agent's container: it gets the spec and returns the
 	// exit (nil: exit 0, nothing written).
 	Agent func(ctx context.Context, spec AgentSpec) (Exit, error)
@@ -296,6 +299,13 @@ func (f *Fake) ProbeTCP(_ context.Context, pod Pod, _ string, port int) error {
 	return h("", nil, port)
 }
 
+// PodSpecs are the pods CreatePod made so far, read while sessions run.
+func (f *Fake) PodSpecs() []PodSpec {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]PodSpec(nil), f.Pods...)
+}
+
 // Called reports whether a call was recorded, and its index in Calls.
 func (f *Fake) Called(prefix string) (int, bool) {
 	f.mu.Lock()
@@ -312,6 +322,11 @@ func (f *Fake) Called(prefix string) (int, bool) {
 func (f *Fake) Remove(_ context.Context, pod Pod) error {
 	f.call("remove " + pod.Name)
 	f.mu.Lock()
+	if f.RemoveFails > 0 {
+		f.RemoveFails--
+		f.mu.Unlock()
+		return fmt.Errorf("fake: remove %s: podman rm: signal: killed", pod.Name)
+	}
 	f.Removed = append(f.Removed, pod.Name)
 	if f.RemoveErr == nil {
 		var cs []Container

@@ -618,9 +618,22 @@ func RemoveArgs(pod Pod) [][]string {
 	}
 }
 
-// Remove implements Runtime: the pod, all its containers and their
-// anonymous volumes, forced. Every call runs; their errors are joined.
+// KillPodArgs sends SIGKILL to every container of a pod at once: its
+// step's and its sidecars' (a Postgres holding a gigabyte), so what a
+// finished or stopped run held is given back before the removal, which
+// a busy store can take minutes over (`podman rm: signal: killed` on 30
+// pods at once, dl360 2026-10-28 10:40Z, each left Degraded with its
+// Postgres up).
+func KillPodArgs(pod Pod) []string {
+	return []string{"pod", "kill", "--signal", "KILL", pod.Name}
+}
+
+// Remove implements Runtime: the pod's containers killed (KillPodArgs;
+// its failure, a pod with nothing running, is no error), then the pod,
+// all its containers and their anonymous volumes, forced. Every call
+// runs; the removals' errors are joined.
 func (p *Podman) Remove(ctx context.Context, pod Pod) error {
+	_, _ = p.output(ctx, KillPodArgs(pod), nil)
 	var errs []error
 	for _, args := range RemoveArgs(pod) {
 		if _, err := p.output(ctx, args, nil); err != nil {

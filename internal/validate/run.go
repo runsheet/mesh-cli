@@ -151,6 +151,13 @@ type LaneRunner interface {
 	Lane(ctx context.Context, name string) (r Runner, release func(), err error)
 }
 
+// FirstLaneReleaser is a LaneRunner whose own pod — the first lane's —
+// can be given back once that lane has run, while the other lanes go
+// on: its sidecars (a Postgres) idle no longer than its steps need them.
+type FirstLaneReleaser interface {
+	ReleaseFirst()
+}
+
 // unit is one command Run runs: a step, or one shard of it.
 type unit struct {
 	step  int
@@ -233,7 +240,9 @@ func shardCommand(cmd string, u unit) string {
 // group unless opts.ContinueOnFailure; when runner is a LaneRunner each
 // group, and each shard of a step declaring shards, runs beside the
 // others in a lane of its own (LaneRunner.Lane), the first in runner
-// itself. Otherwise every step runs in runner in the file's order, a
+// itself. Each lane's pod is given back when its last step has run,
+// pass or fail (Lane's release; the first's by FirstLaneReleaser), not
+// when the whole run ends. Otherwise every step runs in runner in the file's order, a
 // sharded step's shards one after another, as before groups and shards.
 // A sharded step is one StepResult: it fails when a shard does, its
 // duration the longest shard's (the wall), its tests the shards' sum,
@@ -274,6 +283,12 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 				defer wg.Done()
 				if i == 0 {
 					runLane(runner, l)
+					// the run's own pod goes as a lane's does (release),
+					// its steps' reports and artifacts being in the
+					// workspace, read after every lane
+					if fr, ok := runner.(FirstLaneReleaser); ok {
+						fr.ReleaseFirst()
+					}
 					return
 				}
 				r, release, err := lr.Lane(ctx, l.name)

@@ -96,6 +96,7 @@ func TestCloseReturnsAFailedPodRemoval(t *testing.T) {
 	if _, err := sess.Start(context.Background(), nil, 0); err != nil {
 		t.Fatal(err)
 	}
+	fastRemoval(t)
 	f.RemoveErr = errors.New("podman pod: no such pod")
 	err = sess.Close()
 	if err == nil || !strings.Contains(err.Error(), "no such pod") {
@@ -136,7 +137,8 @@ func TestRemoveArgsTakeTheVolumes(t *testing.T) {
 	}
 }
 
-// Podman.Remove runs every call of RemoveArgs, and RemoveTree is
+// Podman.Remove kills the pod's containers, then runs every call of
+// RemoveArgs, and RemoveTree is
 // `podman unshare rm -rf`.
 func TestPodmanRemoveRunsTheArgs(t *testing.T) {
 	var got [][]string
@@ -151,8 +153,76 @@ func TestPodmanRemoveRunsTheArgs(t *testing.T) {
 	if err := p.RemoveTree(context.Background(), "/tmp/mesh-home-1"); err != nil {
 		t.Fatal(err)
 	}
-	want := append(RemoveArgs(pod), []string{"unshare", "rm", "-rf", "--", "/tmp/mesh-home-1"})
+	want := append(append([][]string{KillPodArgs(pod)}, RemoveArgs(pod)...), []string{"unshare", "rm", "-rf", "--", "/tmp/mesh-home-1"})
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("podman calls = %q\nwant %q", got, want)
+	}
+}
+
+// fastRemoval makes a failed removal's retries immediate.
+func fastRemoval(t *testing.T) {
+	t.Helper()
+	backoff := RemoveBackoff
+	RemoveBackoff = 0
+	t.Cleanup(func() { RemoveBackoff = backoff })
+}
+
+// A pod whose removal times out on a busy store is tried again: Close
+// removes it on a later try and says nothing failed, and the pod is the
+// session's no more, so a second Close asks nothing of the runtime.
+func TestCloseTriesAFailedPodRemovalAgain(t *testing.T) {
+	fastRemoval(t)
+	f := &Fake{RemoveFails: RemoveTries - 1}
+	sb := testSandbox(t, f)
+	sess, err := sb.Open("pr-5644-integration-4", "validate", GitIdentity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.Start(context.Background(), []Service{{Name: "postgres", Image: "postgres:17"}}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if len(f.Removed) != 1 || len(sess.Pods()) != 0 {
+		t.Fatalf("removed %v, pods left %v", f.Removed, sess.Pods())
+	}
+	calls := len(f.Calls)
+	if err := sess.Close(); err != nil {
+		t.Fatalf("second close: %v", err)
+	}
+	for _, c := range f.Calls[calls:] {
+		if strings.HasPrefix(c, "remove ") {
+			t.Fatalf("a second Close removed a pod again: %q", f.Calls[calls:])
+		}
+	}
+}
+
+// A Run in a services pod whose ctx is cancelled — its run stopped —
+// has its own container removed at once: the step does not run on
+// beside the services until the pod goes.
+func TestCancelledRunInAServicesPodRemovesItsContainer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	f := &Fake{Agent: func(actx context.Context, _ AgentSpec) (Exit, error) {
+		cancel()
+		<-actx.Done()
+		return Exit{Code: -1}, nil
+	}}
+	sb := testSandbox(t, f)
+	sess, err := sb.Open("pr-5644", "validate", GitIdentity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if _, err := sess.Start(context.Background(), []Service{{Name: "postgres", Image: "postgres:17"}}, 0); err != nil {
+		t.Fatal(err)
+	}
+	err = sess.Run(ctx, RunSpec{Workspace: t.TempDir(), Command: []string{"sh", "-c", "go test ./..."}})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("run = %v", err)
+	}
+	pod := sess.Pods()[0]
+	if want := RunName(pod, 1); len(f.RemovedContainers) != 1 || f.RemovedContainers[0] != want {
+		t.Fatalf("removed containers %v, want [%s]", f.RemovedContainers, want)
 	}
 }

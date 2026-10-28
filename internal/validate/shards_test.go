@@ -205,3 +205,85 @@ func TestAFailingShardsTailIsTheSteps(t *testing.T) {
 		t.Fatalf("a token in the output: %q", e2e.Output)
 	}
 }
+
+// gatedLanes is a LaneRunner whose lane slow holds its command until
+// gate closes, and which records each pod it gives back — a lane's and
+// its own first lane's (FirstLaneReleaser) — on released.
+type gatedLanes struct {
+	HostRunner
+	slow     string
+	gate     chan struct{}
+	released chan string
+}
+
+type gatedRunner struct {
+	next Runner
+	gate chan struct{}
+}
+
+func (g gatedRunner) Run(ctx context.Context, cmd string, timeout time.Duration, stdout, stderr io.Writer) (int, error) {
+	if g.gate != nil {
+		select {
+		case <-g.gate:
+		case <-ctx.Done():
+			return -1, ctx.Err()
+		}
+	}
+	return g.next.Run(ctx, cmd, timeout, stdout, stderr)
+}
+
+func (g *gatedLanes) Lane(_ context.Context, name string) (Runner, func(), error) {
+	r := gatedRunner{next: g.HostRunner}
+	if name == g.slow {
+		r.gate = g.gate
+	}
+	return r, func() { g.released <- name }, nil
+}
+
+func (g *gatedLanes) ReleaseFirst() { g.released <- "first" }
+
+// A shard's or group's pod is given back as soon as its last step has
+// run, pass or fail, while another shard still runs: the run's own
+// pod too, once its first lane is done. Nothing waits on the slowest.
+func TestAFinishedLanesPodGoesWhileOthersRun(t *testing.T) {
+	dir := t.TempDir()
+	steps := []Step{
+		{Name: "lint", Kind: KindLint, Command: "true", Timeout: time.Minute},
+		{Name: "e2e", Kind: KindIntegration, Command: `test "$MESH_SHARD_INDEX" != 0`, Timeout: time.Minute, Shards: 2},
+	}
+	g := &gatedLanes{HostRunner: HostRunner{Dir: dir}, slow: "e2e-1", gate: make(chan struct{}), released: make(chan string, 8)}
+	type out struct {
+		results []StepResult
+		err     error
+	}
+	done := make(chan out, 1)
+	go func() {
+		r, err := Run(context.Background(), steps, g, Options{Dir: dir})
+		done <- out{r, err}
+	}()
+	got := map[string]bool{}
+	for len(got) < 2 {
+		select {
+		case name := <-g.released:
+			got[name] = true
+		case <-done:
+			t.Fatal("the run ended while e2e-1 was held")
+		case <-time.After(10 * time.Second):
+			t.Fatalf("released %v while e2e-1 runs, want the first lane's pod and e2e-0's (failed)", got)
+		}
+	}
+	if !got["first"] || !got["e2e-0"] {
+		t.Fatalf("released %v, want first and e2e-0", got)
+	}
+	close(g.gate)
+	o := <-done
+	if o.err != nil {
+		t.Fatal(o.err)
+	}
+	if last := <-g.released; last != "e2e-1" {
+		t.Fatalf("last released %q, want e2e-1", last)
+	}
+	if o.results[1].ExitCode != 1 {
+		t.Fatalf("e2e exit %d, want shard 1/2's failure", o.results[1].ExitCode)
+	}
+}

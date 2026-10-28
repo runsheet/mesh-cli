@@ -166,16 +166,22 @@ func (vr validator) sessionSign(ctx context.Context, t validationTarget, receipt
 // session's job and pod (nil when adopted), its id, how its errors are
 // redacted and how a note reaches the item.
 type validationTarget struct {
-	item    gateway.WorkItem
-	dir     string
-	base    string
-	prefix  string
-	label   string
-	job     *harness.Job
-	pod     *sandbox.Session
-	session func() string
-	redact  func(error) error
-	report  func(ctx context.Context, note string)
+	item   gateway.WorkItem
+	dir    string
+	base   string
+	prefix string
+	label  string
+	job    *harness.Job
+	pod    *sandbox.Session
+	// releasePod, set, gives pod back — its sidecars with it — once the
+	// suites that run in it have run, while other groups or shards still
+	// run in pods of their own: a main validation's pod, which nothing
+	// runs in after its suites. A build's pod, which its retry turn runs
+	// in again, sets none.
+	releasePod func()
+	session    func() string
+	redact     func(error) error
+	report     func(ctx context.Context, note string)
 	// cred is the item's token — or a merge batch candidate's
 	// (NewBatchCred) — every fetch the validator runs going out on it
 	// (ForFetch, OnItemToken); nil on the fallback.
@@ -371,7 +377,7 @@ func (vr validator) start(ctx context.Context, t validationTarget) (*buildValida
 			git = sandbox.GitIdentityFromEnv(t.job.Env)
 		}
 		return OpenSessionPod(ctx, vr.Sandbox, t.dir, t.label+"-"+name, "validate", git, vr.logf)
-	}}
+	}, releaseFirst: t.releasePod}
 	image := vr.Sandbox.Config.Image
 	run := vr.Inspect
 	if run == nil {
@@ -1346,6 +1352,18 @@ type sandboxRunner struct {
 type laneSandboxRunner struct {
 	sandboxRunner
 	open func(ctx context.Context, name string) (*SessionPod, error)
+	// releaseFirst, set, gives the run's own pod back once the first
+	// lane has run (validate.FirstLaneReleaser): validationTarget's
+	// releasePod
+	releaseFirst func()
+}
+
+// ReleaseFirst implements validate.FirstLaneReleaser: the run's own pod
+// removed, its sidecars with it, when the run's target allows it.
+func (s laneSandboxRunner) ReleaseFirst() {
+	if s.releaseFirst != nil {
+		s.releaseFirst()
+	}
 }
 
 // Run runs a step of the run's first lane holding the node's Go cache
