@@ -96,6 +96,29 @@ func WithFinishPin(ctx context.Context, ref string) context.Context {
 	return context.WithValue(ctx, finishPinKey{}, ref)
 }
 
+type finishBaseKey struct{}
+
+// WithFinishBase marks ctx's FinishWorkItem as naming sha, the commit
+// the pushed branch was built on, as its baseShaAtFinish: the product
+// diffs a pinned head against it, not against the head's first parent,
+// which on a branch of several commits is the builder's own previous
+// commit (2026-10-28: a retry turn's empty commit made the pinned
+// changeset "its base tree", refused). Empty carries nothing.
+func WithFinishBase(ctx context.Context, sha string) context.Context {
+	if sha == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, finishBaseKey{}, sha)
+}
+
+// FinishBaseOf is the base WithFinishBase put on ctx, "" when none.
+func FinishBaseOf(ctx context.Context) string { return finishBaseFrom(ctx) }
+
+func finishBaseFrom(ctx context.Context) string {
+	s, _ := ctx.Value(finishBaseKey{}).(string)
+	return s
+}
+
 type finishPinSignatureKey struct{}
 
 // WithFinishPinSignature carries the session's signed push statement

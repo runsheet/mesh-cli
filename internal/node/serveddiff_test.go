@@ -609,6 +609,33 @@ func TestServedDiffTooLargeFallsBackToTheWorktree(t *testing.T) {
 	assertWorktreeGone(t, s.r, s.batch)
 }
 
+// With the git relay on (FetchThroughRelay) a batch candidate is fetched
+// as a clone of its own, through the relay, and GitHub's Git Data API is
+// never asked: 2026-10-27 the served diff's blob-by-blob reads took
+// installation 127130941 to remaining=0 and every validation was refused.
+func TestServedDiffWithTheRelayOnFetchesAndAsksNoAPI(t *testing.T) {
+	s := newServedFixture(t)
+	s.r.FetchThroughRelay = true
+	claimBatch(t, s.r, s.batch)
+	att, err := handedBack(t, s.r, "candidate", s.batch.MergeBatchID)(s.r.ValidateCandidate(context.Background(), s.batch))
+	if err != nil {
+		t.Fatalf("ValidateCandidate: %v\n%s", err, s.logs.String())
+	}
+	if att.Commit != s.batch.SHA {
+		t.Fatalf("attestation commit = %s, want %s", att.Commit, s.batch.SHA)
+	}
+	if n := len(s.gh.requests()); n != 0 {
+		t.Fatalf("the Git Data API was asked %d time(s) with the relay on", n)
+	}
+	if gl := s.gitLog.String(); !strings.Contains(gl, "clone") || strings.Contains(gl, "worktree add") {
+		t.Fatalf("the candidate was not fetched as a clone of its own:\n%s", gl)
+	}
+	if n := strings.Count(s.logs.String(), "served diff: git relay on"); n != 1 {
+		t.Fatalf("relay fetch said %d times, want once per run:\n%s", n, s.logs.String())
+	}
+	assertWorktreeGone(t, s.r, s.batch)
+}
+
 // A served checkout is a git repository whose HEAD's tree is the served
 // commit's: a suite in a subdirectory finds the scratch as the repo's
 // top level through git (runsheet's loomgen suite, `cd platform && go

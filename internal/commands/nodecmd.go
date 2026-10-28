@@ -1378,6 +1378,9 @@ func runNode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gate
 		logger.Printf("served diff: %v; validations take worktrees", err)
 	} else {
 		runner.ServedDiff(&gitdata.Client{}, cache)
+		// with the relay on a pushed commit is fetched through it, not
+		// read blob by blob from the Git Data API
+		runner.FetchThroughRelay = cfg.GitRelay
 		loop.CacheTrim = &node.CacheTrim{Cache: cache, State: cache.State, Logf: logger.Printf}
 	}
 	loop.Plan = planWith(gw, cfg, h, loop, workRoot, accounts, logger)
