@@ -3587,6 +3587,9 @@ func (c *Client) withDescription(ctx context.Context, in map[string]any, descrip
 // description, given and non-empty, is the PR body (DescriptionField).
 func (c *Client) FinishWorkItem(ctx context.Context, itemID, branch, headSha string, costCents int, usage *UsageReport, description ...string) error {
 	in := map[string]any{"branch": branch, "headSha": headSha, "costCents": costCents}
+	if base := finishBaseFrom(ctx); base != "" {
+		in[BaseShaAtFinishField] = base
+	}
 	c.withDescription(ctx, in, description)
 	return c.mutateWithUsage(ctx, "finishWorkItem", itemID, in, usage)
 }

@@ -187,7 +187,14 @@ type Runner struct {
 	// nil takes the worktree of the shared clone.
 	GitData *gitdata.Client
 	Cache   *SharedCache
-	Log     *log.Logger
+	// FetchThroughRelay, set when node.yaml's git_relay is on, takes the
+	// worktree for every pushed commit: a clone and fetch through the
+	// node's relay, git's protocol and no Git Data API call, so a
+	// validation never spends the installation's API budget blob by blob
+	// (2026-10-27: installation 127130941 at remaining=0, every main and
+	// batch validation refused 403). Cache still roots the Go build cache.
+	FetchThroughRelay bool
+	Log               *log.Logger
 
 	// servedFallbackSaid is each reason the served diff fell back to the
 	// worktree, said once per run; made by ServedDiff, nil says nothing

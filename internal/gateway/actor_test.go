@@ -186,3 +186,28 @@ func TestNoActorWithoutWithActor(t *testing.T) {
 		}
 	}
 }
+
+// A pushed finish carries the branch's base when the node names one
+// (WithFinishBase), and none otherwise.
+func TestFinishWorkItemNamesTheBaseWhenGiven(t *testing.T) {
+	for _, base := range []string{"", "0123456789abcdef0123456789abcdef01234567"} {
+		f := actorFake(t)
+		f.WorkItems[actorItem]["status"] = "running"
+		gw := gateway.New(f.URL(), "rs_test")
+		ctx := gateway.WithFinishBase(nodeCtx(), base)
+		if err := gw.FinishWorkItem(ctx, actorItem, "mesh/g-1", "abc123", 20, nil); err != nil {
+			t.Fatal(err)
+		}
+		calls := f.CallsNamed("finishWorkItem")
+		if len(calls) != 1 {
+			t.Fatalf("%d finishes, want 1", len(calls))
+		}
+		got, sent := calls[0].Input[gateway.BaseShaAtFinishField]
+		if base == "" && sent {
+			t.Fatalf("baseShaAtFinish sent with no base: %v", got)
+		}
+		if base != "" && got != base {
+			t.Fatalf("baseShaAtFinish = %v, want %s", got, base)
+		}
+	}
+}

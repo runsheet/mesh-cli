@@ -122,10 +122,18 @@ func (f *Finish) Run(ctx context.Context, state *State) error {
 	if state.WorkspaceDir == "" {
 		return errors.New("finish: no workspace")
 	}
+	base := f.BaseRef
+	if base == "" {
+		base = state.BaseRef
+	}
+	baseSHA := f.BaseSHA
+	if baseSHA == "" {
+		baseSHA = state.BaseSHA
+	}
 	if f.Gateway == nil {
 		// no changeset gateway at all: the node's push, as a platform
 		// without the routes gets
-		res, err := f.push(ctx, state.WorkspaceDir, errors.New("no changeset gateway"))
+		res, err := f.push(ctx, state.WorkspaceDir, base, baseSHA, errors.New("no changeset gateway"))
 		if res != nil {
 			if state.Results == nil {
 				state.Results = map[string]any{}
@@ -134,20 +142,12 @@ func (f *Finish) Run(ctx context.Context, state *State) error {
 		}
 		return err
 	}
-	base := f.BaseRef
-	if base == "" {
-		base = state.BaseRef
-	}
 	if base == "" {
 		return errors.New("finish: no base ref")
 	}
-	baseSHA := f.BaseSHA
-	if baseSHA == "" {
-		baseSHA = state.BaseSHA
-	}
 	res, err := f.changeset(ctx, state.WorkspaceDir, base, baseSHA)
 	if gateway.IsUnsupported(err) {
-		res, err = f.push(ctx, state.WorkspaceDir, err)
+		res, err = f.push(ctx, state.WorkspaceDir, base, baseSHA, err)
 	}
 	if res != nil {
 		if state.Results == nil {
@@ -303,8 +303,9 @@ func isAncestor(ctx context.Context, git GitFunc, dir, sha string) bool {
 }
 
 // push is the fallback: the node's own push from the node process, then
-// the finish on the head it pushed.
-func (f *Finish) push(ctx context.Context, dir string, why error) (*FinishResult, error) {
+// the finish on the head it pushed, naming the commit the branch was
+// built on (baseCommit of base, "" naming none) as its baseShaAtFinish.
+func (f *Finish) push(ctx context.Context, dir, base, checkoutSHA string, why error) (*FinishResult, error) {
 	if f.Push == nil || f.FinishPushed == nil {
 		return nil, fmt.Errorf("finish: the platform holds no changesets and no push is configured: %w", why)
 	}
@@ -313,6 +314,14 @@ func (f *Finish) push(ctx context.Context, dir string, why error) (*FinishResult
 		return nil, fmt.Errorf("finish: push %s: %w", f.Branch, err)
 	}
 	res := &FinishResult{Pushed: true, HeadSHA: head}
+	if base != "" {
+		if sha, _, err := baseCommit(ctx, f.git(), dir, base, checkoutSHA, f.Logf); err == nil {
+			res.BaseSHA = sha
+			ctx = gateway.WithFinishBase(ctx, sha)
+		} else if f.Logf != nil {
+			f.Logf("finish: no base commit to name: %v", err)
+		}
+	}
 	if err := f.FinishPushed(ctx, f.ItemID, f.Branch, head); err != nil {
 		return res, fmt.Errorf("finish: finish on %s: %w", head, err)
 	}

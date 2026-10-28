@@ -192,6 +192,9 @@ func (r *Runner) checkoutServed(ctx context.Context, t validationTarget, c mainC
 	if r.GitData == nil || r.Cache == nil {
 		return "", nil, &servedFallback{reason: "no shared cache"}
 	}
+	if r.FetchThroughRelay {
+		return "", nil, &servedFallback{reason: "git relay on, fetched through it"}
+	}
 	vr := r.validator()
 	tok, err := vr.servedToken(ctx, t, c.token)
 	if err != nil {

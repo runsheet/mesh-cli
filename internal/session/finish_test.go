@@ -513,3 +513,33 @@ func TestFinishCallsRecordedBetweenTheRecordAndTheFinish(t *testing.T) {
 		t.Fatalf("Recorded got %+v, want changeset cs-6 with the recorded tree %s", got, gw.recorded[0].Tree)
 	}
 }
+
+// A pushed finish (no changeset gateway: a pinned build, runsheet ADR 076
+// option (c)) names the commit the branch was built on as its
+// baseShaAtFinish, never the head's first parent: on 2026-10-28 a retry
+// turn's empty commit on top of the build made the product read the
+// pinned changeset against that parent, "its base tree", and refuse it.
+func TestFinishPushedNamesTheBranchsBase(t *testing.T) {
+	dir := builtWorkspace(t)
+	git(t, dir, "commit", "-q", "--allow-empty", "-m", "re-run validation")
+	base := git(t, dir, "rev-parse", "base")
+	var named string
+	f := &Finish{
+		ItemID: "item-7", Branch: "mesh/g-7",
+		Push: func(ctx context.Context, d, branch string) (string, error) { return "deadbeef", nil },
+		FinishPushed: func(ctx context.Context, _, _, _ string) error {
+			named = gateway.FinishBaseOf(ctx)
+			return nil
+		},
+	}
+	state := &State{WorkspaceDir: dir, BaseRef: "base"}
+	if err := f.Run(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	if named != base {
+		t.Fatalf("baseShaAtFinish = %q, want the branch's base %s", named, base)
+	}
+	if res := state.Results[FinishStepName].(*FinishResult); res.BaseSHA != base || !res.Pushed {
+		t.Fatalf("result = %+v, want pushed on base %s", res, base)
+	}
+}
