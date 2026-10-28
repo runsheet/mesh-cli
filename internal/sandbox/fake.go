@@ -306,6 +306,14 @@ func (f *Fake) PodSpecs() []PodSpec {
 	return append([]PodSpec(nil), f.Pods...)
 }
 
+// AgentSpecs are the agents RunAgent was handed so far, read while
+// they run.
+func (f *Fake) AgentSpecs() []AgentSpec {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]AgentSpec(nil), f.Agents...)
+}
+
 // Called reports whether a call was recorded, and its index in Calls.
 func (f *Fake) Called(prefix string) (int, bool) {
 	f.mu.Lock()

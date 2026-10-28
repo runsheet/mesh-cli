@@ -75,6 +75,17 @@ func (f *Fake) SeedPullRequestValidation(p gateway.MainValidationPullRequest) {
 	f.PullRequestValidations[p.PullRequestValidationID] = seedRow(p)
 }
 
+// WithdrawPullRequestValidation withdraws a pull request validation, as
+// the platform does when the pull request gets a new head: no node
+// holds it, and a claim of it is refused.
+func (f *Fake) WithdrawPullRequestValidation(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if row := f.PullRequestValidations[id]; row != nil {
+		row[validationState] = "withdrawn"
+	}
+}
+
 // PullRequestValidation is a copy of the pull request validation's row,
 // as MergeBatch's.
 func (f *Fake) PullRequestValidation(id string) map[string]any {

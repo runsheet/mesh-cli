@@ -472,9 +472,10 @@ type Loop struct {
 	// reserveSaid is whether sayReserveRetired has said its line
 	reserveSaid bool
 	updateWG    sync.WaitGroup
-	// stoppables are the sessions the platform's stop list can end, by
-	// kind and item (stops.go)
-	stoppables map[string]stoppable
+	// stoppables are the running jobs the node can stop — the sessions
+	// the platform's stop list can end, by kind and item, and every
+	// other job by its own keys (stops.go)
+	stoppables map[string]*stoppable
 	// letGo cancels every context Context derived: the sessions detach
 	// and Run returns. exiting is set by Restart.
 	letGo   []context.CancelFunc

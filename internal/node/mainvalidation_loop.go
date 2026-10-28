@@ -133,9 +133,21 @@ type mainJob struct {
 	window time.Duration
 	run    func(ctx context.Context) (validate.Attestation, error)
 	claim  func(ctx context.Context) error
+	// check asks again, while the run goes on, whether the node still
+	// holds the job (watchMainClaim); nil is claim. A job the one claim
+	// handed over claims nothing itself but is checked by its kind's
+	// claim, which converges on the node that holds it.
+	check  func(ctx context.Context) error
 	finish func(ctx context.Context, att validate.Attestation) error
 	fail   func(ctx context.Context, reason string) error
+	// jobID is the job's Mesh job, when the claim named one: a running
+	// job stops by it too (StopJob(JobKey(jobID))), as by its claim
+	jobID string
 }
+
+// validationStopKey is a main validation's key among the node's running
+// jobs.
+func validationStopKey(id string) string { return stopKey("validate", id) }
 
 func batchJob(l *Loop, gw mainValidationGateway, b gateway.MainValidationBatch, nodeID string) mainJob {
 	return mainJob{
@@ -470,26 +482,36 @@ func (l *Loop) startMainJob(ctx context.Context, j mainJob) bool {
 
 // runMainJob validates j under its claim and ends the claim: finished
 // on the attested sha whatever the attestation's colour, failed with
-// the reason on anything else. A claim the platform refuses again
-// (watchMainClaim) stops the run and sends nothing; a run past its
-// window (the claim's budget, runWindow) is stopped and failed.
+// the reason on anything else. j runs as one of the node's running jobs
+// (runningJob), under its subject and its Mesh job: a claim the platform
+// refuses again (watchMainClaim), a stop from the platform or a Mesh
+// job found cancelled stops it the one way (stopJob) — its steps
+// cancelled at once, its pods and workspace removed by the run's own
+// cleanup as it returns — and nothing is sent. A run past its window
+// (the claim's budget, runWindow) is stopped and failed.
 func (l *Loop) runMainJob(ctx context.Context, j mainJob) {
-	lost, stop := context.WithCancelCause(ctx)
-	defer stop(nil)
+	key := validationStopKey(j.id)
+	keys := []string{key}
+	if j.jobID != "" {
+		keys = append(keys, JobKey(j.jobID))
+	}
+	jctx, done := l.runningJob(ctx, j.label, false, keys...)
+	defer done()
 	window := runWindowOf(j)
-	rctx, cancel := context.WithTimeoutCause(lost, window, errBatchOverrun)
+	rctx, cancel := context.WithTimeoutCause(jctx, window, errBatchOverrun)
 	defer cancel()
-	done := make(chan struct{})
-	defer close(done)
+	watched := make(chan struct{})
+	defer close(watched)
 	go func() {
 		defer crash.Guard()
-		l.watchMainClaim(rctx, done, j, stop)
+		l.watchMainClaim(rctx, watched, j, key)
 	}()
 
 	att, err := j.run(rctx)
-	if cause := context.Cause(rctx); cause != nil && (errors.Is(cause, errBatchClaimLost) || errors.Is(cause, errBatchOverrun)) {
-		if errors.Is(cause, errBatchClaimLost) {
-			l.logf("%s: stopped: %v", j.label, cause)
+	if cause := context.Cause(rctx); cause != nil && (errors.Is(cause, harness.ErrStopSession) || errors.Is(cause, errBatchOverrun)) {
+		if errors.Is(cause, harness.ErrStopSession) {
+			// stopped (stopJob, which said so): the job is not the
+			// node's to finish or fail
 			return
 		}
 		reason := fmt.Sprintf("ran past %s, the platform's run limit; stopped", window)
@@ -523,15 +545,20 @@ func (l *Loop) failMainJob(ctx context.Context, j mainJob, reason string) {
 }
 
 // watchMainClaim asks for j's claim again every BatchCheckEvery while
-// the run goes on — the claim converges on the same node, so it changes
-// nothing while the node holds it — and stops the run, errBatchClaimLost,
-// once the platform refuses it: another node holds it, or the
-// validation no longer waits on a node. A claim that errs otherwise
+// the run goes on (check, else claim) — the claim converges on the same
+// node, so it changes nothing while the node holds it — and stops the
+// job under key (stopJob) once the platform refuses it: another node
+// holds it, or the validation no longer waits on a node (a pull
+// request's head superseded, "withdrawn"). A claim that errs otherwise
 // says nothing.
-func (l *Loop) watchMainClaim(ctx context.Context, done <-chan struct{}, j mainJob, stop context.CancelCauseFunc) {
+func (l *Loop) watchMainClaim(ctx context.Context, done <-chan struct{}, j mainJob, key string) {
 	every := l.BatchCheckEvery
 	if every <= 0 {
 		every = DefaultBatchCheckEvery
+	}
+	check := j.check
+	if check == nil {
+		check = j.claim
 	}
 	t := time.NewTicker(every)
 	defer t.Stop()
@@ -543,8 +570,8 @@ func (l *Loop) watchMainClaim(ctx context.Context, done <-chan struct{}, j mainJ
 			return
 		case <-t.C:
 		}
-		if err := j.claim(ctx); err != nil && gateway.IsRefusal(err) {
-			stop(fmt.Errorf("%w: %v", errBatchClaimLost, err))
+		if err := check(ctx); err != nil && gateway.IsRefusal(err) {
+			l.stopJob(key, &JobLostError{Reason: fmt.Sprintf("%v: %v", errBatchClaimLost, err)})
 			return
 		}
 	}
