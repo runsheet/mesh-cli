@@ -69,6 +69,35 @@ type KnownAccounts struct {
 	// order is the label of each entry, first noted first: Accounts'
 	// stable order.
 	order []string
+	// refs is each account's opaque reference in Mesh (runsheet ADR 078),
+	// learned from the claims Mesh picked it for, by its limits key
+	// (LearnRef): in memory only, relearned from the next claim.
+	refs map[string]string
+}
+
+// LearnRef records that the account whose limits are kept under key is
+// ref in Mesh.
+func (k *KnownAccounts) LearnRef(key, ref string) {
+	if k == nil || key == "" || ref == "" {
+		return
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.refs == nil {
+		k.refs = map[string]string{}
+	}
+	k.refs[key] = ref
+}
+
+// RefOf is the Mesh reference learned for the account whose limits are
+// kept under key, "" when none was learned.
+func (k *KnownAccounts) RefOf(key string) string {
+	if k == nil {
+		return ""
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.refs[key]
 }
 
 // OpenKnownAccounts reads the store kept at path; a missing file is an

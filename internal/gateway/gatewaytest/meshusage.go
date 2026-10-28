@@ -36,7 +36,7 @@ func (f *Fake) meshUsage(w http.ResponseWriter, r *http.Request) bool {
 	}
 	switch kind {
 	case "usage":
-		if f.MeshSessions[id] == nil {
+		if f.MeshSessions[id] == nil && !f.Jobs[id] {
 			writeREST(w, http.StatusNotFound, map[string]any{"message": "unknown job"})
 			return true
 		}

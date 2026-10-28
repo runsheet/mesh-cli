@@ -111,6 +111,10 @@ type SessionAccount struct {
 	creds   *Credentials
 	ref     gateway.SessionRef
 	nodeID  string
+	// meshJob and accountRef are the Mesh job the claim opened and the
+	// account Mesh picked (WithJob): the session's usage is reported on
+	// the job, by the account, when it ends (Report).
+	meshJob, accountRef string
 	account AccountConfig
 	// remaining is an api credential's room under its caps (0: none known).
 	remaining float64
@@ -146,6 +150,9 @@ type SessionAccount struct {
 	// (build, evaluate, rebase, plan, research), which Finish's record
 	// line carries (SetLabel, adr-016's amendment); never on the report.
 	logLabel, kind string
+	// reportedToMesh is a usage report Mesh took on the session's job
+	// (reportToMesh).
+	reportedToMesh bool
 	// evalPriority and evaluators are an evaluation's goal priority and
 	// whether a second opinion ran (1 or 2), which Finish's record line
 	// also carries for kind evaluate (SetEvaluation, adr-016's amendment
@@ -191,7 +198,8 @@ func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID, 
 	if adapter == "" {
 		adapter = AdapterClaudeCode
 	}
-	s := &SessionAccount{creds: c, ref: ref, nodeID: nodeID, started: c.now(), Adapter: adapter}
+	s := &SessionAccount{creds: c, ref: ref, nodeID: nodeID, started: c.now(), Adapter: adapter,
+		meshJob: JobIDFrom(ctx), accountRef: AccountRefFrom(ctx)}
 	if forJob := jobCredentialFrom(ctx); forJob != nil {
 		if done, err := c.openForJob(ctx, s, ref, nodeID, adapter, forJob); done {
 			return s, err
@@ -604,6 +612,7 @@ func (s *SessionAccount) Report(res harness.Result) *gateway.UsageReport {
 	if r.Model == "" {
 		r.Model = s.Model
 	}
+	defer s.reportToMesh(r)
 	if s.before != nil {
 		r.FiveHourBefore, r.FiveHourResetsAtBefore = reportWindow(s.before.FiveHour)
 		r.SevenDayBefore, r.SevenDayResetsAtBefore = reportWindow(s.before.SevenDay)

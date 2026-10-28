@@ -85,7 +85,11 @@ type Fake struct {
 	// MeshSessions are the mesh sessions POST /mesh/v1/sessions opened
 	// (runsheet ADR 056), by session id; NoMeshSessions answers that
 	// route 404, a platform that predates it (meshsessions.go).
-	MeshSessions   map[string]*MeshSession
+	MeshSessions map[string]*MeshSession
+	// Jobs are the Mesh jobs of every other kind the fake knows by id
+	// (runsheet ADR 075 amendment 2026-10-28), which take usage as a
+	// build's mesh session does.
+	Jobs           map[string]bool
 	NoMeshSessions bool
 	// JobUsages are the job usage reports POST /mesh/v1/jobs/{id}/usage
 	// took, by job id, and NodeAccounts the accounts reports POST

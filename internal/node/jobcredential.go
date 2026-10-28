@@ -44,6 +44,36 @@ func CredentialRefFrom(ctx context.Context) string {
 	return ref
 }
 
+type claimedJobKey struct{}
+
+// claimedJob is what the claim answered about the job beyond its
+// subject: the Mesh job it opened and the account Mesh picked for it.
+type claimedJob struct{ id, accountRef string }
+
+// WithJob marks ctx as the claim job answered: its credential_ref, the
+// Mesh job and the account Mesh picked. A brief that names none of them
+// leaves ctx as it is.
+func WithJob(ctx context.Context, job gateway.JobBrief) context.Context {
+	ctx = WithCredentialRef(ctx, job.CredentialRef)
+	if job.JobID == "" && job.AccountRef == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, claimedJobKey{}, claimedJob{id: job.JobID, accountRef: job.AccountRef})
+}
+
+// JobIDFrom is the Mesh job the claim opened, "" when it named none.
+func JobIDFrom(ctx context.Context) string {
+	j, _ := ctx.Value(claimedJobKey{}).(claimedJob)
+	return j.id
+}
+
+// AccountRefFrom is the opaque reference of the account Mesh picked for
+// the claim, "" when it picked none.
+func AccountRefFrom(ctx context.Context) string {
+	j, _ := ctx.Value(claimedJobKey{}).(claimedJob)
+	return j.accountRef
+}
+
 type jobCredentialKey struct{}
 
 // JobCredentialFunc reads the claimed job's credential from Latchkey.

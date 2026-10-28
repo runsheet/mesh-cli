@@ -166,9 +166,12 @@ func (l *Loop) anyAccount(ctx context.Context) bool {
 // startQueued starts the job the one claim handed this node, or hands it
 // back with why when the node cannot run it after all.
 func (l *Loop) startQueued(ctx context.Context, nodeID string, job gateway.JobBrief) {
+	// every kind's session reports its usage on the job the claim opened,
+	// by the account Mesh picked (runsheet ADR 075 amendment 2026-10-28)
+	ctx = WithJob(ctx, job)
 	switch job.Kind {
 	case queueBuild:
-		l.startQueuedBuild(WithCredentialRef(ctx, job.CredentialRef), nodeID, job.Subject.ID)
+		l.startQueuedBuild(ctx, nodeID, job.Subject.ID)
 	case queueEvaluate:
 		l.startQueuedEvaluation(ctx, job.Subject.ID)
 	case queueRebase:

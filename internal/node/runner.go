@@ -1367,14 +1367,24 @@ func (r *Runner) meshUsage(ctx context.Context, item gateway.WorkItem, rep *gate
 		return skip("the gateway takes no job usage")
 	case rep == nil:
 		return rep
-	case rep.CredentialID == "":
+	case rep.CredentialID == "" && AccountRefFrom(ctx) == "":
 		return skip("the session's account has no reference")
 	}
-	job := r.Bearers.JobID(item.ID, item.Attempts)
+	// the job the claim answered, else the claim's mesh session's
+	job := JobIDFrom(ctx)
+	if job == "" {
+		job = r.Bearers.JobID(item.ID, item.Attempts)
+	}
 	if job == "" {
 		return skip("the claim opened no mesh session, so the job has no id")
 	}
-	switch err := mu.ReportJobUsage(ctx, nodeIDOf(r.Scopes, item.OrgID, r.Cfg), job, gateway.JobUsageOf(rep)); {
+	u := gateway.JobUsageOf(rep)
+	// by the account Mesh picked, keyed as Mesh keys its windows; a claim
+	// that picked none names the platform's credential, as before
+	if ref := AccountRefFrom(ctx); ref != "" {
+		u.AccountRef = ref
+	}
+	switch err := mu.ReportJobUsage(ctx, nodeIDOf(r.Scopes, item.OrgID, r.Cfg), job, u); {
 	case err == nil:
 		return nil
 	case gateway.IsUnsupported(err):

@@ -58,8 +58,16 @@ type JobBrief struct {
 	// (runsheet ADR 078 decision 5): the node reads the job's secret from
 	// Latchkey's for-job route by it rather than from its own stored
 	// accounts; "" when Mesh picked none.
-	CredentialRef string         `json:"credential_ref,omitempty"`
-	Subject       JobSubject     `json:"subject"`
+	CredentialRef string `json:"credential_ref,omitempty"`
+	// JobID is the Mesh job the claim opened (runsheet ADR 075 amendment
+	// 2026-10-28: every kind is a job): the job the node reports the
+	// session's usage on. "" from a platform that names none.
+	JobID string `json:"job_id,omitempty"`
+	// AccountRef is the picked account's opaque reference (ADR 078
+	// decision 2), which the node keys the job's usage and the account's
+	// windows by; "" when Mesh picked none.
+	AccountRef string         `json:"account_ref,omitempty"`
+	Subject    JobSubject     `json:"subject"`
 	Code          JobCode        `json:"code"`
 	Needs         string         `json:"needs"`
 	Access        []string       `json:"access"`

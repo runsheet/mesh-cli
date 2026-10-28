@@ -2204,7 +2204,9 @@ func (l *Loop) reportAccounts(ctx context.Context, limits []gateway.Limits) {
 	}
 	var accounts []gateway.NodeAccount
 	for _, lim := range limits {
-		ref := refs[lim.Account]
+		// the reference Mesh picked the account by, where a claim named
+		// it, else the platform's credential id
+		ref := cmp.Or(l.Known.RefOf(lim.Account), refs[lim.Account])
 		if ref == "" {
 			continue
 		}
