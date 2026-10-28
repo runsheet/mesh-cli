@@ -78,3 +78,81 @@ func TestALaneWithoutItsRequiredServiceIsRefused(t *testing.T) {
 		t.Fatalf("the refused lane's pod was left: %v", rt.Removed)
 	}
 }
+
+// A finished shard's pod goes, its Postgres with it, while another
+// shard still runs, and so does the run's own pod once the suites in
+// it have run: on dl360 a done shard's pod stood Degraded, its Postgres
+// up, until the whole validation ended (2026-10-28).
+func TestAFinishedShardsPodIsRemovedWhileOthersRun(t *testing.T) {
+	gate := make(chan struct{})
+	held := make(chan struct{})
+	rt := &sandbox.Fake{Agent: func(ctx context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
+		if strings.Contains(strings.Join(spec.Command, " "), validate.ShardIndexEnv+"=1") {
+			close(held)
+			select {
+			case <-gate:
+			case <-ctx.Done():
+				return sandbox.Exit{Code: -1}, nil
+			}
+		}
+		return sandbox.Exit{}, nil
+	}}
+	sb := &sandbox.Sandbox{Runtime: rt, Config: SandboxConfig{}.Settings("v1"), TempDir: t.TempDir()}
+	sb.Config.ServiceTimeout = 2 * time.Second
+	dir := t.TempDir()
+	writeServices(t, dir, servicesYML)
+	logf := func(string, ...any) {}
+	first, err := OpenSessionPod(context.Background(), sb, dir, "pr-5644", harness.Kind("validate"), sandbox.GitIdentity{}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	lr := laneSandboxRunner{
+		sandboxRunner: sandboxRunner{sess: first.Session, dir: dir},
+		open: func(ctx context.Context, name string) (*SessionPod, error) {
+			return OpenSessionPod(ctx, sb, dir, "pr-5644-"+name, harness.Kind("validate"), sandbox.GitIdentity{}, logf)
+		},
+		releaseFirst: first.Close,
+	}
+	steps := []validate.Step{
+		{Name: "lint", Kind: validate.KindLint, Command: "true", Timeout: time.Minute},
+		{Name: "integration", Kind: validate.KindIntegration, Command: "go test ./e2e", Timeout: time.Minute, Shards: 2},
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := validate.Run(context.Background(), steps, lr, validate.Options{Dir: dir})
+		done <- err
+	}()
+	<-held
+	podOf := func(label string) string {
+		for _, p := range rt.PodSpecs() {
+			if p.Labels[sandbox.SessionLabel] == label {
+				return p.Name
+			}
+		}
+		t.Fatalf("no pod of session %s in %v", label, rt.PodSpecs())
+		return ""
+	}
+	removed := func(label string) bool {
+		name := podOf(label)
+		_, ok := rt.Called("remove " + name)
+		return ok
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for !(removed("pr-5644") && removed("pr-5644-integration-0")) {
+		if time.Now().After(deadline) {
+			t.Fatalf("while shard 2/2 runs, the run's own pod or shard 1/2's still stands: %v", rt.PodSpecs())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if removed("pr-5644-integration-1") {
+		t.Fatal("the running shard's pod was removed")
+	}
+	close(gate)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !removed("pr-5644-integration-1") {
+		t.Fatal("the last shard's pod was left")
+	}
+}

@@ -378,7 +378,9 @@ func (r *Runner) validateCheckout(ctx context.Context, t validationTarget, c mai
 		return validate.Attestation{}, errors.New(pod.ReleaseReason())
 	}
 	if pod != nil {
-		t.pod = pod.Session
+		// nothing runs in it after the suites: given back as soon as
+		// those in it have run, the other lanes' pods going as theirs do
+		t.pod, t.releasePod = pod.Session, pod.Close
 	}
 	v, err := vr.start(ctx, t)
 	if err != nil {

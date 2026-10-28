@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
@@ -20,6 +21,9 @@ type SessionPod struct {
 	Statuses []sandbox.ServiceStatus
 	// logf is the node's log, where a Close that fails says so.
 	logf func(string, ...any)
+	// closed makes Close run once: a validation gives its pod back when
+	// its first lane ends and closes it again on the way out
+	closed sync.Once
 }
 
 // openOrgSessionPod is OpenSessionPod for a session of the org whose id
@@ -94,15 +98,17 @@ func OpenSessionPod(ctx context.Context, sb *sandbox.Sandbox, dir, label string,
 }
 
 // Close removes the pod, its sidecars, their volumes and the session's
-// HOME; what it could not remove is logged, `sandbox: session <label>:
-// close: <err>`, never dropped.
+// HOME, once however often it is called; what it could not remove is
+// logged, `sandbox: session <label>: close: <err>`, never dropped.
 func (p *SessionPod) Close() {
 	if p == nil || p.Session == nil {
 		return
 	}
-	if err := p.Session.Close(); err != nil && p.logf != nil {
-		p.logf("%s", sandbox.CloseLine(p.Session.Label, err))
-	}
+	p.closed.Do(func() {
+		if err := p.Session.Close(); err != nil && p.logf != nil {
+			p.logf("%s", sandbox.CloseLine(p.Session.Label, err))
+		}
+	})
 }
 
 // Apply puts the session on the job, for the harness to run in.

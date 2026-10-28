@@ -817,6 +817,12 @@ func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 		Stderr:         stderr,
 	})
 	if ctx.Err() != nil {
+		if services != nil {
+			// killing podman's client leaves the step's container
+			// running beside the services: removed here, as the pod
+			// of a Run without services is (s.remove)
+			s.removeRun(ctx, name)
+		}
 		return ctx.Err()
 	}
 	if err != nil {
@@ -883,6 +889,17 @@ func (s *Session) Exec(ctx context.Context, spec RunSpec) error {
 		return fmt.Errorf("sandbox: exec: %w", err)
 	}
 	return classify(exit, time.Since(start), spec.Timeout, cfg.Limits, tail.String())
+}
+
+// removeRun removes a cancelled Run's container from the services pod
+// it ran in, past ctx's end, so the step stops when its run is
+// stopped and not when the pod is removed.
+func (s *Session) removeRun(ctx context.Context, name string) {
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), RemoveTimeout)
+	defer cancel()
+	if err := s.sb.Runtime.RemoveContainer(rctx, name); err != nil {
+		s.sb.logf("sandbox: session %s: remove stopped run %s: %s", s.Label, name, oneLine(err.Error()))
+	}
 }
 
 // ExecName is the container name of the session's nth Exec in a pod.
@@ -1108,23 +1125,55 @@ func classify(exit Exit, elapsed, timeout time.Duration, l Limits, stderr string
 }
 
 func (s *Session) remove(ctx context.Context, pod Pod) {
-	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-	defer cancel()
-	if err := s.sb.Runtime.Remove(rctx, pod); err == nil {
-		s.mu.Lock()
-		for i, p := range s.pods {
-			if p == pod {
-				s.pods = append(s.pods[:i], s.pods[i+1:]...)
-				break
-			}
-		}
-		s.mu.Unlock()
-	}
+	_ = s.removePod(ctx, pod)
 }
 
-// Close removes any pod still standing — its containers and their
-// anonymous volumes with it — and the session's HOME, and returns every
-// removal that failed, joined.
+// RemoveTries, RemoveTimeout and RemoveBackoff bound one pod's removal:
+// each try may take RemoveTimeout — a store busy with dozens of pods
+// took past the old 30 seconds to remove one (`podman rm: signal:
+// killed`, dl360 2026-10-28) — and a failed one is tried again after
+// RemoveBackoff, up to RemoveTries in all. The pod's containers are
+// killed first (Podman.Remove), so what it held is given back at once
+// even while its removal waits.
+var (
+	RemoveTries   = 3
+	RemoveTimeout = 2 * time.Minute
+	RemoveBackoff = 5 * time.Second
+)
+
+// removePod removes pod, tried again as RemoveTries says, and drops it
+// from the session's pods once it is gone; the last try's error when
+// none worked. It runs past ctx's end: a cancelled run's pod is removed
+// all the same.
+func (s *Session) removePod(ctx context.Context, pod Pod) error {
+	var err error
+	for try := range max(RemoveTries, 1) {
+		if try > 0 {
+			time.Sleep(RemoveBackoff)
+		}
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), RemoveTimeout)
+		err = s.sb.Runtime.Remove(rctx, pod)
+		cancel()
+		if err == nil {
+			s.mu.Lock()
+			for i, p := range s.pods {
+				if p == pod {
+					s.pods = append(s.pods[:i], s.pods[i+1:]...)
+					break
+				}
+			}
+			s.mu.Unlock()
+			return nil
+		}
+	}
+	return err
+}
+
+// Close removes any pod still standing — its containers killed first,
+// then removed with their anonymous volumes, each pod tried again when
+// its removal fails (removePod) — and the session's HOME, and returns
+// every removal that failed, joined. A pod removed is the session's no
+// more, so a second Close removes only what the first could not.
 //
 // A Detached session's Close removes nothing: its agent runs on. Either
 // way the session leaves the sandbox's open set (Sandbox.Live).
@@ -1142,11 +1191,9 @@ func (s *Session) Close() error {
 	}
 	var errs []error
 	for _, p := range pods {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if err := s.sb.Runtime.Remove(ctx, p); err != nil {
+		if err := s.removePod(context.Background(), p); err != nil {
 			errs = append(errs, err)
 		}
-		cancel()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
