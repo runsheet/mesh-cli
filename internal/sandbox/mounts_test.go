@@ -379,3 +379,40 @@ func TestMountsScratchRemovedReadOnly(t *testing.T) {
 		t.Fatalf("%s still there: %v", dir, err)
 	}
 }
+
+// A validation given the node's shared Go module cache mounts it
+// read-only at its own path and names it as GOMODCACHE, once.
+func TestValidationCacheSharesTheModuleCacheReadOnly(t *testing.T) {
+	root := t.TempDir()
+	c := ValidationCache{Scratch: filepath.Join(root, "s"), GoCache: filepath.Join(root, "go"), Blobs: filepath.Join(root, "blobs"), GoModCache: filepath.Join(root, "gomod")}
+	want := []Mount{
+		{Source: c.Scratch, Target: c.Scratch},
+		{Source: c.GoCache, Target: c.GoCache},
+		{Source: c.Blobs, Target: c.Blobs, ReadOnly: true},
+		{Source: c.GoModCache, Target: c.GoModCache, ReadOnly: true},
+	}
+	if got := c.Mounts(); !slices.Equal(got, want) {
+		t.Fatalf("mounts = %+v, want %+v", got, want)
+	}
+	env := c.Env([]string{"GOMODCACHE=/home/me/go/pkg/mod", "PATH=/bin"})
+	n := 0
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "GOMODCACHE=") {
+			n++
+			if kv != "GOMODCACHE="+c.GoModCache {
+				t.Fatalf("GOMODCACHE = %q", kv)
+			}
+		}
+	}
+	if n != 1 {
+		t.Fatalf("GOMODCACHE set %d times in %v", n, env)
+	}
+	if !slices.Contains(BaseEnv, "GOMODCACHE") {
+		t.Fatal("GOMODCACHE is not passed into the pod")
+	}
+	// none given: no mount, the job's own GOMODCACHE kept
+	none := ValidationCache{Scratch: c.Scratch}
+	if got := none.Env([]string{"GOMODCACHE=/home/me/go/pkg/mod"}); !slices.Contains(got, "GOMODCACHE=/home/me/go/pkg/mod") {
+		t.Fatalf("env = %v", got)
+	}
+}

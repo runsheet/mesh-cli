@@ -79,7 +79,7 @@ const ToolEnvPrefix = "MESH_TOOL_"
 // own ENV says so too, but --unsetenv-all drops the image's variables.
 // The package variables are set only when the node names its Stores, the
 // scratch and Go cache ones only for a run given a ValidationCache.
-var BaseEnv = []string{"PATH", "HOME", "LANG", "TZ", "TERM", "CLAUDE_CONFIG_DIR", "MESH_ITEM", "MESH_SESSION_KIND", "DISABLE_AUTOUPDATER", "npm_config_store_dir", "pnpm_config_store_dir", "PNPM_HOME", "npm_config_cache", "TMPDIR", "GOTMPDIR", "GOCACHE"}
+var BaseEnv = []string{"PATH", "HOME", "LANG", "TZ", "TERM", "CLAUDE_CONFIG_DIR", "MESH_ITEM", "MESH_SESSION_KIND", "DISABLE_AUTOUPDATER", "npm_config_store_dir", "pnpm_config_store_dir", "PNPM_HOME", "npm_config_cache", "TMPDIR", "GOTMPDIR", "GOCACHE", "GOMODCACHE"}
 
 // Stores are the node's package store and cache, one of each per node and
 // shared by every session (mesh-specs ADR 017 §3): Pnpm is pnpm's
@@ -137,21 +137,26 @@ func (st Stores) Env() []string {
 // commits, its counts — is mounted. Each is its own bind mount at its
 // own path, as the Stores are: link(2) refuses to cross them (EXDEV), so
 // a step copies out of the blob store rather than hardlinking, which is
-// the price of not mounting the cache root whole. Empty is none.
+// the price of not mounting the cache root whole. GoModCache, when set,
+// is the node's shared Go module cache, filled by the node before the
+// run (FillGoModCache) and mounted read-only as the steps' GOMODCACHE, so
+// no step downloads a module and none can change one every later run
+// reads. Empty is none.
 type ValidationCache struct {
-	Scratch string
-	GoCache string
-	Blobs   string
+	Scratch    string
+	GoCache    string
+	Blobs      string
+	GoModCache string
 }
 
 // Mounts are the cache's mounts: the scratch and the Go cache
-// read-write, the blob store read-only.
+// read-write, the blob store and the Go module cache read-only.
 func (c ValidationCache) Mounts() []Mount {
 	var m []Mount
 	for _, d := range []struct {
 		path string
 		ro   bool
-	}{{c.Scratch, false}, {c.GoCache, false}, {c.Blobs, true}} {
+	}{{c.Scratch, false}, {c.GoCache, false}, {c.Blobs, true}, {c.GoModCache, true}} {
 		if d.path != "" {
 			m = append(m, Mount{Source: d.path, Target: d.path, ReadOnly: d.ro})
 		}
@@ -169,6 +174,9 @@ func (c ValidationCache) Env(env []string) []string {
 	if c.GoCache != "" {
 		set["GOCACHE"] = c.GoCache
 	}
+	if c.GoModCache != "" {
+		set["GOMODCACHE"] = c.GoModCache
+	}
 	out := make([]string, 0, len(env)+len(set))
 	for _, kv := range env {
 		name, _, _ := strings.Cut(kv, "=")
@@ -176,7 +184,7 @@ func (c ValidationCache) Env(env []string) []string {
 			out = append(out, kv)
 		}
 	}
-	for _, name := range []string{"TMPDIR", "GOTMPDIR", "GOCACHE"} {
+	for _, name := range []string{"TMPDIR", "GOTMPDIR", "GOCACHE", "GOMODCACHE"} {
 		if v, ok := set[name]; ok {
 			out = append(out, name+"="+v)
 		}

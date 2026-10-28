@@ -356,7 +356,15 @@ func (vr validator) start(ctx context.Context, t validationTarget) (*buildValida
 		env = t.job.Env
 	}
 	v.env = sandbox.SetEnv(append([]string(nil), env...), t.served.env())
-	base := sandboxRunner{sess: sess, dir: t.dir, env: env, vars: t.served.env(), cache: &sandbox.ValidationCache{Scratch: scratch, GoCache: cache, Blobs: blobs}}
+	vc := &sandbox.ValidationCache{Scratch: scratch, GoCache: cache, Blobs: blobs}
+	// the node's shared module cache, read-only, when it covers the build
+	modCache := goModCacheDir(filepath.Dir(blobs))
+	if ok, why := FillGoModCache(ctx, t.dir, modCache); ok {
+		vc.GoModCache = modCache
+	} else if why != "no go.mod" {
+		vr.logf("%s: validation: shared go module cache not used: %s", t.prefix, why)
+	}
+	base := sandboxRunner{sess: sess, dir: t.dir, env: env, vars: t.served.env(), cache: vc}
 	v.runner = laneSandboxRunner{sandboxRunner: base, open: func(ctx context.Context, name string) (*SessionPod, error) {
 		var git sandbox.GitIdentity
 		if t.job != nil {
