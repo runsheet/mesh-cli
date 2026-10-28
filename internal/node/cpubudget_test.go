@@ -102,8 +102,8 @@ func TestCPUBudgetEstimates(t *testing.T) {
 	}
 	a.End()
 	c.Estimate(80)
-	if got := c.Hold(); got != 80 {
-		t.Fatalf("a job alone holds its whole estimate, got %g", got)
+	if got := c.Hold(); got != 32 {
+		t.Fatalf("a job alone holds its estimate up to the budget, got %g", got)
 	}
 }
 
@@ -193,8 +193,8 @@ func TestATenPodValidationRunsInWaves(t *testing.T) {
 	if got := budget.ValidationEstimate("acme/app"); got != 80 {
 		t.Fatalf("learnt estimate %g, want 10 pods of 8", got)
 	}
-	if got := cj.Hold(); got != 80 {
-		t.Fatalf("hold %g, want its whole estimate, alone on the node", got)
+	if got := cj.Hold(); got != 32 {
+		t.Fatalf("hold %g, want its estimate capped at the budget", got)
 	}
 
 	// the budget is never past 32 while it runs
@@ -312,8 +312,8 @@ func TestAnOversizedJobRunsAlone(t *testing.T) {
 		t.Fatal("an oversized job does not fit an idle node")
 	}
 	j := b.Job("big", "acme/big", 40)
-	if j.Hold() != 40 {
-		t.Fatalf("hold %g, want its whole estimate", j.Hold())
+	if j.Hold() != 16 {
+		t.Fatalf("hold %g, want the whole budget, never more", j.Hold())
 	}
 	if b.Fits(1) {
 		t.Fatal("a claim fits beside the oversized job")
@@ -417,4 +417,80 @@ func TestAPodPastItsHoldWaitsInTurn(t *testing.T) {
 	<-second
 	rel()
 	j.End()
+}
+
+// dl360, v0.2.633: budget raised to 320, 64 reserved by 5 pods, 144
+// committed, 3 shards waiting — the waiting pods start at once, and a
+// 16-cpu claim fits.
+func TestWaitingPodsStartWithRoomAndDoNotBlockClaims(t *testing.T) {
+	// five pods reserving 64 — a session's of 16 and four of a
+	// validation's of 12 — fill a budget of 64; three more shards wait
+	b := NewCPUBudget(64, 16)
+	sess := b.Reserve(16)
+	defer sess()
+	j := b.Job("pr runsheet/runsheet#5647@9f5e8d8b", "runsheet/runsheet", 96)
+	var rels []func()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for range 4 {
+		r, err := j.Pod(ctx, 12)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rels = append(rels, r)
+	}
+	started := make(chan func(), 3)
+	for range 3 {
+		go func() {
+			r, err := j.Pod(ctx, 16)
+			if err != nil {
+				return
+			}
+			started <- r
+		}()
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for b.Read().Waiting < 3 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the shards did not wait on a full budget: %s", b.Read().Line())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// the operator raises the budget to 320
+	b.SetTotal(320)
+	for range 3 {
+		select {
+		case r := <-started:
+			rels = append(rels, r)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("a waiting pod did not start with room: %s", b.Read().Line())
+		}
+	}
+	if r := b.Read(); r.Waiting != 0 || r.Reserved != 16+48+48 {
+		t.Fatalf("after the raise: %+v", r)
+	}
+	// a waiting pod alone blocks no claim: the exact reading of the stall
+	b2 := NewCPUBudget(320, 16)
+	s2 := b2.Reserve(16)
+	defer s2()
+	j2 := b2.Job("pr", "runsheet/runsheet", 128)
+	for range 4 {
+		r, err := j2.Pod(ctx, 12)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r()
+	}
+	b2.mu.Lock()
+	b2.queue = append(b2.queue, &cpuWaiter{cpus: 16, since: time.Now()}, &cpuWaiter{cpus: 16, since: time.Now()}, &cpuWaiter{cpus: 16, since: time.Now()})
+	b2.mu.Unlock()
+	if r := b2.Read(); r.Reserved != 64 || r.Pods != 5 || r.Committed != 144 || r.Waiting != 3 {
+		t.Fatalf("the stalled reading not reproduced: %+v", r)
+	}
+	if !b2.Fits(16) {
+		t.Fatalf("a 16-cpu claim refused at %s", b2.Read().Line())
+	}
+	for _, r := range rels {
+		r()
+	}
 }
