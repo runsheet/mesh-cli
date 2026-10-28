@@ -626,8 +626,19 @@ func (g *Git) RemoveWorkspace(ctx context.Context, dir string) error {
 	if err != nil {
 		return err
 	}
-	reposRoot, _ := filepath.Abs(g.reposRootFor(dir))
-	if rel, err := filepath.Rel(reposRoot, dir); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	// a dir inside a job (<jobs>/<job>/…) is that job's own workspace,
+	// never a shared clone, whatever the repos root holds: the root
+	// defaults to the node's home, which holds .mesh/jobs, so the guard
+	// below refused every job workspace (dl360, 2026-10-28: 539 refusals,
+	// and the next claim of each job failed at its fetch)
+	inJob := inJobWorkspace(dir)
+	reposRoot := ""
+	if !inJob {
+		if r := g.reposRootFor(dir); r != "" {
+			reposRoot, _ = filepath.Abs(r)
+		}
+	}
+	if rel, err := filepath.Rel(reposRoot, dir); reposRoot != "" && err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("remove workspace %s: under the repos root %s; a shared clone is never removed", dir, reposRoot)
 	}
 	if WorkspaceLive(dir) {
@@ -652,12 +663,34 @@ func (g *Git) RemoveWorkspace(ctx context.Context, dir string) error {
 	if err := os.RemoveAll(dir); err != nil {
 		return err
 	}
+	if reposRoot == "" {
+		return nil
+	}
 	for clone, admins := range registrationsNaming(reposRoot, dir) {
 		if err := g.forgetRegistrations(ctx, g.sharedLockRoot(clone, g.repoKeyOf(ctx, clone)), clone, admins); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// inJobWorkspace is whether dir lies inside a job's directory, at least
+// one level below <jobs>/<job> — a workspace the job owns — whether or
+// not the job's meta can still be read (a cancelled run's may be gone).
+// The jobs dir and a job's own root are never one.
+func inJobWorkspace(dir string) bool {
+	dir = filepath.Clean(dir)
+	depth := 0
+	for p := dir; ; depth++ {
+		parent := filepath.Dir(p)
+		if parent == p {
+			return false
+		}
+		if filepath.Base(parent) == JobsDirName {
+			return depth >= 1
+		}
+		p = parent
+	}
 }
 
 // removeWorktree unlocks the worktree at dir, runs `git worktree remove
