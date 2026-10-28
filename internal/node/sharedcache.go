@@ -104,6 +104,11 @@ type SharedCache struct {
 	// CleanGo empties the Go build cache at dir; nil runs `go clean
 	// -cache` with GOCACHE=dir.
 	CleanGo func(ctx context.Context, dir string) error
+	// GoGate is held shared by every validation step that compiles out
+	// of go/ and exclusively by the clean, so a clean waits for the
+	// steps running and none starts under it; nil is the node's one
+	// gate (goCacheGate).
+	GoGate *sync.RWMutex
 
 	// mu is held shared by Materialize and exclusively by Enforce, so
 	// nothing is evicted from under a copy.
@@ -624,13 +629,7 @@ func (c *SharedCache) Enforce(ctx context.Context) error {
 	if c.MaxBytes <= 0 {
 		return nil
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	total, entries, err := c.scan()
-	if err != nil {
-		return err
-	}
-	_, err = c.enforce(ctx, total, entries, c.MaxBytes)
+	_, err := c.hold(ctx, c.MaxBytes, false, false)
 	return err
 }
 
@@ -645,62 +644,132 @@ const TrimFraction = 0.8
 // is left untouched. It returns the size before and after; equal, and
 // false, when nothing was trimmed.
 func (c *SharedCache) Trim(ctx context.Context) (before, after int64, trimmed bool, err error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	total, entries, err := c.scan()
+	if c.MaxBytes <= 0 {
+		total, err := c.Size()
+		return total, total, false, err
+	}
+	before, err = c.hold(ctx, int64(float64(c.MaxBytes)*TrimFraction), true, true)
 	if err != nil {
-		return 0, 0, false, err
+		return before, before, false, err
 	}
-	if c.MaxBytes <= 0 || total <= c.MaxBytes {
-		return total, total, false, nil
-	}
-	after, err = c.enforce(ctx, total, entries, int64(float64(c.MaxBytes)*TrimFraction))
-	return total, after, after < total, err
+	after, err = c.Size()
+	return before, after, after < before, err
 }
 
-// enforce evicts and cleans until total is at most target, saying so
-// once while still over MaxBytes; c.mu is held. It returns the size it
-// left.
-func (c *SharedCache) enforce(ctx context.Context, total int64, entries []cacheFile, target int64) (int64, error) {
-	if total > target {
-		sort.Slice(entries, func(i, j int) bool { return entries[i].used.Before(entries[j].used) })
-		evicted, freed := 0, int64(0)
-		for _, e := range entries {
-			if total <= target {
-				break
-			}
-			if err := os.Remove(e.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-				c.logf("cache: evict %s: %v", e.path, err)
-				continue
-			}
-			total -= e.size
-			evicted++
-			freed += e.size
-		}
-		if evicted > 0 {
-			c.logf("cache: evicted %d least recently used entries (%s) to hold the cap of %s; %s now", evicted, FormatBytes(freed), FormatBytes(c.MaxBytes), FormatBytes(total))
-		}
+// hold evicts the tree cache's least recently used entries until the
+// root is at most target, under c.mu; then, still over, cleans go/ under
+// the Go gate alone — never c.mu, so the wait for running steps holds up
+// no materialise — and says once while still over MaxBytes. onlyOver
+// leaves a root under MaxBytes untouched (Trim). wait waits for the
+// steps using go/ (the hourly Trim); without it a clean they would hold
+// up is left for the trim (Enforce, after a materialise, which must not
+// stall the validation it serves). It returns the size before.
+func (c *SharedCache) hold(ctx context.Context, target int64, onlyOver, wait bool) (int64, error) {
+	c.mu.Lock()
+	before, entries, err := c.scan()
+	if err != nil {
+		c.mu.Unlock()
+		return 0, err
 	}
+	if onlyOver && before <= c.MaxBytes {
+		c.mu.Unlock()
+		return before, nil
+	}
+	total := c.evict(before, entries, target)
+	c.mu.Unlock()
 	goDir := filepath.Join(c.Root, "go")
 	if total > target {
 		if _, err := os.Stat(goDir); err == nil {
-			if err := c.cleanGo(ctx, goDir); err != nil {
+			if err := c.cleanGoGated(ctx, goDir, wait); err != nil {
 				c.logf("cache: go clean -cache: %v", err)
 			}
-			if total, _, err = c.scan(); err != nil {
-				return total, err
+			c.mu.RLock()
+			total, _, err = c.scan()
+			c.mu.RUnlock()
+			if err != nil {
+				return before, err
 			}
 		}
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if total > c.MaxBytes {
 		if !c.overCapSaid {
 			c.overCapSaid = true
 			c.logf("cache over cap: %s of %s", FormatBytes(total), FormatBytes(c.MaxBytes))
 		}
-		return total, nil
+		return before, nil
 	}
 	c.overCapSaid = false
-	return total, nil
+	return before, nil
+}
+
+// evict removes the least recently used blobs, trees and commits until
+// total is at most target, saying so once; c.mu is held. It returns the
+// size it left.
+func (c *SharedCache) evict(total int64, entries []cacheFile, target int64) int64 {
+	if total <= target {
+		return total
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].used.Before(entries[j].used) })
+	evicted, freed := 0, int64(0)
+	for _, e := range entries {
+		if total <= target {
+			break
+		}
+		if err := os.Remove(e.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			c.logf("cache: evict %s: %v", e.path, err)
+			continue
+		}
+		total -= e.size
+		evicted++
+		freed += e.size
+	}
+	if evicted > 0 {
+		c.logf("cache: evicted %d least recently used entries (%s) to hold the cap of %s; %s now", evicted, FormatBytes(freed), FormatBytes(c.MaxBytes), FormatBytes(total))
+	}
+	return total
+}
+
+// goCacheGate is the node's one Go gate (SharedCache.GoGate): the node
+// has one Go build cache, shared by every validation step.
+var goCacheGate sync.RWMutex
+
+func (c *SharedCache) goGate() *sync.RWMutex {
+	if c.GoGate != nil {
+		return c.GoGate
+	}
+	return &goCacheGate
+}
+
+// holdGoCache holds the node's Go cache for one step that compiles out
+// of it: a clean waits for it to end (cleanGoGated). It returns the
+// release.
+func holdGoCache() func() {
+	goCacheGate.RLock()
+	return goCacheGate.RUnlock
+}
+
+// cleanGoGated cleans go/ once every step holding the Go cache has
+// ended — saying so when it waits — with no new step starting until it
+// is done: `go clean -cache` on a cache a step compiles out of fails
+// that step (dl360, 2026-10-28: every Go step in flight at 08:12:49,
+// 08:56 and 09:58:43 exited 1, and the clean raced them, "unlinkat …:
+// directory not empty").
+func (c *SharedCache) cleanGoGated(ctx context.Context, dir string, wait bool) error {
+	gate := c.goGate()
+	if !gate.TryLock() {
+		if !wait {
+			return nil // the hourly trim cleans it, waiting its turn
+		}
+		c.logf("cache: go clean -cache waits for the validation steps using the Go cache")
+		gate.Lock()
+	}
+	defer gate.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return c.cleanGo(ctx, dir)
 }
 
 // scan is the size of everything under Root and the evictable entries
