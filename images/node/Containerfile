@@ -68,21 +68,28 @@ RUN mkdir -p /etc/postgresql-common/createcluster.d \
  && rm -rf /var/lib/apt/lists/* \
  && ln -s /usr/lib/postgresql/${PG_MAJOR}/bin/* /usr/local/bin/
 
+# Every download is fetched whole to a file before it is unpacked,
+# over HTTP/1.1 and retried: a stream cut short mid-pipe fails the build
+# (nodejs.org's "HTTP/2 stream 1 was not closed cleanly", which failed
+# v0.2.623's image twice, 2026-10-28).
+ARG FETCH="curl -fsSL --http1.1 --retry 6 --retry-all-errors --retry-delay 5 --connect-timeout 30"
+
 # Go, the version go.mod names.
 RUN arch="${TARGETARCH:-$(dpkg --print-architecture)}" \
- && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${arch}.tar.gz" | tar -C /usr/local -xz
+ && $FETCH -o /tmp/go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-${arch}.tar.gz" \
+ && tar -C /usr/local -xzf /tmp/go.tgz && rm /tmp/go.tgz
 
 # Node LTS with npm; corepack provides pnpm and yarn.
 RUN arch="${TARGETARCH:-$(dpkg --print-architecture)}" \
  && case "$arch" in amd64) arch=x64 ;; esac \
- && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${arch}.tar.xz" \
-      | tar -C /usr/local --strip-components=1 -xJ \
+ && $FETCH -o /tmp/node.txz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${arch}.tar.xz" \
+ && tar -C /usr/local --strip-components=1 -xJf /tmp/node.txz && rm /tmp/node.txz \
  && corepack enable
 
 # uv (and uvx) for Python projects and tools.
 RUN arch="$(uname -m)" \
- && curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${arch}-unknown-linux-gnu.tar.gz" \
-      | tar -C /usr/local/bin --strip-components=1 -xz
+ && $FETCH -o /tmp/uv.tgz "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${arch}-unknown-linux-gnu.tar.gz" \
+ && tar -C /usr/local/bin --strip-components=1 -xzf /tmp/uv.tgz && rm /tmp/uv.tgz
 
 # The agent CLIs, pinned. Neither updates itself: the image moves with
 # the node, not under it. They are installed as root under /usr/local,
