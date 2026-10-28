@@ -189,7 +189,7 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 		failing := exitCode != 0 || runErr != nil
 		if failing {
 			sr.Output = failTail(combined)
-			sr.Tail = lastLines(combined, TailLines, tailCap)
+			sr.Tail = failureTail(combined)
 		} else {
 			sr.Output = headTail(combined)
 		}
