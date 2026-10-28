@@ -48,6 +48,10 @@ type SandboxConfig struct {
 	// ServiceTimeout bounds the wait for a session's services' health
 	// checks before its agent starts (default 120s).
 	ServiceTimeout time.Duration `yaml:"service_timeout,omitempty"`
+	// ServicesTmpfs is the size of a service's RAM-backed tmpfs — a
+	// tuned Postgres's data, or a services.yml `tmpfs:` path naming no
+	// size (default 4g).
+	ServicesTmpfs string `yaml:"services_tmpfs,omitempty"`
 }
 
 // UnmarshalYAML takes `sandbox: on|off` or the mapping.
@@ -71,7 +75,7 @@ func (c *SandboxConfig) UnmarshalYAML(n *yaml.Node) error {
 
 // IsZero leaves an unset block out of a saved node.yaml.
 func (c SandboxConfig) IsZero() bool {
-	return c.Mode == "" && c.CPUs == 0 && c.Memory == "" && c.Pids == 0 && c.ServicesCPUs == 0 && c.ServicesMemory == "" && len(c.Registries) == 0 && c.Image == "" && c.ServiceTimeout == 0
+	return c.Mode == "" && c.CPUs == 0 && c.Memory == "" && c.Pids == 0 && c.ServicesCPUs == 0 && c.ServicesMemory == "" && len(c.Registries) == 0 && c.Image == "" && c.ServiceTimeout == 0 && c.ServicesTmpfs == ""
 }
 
 // Validate refuses a mode other than on or off and negative limits.
@@ -101,6 +105,7 @@ func (c SandboxConfig) Settings(version string) sandbox.Config {
 		Registries:     c.Registries,
 		Network:        sandbox.DefaultNetwork(),
 		ServiceTimeout: c.ServiceTimeout,
+		ServicesTmpfs:  c.ServicesTmpfs,
 	}
 	if s.Limits.CPUs == 0 {
 		s.Limits.CPUs = sandbox.DefaultCPUs
@@ -122,6 +127,9 @@ func (c SandboxConfig) Settings(version string) sandbox.Config {
 	}
 	if s.ServiceTimeout == 0 {
 		s.ServiceTimeout = sandbox.DefaultServiceTimeout
+	}
+	if s.ServicesTmpfs == "" {
+		s.ServicesTmpfs = sandbox.DefaultServicesTmpfs
 	}
 	return s
 }

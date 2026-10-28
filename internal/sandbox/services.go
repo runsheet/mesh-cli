@@ -56,8 +56,26 @@ type Service struct {
 	Tuned    bool              // Command is the default test tuning of a known database
 	From     string            // the file it was read from, relative to the repo
 	Refused  bool              // its registry is not allowed; never pulled
-	Notes    []string          // what was ignored, dropped or refused, and why
+	// Tmpfs are RAM-backed mounts in the service's container: what
+	// services.yml's `tmpfs:` names, else a tuned Postgres's data
+	// directory's parent (postgresTmpfs); none with `tmpfs: false`.
+	Tmpfs []Tmpfs
+	Notes []string // what was ignored, dropped or refused, and why
+	// tmpfsSet: services.yml said tmpfs (a list, or false), so no
+	// default is added
+	tmpfsSet bool
 }
+
+// Tmpfs is one RAM-backed mount of a service's container: its path,
+// and its size ("" is the node's sandbox.services_tmpfs).
+type Tmpfs struct {
+	Path string
+	Size string
+}
+
+// DefaultServicesTmpfs is the size of a service's tmpfs that names none
+// (node.yaml's sandbox.services_tmpfs).
+const DefaultServicesTmpfs = "4g"
 
 // HealthCheck is an Actions-style `--health-*` set parsed from options.
 type HealthCheck struct {
@@ -118,6 +136,7 @@ type spec struct {
 	Command     yaml.Node `yaml:"command"`
 	Required    *bool     `yaml:"required"`
 	Tuning      *bool     `yaml:"tuning"`
+	Tmpfs       yaml.Node `yaml:"tmpfs"`
 	Volumes     yaml.Node `yaml:"volumes"`
 	Credentials yaml.Node `yaml:"credentials"`
 }
@@ -143,6 +162,14 @@ func parseServicesFile(b []byte, from string) ([]Service, error) {
 		}
 		s := build(name, sp, from, nil)
 		s.Required = sp.Required == nil || *sp.Required
+		tmpfs, set, err := parseTmpfs(sp.Tmpfs)
+		if err != nil {
+			return nil, fmt.Errorf("service %s: %w", name, err)
+		}
+		if set {
+			// declared, or `tmpfs: false`: no default tmpfs either way
+			s.Tmpfs, s.tmpfsSet = tmpfs, true
+		}
 		if s.Image == "" {
 			return nil, fmt.Errorf("service %s: no image", name)
 		}
@@ -219,6 +246,62 @@ func finish(s *Service, allowed []string) {
 			s.Image, s.Registry, strings.Join(allowed, ", ")))
 	}
 	postgresDefaults(s)
+	postgresTmpfs(s)
+}
+
+// parseTmpfs reads a service's `tmpfs:`: a list of "/path[:size]", or
+// false for none. set is whether the key was there at all.
+func parseTmpfs(n yaml.Node) (out []Tmpfs, set bool, err error) {
+	switch n.Kind {
+	case 0:
+		return nil, false, nil
+	case yaml.ScalarNode:
+		var on bool
+		if err := n.Decode(&on); err != nil || on {
+			return nil, false, fmt.Errorf("tmpfs: want a list of /path[:size], or false")
+		}
+		return nil, true, nil
+	case yaml.SequenceNode:
+		for _, c := range n.Content {
+			p, size, _ := strings.Cut(c.Value, ":")
+			if !strings.HasPrefix(p, "/") || strings.ContainsAny(p, ", ") || strings.ContainsAny(size, ", ") {
+				return nil, false, fmt.Errorf("tmpfs %q: want an absolute /path[:size]", c.Value)
+			}
+			if size != "" {
+				if _, ok := parseSize(size); !ok {
+					return nil, false, fmt.Errorf("tmpfs %q: size %q is not a size (512m, 4g)", c.Value, size)
+				}
+			}
+			out = append(out, Tmpfs{Path: path.Clean(p), Size: size})
+		}
+		return out, true, nil
+	}
+	return nil, false, fmt.Errorf("tmpfs: want a list of /path[:size], or false")
+}
+
+// postgresTmpfs gives a Postgres the node tunes (its default tuning, not
+// `tuning: false` or a command of its own) a RAM-backed tmpfs for its
+// data, unless services.yml said tmpfs itself: PGDATA's parent (/tmp for
+// the default /tmp/pgdata), else /var/lib/postgresql. With fsync off a
+// test Postgres's dirty pages piled up in the container overlay, and
+// removing the container ran syncfs over them: podman blocked for over
+// two minutes and every running step died (dl360, 2026-10-28 10:37Z).
+func postgresTmpfs(s *Service) {
+	if s.tmpfsSet || !s.Tuned {
+		return
+	}
+	switch imageName(s.Image) {
+	case "postgres", "postgis":
+	default:
+		return
+	}
+	data := s.Env["PGDATA"]
+	if data == "" || !strings.HasPrefix(data, "/") {
+		data = "/var/lib/postgresql/data"
+	}
+	dir := path.Dir(path.Clean(data))
+	s.Tmpfs = []Tmpfs{{Path: dir}}
+	s.Notes = append(s.Notes, fmt.Sprintf("data on a tmpfs at %s (RAM, not the container overlay): tmpfs: false turns it off", dir))
 }
 
 // postgresDefaults gives a postgres or postgis service PGDATA and

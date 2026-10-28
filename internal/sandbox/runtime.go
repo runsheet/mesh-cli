@@ -89,6 +89,10 @@ type SidecarSpec struct {
 	Env     []string
 	Command []string
 	Limits  Limits
+	// Tmpfs are RAM-backed mounts in the container, each with its size
+	// filled in (Session.Start: sandbox.services_tmpfs when it named
+	// none).
+	Tmpfs []Tmpfs
 }
 
 // Exit is how the agent's container ended.
