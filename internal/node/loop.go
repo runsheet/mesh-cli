@@ -182,6 +182,10 @@ type Loop struct {
 	// Machine is the host the scaler caps a ranged capacity by; nil
 	// imposes no cap (HostMachine is this one).
 	Machine MachineProbe
+	// CPU is the node's CPU budget (ADR-043), shared with the sandbox
+	// and the validator: a claim is made only when its job's estimate
+	// fits. nil is none — a node without a sandbox.
+	CPU *CPUBudget
 	// Update updates the node's own binary to the version the platform
 	// asks for (selfUpdate); nil never updates.
 	Update Updater
@@ -302,6 +306,9 @@ type Loop struct {
 	// queueSeen is the validation read the one claim took before its
 	// claims this tick (claimFromQueue)
 	queueSeen *gateway.MainValidationQueue
+	// cpuFullSaid is the claim the CPU budget last held back, said once
+	// until one fits again (cpuFits)
+	cpuFullSaid string
 	// threading is the thread turns this node is answering, by turn id.
 	threading map[string]bool
 	// threadKinds is the platform's job-kind catalogue, read at most
@@ -779,6 +786,9 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 		if free <= 0 {
 			break
 		}
+		if !l.cpuFits(l.CPU.podCPUs(), "a build") {
+			break
+		}
 		if l.claimHeld(ctx, sc, item, r.rank) {
 			continue // refused for budget, pause or approval: the goal has not changed
 		}
@@ -832,6 +842,8 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 			continue
 		}
 		free--
+		// its pod counts from the claim, before its checkout
+		l.CPU.Expect(l.CPU.podCPUs())
 		if !pressing {
 			normalFree--
 		}
@@ -1252,7 +1264,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	// the heartbeat goes out before this tick's pass, so its holding is
 	// the last pass's decision (nil before the first; a draining node,
 	// which makes no pass, keeps sending its last one unchanged)
-	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(l.Known.Accounts(l.now()), l.now(), l.Thresholds()), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Manifest: manifest, Reason: l.Condition(), Adopted: l.Adopted(), Resumed: l.Resumed(), Holding: l.Holding(), Commit: l.Commit, Findings: l.heartbeatFindings(ctx), Sessions: l.Sessions()}
+	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(l.Known.Accounts(l.now()), l.now(), l.Thresholds()), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Manifest: manifest, Reason: l.Condition(), Adopted: l.Adopted(), Resumed: l.Resumed(), Holding: l.Holding(), Commit: l.Commit, Findings: l.heartbeatFindings(ctx), Sessions: l.Sessions(), CPUBudget: l.cpuHeartbeat()}
 	rt := l.RuntimeBroken()
 	l.runtimeHeartbeat(ctx, &extras, rt)
 	scaling, ranged := l.Scaling()
@@ -1267,6 +1279,7 @@ func (l *Loop) Tick(ctx context.Context) {
 		l.Standing(StandingAccounts(l.now(), l.scheduled(), l.limitsStore().Readings(), l.Thresholds()))
 	}
 	l.health()
+	l.CPU.SayNear(l.logf)
 	beat := false
 	if owned := l.owned(); owned != nil {
 		// one node, one heartbeat: its answer is the orgs served now and
@@ -1519,7 +1532,11 @@ const DefaultHealthEvery = 15 * time.Minute
 // `health: <running> of <capacity> running, attestations recorded <n>
 // refused <m> (1h)`.
 func (l *Loop) HealthLine() string {
-	return fmt.Sprintf("health: %d of %d running, %s", l.Running(), l.Capacity(), l.Attestations.HealthLine())
+	line := fmt.Sprintf("health: %d of %d running, %s", l.Running(), l.Capacity(), l.Attestations.HealthLine())
+	if l.CPU != nil {
+		line += "; cpu budget " + l.CPU.Read().Line()
+	}
+	return line
 }
 
 // health logs HealthLine on the first tick and every HealthEvery after.
@@ -1982,6 +1999,7 @@ func (l *Loop) reload(ctx context.Context) {
 	}
 	if got.Capacity.Max > 0 {
 		l.setRange(got.Capacity)
+		l.setCPUBudget(got.Capacity.CPUBudget)
 	}
 	if got.Limits != nil {
 		was, now := l.Thresholds(), got.Limits.Thresholds()

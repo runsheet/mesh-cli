@@ -147,6 +147,9 @@ type Runner struct {
 	// services its checkout declares started beside it (ADR 007); nil is
 	// `sandbox: off`, no services.
 	Sandbox *sandbox.Sandbox
+	// CPU is the node's CPU budget, which a validation opens its groups'
+	// and shards' pods against (ADR-043); nil is none.
+	CPU *CPUBudget
 	// State keeps what an item's handed-back build spent its budget on
 	// for the item's next claim (ADR 012 Hand-back); nil keeps nothing.
 	State *RunState

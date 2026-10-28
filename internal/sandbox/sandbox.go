@@ -243,6 +243,53 @@ type Sandbox struct {
 	// open is the sessions this process has open, shared with every
 	// WithStores copy (openSet).
 	open *openSet
+	// Reserve, set, is told the CPUs each session's pod asks for — the
+	// agent's Limits.CPUs at Open, the services' ServicesLimits.CPUs when
+	// Start starts a sidecar — and hands back what gives them back, which
+	// Close calls: the node's CPU budget (mesh-cli ADR-043). nil reserves
+	// nothing; WithReserve makes a copy for pods whose CPUs are reserved
+	// another way (a validation's, by its job).
+	Reserve ReserveFunc
+}
+
+// ReserveFunc reserves cpus for one pod and returns what releases them.
+type ReserveFunc func(cpus float64) (release func())
+
+// WithReserve is a copy of sb whose sessions reserve their CPUs by fn
+// (nil: none), sharing sb's open set.
+func (sb *Sandbox) WithReserve(fn ReserveFunc) *Sandbox {
+	if sb == nil {
+		return nil
+	}
+	sb.openSessions()
+	c := *sb
+	c.Reserve = fn
+	return &c
+}
+
+// reserve reserves cpus for s by its sandbox's Reserve, kept for Close.
+func (s *Session) reserve(cpus float64) {
+	if s.sb.Reserve == nil || cpus <= 0 {
+		return
+	}
+	rel := s.sb.Reserve(cpus)
+	if rel == nil {
+		return
+	}
+	s.mu.Lock()
+	s.releases = append(s.releases, rel)
+	s.mu.Unlock()
+}
+
+// release gives back every CPU reservation s holds, once.
+func (s *Session) release() {
+	s.mu.Lock()
+	rels := s.releases
+	s.releases = nil
+	s.mu.Unlock()
+	for _, r := range rels {
+		r()
+	}
 }
 
 // openSet is the sessions of this node process between Open and Close:
@@ -360,6 +407,9 @@ type Session struct {
 	// (ShareProxyDir), mounted at their own paths; any set makes the
 	// session proxied, and its env admits no tool secret.
 	proxyDirs []string
+	// releases give back the CPUs the session reserved (Sandbox.Reserve),
+	// called by Close.
+	releases []func()
 }
 
 // ShareProxyDir mounts dir, the directory of the session's sessionproxy
@@ -474,6 +524,7 @@ func (s *Sandbox) Open(label, kind string, git GitIdentity) (*Session, error) {
 	set.mu.Lock()
 	set.m[sess] = struct{}{}
 	set.mu.Unlock()
+	sess.reserve(s.Config.Limits.CPUs)
 	return sess, nil
 }
 
@@ -1189,6 +1240,10 @@ func (s *Session) Close() error {
 	set.mu.Lock()
 	delete(set.m, s)
 	set.mu.Unlock()
+	// the CPUs go back whatever happens to the pods: a detached agent is
+	// the next process's to count, and a pod whose removal fails is
+	// killed first (removePod)
+	s.release()
 	if detached {
 		return nil
 	}

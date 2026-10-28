@@ -89,6 +89,11 @@ func (l *Loop) claimFromQueue(ctx context.Context, qc queueClaimer, nodeID strin
 	l.queueSeen = seen
 	l.mu.Unlock()
 	for i := 0; i < free; i++ {
+		// the CPU budget (ADR-043): the next job's estimate must fit
+		// beside what the running ones hold
+		if !l.cpuFits(l.claimEstimate(seen), "the next job") {
+			break
+		}
 		kind := ""
 		if !l.anyAccount(ctx) {
 			// no account has room for any session: only work that needs
@@ -108,6 +113,9 @@ func (l *Loop) claimFromQueue(ctx context.Context, qc queueClaimer, nodeID strin
 			continue
 		}
 		for i := 0; i < queueFinishTries; i++ {
+			if !l.cpuFits(l.CPU.podCPUs(), "an "+kindName(kind)) {
+				break
+			}
 			claimed, ok := l.claimOne(ctx, qc, nodeID, kind)
 			if !ok {
 				return false
@@ -138,6 +146,11 @@ func (l *Loop) claimOne(ctx context.Context, qc queueClaimer, nodeID, kind strin
 	}
 	if a == nil || a.Job == nil {
 		return false, true
+	}
+	if a.Job.Kind != queueValidate {
+		// a session's pod counts from the claim, before its checkout; a
+		// validation holds its own estimate (startMainJob)
+		l.CPU.Expect(l.CPU.podCPUs())
 	}
 	l.startQueued(ctx, nodeID, *a.Job)
 	return true, true

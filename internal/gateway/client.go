@@ -142,6 +142,9 @@ type Client struct {
 	// commitSchema is whether the gateway's heartbeat input was last
 	// found to take `commit` (see takesCommit).
 	commitSchema commitProbe
+	// cpuBudgetSchema is whether the heartbeat input takes `cpuBudget`
+	// (takesCPUBudget), kept as commitSchema is.
+	cpuBudgetSchema commitProbe
 	// findingsSchema is whether the gateway's heartbeat input was last
 	// found to take `findings` (see TakesHeartbeatFindings).
 	findingsSchema commitProbe
@@ -2359,6 +2362,24 @@ type HeartbeatExtras struct {
 	// they are sent only when the gateway's HeartbeatNodeInput has
 	// `findings` (TakesHeartbeatFindings).
 	Findings []Finding
+	// CPUBudget is the node's CPU budget as read this tick (mesh-cli
+	// ADR-043): the CPUs its pods may reserve, what they reserve and
+	// what running jobs hold. nil sends none; set, it is sent only when
+	// the gateway's HeartbeatNodeInput has `cpuBudget` (takesCPUBudget).
+	CPUBudget *CPUBudget
+}
+
+// CPUBudget is the heartbeat's `cpuBudget`: the budget in CPUs, what the
+// open pods reserve and how many they are, what is committed (reserved
+// plus the running jobs' holds and the claimed sessions' pods not yet
+// open) and the pods waiting for room.
+type CPUBudget struct {
+	Budget    float64 `json:"budget"`
+	Reserved  float64 `json:"reserved"`
+	Pods      int     `json:"pods"`
+	Committed float64 `json:"committed"`
+	Jobs      int     `json:"jobs"`
+	Waiting   int     `json:"waiting"`
 }
 
 // Finding is one of the heartbeat's `findings`: what a quartermaster
@@ -2710,6 +2731,9 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 		if len(x.Findings) > 0 && c.TakesHeartbeatFindings(ctx) {
 			in["findings"] = x.Findings
 		}
+		if x.CPUBudget != nil && c.takesCPUBudget(ctx) {
+			in["cpuBudget"] = x.CPUBudget
+		}
 	}
 	// A node can be newer than the platform it reports to: a field the
 	// gateway does not know yet makes GraphQL refuse the whole heartbeat,
@@ -2747,6 +2771,12 @@ type commitProbe struct {
 // whole heartbeat. A failed probe is a no, kept as long.
 func (c *Client) takesCommit(ctx context.Context) bool {
 	return c.heartbeatInputHas(ctx, &c.commitSchema, "commit")
+}
+
+// takesCPUBudget says whether the gateway's HeartbeatNodeInput has
+// `cpuBudget`, asked and kept as takesCommit is.
+func (c *Client) takesCPUBudget(ctx context.Context) bool {
+	return c.heartbeatInputHas(ctx, &c.cpuBudgetSchema, "cpuBudget")
 }
 
 // heartbeatInputHas says whether HeartbeatNodeInput has field, the

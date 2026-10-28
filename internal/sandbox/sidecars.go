@@ -131,6 +131,10 @@ func (s *Session) Start(ctx context.Context, services []Service, timeout time.Du
 		}
 	}
 	limits := SplitLimits(s.sb.Config.ServicesLimits, n)
+	if n > 0 {
+		// the sidecars share the services' budget: reserved once
+		s.reserve(s.sb.Config.ServicesLimits.CPUs)
+	}
 	var started []int
 	for i, svc := range services {
 		if svc.Refused {
