@@ -212,8 +212,13 @@ type Config struct {
 	Image          string
 	Limits         Limits
 	ServicesLimits Limits
-	Registries     []string
-	Network        NetworkPolicy
+	// MaxCPUs and MaxMemory bound what a run may ask for of its own
+	// (RunSpec.Limits, a validation suite's cpus and memory): a request
+	// past one is clamped to it. 0 and "" bound nothing.
+	MaxCPUs    float64
+	MaxMemory  string
+	Registries []string
+	Network    NetworkPolicy
 	// TZ is the session's time zone ("" is UTC).
 	TZ string
 	// ServiceTimeout bounds the wait for the services' health checks
@@ -733,9 +738,42 @@ type RunSpec struct {
 	Cache   *ValidationCache
 	Command []string
 	Timeout time.Duration
-	Stdin   io.Reader
-	Stdout  io.Writer
-	Stderr  io.Writer
+	// Limits are the run's own CPUs and Memory (a validation suite's
+	// `cpus:` and `memory:`), each in place of the sandbox's when set
+	// and clamped to its MaxCPUs and MaxMemory (Sandbox.RunLimits); the
+	// zero value is the sandbox's own. Pids is always the sandbox's.
+	Limits Limits
+	Stdin  io.Reader
+	Stdout io.Writer
+	Stderr io.Writer
+}
+
+// RunLimits is the limits a run asking for want runs with: the
+// sandbox's Limits with want's CPUs and Memory over them where set, each
+// clamped to Config.MaxCPUs and Config.MaxMemory with a log line naming
+// what was asked and what it got. A want with neither set is the
+// sandbox's Limits as they are.
+func (sb *Sandbox) RunLimits(name string, want Limits) Limits {
+	l := sb.Config.Limits
+	if want.CPUs > 0 {
+		l.CPUs = want.CPUs
+		if max := sb.Config.MaxCPUs; max > 0 && l.CPUs > max {
+			sb.logf("sandbox: %s asked for %g cpus, past sandbox.max_cpus; clamped to %g", name, want.CPUs, max)
+			l.CPUs = max
+		}
+	}
+	if want.Memory != "" {
+		l.Memory = want.Memory
+		if max := sb.Config.MaxMemory; max != "" {
+			asked, okA := parseSize(want.Memory)
+			bound, okB := parseSize(max)
+			if okA && okB && asked > bound {
+				sb.logf("sandbox: %s asked for memory %s, past sandbox.max_memory; clamped to %s", name, want.Memory, max)
+				l.Memory = max
+			}
+		}
+	}
+	return l
 }
 
 // pidsExhausted is what a process says when it cannot fork past the
@@ -796,6 +834,10 @@ func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 		mounts, env = append(mounts, c.Mounts()...), c.Env(env)
 	}
 	env = SetEnv(env, spec.Vars)
+	limits := cfg.Limits
+	if spec.Limits.CPUs > 0 || spec.Limits.Memory != "" {
+		limits = s.sb.RunLimits(name, spec.Limits)
+	}
 	timeout := runtimeTimeout(spec.Timeout)
 	tail := &tailBuffer{max: 8 << 10}
 	stderr := io.Writer(tail)
@@ -810,7 +852,7 @@ func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 		Mounts:         mounts,
 		Env:            env,
 		Command:        spec.Command,
-		Limits:         cfg.Limits,
+		Limits:         limits,
 		TimeoutSeconds: timeout,
 		Stdin:          spec.Stdin,
 		Stdout:         spec.Stdout,
@@ -822,7 +864,7 @@ func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 	if err != nil {
 		return fmt.Errorf("sandbox: run: %w", err)
 	}
-	return classify(exit, time.Since(start), spec.Timeout, cfg.Limits, tail.String())
+	return classify(exit, time.Since(start), spec.Timeout, limits, tail.String())
 }
 
 // Exec runs a short command — a preflight's step — in the session's pod

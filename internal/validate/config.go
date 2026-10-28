@@ -1,11 +1,13 @@
 package validate
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -124,7 +126,53 @@ type Step struct {
 	// 0 (the file leaving it out) and 1 are one run; never more than
 	// MaxShards.
 	Shards int
+	// CPUs and Memory are the suite's own container limits (`cpus: 16`,
+	// `memory: 24g`): each step's container, and each shard's, runs with
+	// them in place of the node's sandbox.cpus and sandbox.memory, the
+	// node clamping a request past its sandbox.max_cpus or
+	// sandbox.max_memory. 0 and "" (the file leaving them out) are the
+	// node's. Neither is hashed: how much room a suite runs with is not
+	// what it runs.
+	CPUs   float64
+	Memory string
 }
+
+// Resources is a suite's own container limits (Step.CPUs, Step.Memory);
+// the zero value is the node's.
+type Resources struct {
+	CPUs   float64
+	Memory string
+}
+
+// IsZero reports whether r asks for nothing of its own.
+func (r Resources) IsZero() bool { return r.CPUs == 0 && r.Memory == "" }
+
+// Resources is the step's own container limits.
+func (s Step) Resources() Resources { return Resources{CPUs: s.CPUs, Memory: s.Memory} }
+
+type resourcesKey struct{}
+
+// WithResources is ctx carrying a step's limits to its Runner: Run sets
+// it around each step's (and each shard's) command, so a runner however
+// wrapped reads them with ResourcesOf. A runner with no limits of its
+// own to set (HostRunner) ignores them.
+func WithResources(ctx context.Context, r Resources) context.Context {
+	if r.IsZero() {
+		return ctx
+	}
+	return context.WithValue(ctx, resourcesKey{}, r)
+}
+
+// ResourcesOf is the step's limits WithResources put on ctx; zero when
+// none.
+func ResourcesOf(ctx context.Context) Resources {
+	r, _ := ctx.Value(resourcesKey{}).(Resources)
+	return r
+}
+
+// memorySize is a podman memory size: a number, optionally with a
+// unit of b, k, m or g (and a trailing b: "24g", "512mb", "1024").
+var memorySize = regexp.MustCompile(`(?i)^[0-9]+(\.[0-9]+)?([kmg]b?|b)?$`)
 
 // MaxShards bounds a suite's shards: each is a pod with its own
 // services on the one node.
@@ -167,6 +215,8 @@ type rawStep struct {
 	Results   string   `yaml:"results"`
 	Group     string   `yaml:"group"`
 	Shards    int      `yaml:"shards"`
+	CPUs      float64  `yaml:"cpus"`
+	Memory    string   `yaml:"memory"`
 }
 
 // Load reads <dir>/.runsheet/validate.yml. A missing file is
@@ -220,6 +270,8 @@ func Parse(data []byte) (Config, error) {
 			Results:   s.Results,
 			Group:     strings.TrimSpace(s.Group),
 			Shards:    s.Shards,
+			CPUs:      s.CPUs,
+			Memory:    strings.TrimSpace(s.Memory),
 		}
 		if step.Name == "" {
 			return Config{}, fmt.Errorf("suite %d has no name", i+1)
@@ -236,6 +288,12 @@ func Parse(data []byte) (Config, error) {
 		}
 		if s.Shards < 0 || s.Shards > MaxShards {
 			return Config{}, fmt.Errorf("suite %q has shards %d, not 1 to %d", step.Name, s.Shards, MaxShards)
+		}
+		if s.CPUs < 0 {
+			return Config{}, fmt.Errorf("suite %q has cpus %g, not a positive number", step.Name, s.CPUs)
+		}
+		if step.Memory != "" && !memorySize.MatchString(step.Memory) {
+			return Config{}, fmt.Errorf("suite %q has memory %q, not a size such as 24g or 512m", step.Name, s.Memory)
 		}
 		paths, err := cleanPaths(s.Paths)
 		if err != nil {

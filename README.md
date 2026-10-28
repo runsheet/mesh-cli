@@ -2363,6 +2363,8 @@ sandbox:
   pids: 4096           # the agent's --pids-limit
   services_cpus: 2     # the services' budget together
   services_memory: 4g
+  max_cpus: 32         # the most a validation suite's own `cpus:` may ask for (default: the host's CPUs)
+  max_memory: 48g      # the most a suite's own `memory:` may ask for (default: no bound)
   registries: [docker.io, ghcr.io, "*.pkg.dev", quay.io]   # where service images may come from
   image: build         # default (empty): ghcr.io/runsheet/mesh-node:<version>; build: that tag built here; else as given
   service_timeout: 120s  # how long the services' health checks are waited for
@@ -2376,6 +2378,8 @@ sandbox:
 | `pids` | `4096` | the agent container's process cap |
 | `services_cpus` | `2` | the service sidecars' CPUs, together |
 | `services_memory` | `4g` | the service sidecars' memory, together |
+| `max_cpus` | the host's CPU count | the bound on a validation suite's own `cpus:` (validate.yml); a request past it is clamped, with a log line |
+| `max_memory` | none | the bound on a suite's own `memory:`; a request past it is clamped, with a log line |
 | `registries` | `docker.io`, `ghcr.io`, `*.pkg.dev`, `quay.io` | registries service images may come from |
 | `image` | `ghcr.io/runsheet/mesh-node:<version>` | the node image sessions run in; `build` builds that tag here from the embedded Containerfile, any other value is used as given |
 | `service_timeout` | `120s` | the bound on the services' health checks before the agent starts |
