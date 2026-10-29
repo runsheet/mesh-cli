@@ -3,10 +3,10 @@ package nodev1
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 
+	"projectmesh.io/mesh-cli/internal/githarden"
 	"projectmesh.io/mesh-cli/internal/gitrelay"
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/resources"
@@ -16,28 +16,15 @@ import (
 // credential of the node's own: none reaches a lease's git or session.
 var gitEnvUnset = []string{"GIT_ASKPASS", "SSH_ASKPASS", "GH_TOKEN", "GITHUB_TOKEN", "GIT_CONFIG_PARAMETERS"}
 
-// gitEnv is the environment a lease's git runs in: the node's, without
-// gitEnvUnset, never prompting.
-func gitEnv() []string {
-	var out []string
-	for _, kv := range os.Environ() {
-		name, _, _ := strings.Cut(kv, "=")
-		drop := false
-		for _, u := range gitEnvUnset {
-			if name == u {
-				drop = true
-			}
-		}
-		if !drop {
-			out = append(out, kv)
-		}
-	}
-	return append(out, "GIT_TERMINAL_PROMPT=0")
+// leaseGit is one git command in dir, a lease's checkout, hardened
+// (internal/githarden): its environment is the node's without any
+// credential of the node's or system and global config, and no hook,
+// fsmonitor, filter, driver or credential helper the checkout's config
+// names runs as the node — a parked thread's or retried lease's
+// checkout is one a session wrote to.
+func leaseGit(ctx context.Context, dir string, args ...string) *exec.Cmd {
+	return githarden.Command(ctx, dir, nil, args...)
 }
-
-// noCredentials are git's -c flags that clear every credential helper
-// and askpass the node's own git config may name.
-var noCredentials = []string{"-c", "credential.helper=", "-c", "core.askPass="}
 
 // policyOf is the relay policy of the brief's git: its vendor and base,
 // its repository, read or write, and the refs a push may touch, each
@@ -97,10 +84,7 @@ type resumePoint struct {
 // logged.
 func checkout(ctx context.Context, grant *gitrelay.Grant, b *meshapi.Brief, workspace string, mirrors *resources.Mirrors, logf func(string, ...any)) (*resumePoint, error) {
 	git := func(dir string, args ...string) (string, error) {
-		cmd := exec.CommandContext(ctx, "git", append(append([]string(nil), noCredentials...), args...)...)
-		cmd.Dir = dir
-		cmd.Env = gitEnv()
-		out, err := cmd.CombinedOutput()
+		out, err := leaseGit(ctx, dir, args...).CombinedOutput()
 		if err != nil {
 			return "", fmt.Errorf("git %s: %v: %s", args[0], err, strings.TrimSpace(lastLines(string(out), 5)))
 		}

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -185,10 +184,7 @@ func reattach(ctx context.Context, grant *gitrelay.Grant, b *meshapi.Brief, work
 	if _, err := os.Stat(filepath.Join(workspace, ".git")); err != nil {
 		return errors.New("the parked thread's checkout is gone")
 	}
-	cmd := exec.CommandContext(ctx, "git", append(append([]string(nil), noCredentials...), "remote", "set-url", "origin", grant.Base()+b.Git.Repo+".git")...)
-	cmd.Dir = workspace
-	cmd.Env = gitEnv()
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := leaseGit(ctx, workspace, "remote", "set-url", "origin", grant.Base()+b.Git.Repo+".git").CombinedOutput(); err != nil {
 		return fmt.Errorf("git remote set-url: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil

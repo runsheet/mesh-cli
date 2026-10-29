@@ -14,12 +14,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/githarden"
 )
 
 // Change is one change to apply: the diff Base..Head. Base "" is the
@@ -105,8 +106,10 @@ func Apply(ctx context.Context, dir, onto string, changes []Change, mode Mode, i
 // here.
 type Command func(ctx context.Context, dir string, env []string, args ...string) *exec.Cmd
 
-// Git is Apply's git: Command, or git on PATH with the process's
-// environment when nil.
+// Git is Apply's git: Command, or, when nil, git on PATH hardened
+// against the repository's own config (internal/githarden): no hook,
+// fsmonitor, filter, driver or credential helper of the repository's
+// runs, and no system or global config is read.
 type Git struct {
 	Command Command
 }
@@ -259,12 +262,7 @@ func (g Git) command(ctx context.Context, dir string, env []string, args ...stri
 	if g.Command != nil {
 		return g.Command(ctx, dir, env, args...)
 	}
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	if env != nil {
-		cmd.Env = append(os.Environ(), env...)
-	}
-	return cmd
+	return githarden.Command(ctx, dir, env, args...)
 }
 
 // git runs git in dir with env added.

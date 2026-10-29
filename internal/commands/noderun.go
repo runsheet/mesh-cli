@@ -118,8 +118,11 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 			GitUpstream: gitUpstream(),
 			NoMirrors:   nodeRunNoMirrors,
 			Session:     sess,
-			Once:        nodeRunOnce,
-			Logf:        logger.Printf,
+			// the session runs on the host here, so run_suite's steps
+			// may too; a sandboxed node never runs them there
+			HostSuites: true,
+			Once:       nodeRunOnce,
+			Logf:       logger.Printf,
 		}
 		if nodeRunScheduler {
 			rt.Scheduler = scheduler.New(scheduler.Capacity{

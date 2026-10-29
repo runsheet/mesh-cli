@@ -3,6 +3,7 @@ package nodetools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -95,7 +96,7 @@ func TestRunSuiteRecordsItsRun(t *testing.T) {
 	m := &fakeMesh{}
 	rec, signer := recorder(t, m, RunSuiteTool)
 	var heard []string
-	tool := (&RunSuite{Workspace: dir, Recorder: rec,
+	tool := (&RunSuite{Workspace: dir, Recorder: rec, OnHost: true,
 		Escalate: func(why string) string { heard = append(heard, why); return "opus" }}).Tool()
 	for _, c := range []struct {
 		args      map[string]any
@@ -169,5 +170,59 @@ func TestRecordRefusesAForeignID(t *testing.T) {
 	var none *Recorder
 	if _, err := none.Record(context.Background(), Record{Tool: "push"}, nil); err == nil {
 		t.Fatal("a nil recorder recorded")
+	}
+}
+
+// A run_suite with no runner and no explicit opt-in to the host refuses
+// before it reads validate.yml: the steps are the session's own
+// commands, and the zero value never runs them as the node. A step
+// that would touch a host marker does not run, and nothing is recorded.
+func TestRunSuiteWithoutARunnerRefuses(t *testing.T) {
+	dir := t.TempDir()
+	gitIn(t, dir, "init", "-q")
+	marker := filepath.Join(t.TempDir(), "ran-on-the-host")
+	os.MkdirAll(filepath.Join(dir, ".runsheet"), 0o755)
+	os.WriteFile(filepath.Join(dir, ".runsheet", "validate.yml"), []byte("suites:\n  - name: unit\n    kind: unit\n    command: touch "+marker+"\n"), 0o644)
+	m := &fakeMesh{}
+	rec, _ := recorder(t, m, RunSuiteTool)
+	_, err := (&RunSuite{Workspace: dir, Recorder: rec}).Tool().Call(context.Background(), map[string]any{})
+	if !errors.Is(err, ErrNoSuiteRunner) {
+		t.Fatalf("run_suite with no runner answered %v, want ErrNoSuiteRunner", err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the session's validate.yml step ran on the host")
+	}
+	if len(m.records) != 0 {
+		t.Fatalf("a refused run_suite recorded %d records", len(m.records))
+	}
+}
+
+// With a runner, run_suite runs every step through it and never on the
+// host, whatever OnHost says: a sandboxed lease's runner is its pod's.
+func TestRunSuiteRunsThroughItsRunner(t *testing.T) {
+	dir := t.TempDir()
+	gitIn(t, dir, "init", "-q")
+	marker := filepath.Join(t.TempDir(), "ran-on-the-host")
+	os.MkdirAll(filepath.Join(dir, ".runsheet"), 0o755)
+	os.WriteFile(filepath.Join(dir, ".runsheet", "validate.yml"), []byte("suites:\n  - name: unit\n    kind: unit\n    command: touch "+marker+"\n"), 0o644)
+	m := &fakeMesh{}
+	rec, _ := recorder(t, m, RunSuiteTool)
+	var ran []string
+	run := func(_ context.Context, ws string, steps []validate.Step) ([]validate.StepResult, error) {
+		var out []validate.StepResult
+		for _, st := range steps {
+			ran = append(ran, ws+": "+st.Command)
+			out = append(out, validate.StepResult{Name: st.Name, Command: st.Command})
+		}
+		return out, nil
+	}
+	if _, err := (&RunSuite{Workspace: dir, Recorder: rec, Run: run, OnHost: true}).Tool().Call(context.Background(), map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{dir + ": touch " + marker}; !reflect.DeepEqual(ran, want) {
+		t.Fatalf("the runner ran %q, want %q", ran, want)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a step ran on the host beside its runner")
 	}
 }
