@@ -10,6 +10,7 @@ import (
 	"runtime/debug"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/gitrelay"
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
@@ -25,10 +26,15 @@ const maxReason = 2000
 
 // outcome is how a lease's work ended, before it is reported.
 type outcome struct {
-	result     SessionResult
+	result SessionResult
+	// finish is what the product's finish tool answered, nil when the
+	// session never had it answer.
+	finish     json.RawMessage
 	err        error
 	cause      error // the lease ctx's cause when it was cancelled
 	nodeEnding bool
+	// access are the relay's AccessRecords of the lease.
+	access []meshapi.AccessRecord
 }
 
 // runLease runs one lease to its report: the lease's directory and
@@ -65,10 +71,16 @@ func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take) {
 	cancel(nil)
 	<-renewDone
 	out.nodeEnding = ctx.Err() != nil
+	out.access = r.takeAccess(id)
 	r.report(id, b, out)
 }
 
-// work prepares the lease and runs its session.
+// work prepares the lease and runs its session: the lease's Latchkey
+// session (its DPoP key, request credential and session tokens, held
+// here alone), its git grant on the node's relay and the checkout
+// through it, its sessionproxy, then the session. Leaving, it closes the
+// proxy, then the grant — which revokes the git tokens it minted — and
+// removes the lease's directory.
 func (r *Runtime) work(ctx context.Context, b *meshapi.Brief) outcome {
 	dir := filepath.Join(r.WorkRoot, "leases", b.LeaseID)
 	workspace := filepath.Join(dir, "work")
@@ -77,7 +89,36 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief) outcome {
 	}
 	defer os.RemoveAll(dir)
 
-	servers, closeProxy, err := r.openProxy(ctx, b)
+	var tokens *sessionTokens
+	if len(b.Servers) > 0 || b.Git != nil {
+		var err error
+		if tokens, err = openSession(ctx, r.API, b.LeaseID, r.LatchkeyHTTP); err != nil {
+			return outcome{err: err, cause: context.Cause(ctx)}
+		}
+	}
+	var grant *gitrelay.Grant
+	if b.Git != nil && b.Git.Repo != "" {
+		policy := policyOf(b.Git)
+		mint := func(ctx context.Context) (gitrelay.Token, error) {
+			return tokens.MintSource(ctx, b.Git.Repo, string(policy.Access))
+		}
+		g, err := r.relay.Open(b.LeaseID, policy, mint, tokens.RevokeSource)
+		if err != nil {
+			return outcome{err: fmt.Errorf("the lease's git relay: %w", err)}
+		}
+		grant = g
+		defer func() {
+			if err := grant.Close(); err != nil {
+				r.logf("nodev1: lease %s: %v", b.LeaseID, err)
+			}
+		}()
+		if err := checkout(ctx, grant, b, workspace); err != nil {
+			return outcome{err: fmt.Errorf("checking out %s: %w", b.Git.Repo, err), cause: context.Cause(ctx)}
+		}
+	}
+
+	fin := &finishCapture{tool: b.FinishTool}
+	servers, closeProxy, err := r.openProxy(b, tokens, grant, fin.observe)
 	if err != nil {
 		return outcome{err: fmt.Errorf("the lease's sessionproxy: %w", err)}
 	}
@@ -90,6 +131,8 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief) outcome {
 		Model:     b.Harness.Model.Default,
 		BudgetUSD: b.Harness.Budget.USD,
 		Servers:   servers,
+		Env:       []string{"GIT_TERMINAL_PROMPT=0"},
+		Unset:     gitEnvUnset,
 	}
 	sctx := ctx
 	if m := b.Harness.Budget.Minutes; m > 0 {
@@ -98,7 +141,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief) outcome {
 		defer stop()
 	}
 	res, err := r.Session.Run(sctx, spec)
-	o := outcome{result: res, err: err}
+	o := outcome{result: res, err: err, finish: fin.result()}
 	if ctx.Err() != nil {
 		o.cause = context.Cause(ctx)
 	} else if errors.Is(err, context.DeadlineExceeded) || sctx.Err() != nil {
@@ -111,17 +154,16 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief) outcome {
 // own, a unix socket in a short directory of the lease's own
 // (leaseSocketDir), and answers the session's
 // MCP config: each server a `mesh mcp-relay --socket` entry naming it.
-func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief) (map[string]any, func(), error) {
+// Each product server is reached on the lease's mesh-session token with
+// a DPoP proof signed for the server's own URL; the grant, when there is
+// one, serves the proxy's /git/ route.
+func (r *Runtime) openProxy(b *meshapi.Brief, tokens *sessionTokens, grant *gitrelay.Grant, observe func(string, []byte, []byte)) (map[string]any, func(), error) {
 	ups := map[string]sessionproxy.Upstream{}
 	for _, s := range b.Servers {
 		if s.Name == "" || s.URL == "" {
 			return nil, nil, fmt.Errorf("the brief names a server without a name or url: %+v", s)
 		}
-		if r.Upstream != nil {
-			ups[s.Name] = r.Upstream(ctx, b, s)
-		} else {
-			ups[s.Name] = sessionproxy.Remote{URL: s.URL}
-		}
+		ups[s.Name] = sessionproxy.Product{URL: s.URL, Bearer: tokens.Token, Key: tokens.Key()}
 	}
 	sockDir, err := r.leaseSocketDir(b.LeaseID)
 	if err != nil {
@@ -130,6 +172,10 @@ func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief) (map[string]a
 	sock := filepath.Join(sockDir, leaseSocketName)
 	p := sessionproxy.New(ups)
 	p.Logf = r.Logf
+	p.Observe = observe
+	if grant != nil {
+		p.Git = grant
+	}
 	if err := p.Listen(sock); err != nil {
 		os.RemoveAll(sockDir)
 		return nil, nil, err
@@ -197,11 +243,13 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) {
 		r.logf("nodev1: lease %s ended without a report: %v", id, o.cause)
 		return
 	case o.nodeEnding:
+		r.postAccess(id, o.access)
 		r.handBack(id, meshapi.CauseNodeRestart, "the node stopped while the session ran", o.result.SessionID)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
 	defer cancel()
+	r.postAccess(id, o.access)
 	if u := usageOf(o.result); u != nil {
 		if err := r.API.Usage(ctx, id, *u); err != nil {
 			r.logf("nodev1: lease %s: usage: %v", id, err)
@@ -211,13 +259,28 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) {
 		r.handBack(id, meshapi.CauseCannotRun, o.err.Error(), o.result.SessionID)
 		return
 	}
-	result, _ := json.Marshal(map[string]string{"text": clip(o.result.Text, 16<<10)})
+	result := o.finish
+	if result == nil {
+		result, _ = json.Marshal(map[string]string{"text": clip(o.result.Text, 16<<10)})
+	}
 	st, err := r.API.Finish(ctx, id, meshapi.FinishRequest{Result: result, SessionRef: o.result.SessionID})
 	if err != nil {
 		r.logf("nodev1: lease %s: finish: %v", id, err)
 		return
 	}
 	r.logf("nodev1: lease %s finished; job %s is %s", id, st.JobID, st.Status)
+}
+
+// postAccess posts the relay's AccessRecords of the lease to Mesh.
+func (r *Runtime) postAccess(id string, records []meshapi.AccessRecord) {
+	if len(records) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
+	defer cancel()
+	if err := r.API.Access(ctx, id, records); err != nil {
+		r.logf("nodev1: lease %s: access records: %v", id, err)
+	}
 }
 
 func (r *Runtime) handBack(id, cause, reason, sessionRef string) {

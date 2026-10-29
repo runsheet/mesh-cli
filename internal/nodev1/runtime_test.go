@@ -2,6 +2,7 @@ package nodev1
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -21,40 +23,15 @@ import (
 	"projectmesh.io/mesh-cli/internal/meshapi/meshapitest"
 )
 
-// product is a product's MCP server: it records each call and answers
-// a JSON-RPC result.
-type product struct {
-	mu    sync.Mutex
-	calls []string
-	auth  []string
-}
-
-func (p *product) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	b, _ := io.ReadAll(r.Body)
-	var msg struct {
-		ID     any    `json:"id"`
-		Method string `json:"method"`
-		Params struct {
-			Name string `json:"name"`
-		} `json:"params"`
-	}
-	json.Unmarshal(b, &msg)
-	p.mu.Lock()
-	p.calls = append(p.calls, msg.Method+" "+msg.Params.Name)
-	p.auth = append(p.auth, r.Header.Get("Authorization"))
-	p.mu.Unlock()
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%v,"result":{"content":[{"type":"text","text":"ok"}]}}`, msg.ID)
-}
-
 // stubSession stands in for claude: it calls each tool of calls on the
 // server its spec names, through the lease's sessionproxy socket as the
 // session's mcp-relay would, then waits for hold (if set) and answers.
 type stubSession struct {
-	calls  []string // server/tool
-	hold   chan struct{}
-	err    error
-	result SessionResult
+	calls   []string // server/tool
+	inspect func(SessionSpec)
+	hold    chan struct{}
+	err     error
+	result  SessionResult
 
 	mu    sync.Mutex
 	specs []SessionSpec
@@ -64,6 +41,9 @@ func (s *stubSession) Run(ctx context.Context, spec SessionSpec) (SessionResult,
 	s.mu.Lock()
 	s.specs = append(s.specs, spec)
 	s.mu.Unlock()
+	if s.inspect != nil {
+		s.inspect(spec)
+	}
 	for _, c := range s.calls {
 		server, tool, _ := strings.Cut(c, "/")
 		if err := callThroughProxy(ctx, spec.Servers[server], tool); err != nil {
@@ -108,6 +88,8 @@ func callThroughProxy(ctx context.Context, entry any, tool string) error {
 
 type rig struct {
 	fake       *meshapitest.Fake
+	latchkey   *fakeLatchkey
+	github     *fakeGitHub
 	product    *product
 	productURL string
 	rt         *Runtime
@@ -119,26 +101,32 @@ func newRig(t *testing.T, sess Session) *rig {
 	fake := meshapitest.NewFake(t)
 	mesh := httptest.NewServer(fake)
 	t.Cleanup(mesh.Close)
-	prod := &product{}
+	lk := newFakeLatchkey(t)
+	fake.Session = lk.open
+	gh := newFakeGitHub(t)
+	prod := &product{l: lk}
 	ps := httptest.NewServer(prod)
 	t.Cleanup(ps.Close)
+	prod.url = ps.URL + "/mcp"
 	work := t.TempDir()
 	rt := &Runtime{
-		API:        &meshapi.Client{BaseURL: mesh.URL, Token: func(context.Context) (string, error) { return "machine", nil }},
-		Node:       meshapi.RegisterRequest{Name: "test-node", Version: "v0.0.0-test", CapacityTotal: meshapi.Capacity{CPUs: 4, MemGB: 8, Slots: 1}, SigningKey: "ed25519:AAAA"},
-		WorkRoot:   work,
-		MeshBinary: "/usr/local/bin/mesh",
-		Session:    sess,
-		Once:       true,
-		Logf:       t.Logf,
-		Backoff:    10 * time.Millisecond,
+		API:         &meshapi.Client{BaseURL: mesh.URL, Token: func(context.Context) (string, error) { return "machine", nil }},
+		Node:        meshapi.RegisterRequest{Name: "test-node", Version: "v0.0.0-test", CapacityTotal: meshapi.Capacity{CPUs: 4, MemGB: 8, Slots: 1}, SigningKey: "ed25519:AAAA"},
+		WorkRoot:    work,
+		MeshBinary:  "/usr/local/bin/mesh",
+		Session:     sess,
+		Once:        true,
+		Logf:        t.Logf,
+		Backoff:     10 * time.Millisecond,
+		GitUpstream: gh.srv.URL,
 	}
-	return &rig{fake: fake, product: prod, productURL: ps.URL + "/mcp", rt: rt, work: work}
+	return &rig{fake: fake, latchkey: lk, github: gh, product: prod, productURL: prod.url, rt: rt, work: work}
 }
 
 func (g *rig) offer(t *testing.T, mut func(*meshapi.Brief)) string {
 	return g.fake.Offer(func(b *meshapi.Brief) {
 		b.Servers = []meshapi.Server{{Name: "conform", URL: g.productURL}}
+		b.Code.BaseSHA = g.github.head
 		if mut != nil {
 			mut(b)
 		}
@@ -158,14 +146,35 @@ func run(t *testing.T, g *rig, ctx context.Context) error {
 	}
 }
 
-// The slice: register, take a lease, run one session that reaches the
-// product's MCP server through the lease's sessionproxy — the proxy, not
-// the session, says who calls upstream — then post usage and finish with
-// the session's ref; the lease's directory and socket are gone after.
+// The slice (Mesh v1 PR 0.8b): register, take a lease, open its
+// Latchkey session through Mesh with a fresh key's jkt, trade lksr_ for
+// a DPoP mesh-session token, have the relay mint the git token, check
+// the repository out through the relay with no credential anywhere in the
+// checkout, run one session that reaches the product's MCP through the
+// proxy on the DPoP token signed for the product's URL and git through
+// the proxy's /git/ route, then finish with what the product's submit
+// answered. After release the capability answers 404, the git token is
+// revoked and Mesh holds the AccessRecords.
 func TestRunTakesALeaseRunsOneSessionAndFinishes(t *testing.T) {
+	var seen struct {
+		readme, gitConfig, origin string
+		env                       []string
+		gitViaProxy               int
+	}
 	sess := &stubSession{
 		calls:  []string{"conform/brief", "conform/submit"},
 		result: SessionResult{SessionID: "sess-1", Text: "submitted", CostUSD: 0.02, Turns: 3, Usage: &harness.Usage{Model: "claude-haiku-4-5", InputTokens: 100, OutputTokens: 10}},
+	}
+	sess.inspect = func(spec SessionSpec) {
+		b, _ := os.ReadFile(filepath.Join(spec.Workspace, "README.md"))
+		seen.readme = string(b)
+		c, _ := os.ReadFile(filepath.Join(spec.Workspace, ".git", "config"))
+		seen.gitConfig = string(c)
+		out, _ := exec.Command("git", "-C", spec.Workspace, "config", "remote.origin.url").Output()
+		seen.origin = strings.TrimSpace(string(out))
+		seen.env = harness.SessionEnviron(append(os.Environ(), "GH_TOKEN=node-own"), harness.Job{Env: spec.Env, Unset: spec.Unset})
+		sock, _, _ := harness.ProxiedOf(spec.Servers["conform"])
+		seen.gitViaProxy = getViaSocket(sock, "/git/acme/fixture.git/info/refs?service=git-upload-pack")
 	}
 	g := newRig(t, sess)
 	job := g.offer(t, nil)
@@ -174,15 +183,65 @@ func TestRunTakesALeaseRunsOneSessionAndFinishes(t *testing.T) {
 	}
 	lease := g.fake.LeaseOf(job)
 	if g.fake.Ended(lease) != "finish" {
-		t.Fatalf("lease %s ended %q", lease, g.fake.Ended(lease))
+		t.Fatalf("lease %s ended %q; hand-backs %v", lease, g.fake.Ended(lease), g.fake.Calls("hand-back"))
 	}
-	if len(g.fake.Calls("register")) != 1 {
-		t.Fatal("no registration")
+
+	// the session and its key
+	var sreq meshapi.SessionRequest
+	json.Unmarshal(g.fake.Calls("session")[0].Body, &sreq)
+	if sreq.JKT == "" {
+		t.Fatal("the session was opened with no jkt")
 	}
+	minted, revoked, lkFailures := g.latchkey.snapshot()
+	if len(lkFailures) > 0 {
+		t.Fatalf("Latchkey refused: %v", lkFailures)
+	}
+
+	// the checkout, through the relay, with no credential in it
+	if seen.readme != "the fixture\n" {
+		t.Fatalf("the checkout read %q", seen.readme)
+	}
+	if !strings.HasPrefix(seen.origin, "http://127.0.0.1:") || !strings.Contains(seen.origin, "/j/") {
+		t.Fatalf("origin is %q, not the relay", seen.origin)
+	}
+	for _, secret := range append(minted, "lksr_", "mst_", "ghs_", "helper", "askpass") {
+		if strings.Contains(strings.ToLower(seen.gitConfig), strings.ToLower(secret)) {
+			t.Fatalf("the checkout's git config names %q:\n%s", secret, seen.gitConfig)
+		}
+	}
+	for _, kv := range seen.env {
+		for _, secret := range []string{"lksr_", "mst_", "ghs_", "GH_TOKEN=", "GIT_ASKPASS="} {
+			if strings.Contains(kv, secret) {
+				t.Fatalf("the session's environment carries %q", kv)
+			}
+		}
+	}
+	if seen.gitViaProxy != 200 {
+		t.Fatalf("git through the proxy's /git/ route: %d", seen.gitViaProxy)
+	}
+	if len(minted) == 0 {
+		t.Fatal("no git token was minted")
+	}
+	for _, a := range g.github.auths() {
+		if a != basicAuth(minted[0]) && a != basicAuth(minted[len(minted)-1]) {
+			t.Fatalf("GitHub saw %q, not the minted token", a)
+		}
+	}
+
+	// the product, on the DPoP session token
+	calls, pFailures := g.product.snapshot()
+	if len(pFailures) > 0 {
+		t.Fatalf("the product refused: %v", pFailures)
+	}
+	if strings.Join(calls, ",") != "tools/call brief,tools/call submit" {
+		t.Fatalf("product calls %v", calls)
+	}
+
+	// the finish carries the product's answer to submit
 	fin := g.fake.Calls("finish")
 	var req meshapi.FinishRequest
 	json.Unmarshal(fin[0].Body, &req)
-	if req.SessionRef != "sess-1" || !strings.Contains(string(req.Result), "submitted") || fin[0].Auth != "Bearer machine" {
+	if req.SessionRef != "sess-1" || string(req.Result) != `{"sha256":"5f0c"}` || fin[0].Auth != "Bearer machine" {
 		t.Fatalf("finish %s", fin[0].Body)
 	}
 	var usage meshapi.UsageRequest
@@ -190,16 +249,21 @@ func TestRunTakesALeaseRunsOneSessionAndFinishes(t *testing.T) {
 	if len(usage.Usage) != 1 || usage.Usage[0].Model != "claude-haiku-4-5" || usage.Turns != 3 {
 		t.Fatalf("usage %+v", usage)
 	}
-	g.product.mu.Lock()
-	calls, auth := g.product.calls, g.product.auth
-	g.product.mu.Unlock()
-	if strings.Join(calls, ",") != "tools/call brief,tools/call submit" {
-		t.Fatalf("product calls %v", calls)
+
+	// release: 404, revoked, audited
+	if c := getURL(seen.origin + "/info/refs?service=git-upload-pack"); c != http.StatusNotFound {
+		t.Fatalf("the capability answered %d after release", c)
 	}
-	for _, a := range auth {
-		if a != "" {
-			t.Fatalf("the session's own Authorization reached the product: %q", a)
-		}
+	if strings.Join(revoked, ",") != strings.Join(minted, ",") {
+		t.Fatalf("minted %v, revoked %v", minted, revoked)
+	}
+	var access meshapi.AccessRequest
+	json.Unmarshal(g.fake.Calls("access")[0].Body, &access)
+	if len(access.Records) < 2 || access.Records[0].Kind != "git" || access.Records[0].Repo != "acme/fixture" || access.Records[0].Outcome != "ok" {
+		t.Fatalf("access records %+v", access.Records)
+	}
+	if len(g.rt.relay.Leases()) != 0 {
+		t.Fatalf("grants left open: %v", g.rt.relay.Leases())
 	}
 	spec := sess.specs[0]
 	if spec.Model != "haiku" || !strings.Contains(spec.Prompt, "`brief`") || !strings.Contains(spec.Prompt, "`submit`") {
@@ -211,6 +275,47 @@ func TestRunTakesALeaseRunsOneSessionAndFinishes(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(g.work, "leases", lease)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the lease's directory is still there: %v", err)
+	}
+}
+
+func basicAuth(tok string) string {
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+tok))
+}
+
+func getURL(url string) int {
+	resp, err := http.Get(url)
+	if err != nil {
+		return 0
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+func getViaSocket(sock, path string) int {
+	c := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", sock)
+	}}}
+	resp, err := c.Get("http://proxy" + path)
+	if err != nil {
+		return 0
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+// Mesh refusing the lease's session hands the job back: the node cannot
+// run it without its key to Latchkey.
+func TestASessionMeshRefusesHandsBack(t *testing.T) {
+	g := newRig(t, &stubSession{})
+	g.fake.Session = func(string, string) (*meshapi.SessionCredential, int) { return nil, http.StatusServiceUnavailable }
+	job := g.offer(t, nil)
+	run(t, g, context.Background())
+	var hb meshapi.HandBackRequest
+	json.Unmarshal(g.fake.Calls("hand-back")[0].Body, &hb)
+	if g.fake.Ended(g.fake.LeaseOf(job)) != "hand-back" || hb.Cause != meshapi.CauseCannotRun || !strings.Contains(hb.Reason, "session") {
+		t.Fatalf("%+v", hb)
 	}
 }
 
