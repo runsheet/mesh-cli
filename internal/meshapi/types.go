@@ -354,11 +354,27 @@ type ModelUsage struct {
 	CostUSD               float64 `json:"cost_usd"`
 }
 
-// UsageRequest is POST /v1/leases/{id}/usage.
+// UsageRequest is POST /v1/leases/{id}/usage. Escalations are the
+// model steps the lease's session took (PR 2.11), in order.
 type UsageRequest struct {
-	Usage      []ModelUsage `json:"usage"`
-	Turns      int          `json:"turns"`
-	DurationMS int64        `json:"duration_ms"`
+	Usage       []ModelUsage `json:"usage"`
+	Turns       int          `json:"turns"`
+	DurationMS  int64        `json:"duration_ms"`
+	Escalations []Escalation `json:"escalations,omitempty"`
+}
+
+// Escalation is one step up a kind's model ladder in a lease's session:
+// from one model to the next, on a trigger (red, conflict, stall,
+// asked), at a time. Failed, when set, is why the session did not take
+// the step and stayed on From: the node keeps it in its log, and Mesh
+// hears only the steps taken.
+type Escalation struct {
+	From   string    `json:"from"`
+	To     string    `json:"to"`
+	On     string    `json:"on"`
+	Reason string    `json:"reason,omitempty"`
+	At     time.Time `json:"at"`
+	Failed string    `json:"-"`
 }
 
 // FinishRequest is POST /v1/leases/{id}/finish: the product's opaque

@@ -37,6 +37,16 @@ type CancelEvent struct {
 	Reason  string `json:"reason,omitempty"`
 }
 
+// TurnEvent is a turn's data: a thread job's new turn, for the lease's
+// live session (Mesh v1 spec, "Threads carry no content": ids only; the
+// session reads the turn with the product's turn tool).
+type TurnEvent struct {
+	LeaseID string `json:"lease_id"`
+	JobID   string `json:"job_id"`
+	TurnID  string `json:"turn_id"`
+	Seq     int64  `json:"seq"`
+}
+
 // maxEventLine bounds one line of the stream.
 const maxEventLine = 1 << 20
 

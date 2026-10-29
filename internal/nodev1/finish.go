@@ -14,6 +14,9 @@ import (
 // result as it is; any other text is {"text": …}.
 type finishCapture struct {
 	tool string
+	// onFinish hears the product answer the finish tool (Mailbox.Finish:
+	// a one-shot job's input closes).
+	onFinish func()
 
 	mu  sync.Mutex
 	got json.RawMessage
@@ -67,6 +70,9 @@ func (f *finishCapture) observe(_ string, request, response []byte) {
 	f.mu.Lock()
 	f.got = raw
 	f.mu.Unlock()
+	if f.onFinish != nil {
+		f.onFinish()
+	}
 }
 
 // isFinish says whether name is the finish tool: its own name, or the

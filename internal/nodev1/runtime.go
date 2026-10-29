@@ -82,6 +82,32 @@ type running struct {
 	progressAt time.Time
 	// cancelled is why Mesh cancelled the lease, once it has
 	cancelled string
+	// mailbox reaches the lease's live session; turnTool is the brief's,
+	// to read a turn with.
+	mailbox  *Mailbox
+	turnTool string
+}
+
+// touch is the lease's session showing progress: its progress_at in the
+// next heartbeat (Mesh v1 spec: the output stream feeds liveness).
+func (r *Runtime) touch(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if l := r.live[id]; l != nil {
+		l.progressAt = time.Now()
+	}
+}
+
+// deliver leaves msg in the lease's mailbox; a lease the node does not
+// hold has none.
+func (r *Runtime) deliver(id string, msg Message) error {
+	r.mu.Lock()
+	l := r.live[id]
+	r.mu.Unlock()
+	if l == nil || l.mailbox == nil {
+		return fmt.Errorf("the node holds no lease %s", id)
+	}
+	return l.mailbox.Post(msg)
 }
 
 // errLeaseGone ends a lease's work with nothing more to report: Mesh
@@ -319,4 +345,14 @@ func (r *Runtime) takeAccess(lease string) []meshapi.AccessRecord {
 	out := r.access[lease]
 	delete(r.access, lease)
 	return out
+}
+
+// turnTool is the turn tool of the lease's brief.
+func (r *Runtime) turnTool(id string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if l := r.live[id]; l != nil {
+		return l.turnTool
+	}
+	return ""
 }
