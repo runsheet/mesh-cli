@@ -16,12 +16,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"runtime"
 	"sync"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/gitrelay"
 	"projectmesh.io/mesh-cli/internal/meshapi"
-	"projectmesh.io/mesh-cli/internal/sessionproxy"
 )
 
 // Runtime is one v1 node.
@@ -44,9 +45,12 @@ type Runtime struct {
 	MeshBinary string
 	// Session runs each lease's session.
 	Session Session
-	// Upstream is how the lease's proxy reaches one of the brief's
-	// servers; a plain Remote, no credential, when nil.
-	Upstream func(ctx context.Context, b *meshapi.Brief, s meshapi.Server) sessionproxy.Upstream
+	// LatchkeyHTTP reaches Latchkey for a lease's session tokens and git
+	// tokens; a plain client when nil.
+	LatchkeyHTTP *http.Client
+	// GitUpstream is the git host the relay reaches on a lease's token;
+	// https://github.com when empty.
+	GitUpstream string
 	// Once stops the runtime after its first lease ends.
 	Once bool
 	// Logf hears the runtime's lines; nothing is logged when nil.
@@ -58,8 +62,10 @@ type Runtime struct {
 	Backoff time.Duration
 
 	nodeID string
+	relay  *gitrelay.Server
 	mu     sync.Mutex
 	live   map[string]*running
+	access map[string][]meshapi.AccessRecord
 	drain  bool
 }
 
@@ -107,6 +113,10 @@ func (r *Runtime) Run(ctx context.Context) error {
 	if r.Node.Tools == nil {
 		r.Node.Tools = []string{}
 	}
+	r.relay = &gitrelay.Server{Upstream: r.GitUpstream, Audit: r.audit}
+	if err := r.relay.Start(ctx); err != nil {
+		return fmt.Errorf("nodev1: the git relay: %w", err)
+	}
 	node, err := r.API.Register(ctx, r.Node)
 	if err != nil {
 		return fmt.Errorf("nodev1: register: %w", err)
@@ -114,6 +124,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	r.mu.Lock()
 	r.nodeID = node.NodeID
 	r.live = map[string]*running{}
+	r.access = map[string][]meshapi.AccessRecord{}
 	r.mu.Unlock()
 	r.logf("nodev1: registered as %s (%s)", node.NodeID, r.Node.Name)
 
@@ -229,4 +240,27 @@ func (r *Runtime) heartbeat(ctx context.Context) {
 			l.cancel(errCancelled)
 		}
 	}
+}
+
+// audit keeps one relay event as the lease's AccessRecord, posted to
+// Mesh when the lease ends.
+func (r *Runtime) audit(e gitrelay.Event) {
+	if e.Lease == "" {
+		return
+	}
+	rec := meshapi.AccessRecord{Kind: "git", Repo: e.Repo, Service: e.Service, Refs: e.Refs, Outcome: e.Outcome, Reason: e.Reason, Bytes: e.Bytes, At: e.At.UTC()}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.access != nil {
+		r.access[e.Lease] = append(r.access[e.Lease], rec)
+	}
+}
+
+// takeAccess answers and forgets the lease's AccessRecords.
+func (r *Runtime) takeAccess(lease string) []meshapi.AccessRecord {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := r.access[lease]
+	delete(r.access, lease)
+	return out
 }

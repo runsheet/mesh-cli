@@ -96,6 +96,11 @@ type Runsheet struct {
 	Key    Signer
 }
 
+// Product is a product's MCP server reached on a lease's DPoP-bound
+// mesh-session token (Mesh v1): the same upstream as Runsheet, whose
+// name the Mesh v1 spec retires for this one (wave 2.7).
+type Product = Runsheet
+
 // Signer signs one request's DPoP proof (internal/dpop.Key).
 type Signer interface {
 	Proof(method, rawURL, token string) (string, error)
@@ -161,6 +166,13 @@ type Proxy struct {
 	// git relay for the session's job, which holds
 	// the GitHub token so the session never does. Nil serves no git.
 	Git http.Handler
+	// Observe, when set, hears each JSON-RPC message a remote upstream
+	// answers, masked, beside the request it answers: a JSON answer
+	// whole, an event stream's each event's data. It is how a node reads
+	// what a product's tool answered — the finish tool's result — from
+	// the product's own words, not the session's transcript. It must not
+	// block.
+	Observe func(server string, request, response []byte)
 
 	mu        sync.Mutex
 	upstreams map[string]Upstream
@@ -419,7 +431,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			p.noteError(name, fmt.Sprintf("sessionproxy: %s: %s %s answered %d", name, req.Method, u.endpoint(), resp.StatusCode))
 		}
 	}
-	p.reply(w, resp)
+	p.reply(w, resp, name, body)
 }
 
 // proofRefused answers a 401 that refuses the DPoP proof rather than the
@@ -472,7 +484,7 @@ func (p *Proxy) forward(req *http.Request, u Upstream, body []byte, again bool) 
 
 // reply relays the upstream's answer, masked: an event stream line by
 // line as it arrives, anything else whole.
-func (p *Proxy) reply(w http.ResponseWriter, resp *http.Response) {
+func (p *Proxy) reply(w http.ResponseWriter, resp *http.Response, name string, request []byte) {
 	for _, k := range returned {
 		if v := resp.Header.Values(k); len(v) > 0 {
 			w.Header()[http.CanonicalHeaderKey(k)] = append([]string(nil), v...)
@@ -484,6 +496,9 @@ func (p *Proxy) reply(w http.ResponseWriter, resp *http.Response) {
 			p.logf("sessionproxy: reading the reply: %v", err)
 		}
 		masked := p.mask(string(b))
+		if p.Observe != nil && resp.StatusCode/100 == 2 {
+			p.Observe(name, request, []byte(masked))
+		}
 		w.Header().Del("Content-Length")
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.WriteString(w, masked)
@@ -496,10 +511,21 @@ func (p *Proxy) reply(w http.ResponseWriter, resp *http.Response) {
 		flusher.Flush()
 	}
 	rd := bufio.NewReaderSize(resp.Body, 64<<10)
+	var data strings.Builder
 	for {
 		line, err := rd.ReadString('\n')
 		if line != "" {
-			if _, werr := io.WriteString(w, p.mask(line)); werr != nil {
+			masked := p.mask(line)
+			if p.Observe != nil {
+				trimmed := strings.TrimRight(masked, "\r\n")
+				if d, ok := strings.CutPrefix(trimmed, "data:"); ok {
+					data.WriteString(strings.TrimPrefix(d, " "))
+				} else if trimmed == "" && data.Len() > 0 {
+					p.Observe(name, request, []byte(data.String()))
+					data.Reset()
+				}
+			}
+			if _, werr := io.WriteString(w, masked); werr != nil {
 				return
 			}
 			if flusher != nil && strings.TrimRight(line, "\r\n") == "" {
