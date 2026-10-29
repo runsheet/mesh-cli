@@ -179,3 +179,27 @@ func TestCancellingKillsTheSession(t *testing.T) {
 		t.Fatal("a killed session ended cleanly")
 	}
 }
+
+// A turn's model turns go to the model whose spend grew most in it: a
+// result's modelUsage is the session's whole spend so far.
+func TestGrewMost(t *testing.T) {
+	haiku := harness.ModelSpend{InputTokens: 100, OutputTokens: 10, CostUSD: 0.01}
+	for _, c := range []struct {
+		name        string
+		before, now map[string]harness.ModelSpend
+		want        string
+	}{
+		{"the first turn", nil, map[string]harness.ModelSpend{"haiku": haiku}, "haiku"},
+		{"nothing grew", map[string]harness.ModelSpend{"haiku": haiku}, map[string]harness.ModelSpend{"haiku": haiku}, ""},
+		{"an escalated turn", map[string]harness.ModelSpend{"haiku": haiku},
+			map[string]harness.ModelSpend{"haiku": {InputTokens: 120, OutputTokens: 10}, "sonnet": {InputTokens: 300, CostUSD: 0.2}}, "sonnet"},
+		{"a tie goes by cost", nil,
+			map[string]harness.ModelSpend{"a": {InputTokens: 5, CostUSD: 0.01}, "b": {InputTokens: 5, CostUSD: 0.02}}, "b"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := grewMost(c.before, c.now); got != c.want {
+				t.Fatalf("%q, want %q", got, c.want)
+			}
+		})
+	}
+}

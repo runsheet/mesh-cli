@@ -149,7 +149,7 @@ func TestUsageCarriesEscalations(t *testing.T) {
 	}
 	var u meshapi.UsageRequest
 	json.Unmarshal(g.fake.Calls("usage")[0].Body, &u)
-	if len(u.Escalations) != 1 || u.Escalations[0].To != "sonnet" || u.Escalations[0].On != "red" || len(u.Usage) != 1 || u.Usage[0].Model != "claude-haiku" {
+	if len(u.Escalations) != 1 || u.Escalations[0].To != "sonnet" || u.Escalations[0].On != "red" || len(u.Models) != 1 || u.Models[0].Model != "claude-haiku" || u.CostListCents != 10 || u.Model != "sonnet" {
 		t.Fatalf("usage %s", g.fake.Calls("usage")[0].Body)
 	}
 }

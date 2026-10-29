@@ -37,6 +37,11 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			decode(t, f.Request, &req)
 			return c.Heartbeat(context.Background(), idOf(f.Path, 3), req)
 		},
+		"nodes-heartbeat-accounts": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.HeartbeatRequest
+			decode(t, f.Request, &req)
+			return c.Heartbeat(context.Background(), idOf(f.Path, 3), req)
+		},
 		"nodes-connect": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
 			var req meshapi.ConnectRequest
 			decode(t, f.Request, &req)
@@ -46,6 +51,17 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			var req meshapi.TakeRequest
 			decode(t, f.Request, &req)
 			return c.Take(context.Background(), req)
+		},
+		"take-pushed": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.TakeRequest
+			decode(t, f.Request, &req)
+			tk, err := c.Take(context.Background(), req)
+			if err == nil && (tk.Brief == nil || len(tk.Brief.Pushed) != 1 || tk.Brief.Pushed[0].LeaseN != 1 || tk.Brief.Pushed[0].SHA == "") {
+				t.Errorf("take-pushed: the brief's pushed %+v", tk.Brief)
+			}
+			// the brief carries fields this node does not read (finish,
+			// a server's audience): only its pushed is held to the fixture
+			return nil, err
 		},
 		"take-waiting": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
 			var req meshapi.TakeRequest

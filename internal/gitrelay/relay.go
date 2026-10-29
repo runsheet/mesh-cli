@@ -92,10 +92,20 @@ type Event struct {
 	Repo    string
 	Service string // upload-pack or receive-pack
 	Refs    []string
+	// Pushed are a push's ref updates, each ref with the commit it
+	// names after the push; empty for a fetch. Mesh hands the ok ones to
+	// a later lease of the job as its brief's pushed.
+	Pushed  []PushedRef
 	Outcome string // ok, refused or failed
 	Reason  string
 	Bytes   int64
 	At      time.Time
+}
+
+// PushedRef is one ref a push updates and the commit it names after.
+type PushedRef struct {
+	Ref string
+	SHA string
 }
 
 // Relay is one job's git relay.
@@ -176,6 +186,9 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 		for _, c := range cmds {
 			ev.Refs = append(ev.Refs, c.ref)
+			if c.new != zeroID {
+				ev.Pushed = append(ev.Pushed, PushedRef{Ref: c.ref, SHA: c.new})
+			}
 			if reason := r.check(req.Context(), c); reason != "" {
 				refuse(reason)
 				return

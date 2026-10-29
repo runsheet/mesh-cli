@@ -1,0 +1,100 @@
+{
+  "name": "take-pushed",
+  "method": "POST",
+  "path": "/v1/take",
+  "caller": "node",
+  "request": {
+    "harnesses": [
+      "claude-code"
+    ],
+    "node_id": "7f41f005-46b5-5c7d-8af5-9ec6c44c99f9",
+    "wait_s": 5
+  },
+  "status": 200,
+  "response": {
+    "brief": {
+      "brief_tool": "brief",
+      "code": {
+        "base_ref": "main",
+        "repo": {
+          "full_name": "acme/fixture",
+          "host": "github.test"
+        }
+      },
+      "evidence_required": [],
+      "finish": "result",
+      "finish_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sha256"
+        ],
+        "type": "object"
+      },
+      "finish_tool": "submit",
+      "guidance": "You are the conformance product's echo job. It proves a session can read\nits job's repository through the node's relay and hand a result back\nthrough the product's own tool.\n\nCall the brief tool first. It names one file in the repository checked out\nfor you. Read that file's bytes exactly as committed at the checked-out\ncommit, take their SHA-256, and submit it as 64 lowercase hex characters.\nIf submit refuses, read its reason and try again. Change nothing in the\nrepository.",
+      "handbacks": 1,
+      "harness": {
+        "model": {
+          "default": "haiku",
+          "escalate": [
+            "sonnet"
+          ],
+          "max": "sonnet",
+          "on": [
+            "red",
+            "stall"
+          ]
+        },
+        "name": "claude-code"
+      },
+      "job_id": "e73d89af-ffaf-5bbd-80bd-c28304fa7647",
+      "kind": "echo",
+      "lease_expires_at": "2026-01-01T00:00:00Z",
+      "lease_id": "bcd02c25-1ba1-52b5-8bee-d4a7768345e2",
+      "lease_n": 2,
+      "node_tools": [
+        "result",
+        "hand_back",
+        "progress"
+      ],
+      "product": "conform",
+      "pushed": [
+        {
+          "lease_n": 1,
+          "ref": "refs/heads/mesh/access-1",
+          "sha": "5f1d3c0a9b8e7d6c5b4a39281706f5e4d3c2b1a0"
+        }
+      ],
+      "renew_every_s": 30,
+      "resources": {
+        "cpus": 1,
+        "mem_gb": 1
+      },
+      "servers": [
+        {
+          "audience": "https://conform.test/mcp",
+          "name": "conform",
+          "url": "https://conform.test/mcp"
+        }
+      ],
+      "subject": {
+        "id": "1",
+        "type": "fixture"
+      },
+      "tenant": "acme"
+    },
+    "lease": {
+      "expires_at": "2026-01-01T00:00:00Z",
+      "job_id": "e73d89af-ffaf-5bbd-80bd-c28304fa7647",
+      "lease_id": "bcd02c25-1ba1-52b5-8bee-d4a7768345e2",
+      "n": 2,
+      "renew_every_s": 30
+    }
+  }
+}
