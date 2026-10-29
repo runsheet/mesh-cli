@@ -59,6 +59,9 @@ type SessionSpec struct {
 	// resumes (`claude -p --resume <id>`) with its context, rather than
 	// starting afresh.
 	Resume string
+	// Settings are added to the session's --settings: the Stop hook that
+	// holds a one-shot session to its finish (stophook.go).
+	Settings map[string]any
 	// OnEvent hears every event of the session's output as it comes:
 	// the lease's liveness (progress_at) and the evidence hooks. It must
 	// not block.
@@ -124,7 +127,7 @@ func (c *ClaudeSession) Args(spec SessionSpec) []string {
 	if spec.BudgetUSD > 0 {
 		args = append(args, "--max-budget-usd", strconv.FormatFloat(spec.BudgetUSD, 'f', 2, 64))
 	}
-	if cfg, err := json.Marshal(harness.SessionSettings(nil)); err == nil {
+	if cfg, err := json.Marshal(harness.SessionSettings(spec.Settings)); err == nil {
 		args = append(args, "--settings", string(cfg))
 	}
 	args = append(args, harness.MCPArgs(spec.Servers)...)
