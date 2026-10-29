@@ -30,7 +30,9 @@ import (
 // server its spec names, through the lease's sessionproxy socket as the
 // session's mcp-relay would, then waits for hold (if set) and answers.
 type stubSession struct {
-	calls   []string // server/tool
+	calls []string // server/tool
+	// args are a call's arguments by server/tool, as JSON; {} when none
+	args    map[string]string
 	inspect func(SessionSpec)
 	hold    chan struct{}
 	err     error
@@ -49,7 +51,7 @@ func (s *stubSession) Run(ctx context.Context, spec SessionSpec) (SessionResult,
 	}
 	for _, c := range s.calls {
 		server, tool, _ := strings.Cut(c, "/")
-		if err := callThroughProxy(ctx, spec.Servers[server], tool); err != nil {
+		if err := callThroughProxyWith(ctx, spec.Servers[server], tool, s.args[c]); err != nil {
 			return SessionResult{}, err
 		}
 	}
@@ -65,6 +67,14 @@ func (s *stubSession) Run(ctx context.Context, spec SessionSpec) (SessionResult,
 
 // callThroughProxy posts one tools/call to the entry's socket and server.
 func callThroughProxy(ctx context.Context, entry any, tool string) error {
+	return callThroughProxyWith(ctx, entry, tool, "")
+}
+
+// callThroughProxyWith is callThroughProxy with the call's arguments.
+func callThroughProxyWith(ctx context.Context, entry any, tool, args string) error {
+	if args == "" {
+		args = "{}"
+	}
 	sock, name, ok := harness.ProxiedOf(entry)
 	if !ok {
 		return fmt.Errorf("not a proxied entry: %v", entry)
@@ -72,7 +82,7 @@ func callThroughProxy(ctx context.Context, entry any, tool string) error {
 	c := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", sock)
 	}}}
-	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":%q,"arguments":{}}}`, tool)
+	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":%q,"arguments":%s}}`, tool, args)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "http://proxy/mcp/"+name, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")

@@ -42,8 +42,13 @@ const maxReason = 2000
 type outcome struct {
 	result SessionResult
 	// finish is what the product's finish tool answered, nil when the
-	// session never had it answer.
-	finish     json.RawMessage
+	// session never had it answer. A one-shot session's settle fills it
+	// from the session's last message when that fits the kind's
+	// finish_schema (settle.go).
+	finish json.RawMessage
+	// noFinish is why a one-shot session ended with no finish: the lease
+	// fails no_finish, never finishes with prose.
+	noFinish   string
 	err        error
 	cause      error // the lease ctx's cause when it was cancelled
 	nodeEnding bool
@@ -221,7 +226,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	}
 
 	ladder := escalate.New(b.Harness.Model)
-	fin := &finishCapture{tool: b.FinishTool, onFinish: mb.Finish}
+	fin := &finishCapture{tool: b.FinishTool, learningsTool: b.LearningsTool, onFinish: mb.Finish}
 	// run_suite's steps run in the lease's pod, never on a sandboxed
 	// node's host (podsuites.go)
 	suites := r.suiteRunner(b, pod)
@@ -231,6 +236,10 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		return outcome{err: fmt.Errorf("the lease's sessionproxy: %w", err), cause: context.Cause(ctx)}
 	}
 	keep(holdProxy, func() error { closeProxy(); return nil })
+	gate := r.openStopGate(b, sock, fin)
+	if gate != nil {
+		keep("the stop gate", func() error { gate.close(); return nil })
+	}
 	env := []string{"GIT_TERMINAL_PROMPT=0"}
 	if len(apiRules(b)) > 0 {
 		env = append(env, RelaySocketEnv+"="+sock)
@@ -249,6 +258,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		Mailbox:   mb,
 		Ladder:    ladder,
 		Thread:    b.Thread != nil,
+		Settings:  gate.sessionSettings(r.MeshBinary),
 		OnEvent: func(ev harness.Event) {
 			r.touch(b.LeaseID)
 			r.readAccount(account.ref(), ev)
@@ -281,6 +291,15 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		o.cause = context.Cause(ctx)
 	} else if errors.Is(err, context.DeadlineExceeded) || sctx.Err() != nil {
 		o.err = fmt.Errorf("the session ran past its %d-minute budget", b.Harness.Budget.Minutes)
+	}
+	if o.err == nil && o.cause == nil && b.Thread == nil && !res.Parked {
+		// a one-shot session's finish is its finish tool's answer, or its
+		// last message when that fits the kind's finish_schema, or none
+		// (settle.go); the learnings the finish carried go to the
+		// product's learnings tool while the proxy is still open
+		st := settle(b, fin, res.Text, gate.refused())
+		o.finish, o.noFinish = st.result, st.noFinish
+		r.handInLearnings(ctx, b, sock, fin, st.learnings)
 	}
 	return o
 }
@@ -497,6 +516,11 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) actor.End {
 	if o.err != nil {
 		r.handBack(id, meshapi.CauseCannotRun, o.err.Error(), o.result.SessionID)
 		return actor.End{Report: actor.ReportHandBack, Cause: meshapi.CauseCannotRun, Reason: o.err.Error()}
+	}
+	if o.noFinish != "" {
+		r.logf("nodev1: lease %s: no finish: %s", id, o.noFinish)
+		r.fail(id, meshapi.CauseNoFinish, o.noFinish)
+		return actor.End{Report: actor.ReportFail, Cause: meshapi.CauseNoFinish, Reason: o.noFinish}
 	}
 	result := o.finish
 	if result == nil {
