@@ -1,15 +1,16 @@
 {
   "name": "lease-fail-no-finish",
   "method": "POST",
-  "path": "/v1/leases/lse_01JD7K2Q9N3V/fail",
+  "path": "/v1/leases/32568b33-4626-58b7-a37a-4ccdd95053fe/fail",
+  "caller": "node",
   "request": {
     "cause": "no_finish",
-    "reason": "the session ended without calling its finish tool submit, after 3 refused stops, and its last message is not a JSON object to take as the result"
+    "reason": "the session ended 3 times without calling submit; its last message did not fit the kind's finish_schema"
   },
   "status": 200,
   "response": {
-    "job_id": "job_01JD7K1ZC4XA",
-    "status": "queued",
-    "handbacks": 1
+    "handbacks": 1,
+    "job_id": "45664f9a-b216-5cd1-b4a9-df036fab1e3a",
+    "status": "queued"
   }
 }
