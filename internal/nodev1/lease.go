@@ -222,7 +222,10 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 
 	ladder := escalate.New(b.Harness.Model)
 	fin := &finishCapture{tool: b.FinishTool, onFinish: mb.Finish}
-	tools, rec := r.nodeTools(b, grant, workspace, tokens, ladder, mb)
+	// run_suite's steps run in the lease's pod, never on a sandboxed
+	// node's host (podsuites.go)
+	suites := r.suiteRunner(b, pod)
+	tools, rec := r.nodeTools(b, grant, workspace, tokens, ladder, mb, suites)
 	servers, sock, closeProxy, err := r.openProxy(ctx, b, tokens, grant, tools, fin.observe)
 	if err != nil {
 		return outcome{err: fmt.Errorf("the lease's sessionproxy: %w", err), cause: context.Cause(ctx)}

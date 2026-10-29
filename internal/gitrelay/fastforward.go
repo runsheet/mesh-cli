@@ -4,9 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
+
+	"projectmesh.io/mesh-cli/internal/githarden"
 )
 
 // The relay refuses a force push itself (Mesh v1 spec, "The git relay
@@ -32,8 +33,9 @@ func CheckoutAncestry(dir string) Ancestry {
 		if !objectID(old) || !objectID(new) {
 			return fmt.Errorf("%q to %q is not a pair of commits", old, new)
 		}
-		cmd := exec.CommandContext(ctx, "git", "-C", dir, "merge-base", "--is-ancestor", old, new)
-		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		// the pushing checkout is the session's: git runs hardened in it
+		// (internal/githarden), so nothing of its config runs as the node
+		cmd := githarden.Command(ctx, dir, nil, "merge-base", "--is-ancestor", old, new)
 		out, err := cmd.CombinedOutput()
 		if err == nil {
 			return nil

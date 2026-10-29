@@ -19,8 +19,10 @@ import (
 // them, by the node's own key. escalate, and a red run_suite or a
 // conflicted apply_onto, move the session up the lease's ladder through
 // its mailbox (PR 2.11). A tool the node does not have is left out and
-// logged.
-func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace string, tokens *sessionTokens, ladder *escalate.Ladder, mb *Mailbox) ([]mcptool.Tool, *nodetools.Recorder) {
+// logged. suites, set, runs run_suite's steps in the lease's pod; nil
+// runs them on the host only on a node explicitly unsandboxed
+// (hostSuites), and otherwise run_suite refuses (podsuites.go).
+func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace string, tokens *sessionTokens, ladder *escalate.Ladder, mb *Mailbox, suites nodetools.SuiteRunner) ([]mcptool.Tool, *nodetools.Recorder) {
 	if len(b.NodeTools) == 0 {
 		return nil, nil
 	}
@@ -49,8 +51,8 @@ func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace s
 				Refusal: func(since time.Time) string { return r.refusalSince(b.LeaseID, since) }}
 			out = append(out, p.Tool())
 		case nodetools.RunSuiteTool:
-			out = append(out, (&nodetools.RunSuite{Workspace: workspace, Recorder: rec,
-				Escalate: escalateOn(ladder, mb, escalate.OnRed)}).Tool())
+			out = append(out, (&nodetools.RunSuite{Workspace: workspace, Recorder: rec, Run: suites,
+				OnHost: suites == nil && r.hostSuites(), Escalate: escalateOn(ladder, mb, escalate.OnRed)}).Tool())
 		case nodetools.ApplyOntoTool:
 			out = append(out, (&nodetools.ApplyOnto{Grant: g, Repo: repo, Workspace: workspace, Code: b.Code, Recorder: rec,
 				Escalate: escalateOn(ladder, mb, escalate.OnConflict)}).Tool())

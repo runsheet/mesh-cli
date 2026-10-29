@@ -32,12 +32,26 @@ func HostSuites(ctx context.Context, workspace string, steps []validate.Step) ([
 	return validate.Run(ctx, steps, validate.HostRunner{Dir: workspace}, validate.Options{Dir: workspace, ContinueOnFailure: true})
 }
 
+// ErrNoSuiteRunner is run_suite refused: the lease has nowhere to run
+// its steps. The steps are commands the session wrote
+// (.runsheet/validate.yml in its own checkout), so they run where the
+// session runs — in its lease's pod — and never on the host of a node
+// that sandboxes its sessions.
+var ErrNoSuiteRunner = errors.New("run_suite cannot run here: the lease has no sandbox to run its suites in, and this node runs none on the host")
+
 // RunSuite is one lease's run_suite tool.
 type RunSuite struct {
 	Workspace string
 	Recorder  *Recorder
-	// Run runs the steps; HostSuites when nil.
+	// Run runs the steps: the lease's pod's runner on a sandboxed node.
+	// Nil runs them on the host (HostSuites) only with OnHost, and
+	// otherwise refuses (ErrNoSuiteRunner) before reading validate.yml.
 	Run SuiteRunner
+	// OnHost is the explicit opt-in to running the steps on the host
+	// when Run is nil: only for a node whose sessions themselves run on
+	// the host, unsandboxed (dev, test), where the steps can do nothing
+	// the session could not. The zero value never runs on the host.
+	OnHost bool
 	// Escalate hears a red run, its summary why (PR 2.11, trigger
 	// "red"), and answers the model the session moves to, "" when it
 	// does not; nil never escalates.
@@ -88,6 +102,13 @@ func (s *RunSuite) Tool() mcptool.Tool {
 }
 
 func (s *RunSuite) call(ctx context.Context, args map[string]any) (string, error) {
+	run := s.Run
+	if run == nil {
+		if !s.OnHost {
+			return "", ErrNoSuiteRunner
+		}
+		run = HostSuites
+	}
 	var names []string
 	if raw, ok := args["suites"].([]any); ok {
 		for _, v := range raw {
@@ -121,10 +142,6 @@ func (s *RunSuite) call(ctx context.Context, args map[string]any) (string, error
 	tree, _ := git(ctx, s.Workspace, "rev-parse", "--verify", "-q", "HEAD^{tree}")
 	// what the checkout holds beyond HEAD is part of what was run
 	status, _ := git(ctx, s.Workspace, "status", "--porcelain=v1", "-uall")
-	run := s.Run
-	if run == nil {
-		run = HostSuites
-	}
 	start := time.Now()
 	results, runErr := run(ctx, s.Workspace, steps)
 	ended := time.Now()
