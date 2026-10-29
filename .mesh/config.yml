@@ -1,5 +1,5 @@
 # Mesh's settings for this repository (runsheet ADR 021 and its
-# amendments). Only append_paths is set: every key left out falls back to
+# amendments). append_paths and merge_queue are set: every key left out falls back to
 # the project's setting, then the platform's default, exactly as if this
 # file did not exist.
 
@@ -14,3 +14,16 @@ append_paths:
   - "AGENTS.md"
   - "README.md"
   - "docs/adr/**"
+
+# The merge queue validates ahead (runsheet ADR 079): each queued pull
+# request is a one-member chain validated on main plus every chain ahead
+# of it, all at once; a green chain lands by fast-forward on the run it
+# has, a red one ejects only its own member, and no batch is bisected.
+# mesh-cli is the first repository on chains (2026-10-30); RUNSHEET_CHAINS_OFF
+# on the platform, or removing this block, puts it back on batches.
+merge_queue:
+  mode: chains
+  window:
+    start: 2
+    floor: 1
+    max: 4
