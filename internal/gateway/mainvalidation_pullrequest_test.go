@@ -115,7 +115,7 @@ func TestFakePullRequestValidation(t *testing.T) {
 		t.Fatalf("another node's claim = %v, want IsRefusal", err)
 	}
 
-	tok, err := gw.PullRequestValidationToken(ctx, prValidationID, nodeID)
+	tok, err := gw.PullRequestValidationToken(ctx, prValidationID, nodeID, "")
 	if err != nil {
 		t.Fatal(err)
 	}

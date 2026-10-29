@@ -521,9 +521,18 @@ func (f *Fake) jobAccessAliases(r *http.Request, in map[string]any, bearer strin
 		token("mutation($id: UUID!) { issueItemRepoToken(mergeBatchId: $id) }", "issueItemRepoToken")
 	case "runsheet/validate main", "runsheet/validate pull_request":
 		// a read token of the merged item's repo, whatever the item's
-		// status: the validation holds the claim, not the item
-		if tok := f.GitHubTokens[id]; tok != nil {
+		// status: the validation holds the claim, not the item — or, for
+		// a pull request asked with its brief's pushTo (a validation onto
+		// main, runsheet ADR 077), a write one; any other pushTo is not
+		// served, as runsheet's gateway/jobaccess.go refuses it
+		push, _ := in["pushTo"].(string)
+		if push != "" && (typ != "pull_request" || push != "refs/runsheet/onto/"+id) {
+			missing = append(missing, map[string]any{"access": "repo", "reason": fmt.Sprintf("the validation pushes refs/runsheet/onto/%s, not %s", id, push)})
+		} else if tok := f.GitHubTokens[id]; tok != nil {
 			out["repo"] = copyRow(tok)
+			if push != "" {
+				out["repo"].(map[string]any)["access"] = "write"
+			}
 		} else {
 			missing = append(missing, map[string]any{"access": "repo", "reason": "no GitHub installation reaches the item's repo"})
 		}

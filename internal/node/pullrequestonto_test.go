@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 	"projectmesh.io/mesh-cli/internal/validate"
 )
 
@@ -33,7 +34,14 @@ func (g prBriefGW) JobBriefOf(kind string, s gateway.JobSubject) (*gateway.JobBr
 // answers the runner, the validation, origin, the new main and node.log.
 func ontoPullRequest(t *testing.T, head, mainMoves map[string]string, code func(pr gateway.MainValidationPullRequest, newMain string) *gateway.JobCode) (*Runner, gateway.MainValidationPullRequest, string, string, *syncBuf) {
 	t.Helper()
-	r, _, _, origin, logs := candidateRunner(t, twoSuitesYML("true"))
+	r, _, pr, origin, newMain, logs := ontoPullRequestOn(t, head, mainMoves, code)
+	return r, pr, origin, newMain, logs
+}
+
+// ontoPullRequestOn is ontoPullRequest answering the fake gateway too.
+func ontoPullRequestOn(t *testing.T, head, mainMoves map[string]string, code func(pr gateway.MainValidationPullRequest, newMain string) *gateway.JobCode) (*Runner, *gatewaytest.Fake, gateway.MainValidationPullRequest, string, string, *syncBuf) {
+	t.Helper()
+	r, f, _, origin, logs := candidateRunner(t, twoSuitesYML("true"))
 	root := t.TempDir()
 	seedDir := filepath.Join(root, "fork")
 	gitRun(t, root, "clone", "--quiet", origin, seedDir)
@@ -60,7 +68,7 @@ func ontoPullRequest(t *testing.T, head, mainMoves map[string]string, code func(
 		}
 		r.GW = prBriefGW{Client: r.GW.(*gateway.Client), brief: brief}
 	}
-	return r, pr, origin, newMain, logs
+	return r, f, pr, origin, newMain, logs
 }
 
 // ontoMainCode is the brief runsheet sends a hand pull request's
@@ -162,6 +170,55 @@ func TestValidatePullRequestWithoutOntoIsUnchanged(t *testing.T) {
 			}
 			if strings.Contains(logs.String(), "onto:") {
 				t.Fatalf("node.log speaks of onto:\n%s", logs.String())
+			}
+		})
+	}
+}
+
+// The validation's token is asked of the exchange with the brief's
+// pushTo, so the platform answers the write token its merge is pushed
+// with (runsheet gateway/jobaccess.go mints write only for that ref, and
+// read for an ask without one); a brief without onto asks without
+// pushTo, the read token as before.
+func TestValidatePullRequestOntoAsksWithPushTo(t *testing.T) {
+	for name, tc := range map[string]struct {
+		code   func(gateway.MainValidationPullRequest, string) *gateway.JobCode
+		pushTo string
+	}{
+		"onto main": {code: ontoMainCode, pushTo: "refs/runsheet/onto/" + prValidationID},
+		"no onto": {code: func(pr gateway.MainValidationPullRequest, _ string) *gateway.JobCode {
+			return &gateway.JobCode{Form: "commit", Repo: pr.RepoFullName, SHA: pr.SHA}
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, f, pr, origin, _, logs := ontoPullRequestOn(t,
+				map[string]string{"api/fix.go": "package api\n"},
+				map[string]string{"web/moved.go": "package web\n"}, tc.code)
+			f.GitHubTokens[prValidationID] = map[string]any{"token": "ghs_pr12", "expiresAt": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+				"repo": "acme/widgets", "access": "read"}
+			att, err := r.ValidatePullRequest(context.Background(), pr)
+			if err != nil {
+				t.Fatalf("ValidatePullRequest: %v\n%s", err, logs.String())
+			}
+			acc := f.CallsNamed("jobAccess")
+			if len(acc) == 0 {
+				t.Fatal("no jobAccess asked")
+			}
+			got, has := acc[0].Input["pushTo"]
+			switch {
+			case tc.pushTo == "" && has:
+				t.Fatalf("jobAccess asked with pushTo %v, the brief names none", got)
+			case tc.pushTo != "" && got != tc.pushTo:
+				t.Fatalf("jobAccess input %v, want pushTo %s", acc[0].Input, tc.pushTo)
+			}
+			if tc.pushTo == "" {
+				if att.Commit != pr.SHA {
+					t.Fatalf("attested %s, want the head %s", att.Commit, pr.SHA)
+				}
+				return
+			}
+			if pushed := gitRun(t, origin, "rev-parse", tc.pushTo); pushed != att.Commit || att.Commit == pr.SHA {
+				t.Fatalf("pushTo holds %s, attested %s (head %s)\n%s", pushed, att.Commit, pr.SHA, logs.String())
 			}
 		})
 	}

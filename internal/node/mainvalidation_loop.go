@@ -692,7 +692,7 @@ func (r *Runner) ValidateMainRequest(ctx context.Context, req gateway.MainValida
 // pullRequestTokenMinter is the gateway's pull request validation token,
 // from the exchange (*gateway.Client).
 type pullRequestTokenMinter interface {
-	PullRequestValidationToken(ctx context.Context, validationID, nodeID string) (*gateway.GitHubToken, error)
+	PullRequestValidationToken(ctx context.Context, validationID, nodeID, pushTo string) (*gateway.GitHubToken, error)
 }
 
 // ValidatePullRequest is validatePullRequest on the pull request
@@ -700,13 +700,21 @@ type pullRequestTokenMinter interface {
 // pull_request), what the loop's ValidatePullRequest runs: a mint
 // refused or failing is the validation's error, never the operator's
 // login instead. A gateway that mints none runs on the operator's login.
+// A brief naming onto and pushTo (pullRequestOnto) asks the exchange
+// with that pushTo, and is answered the write token its merge is pushed
+// with; asked without, the platform answers read and the push is
+// refused.
 func (r *Runner) ValidatePullRequest(ctx context.Context, pr gateway.MainValidationPullRequest) (validate.Attestation, error) {
 	m, ok := r.GW.(pullRequestTokenMinter)
 	if !ok {
 		return r.validatePullRequest(ctx, pr, nil)
 	}
 	sc, _ := r.Scopes.ByOrg(pr.OrgID)
-	tok, err := m.PullRequestValidationToken(ctx, pr.PullRequestValidationID, sc.NodeID)
+	var pushTo string
+	if o := pullRequestOnto(r.GW, pr); o != nil {
+		pushTo = o.code.PushTo
+	}
+	tok, err := m.PullRequestValidationToken(ctx, pr.PullRequestValidationID, sc.NodeID, pushTo)
 	if err != nil {
 		err = fmt.Errorf("github token for %s: %w", pullRequestLabel(pr), err)
 		r.logf("%v; not fetched", err)

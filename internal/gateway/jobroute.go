@@ -179,7 +179,14 @@ func jobKindFrom(ctx context.Context) string {
 // jobRepoToken is the job's one repository token from the exchange: an
 // entry the platform did not serve is its refusal, naming why.
 func (c *Client) jobRepoToken(ctx context.Context, kind string, subject JobSubject) (*GitHubToken, error) {
-	acc, err := c.JobAccess(ctx, kind, subject, "")
+	return c.jobRepoTokenPushing(ctx, kind, subject, "")
+}
+
+// jobRepoTokenPushing is jobRepoToken asked with pushTo
+// (jobAccessPushing): the write token a validation onto main pushes its
+// merge with.
+func (c *Client) jobRepoTokenPushing(ctx context.Context, kind string, subject JobSubject, pushTo string) (*GitHubToken, error) {
+	acc, err := c.jobAccessPushing(ctx, kind, subject, "", pushTo)
 	if err != nil {
 		return nil, err
 	}
