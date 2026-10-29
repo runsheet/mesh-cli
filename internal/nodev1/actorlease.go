@@ -110,11 +110,7 @@ func (r *Runtime) runActor(ctx context.Context, tk *meshapi.Take, room *schedule
 			out = outcome{err: fmt.Errorf("the lease's pod: %w", err), cause: context.Cause(leaseCtx)}
 		} else {
 			if pod != "" {
-				r.mu.Lock()
-				if l := r.lease(id); l != nil {
-					l.pod = pod
-				}
-				r.mu.Unlock()
+				r.setPod(id, pod)
 				go r.watchPod(leaseCtx, pod, cancel)
 			}
 			out = r.work(leaseCtx, b, mb, a, pod)
@@ -167,9 +163,12 @@ func PodName(leaseID string) string {
 
 // openPod makes the lease's pod when the brief names pods and the node
 // has a sandbox runtime, with each pod a sidecar in it, and has the
-// actor hold it; "" when there is none to make.
+// actor hold it; "" when there is none to make. A node with the sandbox
+// (Pods, `--sandbox`) makes none here: its lease's pod runs the session
+// too, and work opens it once the checkout says what services it needs
+// (podsession.go).
 func (r *Runtime) openPod(ctx context.Context, b *meshapi.Brief, a *actor.Actor) (string, error) {
-	if r.Sandbox == nil || len(b.Pods) == 0 {
+	if r.Pods != nil || r.Sandbox == nil || len(b.Pods) == 0 {
 		return "", nil
 	}
 	specs := make([]podSpec, 0, len(b.Pods))
@@ -195,6 +194,15 @@ func (r *Runtime) openPod(ctx context.Context, b *meshapi.Brief, a *actor.Actor)
 		}
 	}
 	return pod.Name, nil
+}
+
+// setPod records the lease's pod in its record, for the supervisor.
+func (r *Runtime) setPod(id, pod string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if l := r.lease(id); l != nil {
+		l.pod = pod
+	}
 }
 
 // watchPod reads the lease's pod's agent until ctx ends: an agent that
@@ -230,6 +238,12 @@ func podKilled(o outcome) (string, bool) {
 	}
 	if o.cause != nil || o.nodeEnding {
 		return "", false
+	}
+	// a pod session's agent killed by its sandbox's limit (the OOM
+	// killer, the pids cap) is the node's sizing, never the work's
+	var le *sandbox.LimitError
+	if errors.As(o.err, &le) {
+		return fmt.Sprintf("the session's pod was killed by its %s limit (%s): %v", le.Limit, le.Value, o.err), true
 	}
 	if code, ok := actor.Killed(o.err); ok {
 		return fmt.Sprintf("the session was killed (exit %d), not by the node: %v", code, o.err), true

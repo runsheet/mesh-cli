@@ -67,12 +67,19 @@ type Options struct {
 	// OnEvent hears every event of the output, in order, on the
 	// session's reading goroutine: it must not block.
 	OnEvent func(harness.Event)
+	// Spawn, when set, runs the session's process in place of exec on
+	// the host — a v1 node's lease pod (mesh-cli ADR-044): it runs argv
+	// (Binary, the stream flags and Args) to its end on the streams it is
+	// given, closing nothing of them, and answers how it ended. Env and
+	// Dir are Spawn's to apply; ctx's end must stop it.
+	Spawn func(ctx context.Context, argv []string, stdin io.Reader, stdout, stderr io.Writer) error
 }
 
 // Session is one running streaming session.
 type Session struct {
-	cmd   *exec.Cmd
-	start time.Time
+	// waitProc reaps the process: exec's Wait, or Spawn's end.
+	waitProc func() error
+	start    time.Time
 
 	wmu    sync.Mutex
 	in     io.WriteCloser
@@ -136,23 +143,32 @@ func Start(ctx context.Context, opts Options, first string) (*Session, error) {
 		bin = "claude"
 	}
 	args := append([]string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"}, opts.Args...)
-	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Dir = opts.Dir
-	cmd.Env = opts.Env
-	cmd.Stderr = opts.Stderr
-	cmd.WaitDelay = 5 * time.Second
-	in, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, err
+	var (
+		in       io.WriteCloser
+		out      io.ReadCloser
+		waitProc func() error
+	)
+	if opts.Spawn != nil {
+		in, out, waitProc = spawn(ctx, opts, append([]string{bin}, args...))
+	} else {
+		cmd := exec.CommandContext(ctx, bin, args...)
+		cmd.Dir = opts.Dir
+		cmd.Env = opts.Env
+		cmd.Stderr = opts.Stderr
+		cmd.WaitDelay = 5 * time.Second
+		var err error
+		if in, err = cmd.StdinPipe(); err != nil {
+			return nil, err
+		}
+		if out, err = cmd.StdoutPipe(); err != nil {
+			return nil, err
+		}
+		if err := cmd.Start(); err != nil {
+			return nil, err
+		}
+		waitProc = cmd.Wait
 	}
-	out, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	s := &Session{cmd: cmd, start: time.Now(), in: in, waiting: map[string]chan controlAnswer{},
+	s := &Session{waitProc: waitProc, start: time.Now(), in: in, waiting: map[string]chan controlAnswer{},
 		parsed: make(chan harness.Result, 1), done: make(chan struct{})}
 	pr, pw := io.Pipe()
 	go func() { s.parsed <- harness.ParseStream(pr, s.observe(opts.OnEvent)) }()
@@ -271,10 +287,31 @@ func (s *Session) answer(a controlAnswer) {
 	}
 }
 
+// spawn runs argv through opts.Spawn on pipes of its own: the input's
+// reader closes once the process has ended, so a turn sent after that
+// fails rather than blocking, and the output's writer closes then too,
+// which ends the session's reading.
+func spawn(ctx context.Context, opts Options, argv []string) (io.WriteCloser, io.ReadCloser, func() error) {
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	ended := make(chan error, 1)
+	stderr := opts.Stderr
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	go func() {
+		err := opts.Spawn(ctx, argv, inR, outW, stderr)
+		inR.CloseWithError(ErrClosed)
+		outW.Close()
+		ended <- err
+	}()
+	return inW, outR, func() error { return <-ended }
+}
+
 // wait reaps the process once its output is read to the end (exec: Wait
 // closes the output pipe).
 func (s *Session) wait() {
-	err := s.cmd.Wait()
+	err := s.waitProc()
 	parsed := <-s.parsed
 	s.mu.Lock()
 	s.res = Result{
