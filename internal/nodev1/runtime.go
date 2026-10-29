@@ -31,6 +31,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/scheduler"
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
 	"projectmesh.io/mesh-cli/internal/sigstore"
+	"projectmesh.io/mesh-cli/internal/supervisor"
 )
 
 // Runtime is one v1 node.
@@ -109,6 +110,17 @@ type Runtime struct {
 	// PodWatchEvery is how often an actor reads its pod's agent; 5 s
 	// when zero.
 	PodWatchEvery time.Duration
+	// SupervisorMode runs the supervisor over the actors (ADR-044, PR
+	// 3.3; `--supervisor`): warn logs quiet sessions and what the
+	// reconcile finds, cancel escalates a quiet session, then stops it
+	// stalled, and removes what no actor holds. Off, or no Actors, runs
+	// none. QuietAfter is how long a session may be quiet (15 minutes
+	// when zero); SuperviseEvery and ReconcileEvery are how often it
+	// looks (15 s) and reconciles (a minute).
+	SupervisorMode supervisor.Mode
+	QuietAfter     time.Duration
+	SuperviseEvery time.Duration
+	ReconcileEvery time.Duration
 
 	nodeID  string
 	relay   *gitrelay.Server
@@ -132,8 +144,11 @@ type running struct {
 	// to read a turn with.
 	mailbox  *Mailbox
 	turnTool string
-	// actor is the lease's job actor, under --actors.
-	actor *actor.Actor
+	// actor is the lease's job actor, under --actors; pod its pod, and
+	// escalatedAt when the supervisor last escalated it for quiet.
+	actor       *actor.Actor
+	pod         string
+	escalatedAt time.Time
 }
 
 // touch is the lease's session showing progress: its progress_at in the
@@ -264,6 +279,9 @@ func (r *Runtime) Run(ctx context.Context) error {
 	defer stopHB()
 	go r.heartbeats(hbCtx, every)
 	go r.events(hbCtx)
+	if s := r.supervisor(); s != nil {
+		go s.Run(hbCtx)
+	}
 
 	var leases sync.WaitGroup
 	defer leases.Wait()
