@@ -71,6 +71,9 @@ type Token struct {
 
 // Event is one git request the relay answered, for the node's audit.
 type Event struct {
+	// Lease is the lease whose grant answered it (Server.Open); empty
+	// for a token-keyed registration's.
+	Lease   string
 	Repo    string
 	Service string // upload-pack or receive-pack
 	Refs    []string

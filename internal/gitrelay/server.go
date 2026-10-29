@@ -36,10 +36,19 @@ type Server struct {
 	entries map[string]*entry
 }
 
+// entry is one capability: a token-keyed registration (Register, the
+// legacy node's) with its relay and expiry, or a lease's grant (Open),
+// which lives until it is closed.
 type entry struct {
 	relay   *Relay
 	expires time.Time
 	key     string
+	grant   *Grant
+}
+
+// live says whether the entry still serves at now.
+func (e *entry) live(now time.Time) bool {
+	return e.grant != nil || e.expires.After(now)
 }
 
 // Start listens on a loopback port until ctx is done.
@@ -61,7 +70,8 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
-// Register serves policy on token until it expires and answers the base
+// Register serves policy on token until it expires — the legacy node's
+// token-keyed registration; a Mesh v1 lease opens a Grant instead and answers the base
 // URL a git command's insteadOf points GitHub at:
 // http://127.0.0.1:<port>/j/<capability>/git/. The same token and
 // policy again answer the same base.
@@ -77,6 +87,9 @@ func (s *Server) Register(policy Policy, token Token) (string, error) {
 		key += fmt.Sprintf("\x00%s %t", r.Ref, r.CreateOnly)
 	}
 	for c, e := range s.entries {
+		if e.grant != nil {
+			continue
+		}
 		if !e.expires.After(now) {
 			delete(s.entries, c)
 			continue
@@ -116,12 +129,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	e := s.entries[c]
 	s.mu.Unlock()
-	if e == nil || !e.expires.After(s.now()) {
+	if e == nil || !e.live(s.now()) {
 		http.Error(w, "gitrelay: no such relay, or its token expired", http.StatusNotFound)
 		return
 	}
 	r2 := r.Clone(r.Context())
 	r2.URL.Path = "/" + path
+	if e.grant != nil {
+		e.grant.ServeHTTP(w, r2)
+		return
+	}
 	e.relay.ServeHTTP(w, r2)
 }
 
