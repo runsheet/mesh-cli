@@ -118,6 +118,12 @@ type Runtime struct {
 	// without --sandbox). A node with a Sandbox never does, whatever this
 	// says; the zero value never does (podsuites.go).
 	HostSuites bool
+	// Pods, when set, runs each lease's session and its services in a
+	// rootless pod of the lease's own (`--sandbox`, podsession.go): the
+	// checkout's .mesh/services.yml and the brief's pods as sidecars, the
+	// agent on the brief's CPUs and memory, the relay reached only
+	// through the lease's socket. Its Runtime is the node's Sandbox.
+	Pods *sandbox.Sandbox
 	// PodWatchEvery is how often an actor reads its pod's agent; 5 s
 	// when zero.
 	PodWatchEvery time.Duration
@@ -144,6 +150,10 @@ type Runtime struct {
 	QuietAfter     time.Duration
 	SuperviseEvery time.Duration
 	ReconcileEvery time.Duration
+
+	// gitBridgePort, set, is a lease pod's git bridge port in place of
+	// podGitPort: tests, whose fake pods share the host's loopback.
+	gitBridgePort int
 
 	nodeID  string
 	relay   *gitrelay.Server
@@ -277,6 +287,9 @@ func (r *Runtime) Run(ctx context.Context) error {
 	}
 	if r.Node.Tools == nil {
 		r.Node.Tools = []string{}
+	}
+	if r.Pods != nil && r.Sandbox == nil {
+		r.Sandbox = r.Pods.Runtime
 	}
 	r.relay = &gitrelay.Server{Upstream: r.GitUpstream, Audit: r.audit}
 	if err := r.relay.Start(ctx); err != nil {

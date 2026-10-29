@@ -68,3 +68,49 @@ Each piece is a PR behind a `mesh node run` flag, off by default:
 | 3.3 supervisor liveness and reconcile | `--supervisor=off\|warn\|cancel` |
 | 3.4 resource actors | `--cache-trim`, `--self-update` |
 | 3.9 guard test | none |
+| the lease's pod (amendment below) | `--sandbox` (with `--actors`) |
+
+## Amendment, 2026-10-30: the lease's pod (`--sandbox`)
+
+Until now nodev1 made a pod only in tests: a job actor held one for the
+brief's pods, and the session ran on the host. With `--sandbox` each
+lease's session and its services run in one rootless podman pod of the
+lease's own, on the legacy node's sandbox (mesh-specs ADR 007) and
+node.yaml's `sandbox:` settings (image, cpus, memory, pids, the
+services' budget, registries, service timeout, tmpfs).
+
+1. **One pod per lease, the actor's.** It is named `mesh-v1-<lease>`
+   before it exists, so actor.json names it (a restarted node removes
+   it), and labelled `mesh.v1.lease`, `mesh.job` and `mesh.node`, which
+   the supervisor's reconcile reads. Its agent container is
+   `<pod>-agent`, the name watchPod and the reconcile watch.
+2. **Services.** The checkout's `.mesh/services.yml` (or a workflow's
+   services, as the legacy node reads them) and the brief's pods start
+   as sidecars, health-checked before the session. A required one that
+   is not ready hands the lease back `cannot_run`. `run_suite` runs its
+   steps in the same pod, beside them.
+3. **Resources.** The agent runs on the CPUs and memory the scheduler
+   leased the lease (the brief's `resources`); a zero keeps node.yaml's.
+4. **The relay through the socket only.** The pod mounts the lease's
+   socket directory and nothing else of the relay: product MCP through
+   the node image's proxy shim, vendor APIs at `/latchkey/<vendor>/` on
+   `$MESH_RELAY_SOCKET`, and git through a loopback bridge in the agent's
+   container (`node mesh-git-bridge.js <socket> <port> -- claude …`)
+   that the checkout's origin is rewritten onto by `GIT_CONFIG_*`
+   `insteadOf`, since git cannot speak to a unix socket. The model relay
+   (#1691) is reached through the same bridge: the pod's
+   `ANTHROPIC_BASE_URL` is `http://127.0.0.1:<bridge>/model/anthropic`
+   (`OPENAI_BASE_URL` `…/model/openai/v1`), with the relay's dummy
+   credential and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` as a host
+   session has them; the bridge runs whenever the lease has a git grant
+   or relays a model account. The pod's
+   environment is the sandbox's allow-list: none of the node's own.
+5. **Ends.** An agent exit 137 or 143 the actor did not cause, or a
+   sandbox limit's kill (memory, pids), is `pod_killed`.
+6. **Never root.** `--sandbox` refuses to start as root, and with no
+   podman that answers: a lease never runs unsandboxed because the
+   runtime is missing.
+
+The real-pod path is validated on dl360 (podman 5, rootless); the
+laptop's tests drive it through `sandbox.Fake`, with the agent's command
+— the git bridge and the fake claude — run on the host.

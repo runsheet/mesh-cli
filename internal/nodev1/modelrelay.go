@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
 )
 
@@ -250,6 +251,18 @@ func (a *sessionAccount) apply(spec *SessionSpec) {
 	if a.relays() && a.base != "" {
 		spec.Env = append(spec.Env, a.auth.relayEnv(a.base)...)
 	}
+}
+
+// podEnv is env for a session in the lease's pod: the relay's address
+// the account was served on (the host's loopback, which the pod cannot
+// reach) replaced by base, the pod's bridge onto the lease's socket,
+// whose sessionproxy serves the same /model/ route. The dummy and
+// CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC stay as they are.
+func (a *sessionAccount) podEnv(env []string, base string) []string {
+	if !a.relays() || a.base == "" {
+		return env
+	}
+	return sandbox.SetEnv(env, a.auth.relayEnv(base))
 }
 
 // modelUpstreams are the test overrides of each provider's origin in
