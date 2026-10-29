@@ -55,6 +55,13 @@ func policyOf(g *meshapi.Git) gitrelay.Policy {
 	return p
 }
 
+// sourceRequest is the mint of the brief's git token: the vendor and
+// base_url as the brief names them (none for GitHub at its own origin),
+// the repository, and the policy's access.
+func sourceRequest(g *meshapi.Git, p gitrelay.Policy) SourceRequest {
+	return SourceRequest{Vendor: strings.ToLower(strings.TrimSpace(g.Vendor)), BaseURL: strings.TrimRight(g.BaseURL, "/"), Repository: g.Repo, Access: string(p.Access)}
+}
+
 // baseOf is the vendor origin the brief's git names: its base_url, else
 // https://<host>, else "" for the vendor's own.
 func baseOf(g *meshapi.Git) string {

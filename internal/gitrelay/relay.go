@@ -5,8 +5,10 @@
 // session's env, disk or git config, and in Mesh v1 every write to a
 // vendor goes through it.
 //
-// It serves /git/<owner>/<repo>.git/{info/refs,git-upload-pack,
-// git-receive-pack} and streams both ways: a pack is never buffered.
+// It serves /git/<repo>.git/{info/refs,git-upload-pack,git-receive-pack}
+// — <repo> as the job's vendor names it: owner/name, a GitLab
+// group/subgroup/project, an Azure DevOps org/project/repo — and streams
+// both ways: a pack is never buffered.
 package gitrelay
 
 import (
@@ -38,7 +40,8 @@ const (
 // may touch. The relay knows nothing of what a ref means; it enforces
 // these and nothing else.
 type Policy struct {
-	// Repo is owner/name, the only repository the job reaches.
+	// Repo is the only repository the job reaches, as its vendor names
+	// it (Vendor.RepoPath): owner/name on GitHub.
 	Repo string
 	// Access is read or write; read refuses git-receive-pack.
 	Access Access
@@ -73,7 +76,7 @@ func (r RefRule) matches(ref string) bool {
 	return ref == r.Ref
 }
 
-// Token is the job's GitHub token and when it expires.
+// Token is the job's vendor token and when it expires.
 type Token struct {
 	Value     string
 	ExpiresAt time.Time
@@ -188,7 +191,14 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "gitrelay: no token for "+repo+": "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	out, err := http.NewRequestWithContext(req.Context(), req.Method, r.upstream()+"/"+repo+".git"+rest, body)
+	repoPath, err := vendor.RepoPath(r.Policy.Repo)
+	if err != nil {
+		ev.Outcome, ev.Reason = "failed", err.Error()
+		r.audit(ev)
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	out, err := http.NewRequestWithContext(req.Context(), req.Method, r.upstream()+"/"+repoPath+rest, body)
 	if err != nil {
 		http.Error(w, "gitrelay: "+err.Error(), http.StatusBadGateway)
 		return
@@ -226,22 +236,36 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.audit(ev)
 }
 
-// splitPath reads /git/<owner>/<repo>[.git]<rest>: git asks for a remote
-// named with or without .git, and GitHub answers both.
+// splitPath reads /git/<repo>[.git]<rest>: the repository is every
+// segment up to the one ending .git, which a remote the node names
+// always has; without one, up to git's smart-HTTP suffix. git asks for
+// a remote named with or without .git, and vendors answer both. A
+// segment that is empty, dot or dot-dot is no repository.
 func splitPath(p string) (repo, rest string, ok bool) {
 	p, ok = strings.CutPrefix(p, Prefix)
 	if !ok {
 		return "", "", false
 	}
-	parts := strings.SplitN(p, "/", 3)
-	if len(parts) < 3 || parts[0] == "" || parts[1] == "" {
+	if i := strings.Index(p, ".git/"); i >= 0 {
+		repo, rest = p[:i], p[i+len(".git"):]
+	} else {
+		for _, suffix := range []string{"/info/refs", "/git-upload-pack", "/git-receive-pack"} {
+			if before, found := strings.CutSuffix(p, suffix); found {
+				repo, rest = before, suffix
+				break
+			}
+		}
+	}
+	segs := strings.Split(repo, "/")
+	if repo == "" || len(segs) < 2 || rest == "" {
 		return "", "", false
 	}
-	owner, name := parts[0], strings.TrimSuffix(parts[1], ".git")
-	if name == "" || strings.Contains(owner+name, "..") || owner == "." || name == "." {
-		return "", "", false
+	for _, s := range segs {
+		if s == "" || s == "." || s == ".." {
+			return "", "", false
+		}
 	}
-	return owner + "/" + name, "/" + parts[2], true
+	return repo, rest, true
 }
 
 // serviceOf names the git service a request is for: upload-pack (fetch,

@@ -35,6 +35,7 @@ type fakeLatchkey struct {
 	revoked  []string
 	failures []string
 	api      []string // each proxied call: METHOD vendor/path
+	mints    []SourceRequest
 	n        int
 }
 
@@ -114,10 +115,19 @@ func (l *fakeLatchkey) source(w http.ResponseWriter, r *http.Request) {
 		l.fail(w, http.StatusUnauthorized, "source: "+err.Error())
 		return
 	}
-	var body struct{ Repository, Access, Token string }
+	var body struct {
+		Vendor     string `json:"vendor"`
+		BaseURL    string `json:"base_url"`
+		Repository string `json:"repository"`
+		Access     string `json:"access"`
+		Token      string `json:"token"`
+	}
 	json.NewDecoder(r.Body).Decode(&body)
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if r.Method == http.MethodPost {
+		l.mints = append(l.mints, SourceRequest{Vendor: body.Vendor, BaseURL: body.BaseURL, Repository: body.Repository, Access: body.Access})
+	}
 	if r.Method == http.MethodDelete {
 		l.revoked = append(l.revoked, body.Token)
 		w.WriteHeader(http.StatusNoContent)

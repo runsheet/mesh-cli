@@ -115,7 +115,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox) outco
 	if b.Git != nil && b.Git.Repo != "" {
 		policy := policyOf(b.Git)
 		mint := func(ctx context.Context) (gitrelay.Token, error) {
-			return tokens.MintSource(ctx, b.Git.Repo, string(policy.Access))
+			return tokens.MintSource(ctx, sourceRequest(b.Git, policy))
 		}
 		g, err := r.relay.Open(b.LeaseID, policy, mint, tokens.RevokeSource)
 		if err != nil {

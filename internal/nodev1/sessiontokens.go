@@ -121,15 +121,27 @@ func (s *sessionTokens) Token(ctx context.Context) (string, error) {
 	return s.token, nil
 }
 
-// MintSource mints the lease's git token for repo at Latchkey: POST
-// /v1/credentials/for-job/source {repository, access} on the session
-// token. Latchkey checks the lease is live with Mesh.
-func (s *sessionTokens) MintSource(ctx context.Context, repo, access string) (gitrelay.Token, error) {
+// SourceRequest is Latchkey's for-job source mint (L3): the repository
+// and access, and the vendor and its base when the brief names them —
+// GitHub at its own origin when it names neither, which Latchkey takes
+// as before vendors were named (Mesh v1 2.9).
+type SourceRequest struct {
+	Vendor     string `json:"vendor,omitempty"`
+	BaseURL    string `json:"base_url,omitempty"`
+	Repository string `json:"repository"`
+	Access     string `json:"access"`
+}
+
+// MintSource mints the lease's git token at Latchkey: POST
+// /v1/credentials/for-job/source {vendor, base_url, repository, access}
+// on the session token. Latchkey checks the lease is live with Mesh and
+// mints through the tenant's connection for that vendor.
+func (s *sessionTokens) MintSource(ctx context.Context, req SourceRequest) (gitrelay.Token, error) {
 	var out struct {
 		Token     string    `json:"token"`
 		ExpiresAt time.Time `json:"expires_at"`
 	}
-	if err := s.onToken(ctx, http.MethodPost, sourcePath, map[string]string{"repository": repo, "access": access}, &out); err != nil {
+	if err := s.onToken(ctx, http.MethodPost, sourcePath, req, &out); err != nil {
 		return gitrelay.Token{}, err
 	}
 	if out.Token == "" {
