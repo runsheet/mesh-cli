@@ -320,6 +320,18 @@ func (e *Evaluator) evaluate(ctx context.Context, item gateway.WorkItem, res *Re
 	// repo's default branch, which then holds the dependency
 	diffBase := spec.BaseRef
 	if !alreadyDone {
+		// the would-be merge (runsheet ADR 077): a brief naming onto has
+		// the change evaluated on it, and diffed from it; a brief without
+		// one, as always
+		if code := jobBriefOf(ctx, e.GW, EvaluateKind, item.ID).Code; code.Onto != nil {
+			onto, conflict := e.evaluateOnto(ctx, dir, label, code)
+			if conflict != "" {
+				return e.ontoConflict(ctx, item, label, conflict)
+			}
+			if onto != "" {
+				diffBase = onto
+			}
+		}
 		diff, err = e.WS.Diff(ctx, dir, diffBase)
 		if def, ok := goneBaseFallback(err, diffBase, defaultBranchOf(res)); ok {
 			e.logf("item %s: evaluate: base %s is gone (merged); diff from origin/%s", label, diffBase, def)
