@@ -13,6 +13,12 @@ import (
 // no content of the work itself; the session reads it with the product's
 // brief tool.
 func Prompt(b *meshapi.Brief) string {
+	return leasePrompt(b, nil)
+}
+
+// leasePrompt is Prompt for a lease whose checkout starts from resumed —
+// what an earlier lease of the job pushed — when not nil.
+func leasePrompt(b *meshapi.Brief, resumed *resumePoint) string {
 	var sb strings.Builder
 	if g := strings.TrimSpace(b.Guidance); g != "" {
 		sb.WriteString(g)
@@ -43,9 +49,15 @@ func Prompt(b *meshapi.Brief) string {
 		sb.WriteString(", then stop.\n")
 	}
 	if b.Code != nil && b.Code.Repo.FullName != "" {
-		fmt.Fprintf(&sb, "Your working directory is a checkout of %s at %s.\n", b.Code.Repo.FullName, shortSHA(b.Code.BaseSHA))
-		if b.LeaseN > 1 && b.Code.PushTo != "" {
-			fmt.Fprintf(&sb, "If an earlier run of this job already pushed %s, the checkout is at that push instead: build on it, and push only on top of it.\n", b.Code.PushTo)
+		if resumed == nil {
+			fmt.Fprintf(&sb, "Your working directory is a checkout of %s at %s.\n", b.Code.Repo.FullName, shortSHA(b.Code.BaseSHA))
+		} else {
+			by := "An earlier run of this job"
+			if resumed.LeaseN > 0 {
+				by = fmt.Sprintf("An earlier run of this job (lease %d)", resumed.LeaseN)
+			}
+			fmt.Fprintf(&sb, "Your working directory is a checkout of %s. %s already pushed %s, at %s, and the checkout starts from that push, not from the base %s: build on what it did, and push only on top of it.\n",
+				b.Code.Repo.FullName, by, strings.TrimPrefix(resumed.Ref, "refs/heads/"), shortSHA(resumed.SHA), shortSHA(b.Code.BaseSHA))
 		}
 	}
 	return sb.String()

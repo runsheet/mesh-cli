@@ -126,6 +126,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox) outco
 		return outcome{err: err, cause: context.Cause(ctx)}
 	}
 	var grant *gitrelay.Grant
+	var resumed *resumePoint
 	if b.Git != nil && b.Git.Repo != "" {
 		policy := policyOf(b.Git)
 		mint := func(ctx context.Context) (gitrelay.Token, error) {
@@ -141,7 +142,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox) outco
 				r.logf("nodev1: lease %s: %v", b.LeaseID, err)
 			}
 		}()
-		if err := checkout(ctx, grant, b, workspace, r.mirrors, r.logf); err != nil {
+		if resumed, err = checkout(ctx, grant, b, workspace, r.mirrors, r.logf); err != nil {
 			return outcome{err: fmt.Errorf("checking out %s: %w", b.Git.Repo, err), cause: context.Cause(ctx)}
 		}
 		// the relay proves a fast-forward-only push in this checkout
@@ -164,7 +165,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox) outco
 	spec := SessionSpec{
 		Label:     b.LeaseID,
 		Workspace: workspace,
-		Prompt:    promptWithRelay(b, sock),
+		Prompt:    promptWithRelay(b, sock, resumed),
 		Model:     b.Harness.Model.Default,
 		BudgetUSD: b.Harness.Budget.USD,
 		Servers:   servers,
@@ -315,8 +316,9 @@ func (r *Runtime) renew(ctx context.Context, lease *meshapi.Lease, cancel contex
 // fault rather than a red verdict, and max_handbacks still bounds it. A
 // work failure would end the job instead, but would charge the work
 // with the node's fault. What makes the retry safe is that it builds on
-// the writes: the next lease's checkout starts from the job's push_to
-// when an earlier lease pushed there (checkout).
+// the writes: Mesh records the lease's pushes from its AccessRecords,
+// and the next lease's checkout starts from the most recent of them (the
+// brief's pushed; checkout).
 func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) {
 	writes := landedWrites(o.access)
 	switch {

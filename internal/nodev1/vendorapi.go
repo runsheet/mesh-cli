@@ -90,8 +90,8 @@ func apiPathMatch(pattern, path string) bool {
 
 // promptWithRelay is the lease's prompt, and — when its brief allows
 // vendor API calls — how the session makes them.
-func promptWithRelay(b *meshapi.Brief, sock string) string {
-	p := Prompt(b)
+func promptWithRelay(b *meshapi.Brief, sock string, resumed *resumePoint) string {
+	p := leasePrompt(b, resumed)
 	rules := apiRules(b)
 	if len(rules) == 0 || sock == "" {
 		return p

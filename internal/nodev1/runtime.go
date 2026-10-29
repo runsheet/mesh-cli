@@ -362,6 +362,9 @@ func (r *Runtime) audit(e gitrelay.Event) {
 		return
 	}
 	rec := meshapi.AccessRecord{Kind: "git", Vendor: e.Vendor, Repo: e.Repo, Service: e.Service, Refs: e.Refs, Outcome: e.Outcome, Reason: e.Reason, Bytes: e.Bytes, At: e.At.UTC()}
+	for _, p := range e.Pushed {
+		rec.Pushed = append(rec.Pushed, meshapi.PushedRef{Ref: p.Ref, SHA: p.SHA})
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.access != nil {
