@@ -84,6 +84,9 @@ func (s *Server) Open(leaseID string, policy Policy, mint Mint, revoke Revoke) (
 	if err != nil {
 		return nil, err
 	}
+	if _, err := vendor.RepoPath(policy.Repo); err != nil {
+		return nil, err
+	}
 	upstream, err := upstreamOf(s.Upstream, policy.Base)
 	if err != nil {
 		return nil, err

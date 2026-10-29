@@ -55,6 +55,14 @@ func policyOf(g *meshapi.Git) gitrelay.Policy {
 	return p
 }
 
+// sourceRequest is the mint of the brief's git token: the vendor and
+// base_url exactly as the brief's git has them — Latchkey compares them
+// with the job's git as Mesh answers it — (none for GitHub at its own
+// origin), the repository, and the policy's access.
+func sourceRequest(g *meshapi.Git, p gitrelay.Policy) SourceRequest {
+	return SourceRequest{Vendor: g.Vendor, BaseURL: g.BaseURL, Repository: g.Repo, Access: string(p.Access)}
+}
+
 // baseOf is the vendor origin the brief's git names: its base_url, else
 // https://<host>, else "" for the vendor's own.
 func baseOf(g *meshapi.Git) string {
