@@ -323,6 +323,11 @@ type Loop struct {
 	// validatingUntil is when each of validating's runs reaches the end
 	// of its window (runWindow): what a self-update waits for
 	validatingUntil map[string]time.Time
+	// validationSlots is the main validations the last pass had room
+	// for (validationSlotsFor), validationSlotsSeen whether a pass has
+	// judged it yet: the heartbeat's inFlight.validationSlots.
+	validationSlots     int
+	validationSlotsSeen bool
 	// sessionOrg is the org each build, plan and research session counts
 	// toward, by subject (item, goal or direction id): heldByOrg's count
 	// against the org's floor (ADR-023).
@@ -1264,7 +1269,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	// the heartbeat goes out before this tick's pass, so its holding is
 	// the last pass's decision (nil before the first; a draining node,
 	// which makes no pass, keeps sending its last one unchanged)
-	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(l.Known.Accounts(l.now()), l.now(), l.Thresholds()), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Manifest: manifest, Reason: l.Condition(), Adopted: l.Adopted(), Resumed: l.Resumed(), Holding: l.Holding(), Commit: l.Commit, Findings: l.heartbeatFindings(ctx), Sessions: l.Sessions(), CPUBudget: l.cpuHeartbeat()}
+	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(l.Known.Accounts(l.now()), l.now(), l.Thresholds()), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Manifest: manifest, Reason: l.Condition(), Adopted: l.Adopted(), Resumed: l.Resumed(), Holding: l.Holding(), Commit: l.Commit, Findings: l.heartbeatFindings(ctx), Sessions: l.Sessions(), CPUBudget: l.cpuHeartbeat(), InFlight: l.InFlight()}
 	rt := l.RuntimeBroken()
 	l.runtimeHeartbeat(ctx, &extras, rt)
 	scaling, ranged := l.Scaling()
@@ -1338,10 +1343,14 @@ func (l *Loop) Tick(ctx context.Context) {
 			// a broken runtime claims nothing of any kind — what runs
 			// runs on, as in a drain — and says why on every ready goal
 			l.passOverRuntime(ctx, rt)
+			l.noteValidationSlots(0)
 		} else {
 			// the slots taken are the tracked builds or, when more run on
 			// the host, the live agent sessions, orphans included (LiveProbe)
 			inUse := l.inUse(ctx)
+			// the slots a validation could take this pass, for the next
+			// heartbeat (runsheet ADR 079: the chain window keeps within it)
+			l.noteValidationSlots(l.validationSlotsFor(l.Capacity() - inUse))
 			l.sayReserveRetired()
 			// the one claim (queueclaim.go): Mesh orders builds,
 			// evaluations, rebases, validations of every subject, plans and
