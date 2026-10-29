@@ -110,6 +110,11 @@ func (r *Runtime) runActor(ctx context.Context, tk *meshapi.Take, room *schedule
 			out = outcome{err: fmt.Errorf("the lease's pod: %w", err), cause: context.Cause(leaseCtx)}
 		} else {
 			if pod != "" {
+				r.mu.Lock()
+				if l := r.live[id]; l != nil {
+					l.pod = pod
+				}
+				r.mu.Unlock()
 				go r.watchPod(leaseCtx, pod, cancel)
 			}
 			out = r.work(leaseCtx, b, mb, a, pod)

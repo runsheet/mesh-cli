@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -20,6 +21,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/paths"
 	"projectmesh.io/mesh-cli/internal/scheduler"
 	"projectmesh.io/mesh-cli/internal/sigstore"
+	"projectmesh.io/mesh-cli/internal/supervisor"
 	"projectmesh.io/mesh-cli/internal/version"
 )
 
@@ -42,6 +44,8 @@ var (
 	nodeRunScheduler    bool
 	nodeRunAccountSlots int
 	nodeRunActors       bool
+	nodeRunSupervisor   string
+	nodeRunQuietAfter   time.Duration
 )
 
 // nodeRunCmd is the Mesh v1 node runtime (internal/nodev1), beside the
@@ -118,6 +122,14 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 			rt.Scheduler.Logf = logger.Printf
 		}
 		rt.Actors = nodeRunActors
+		mode, err := supervisor.ParseMode(nodeRunSupervisor)
+		if err != nil {
+			return fmt.Errorf("mesh node run: --supervisor: %w", err)
+		}
+		if mode != supervisor.Off && !nodeRunActors {
+			return fmt.Errorf("mesh node run: --supervisor=%s watches job actors: it needs --actors", mode)
+		}
+		rt.SupervisorMode, rt.QuietAfter = mode, nodeRunQuietAfter
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		if err := rt.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -210,6 +222,8 @@ func init() {
 	f.BoolVar(&nodeRunScheduler, "actors-scheduler", false, "the scheduler owns the node's capacity (ADR-044): leases hold their resources as scheduler leases, the node reports what is free on each take and runs up to --slots leases side by side")
 	f.IntVar(&nodeRunAccountSlots, "account-slots", 0, "with --actors-scheduler, sessions at once per model account (0 is unbounded)")
 	f.BoolVar(&nodeRunActors, "actors", false, "run each lease as a job actor (ADR-044): it owns the lease's directory, room, grant and proxy, writes actor.json before each state change, releases everything however the lease ends, and hands back pod_killed a session killed from outside; a restarted node releases the actors it left")
+	f.StringVar(&nodeRunSupervisor, "supervisor", "off", "with --actors, the supervisor (ADR-044): off; warn (or report) logs quiet sessions and what the minute's reconcile finds; cancel escalates a quiet session, then hands it back stalled, and removes pods, job directories and grants no actor holds")
+	f.DurationVar(&nodeRunQuietAfter, "quiet-after", 0, "with --supervisor, how long a session may show no progress before it is escalated, and again before it is stopped (default 15m)")
 	_ = nodeRunCmd.MarkFlagRequired("api")
 	nodeCmd.AddCommand(nodeRunCmd)
 }
