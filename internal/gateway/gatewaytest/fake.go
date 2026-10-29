@@ -106,6 +106,10 @@ type Fake struct {
 	// KindGit is the git policy a kind's claimJob brief carries ({repo,
 	// access, push: [{ref, create_only}]}), none when unset.
 	KindGit map[string]map[string]any
+	// KindCode is what a kind's claimJob brief adds to its code (runsheet
+	// ADR 077's onto, apply, applyMode, applyAs and pushTo), nothing when
+	// unset.
+	KindCode map[string]map[string]any
 	// PlanNotHandedIn, when set, is the refusal finishJob answers a plan
 	// job's empty result with: no plan reached the product's tool.
 	PlanNotHandedIn string
