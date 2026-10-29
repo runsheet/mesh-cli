@@ -1,25 +1,30 @@
 {
   "name": "lease-evidence",
   "method": "POST",
-  "path": "/v1/leases/lse_01JD7K2Q9N3V/evidence",
+  "path": "/v1/leases/bade8fc8-c599-5823-8715-5a0fa52c72e9/evidence",
+  "caller": "node",
   "request": {
     "records": [
       {
-        "tool": "run_suite",
-        "input_digest": "sha256:aa",
-        "started_at": "2026-10-29T10:00:05Z",
-        "ended_at": "2026-10-29T10:00:40Z",
-        "exit": 0,
-        "summary": "42 passed",
-        "output_digest": "sha256:bb",
-        "signature": "ed25519:c2ln"
+        "envelope": {
+          "payload": "eyJfdHlwZSI6Imh0dHBzOi8vaW4tdG90by5pby9TdGF0ZW1lbnQvdjEiLCJzdWJqZWN0IjpbeyJuYW1lIjoiaW5wdXQiLCJkaWdlc3QiOnsic2hhMjU2IjoiZGExMWY0N2M2OTYxZmM4OWVlY2VhYWY3OGI4MDQyM2RjODZjZWYxOWM4NTI2MjRmZTQ4NDUyZmJmMzk0YzEzNyJ9fSx7Im5hbWUiOiJvdXRwdXQiLCJkaWdlc3QiOnsic2hhMjU2IjoiOWE5ZjE4ODUzNDhkZGI2NWRhYTNjYTM5MmMzYzRkMjQ2OWRlNWZjNjNlNDM3ZGM2ZDU3MGY3MzVhMDcyYTMwMiJ9fV0sInByZWRpY2F0ZVR5cGUiOiJodHRwczovL3Byb2plY3RtZXNoLmlvL2F0dGVzdC90b29sL3YxIiwicHJlZGljYXRlIjp7InRvb2wiOiJydW5fc3VpdGUiLCJqb2JfaWQiOiJhNGMyZTE3ZS1hZjQ2LTUwYTgtOGNjYi1iNTc4ZmY5ZmE4MzIiLCJsZWFzZV9pZCI6ImJhZGU4ZmM4LWM1OTktNTgyMy04NzE1LTVhMGZhNTJjNzJlOSIsImxlYXNlX24iOjEsInByb2R1Y3QiOiJjb25mb3JtIiwidGVuYW50IjoiYWNtZSIsIm5vZGVfaWQiOiI3ZjQxZjAwNS00NmI1LTVjN2QtOGFmNS05ZWM2YzQ0Yzk5ZjkiLCJpbnB1dF9kaWdlc3QiOiJzaGEyNTY6ZGExMWY0N2M2OTYxZmM4OWVlY2VhYWY3OGI4MDQyM2RjODZjZWYxOWM4NTI2MjRmZTQ4NDUyZmJmMzk0YzEzNyIsIm91dHB1dF9kaWdlc3QiOiJzaGEyNTY6OWE5ZjE4ODUzNDhkZGI2NWRhYTNjYTM5MmMzYzRkMjQ2OWRlNWZjNjNlNDM3ZGM2ZDU3MGY3MzVhMDcyYTMwMiIsInN0YXJ0ZWRfYXQiOiIyMDI2LTEwLTI5VDEwOjAwOjAwWiIsImVuZGVkX2F0IjoiMjAyNi0xMC0yOVQxMDowMDozNVoiLCJleGl0IjowLCJzdW1tYXJ5IjoiMyBwYXNzZWQsIDAgZmFpbGVkIn19",
+          "payloadType": "application/vnd.in-toto+json",
+          "signatures": [
+            {
+              "keyid": "ed25519:iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+              "sig": "P+dOXWZXJ8M3ueiqy2sMrrd7VxVRfJTExdHyWRhfB8eVejPgSuJOL6fJ7XpEcFh2NcoPZGWIDwCUPfoAHAwLBw=="
+            }
+          ]
+        },
+        "signing": "node",
+        "unverified_reason": "fulcio: 503 Service Unavailable"
       }
     ]
   },
   "status": 201,
   "response": {
     "ids": [
-      "ev_01JD7K3A"
+      "sha256:8c8a44e0b53ddea94295f523d452f1512689fb8cc76f7b7af2e2e26615914f45"
     ]
   }
 }

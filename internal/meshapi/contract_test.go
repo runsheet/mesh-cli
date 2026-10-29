@@ -91,6 +91,11 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			decode(t, f.Request, &req)
 			return c.Finish(context.Background(), idOf(f.Path, 3), req)
 		},
+		"lease-finish-evidence": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.FinishRequest
+			decode(t, f.Request, &req)
+			return c.Finish(context.Background(), idOf(f.Path, 3), req)
+		},
 		"lease-fail": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
 			var req meshapi.FailRequest
 			decode(t, f.Request, &req)
