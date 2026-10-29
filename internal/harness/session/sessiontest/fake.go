@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -18,7 +19,10 @@ const Env = "FAKE_STREAM_CLAUDE"
 // Main runs the fake and exits when the test binary was started as the
 // fake claude (Env=1); else it returns, for TestMain to run the tests.
 // With FAKE_CLAUDE_OUT set, the fake writes its args there (args, one a
-// line) and every input line (stdin).
+// line), its whole environment (env, one variable a line) and every
+// input line (stdin); with ANTHROPIC_BASE_URL set too, its first turn
+// calls the model there as Claude Code does (modelCall), writing what
+// the model answered (model).
 func Main() {
 	if os.Getenv(Env) != "1" {
 		return
@@ -39,6 +43,7 @@ func Fake(args []string, stdin io.Reader, stdout io.Writer) int {
 	var record io.Writer = io.Discard
 	if out != "" {
 		_ = os.WriteFile(out+".args", []byte(strings.Join(args, "\n")+"\n"), 0o600)
+		_ = os.WriteFile(out+".env", []byte(strings.Join(os.Environ(), "\n")+"\n"), 0o600)
 		if f, err := os.Create(out + ".stdin"); err == nil {
 			defer f.Close()
 			record = f
@@ -74,6 +79,7 @@ func Fake(args []string, stdin io.Reader, stdout io.Writer) int {
 			Content string `json:"content"`
 		} `json:"message"`
 	}
+	called := false
 	spend := map[string]map[string]any{}
 	cost := 0.0
 	control := func(m msg) {
@@ -99,6 +105,10 @@ func Fake(args []string, stdin io.Reader, stdout io.Writer) int {
 			continue
 		}
 		text := m.Message.Content
+		if base := os.Getenv("ANTHROPIC_BASE_URL"); base != "" && out != "" && !called {
+			called = true
+			_ = os.WriteFile(out+".model", []byte(modelCall(base)), 0o600)
+		}
 		emit(map[string]any{"type": "system", "subtype": "init", "session_id": "fake-session", "model": model})
 		emit(map[string]any{"type": "assistant", "session_id": "fake-session", "message": map[string]any{"id": "msg-" + text, "role": "assistant", "model": model, "content": []map[string]any{{"type": "text", "text": "working on " + text}}}})
 		subtype := "success"
@@ -125,4 +135,34 @@ func Fake(args []string, stdin io.Reader, stdout io.Writer) int {
 			"session_id": "fake-session", "num_turns": 1, "total_cost_usd": cost, "modelUsage": spend})
 	}
 	return 0
+}
+
+// modelCall is one Messages API call at base, signed in as Claude Code
+// signs in from its environment: ANTHROPIC_AUTH_TOKEN or
+// CLAUDE_CODE_OAUTH_TOKEN as a bearer (the latter with the OAuth beta),
+// else ANTHROPIC_API_KEY as x-api-key. It answers "<status> <body>", or
+// the error.
+func modelCall(base string) string {
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(base, "/")+"/v1/messages", strings.NewReader(`{"model":"claude-haiku","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		return "error " + err.Error()
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Anthropic-Version", "2023-06-01")
+	switch {
+	case os.Getenv("ANTHROPIC_AUTH_TOKEN") != "":
+		req.Header.Set("Authorization", "Bearer "+os.Getenv("ANTHROPIC_AUTH_TOKEN"))
+	case os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") != "":
+		req.Header.Set("Authorization", "Bearer "+os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"))
+		req.Header.Set("Anthropic-Beta", "oauth-2025-04-20")
+	default:
+		req.Header.Set("X-Api-Key", os.Getenv("ANTHROPIC_API_KEY"))
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "error " + err.Error()
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return fmt.Sprintf("%d %s", resp.StatusCode, b)
 }

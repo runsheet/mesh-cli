@@ -271,10 +271,10 @@ func TestRunTakesALeaseRunsOneSessionAndFinishes(t *testing.T) {
 		t.Fatalf("grants left open: %v", g.rt.relay.Leases())
 	}
 	spec := sess.specs[0]
-	// the brief's credential_ref: the session runs on the job's account,
-	// its secret in the session's environment alone and masked
-	if !slices.Contains(spec.Env, "CLAUDE_CODE_OAUTH_TOKEN="+fakeModelSecret) || !slices.Contains(spec.Secrets, fakeModelSecret) ||
-		!slices.Contains(spec.Unset, "ANTHROPIC_API_KEY") || !slices.Contains(spec.Unset, "CLAUDE_CODE_OAUTH_TOKEN") {
+	// the brief's credential_ref: the session runs on the job's account
+	// through the relay, holding only the dummy (modelrelay.go)
+	if !slices.Contains(spec.Env, "CLAUDE_CODE_OAUTH_TOKEN="+ModelDummy) || !slices.Contains(spec.Unset, "ANTHROPIC_API_KEY") ||
+		!slices.Contains(spec.Unset, "CLAUDE_CODE_OAUTH_TOKEN") || strings.Contains(fmt.Sprint(spec), fakeModelSecret) {
 		t.Fatalf("the session's account env %v unset %v", spec.Env, spec.Unset)
 	}
 	if spec.Model != "haiku" || !strings.Contains(spec.Prompt, "`brief`") || !strings.Contains(spec.Prompt, "`submit`") {

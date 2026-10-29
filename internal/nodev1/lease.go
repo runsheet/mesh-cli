@@ -181,7 +181,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	}
 	// the job's model account, when Mesh picked one: read now, so a lease
 	// whose account Latchkey refuses is handed back before any checkout
-	account, err := openAccount(ctx, b.CredentialRef, tokens)
+	account, err := openAccount(ctx, b.CredentialRef, tokens, os.Environ())
 	if err != nil {
 		return outcome{err: err, cause: context.Cause(ctx)}
 	}
@@ -226,7 +226,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	// node's host (podsuites.go)
 	suites := r.suiteRunner(b, pod)
 	tools, rec := r.nodeTools(b, grant, workspace, tokens, ladder, mb, suites)
-	servers, sock, closeProxy, err := r.openProxy(ctx, b, tokens, grant, tools, fin.observe)
+	servers, sock, closeProxy, err := r.openProxy(ctx, b, tokens, grant, tools, fin.observe, account)
 	if err != nil {
 		return outcome{err: fmt.Errorf("the lease's sessionproxy: %w", err), cause: context.Cause(ctx)}
 	}
@@ -296,7 +296,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 // brief's access names vendor APIs, the proxy's /latchkey/<vendor>/
 // route reaches Latchkey's proxy on the session token (wave 2.7). It
 // answers only once the socket does (waitListening).
-func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief, tokens *sessionTokens, grant *gitrelay.Grant, tools []mcptool.Tool, observe func(string, []byte, []byte)) (map[string]any, string, func(), error) {
+func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief, tokens *sessionTokens, grant *gitrelay.Grant, tools []mcptool.Tool, observe func(string, []byte, []byte), account *sessionAccount) (map[string]any, string, func(), error) {
 	ups := map[string]sessionproxy.Upstream{}
 	for _, s := range b.Servers {
 		if s.Name == "" || s.URL == "" {
@@ -333,7 +333,19 @@ func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief, tokens *sessi
 			Audit: func(c sessionproxy.APICall) { r.auditAPI(b.LeaseID, c) },
 		}
 	}
+	// the lease's model account, held here and never by the session
+	// (modelrelay.go)
+	models := r.ModelUpstreams
+	if models == nil {
+		models = modelUpstreams()
+	}
+	if err := account.serve(p, models, r.logf, b.LeaseID); err != nil {
+		p.Close()
+		os.RemoveAll(sockDir)
+		return nil, "", nil, err
+	}
 	if err := p.Listen(sock); err != nil {
+		p.Close()
 		os.RemoveAll(sockDir)
 		return nil, "", nil, err
 	}
@@ -571,7 +583,7 @@ func usageOf(o outcome) *meshapi.UsageRequest {
 	if res.Usage == nil && res.CostUSD == 0 && len(res.Models) == 0 && len(o.escalations) == 0 {
 		return nil
 	}
-	apiKey := o.account != nil && o.account.cred.apiKey()
+	apiKey := o.account.apiKey()
 	actual := func(list int64) int64 {
 		if apiKey {
 			return list
