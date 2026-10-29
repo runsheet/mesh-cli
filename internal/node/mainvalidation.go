@@ -1,6 +1,7 @@
 package node
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -213,8 +214,11 @@ func (r *Runner) validatePullRequest(ctx context.Context, pr gateway.MainValidat
 		repoTok:   tok,
 		allSuites: true,
 	}
+	// a brief naming onto has the head validated as merged onto it
+	// (pullrequestonto.go); a brief without one, the head alone
 	return r.validateCommit(ctx, t, mainCommit{repo: pr.RepoFullName, branch: ref, sha: pr.SHA, pull: true,
-		what: fmt.Sprintf("pull request #%d head", pr.Number), token: fmt.Sprintf("pull request #%d", pr.Number)})
+		what: fmt.Sprintf("pull request #%d head", pr.Number), token: fmt.Sprintf("pull request #%d", pr.Number),
+		onto: pullRequestOnto(r.GW, pr)})
 }
 
 // orUnnamed is s, else `unnamed`: a token whose repo or access the
@@ -233,10 +237,15 @@ func orUnnamed(s string) string {
 //
 // pull, set, is a hand-opened pull request's head: branch is then its
 // ref (refs/pull/<n>/head), fetched as it is, whose head must be sha.
+//
+// onto, set, is a pull request's validation onto main (mergeOnto): the
+// head is checked out as a clone of its own — the served diff makes no
+// merge — merged onto it, and the merge validated in its place.
 type mainCommit struct {
 	repo, branch, sha string
 	atHead, pull      bool
 	what, token       string
+	onto              *ontoPull
 }
 
 // validateCommit is a main validation's body, a batch candidate's or a
@@ -266,6 +275,18 @@ func (r *Runner) validateCommit(ctx context.Context, t validationTarget, c mainC
 func (r *Runner) validateCommitIn(ctx context.Context, t validationTarget, c mainCommit) (validate.Attestation, error) {
 	prefix := t.prefix
 	r.logf("%s: validating %s at %s", prefix, c.what, short(c.sha))
+	if c.onto != nil {
+		r.logf("%s: onto: checked out as a clone of its own, merged onto %s", prefix, cmp.Or(c.onto.code.Onto.Ref, t.base))
+		cleanup, err := r.checkoutWorktree(ctx, t, c)
+		defer cleanup()
+		if err != nil {
+			return validate.Attestation{}, err
+		}
+		if c, err = r.mergeOnto(ctx, t, c); err != nil {
+			return validate.Attestation{}, err
+		}
+		return r.validateCheckout(ctx, t, c)
+	}
 	dir, served, err := r.checkoutServed(ctx, t, c)
 	if err == nil {
 		t.dir, t.served = dir, served
