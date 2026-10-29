@@ -145,6 +145,11 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			}
 			return st, err
 		},
+		"lease-progress": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.ProgressRequest
+			decode(t, f.Request, &req)
+			return c.Progress(context.Background(), idOf(f.Path, 3), req)
+		},
 		"lease-hand-back": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
 			var req meshapi.HandBackRequest
 			decode(t, f.Request, &req)

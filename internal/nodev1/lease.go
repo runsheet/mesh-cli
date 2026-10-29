@@ -41,9 +41,12 @@ const maxReason = 2000
 // outcome is how a lease's work ended, before it is reported.
 type outcome struct {
 	result SessionResult
-	// finish is what the product's finish tool answered, nil when the
-	// session never had it answer.
-	finish     json.RawMessage
+	// finish is what the product's finish tool answered, or the node's
+	// result tool kept, nil when the session never had either answer.
+	finish json.RawMessage
+	// handBack is the hand-back the session asked for with the node's
+	// hand_back tool, nil when it asked none.
+	handBack   *meshapi.HandBackRequest
 	err        error
 	cause      error // the lease ctx's cause when it was cancelled
 	nodeEnding bool
@@ -226,6 +229,8 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	// node's host (podsuites.go)
 	suites := r.suiteRunner(b, pod)
 	tools, rec := r.nodeTools(b, grant, workspace, tokens, ladder, mb, suites)
+	hb := &sessionHandBack{}
+	tools = append(tools, r.endTools(b, fin, hb, mb)...)
 	servers, sock, closeProxy, err := r.openProxy(ctx, b, tokens, grant, tools, fin.observe, account)
 	if err != nil {
 		return outcome{err: fmt.Errorf("the lease's sessionproxy: %w", err), cause: context.Cause(ctx)}
@@ -275,7 +280,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		}
 	}
 	res, err := r.Session.Run(sctx, spec)
-	o := outcome{result: res, err: err, finish: fin.result(), escalations: taken(ladder.Steps()), evidence: rec.IDs(),
+	o := outcome{result: res, err: err, finish: fin.result(), handBack: hb.asked(), escalations: taken(ladder.Steps()), evidence: rec.IDs(),
 		account: account, harness: b.Harness.Name, model: ladder.Model(), parked: res.Parked}
 	if ctx.Err() != nil {
 		o.cause = context.Cause(ctx)
@@ -483,6 +488,24 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) actor.End {
 		r.logf("nodev1: lease %s: %s", id, reason)
 		r.handBack(id, meshapi.CausePodKilled, reason, o.result.SessionID)
 		return actor.End{Report: actor.ReportHandBack, Cause: meshapi.CausePodKilled, Reason: reason}
+	}
+	// a session that gave the job back with the node's hand_back tool is
+	// handed back with the cause it claimed, however its session then
+	// exited (projectmesh-io/api ADR 001 amendment, node tools); a
+	// cannot_run after an irreversible write fails infrastructure, as the
+	// node's own would below
+	if hb := o.handBack; hb != nil {
+		r.postAccess(id, o.access)
+		r.postUsage(id, o)
+		reason := afterWrites(hb.Reason, writes)
+		if hb.Cause == meshapi.CauseCannotRun && len(writes) > 0 {
+			r.logf("nodev1: lease %s: the session handed back cannot_run AFTER IRREVERSIBLE WRITES (%s)", id, strings.Join(writes, "; "))
+			r.fail(id, meshapi.CauseInfrastructure, reason)
+			return actor.End{Report: actor.ReportFail, Cause: meshapi.CauseInfrastructure, Reason: reason}
+		}
+		r.logf("nodev1: lease %s: the session handed the job back (%s): %s", id, hb.Cause, clip(hb.Reason, 200))
+		r.handBack(id, hb.Cause, reason, o.result.SessionID)
+		return actor.End{Report: actor.ReportHandBack, Cause: hb.Cause, Reason: reason}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
 	defer cancel()
