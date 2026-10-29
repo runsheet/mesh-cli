@@ -44,15 +44,16 @@ var (
 	nodeRunFulcioURL  string
 	nodeRunRekorURL   string
 	// The actor node's flags (ADR-044), each off by default.
-	nodeRunScheduler    bool
-	nodeRunAccountSlots int
-	nodeRunActors       bool
-	nodeRunSupervisor   string
-	nodeRunQuietAfter   time.Duration
-	nodeRunCacheTrim    bool
-	nodeRunCacheDir     string
-	nodeRunCacheMaxGB   float64
-	nodeRunSelfUpdate   bool
+	nodeRunScheduler     bool
+	nodeRunAccountSlots  int
+	nodeRunActors        bool
+	nodeRunSupervisor    string
+	nodeRunQuietAfter    time.Duration
+	nodeRunCacheTrim     bool
+	nodeRunCacheDir      string
+	nodeRunCacheMaxGB    float64
+	nodeRunSelfUpdate    bool
+	nodeRunConfirmWithin time.Duration
 )
 
 // nodeRunCmd is the Mesh v1 node runtime (internal/nodev1), beside the
@@ -155,7 +156,13 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 			rt.CacheTrim = &resources.CacheTrim{Root: dir, MaxBytes: int64(nodeRunCacheMaxGB * (1 << 30)), Logf: logger.Printf}
 		}
 		if nodeRunSelfUpdate {
-			rt.Updater = &resources.ReleaseUpdater{Releases: selfupdate.GitHub{}, Current: version.Resolved(), Exe: meshBinary()}
+			// the v1 node's own update state, beside its leases: never the
+			// legacy node's ~/.mesh/update.json, which a node of the same
+			// user may be confirming at the same time
+			state := &selfupdate.StateFile{Path: filepath.Join(root, "update.json")}
+			exe := meshBinary()
+			rt.Updater = &resources.ReleaseUpdater{Releases: selfupdate.GitHub{}, Current: version.Resolved(), Exe: exe, State: state}
+			rt.Confirm = &resources.Confirm{State: state, Exe: exe, Within: nodeRunConfirmWithin}
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
@@ -163,6 +170,11 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 		if errors.Is(err, nodev1.ErrRestartForUpdate) {
 			// exit 0: the service manager starts the binary now in place
 			logger.Printf("updated; exiting for the service manager to start the new binary")
+			return nil
+		}
+		if errors.Is(err, nodev1.ErrRolledBack) {
+			// exit 0: the previous binary is back in place
+			logger.Printf("rolled back; exiting for the service manager to start the previous binary")
 			return nil
 		}
 		if err != nil && !errors.Is(err, context.Canceled) {
@@ -260,7 +272,8 @@ func init() {
 	f.BoolVar(&nodeRunCacheTrim, "cache-trim", false, "with --actors-scheduler, trim the Go build cache hourly when over --cache-max-gb, holding it alone in the scheduler so no build runs under the trim")
 	f.StringVar(&nodeRunCacheDir, "cache-dir", "", "with --cache-trim, the Go build cache (default `go env GOCACHE`)")
 	f.Float64Var(&nodeRunCacheMaxGB, "cache-max-gb", 50, "with --cache-trim, the build cache's cap in GB")
-	f.BoolVar(&nodeRunSelfUpdate, "self-update", false, "keep the node on the newest release: drain, hand back node_update what still runs after 30 minutes, install the verified release and exit for the service manager to restart it")
+	f.BoolVar(&nodeRunSelfUpdate, "self-update", false, "keep the node on the newest release: drain, hand back node_update what still runs after 30 minutes, install the verified release and exit for the service manager to restart it; the new binary confirms on its first heartbeat, and its third start without one rolls back to the previous binary (state in <work-root>/update.json)")
+	f.DurationVar(&nodeRunConfirmWithin, "confirm-within", 0, "with --self-update, how long a new binary may take to confirm before its start ends for the next (default 5m)")
 	_ = nodeRunCmd.MarkFlagRequired("api")
 	nodeCmd.AddCommand(nodeRunCmd)
 }

@@ -68,3 +68,28 @@ Each piece is a PR behind a `mesh node run` flag, off by default:
 | 3.3 supervisor liveness and reconcile | `--supervisor=off\|warn\|cancel` |
 | 3.4 resource actors | `--cache-trim`, `--self-update` |
 | 3.9 guard test | none |
+
+## Amendment, 2026-10-30: the self-update confirms or rolls back
+
+The legacy node's rollback (internal/node selfupdate.go, mesh-specs ADR
+002) is ported to the v1 node, behind the same `--self-update`:
+
+1. **Recorded before the swap.** The release updater records the update
+   (`from`, `to`) in the v1 node's own state file,
+   `<work-root>/update.json` — never the legacy node's
+   `~/.mesh/update.json`, which a legacy node of the same user may be
+   confirming at the same time — before it swaps the binary, the old one
+   kept as `<exe>.prev`. A release that fails to fetch, verify or swap is
+   recorded with why.
+2. **Every start counts.** A start of the new binary counts itself
+   against the pending update and logs it first: `confirming update vX →
+   vY: start 1 of 3, rolls back on the third`.
+3. **The first heartbeat confirms.** It is sent at once on an
+   unconfirmed start; Mesh answering it confirms the update. A start
+   that cannot within the confirm window (`--confirm-within`, 5 minutes)
+   ends with an UnconfirmedError naming the last refusal, and the
+   service manager's restart is the next start.
+4. **The third unconfirmed start rolls back.** It puts `<exe>.prev` back
+   and exits 0 before it registers, for the service manager to start the
+   previous binary. A version rolled back is never due again; a newer
+   release is.
