@@ -138,7 +138,15 @@ type Runtime struct {
 	// newer release drains the node, waits DrainWait (30 minutes) for
 	// its leases, hands back node_update what still runs, installs, and
 	// ends Run with ErrRestartForUpdate.
-	Updater        resources.Updater
+	Updater resources.Updater
+	// Confirm, with Updater (`--self-update`), is the update state the
+	// node confirms or rolls back on start (resourceactors.go): each
+	// start of a new binary counts itself, the first heartbeat Mesh
+	// answers confirms it, a start that cannot within the window ends
+	// Run with a *resources.UnconfirmedError, and the third unconfirmed
+	// start puts the previous binary back and ends Run with
+	// ErrRolledBack.
+	Confirm        *resources.Confirm
 	UpdateEvery    time.Duration
 	DrainWait      time.Duration
 	QuietAfter     time.Duration
@@ -161,6 +169,9 @@ type Runtime struct {
 	// it ends, holding the version it installed
 	updating bool
 	updated  chan string
+	// confirming is a self-update this start still has to confirm
+	// (resourceactors.go)
+	confirming bool
 }
 
 // running is one lease in flight.
@@ -278,6 +289,11 @@ func (r *Runtime) Run(ctx context.Context) error {
 	if r.Node.Tools == nil {
 		r.Node.Tools = []string{}
 	}
+	if err := r.checkUpdate(); err != nil {
+		return err
+	}
+	ctx, stopRun := context.WithCancelCause(ctx)
+	defer stopRun(nil)
 	r.relay = &gitrelay.Server{Upstream: r.GitUpstream, Audit: r.audit}
 	if err := r.relay.Start(ctx); err != nil {
 		return fmt.Errorf("nodev1: the git relay: %w", err)
@@ -288,6 +304,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	}
 	node, err := r.API.Register(ctx, r.Node)
 	if err != nil {
+		r.startFailed(err)
 		return fmt.Errorf("nodev1: register: %w", err)
 	}
 	r.mu.Lock()
@@ -312,6 +329,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	}
 	hbCtx, stopHB := context.WithCancel(ctx)
 	defer stopHB()
+	r.awaitConfirm(hbCtx, stopRun)
 	go r.heartbeats(hbCtx, every)
 	go r.events(hbCtx)
 	if s := r.supervisor(); s != nil {
@@ -365,6 +383,10 @@ func (r *Runtime) Run(ctx context.Context) error {
 			defer leases.Done()
 			r.runLease(ctx, tk, room, roomErr)
 		}()
+	}
+	leases.Wait()
+	if cause := context.Cause(ctx); errors.Is(cause, resources.ErrUnconfirmed) {
+		return cause
 	}
 	return ctx.Err()
 }
@@ -451,9 +473,11 @@ func (r *Runtime) heartbeat(ctx context.Context) {
 	if err != nil {
 		if ctx.Err() == nil {
 			r.logf("nodev1: heartbeat: %v", err)
+			r.confirmFailed(err)
 		}
 		return
 	}
+	r.confirmUpdate()
 	r.sentAccounts(accounts)
 	if resp.Drain {
 		r.mu.Lock()
