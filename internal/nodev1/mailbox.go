@@ -42,6 +42,9 @@ type Mailbox struct {
 	ch       chan Message
 	once     sync.Once
 	finished chan struct{}
+	// turns is a thread lease's record of the turns its session was
+	// given (turns.go), nil for any other lease.
+	turns *turnLedger
 }
 
 // NewMailbox is an empty mailbox.

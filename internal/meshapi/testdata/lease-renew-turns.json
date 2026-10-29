@@ -1,0 +1,22 @@
+{
+  "name": "lease-renew-turns",
+  "method": "POST",
+  "path": "/v1/leases/b5fa2d89-1a02-521b-bf3b-a1a07cb66740/renew",
+  "caller": "node",
+  "request": {
+    "turns_seen": 1
+  },
+  "status": 200,
+  "response": {
+    "expires_at": "2026-01-01T00:00:00Z",
+    "lease_id": "b5fa2d89-1a02-521b-bf3b-a1a07cb66740",
+    "renew_every_s": 30,
+    "turns": [
+      {
+        "seq": 1,
+        "turn_id": "t-2"
+      }
+    ],
+    "turns_through": 2
+  }
+}
