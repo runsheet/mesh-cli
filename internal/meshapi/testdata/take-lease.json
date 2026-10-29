@@ -1,0 +1,112 @@
+{
+  "name": "take-lease",
+  "method": "POST",
+  "path": "/v1/take",
+  "request": {
+    "node_id": "nod_01JD6Y0M2T8E",
+    "free": {
+      "cpus": 15,
+      "mem_gb": 62,
+      "slots": 3
+    },
+    "harnesses": [
+      "claude-code"
+    ],
+    "wait_s": 25
+  },
+  "status": 200,
+  "response": {
+    "lease": {
+      "lease_id": "lse_01JD7K2Q9N3V",
+      "job_id": "job_01JD7K1ZC4XA",
+      "n": 1,
+      "expires_at": "2026-10-29T10:01:30Z",
+      "renew_every_s": 30
+    },
+    "brief": {
+      "job_id": "job_01JD7K1ZC4XA",
+      "lease_id": "lse_01JD7K2Q9N3V",
+      "lease_expires_at": "2026-10-29T10:01:30Z",
+      "renew_every_s": 30,
+      "kind": "conform/echo",
+      "product": "conform",
+      "tenant": "acme",
+      "subject": {
+        "type": "fixture",
+        "id": "echo-1"
+      },
+      "lease_n": 1,
+      "handbacks": 0,
+      "harness": {
+        "name": "claude-code",
+        "model": {
+          "default": "haiku",
+          "escalate": [
+            "sonnet"
+          ],
+          "on": [
+            "red",
+            "stall"
+          ],
+          "max": "sonnet"
+        },
+        "budget": {
+          "usd": 1.5,
+          "minutes": 20,
+          "turns": 40
+        }
+      },
+      "guidance": "Read README.md in the checkout and submit its sha256.",
+      "brief_tool": "brief",
+      "finish_tool": "submit",
+      "finish_schema": {
+        "type": "object",
+        "properties": {
+          "sha256": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sha256"
+        ]
+      },
+      "servers": [
+        {
+          "name": "conform",
+          "url": "https://conform.test/mcp"
+        }
+      ],
+      "node_tools": [
+        "result",
+        "hand_back",
+        "progress"
+      ],
+      "evidence_required": [],
+      "code": {
+        "repo": {
+          "host": "github.com",
+          "full_name": "acme/fixture"
+        },
+        "base_ref": "refs/heads/main",
+        "base_sha": "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+      },
+      "git": {
+        "host": "github.com",
+        "repo": "acme/fixture",
+        "access": "read"
+      },
+      "access": {
+        "repo": true,
+        "mcp": [
+          "conform"
+        ],
+        "model": true
+      },
+      "resources": {
+        "cpus": 1,
+        "mem_gb": 2
+      },
+      "credential_ref": "9f1c2b7e-3a4d-4e5f-8a6b-7c8d9e0f1a2b"
+    }
+  }
+}

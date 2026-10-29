@@ -1,0 +1,16 @@
+{
+  "name": "lease-hand-back",
+  "method": "POST",
+  "path": "/v1/leases/lse_01JD7K2Q9N3V/hand-back",
+  "request": {
+    "cause": "cannot_run",
+    "reason": "claude exited 1 before its first turn",
+    "session_ref": "c0ffee00-0000-4000-8000-000000000001"
+  },
+  "status": 200,
+  "response": {
+    "job_id": "job_01JD7K1ZC4XA",
+    "status": "queued",
+    "handbacks": 1
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "lease-session",
+  "method": "POST",
+  "path": "/v1/leases/lse_01JD7K2Q9N3V/session",
+  "request": {
+    "jkt": "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
+  },
+  "status": 201,
+  "response": {
+    "session_id": "5b8e3c1a-7f2d-4a9b-8c6e-1d2f3a4b5c6d",
+    "request_url": "https://session.latchkey.test/oauth/session-token/request?session=5b8e3c1a-7f2d-4a9b-8c6e-1d2f3a4b5c6d&v=1",
+    "request_token": "lksr_FIXTUREFIXTUREFIXTUREFIXTUREFIXTUREFIXTURE",
+    "expires_at": "2026-10-29T10:10:00Z"
+  }
+}

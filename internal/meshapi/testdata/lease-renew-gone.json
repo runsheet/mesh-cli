@@ -1,0 +1,11 @@
+{
+  "name": "lease-renew-gone",
+  "method": "POST",
+  "path": "/v1/leases/lse_01JD7K2Q9N3V/renew",
+  "request": {},
+  "status": 409,
+  "response": {
+    "error": "lease_not_live",
+    "message": "lease lse_01JD7K2Q9N3V expired at 2026-10-29T10:01:30Z"
+  }
+}

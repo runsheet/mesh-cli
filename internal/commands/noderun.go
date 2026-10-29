@@ -1,0 +1,126 @@
+package commands
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"syscall"
+
+	"github.com/spf13/cobra"
+
+	"projectmesh.io/mesh-cli/internal/meshapi"
+	"projectmesh.io/mesh-cli/internal/nodev1"
+	"projectmesh.io/mesh-cli/internal/paths"
+	"projectmesh.io/mesh-cli/internal/version"
+)
+
+var (
+	nodeRunAPI        string
+	nodeRunURL        string
+	nodeRunName       string
+	nodeRunWorkRoot   string
+	nodeRunOnce       bool
+	nodeRunUnattended bool
+	nodeRunCPUs       float64
+	nodeRunMemGB      float64
+	nodeRunSlots      int
+)
+
+// nodeRunCmd is the Mesh v1 node runtime (internal/nodev1), beside the
+// legacy `mesh node start`: it speaks only Mesh's v1 node API, on the
+// machine credential `mesh node login` saved.
+var nodeRunCmd = &cobra.Command{
+	Use:   "run --api v1",
+	Short: "Run this machine as a Mesh v1 node (beside `mesh node start`)",
+	Long: `Run this machine as a Mesh v1 node: register with Mesh (api.projectmesh.io),
+take one lease at a time, run its claude-code session with the brief's product
+MCP servers through a sessionproxy of the lease's own, renew the lease while it
+runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `.`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		if nodeRunAPI != "v1" {
+			return fmt.Errorf("mesh node run: --api must be v1 (the legacy runtime is `mesh node start`), not %q", nodeRunAPI)
+		}
+		src, err := tokenSource()
+		if err != nil {
+			return fmt.Errorf("mesh node run: no machine credential (run `mesh node login`): %w", err)
+		}
+		dir, err := paths.MeshDir()
+		if err != nil {
+			return err
+		}
+		root := nodeRunWorkRoot
+		if root == "" {
+			root = filepath.Join(dir, "v1")
+		}
+		key, err := nodev1.LoadSigningKey(filepath.Join(root, "signing.key"))
+		if err != nil {
+			return err
+		}
+		name := nodeRunName
+		if name == "" {
+			name, _ = os.Hostname()
+		}
+		cpus := nodeRunCPUs
+		if cpus <= 0 {
+			cpus = float64(runtime.NumCPU())
+		}
+		logger := log.New(os.Stderr, "mesh node v1: ", log.LstdFlags)
+		sess := &nodev1.ClaudeSession{Stderr: os.Stderr}
+		if nodeRunUnattended {
+			sess.ExtraArgs = []string{"--dangerously-skip-permissions"}
+		}
+		rt := &nodev1.Runtime{
+			API: &meshapi.Client{BaseURL: meshAPIURL(), Token: src.Token},
+			Node: meshapi.RegisterRequest{
+				Name: name, Version: version.Resolved(), Harnesses: []string{"claude-code"},
+				CapacityTotal: meshapi.Capacity{CPUs: cpus, MemGB: nodeRunMemGB, Slots: max(nodeRunSlots, 1)},
+				SigningKey:    nodev1.PublicKey(key),
+			},
+			WorkRoot:   root,
+			MeshBinary: meshBinary(),
+			Session:    sess,
+			Once:       nodeRunOnce,
+			Logf:       logger.Printf,
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := rt.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			return err
+		}
+		return nil
+	},
+}
+
+// meshAPIURL is Mesh's v1 API: --url, else MESH_API_URL, else
+// api.projectmesh.io.
+func meshAPIURL() string {
+	if v := strings.TrimSpace(nodeRunURL); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("MESH_API_URL")); v != "" {
+		return v
+	}
+	return meshapi.DefaultURL
+}
+
+func init() {
+	f := nodeRunCmd.Flags()
+	f.StringVar(&nodeRunAPI, "api", "", "the API the node speaks: v1 (required)")
+	f.StringVar(&nodeRunURL, "url", "", "Mesh's API (default $MESH_API_URL, else "+meshapi.DefaultURL+")")
+	f.StringVar(&nodeRunName, "name", "", "the node's name (default the hostname)")
+	f.StringVar(&nodeRunWorkRoot, "work-root", "", "where leases run (default ~/.mesh/v1)")
+	f.BoolVar(&nodeRunOnce, "once", false, "stop after the first lease ends")
+	f.BoolVar(&nodeRunUnattended, "unattended", false, "run sessions with --dangerously-skip-permissions (trusted machines only)")
+	f.Float64Var(&nodeRunCPUs, "cpus", 0, "CPUs offered (default all)")
+	f.Float64Var(&nodeRunMemGB, "mem-gb", 0, "memory offered, in GB")
+	f.IntVar(&nodeRunSlots, "slots", 1, "sessions at once")
+	_ = nodeRunCmd.MarkFlagRequired("api")
+	nodeCmd.AddCommand(nodeRunCmd)
+}
