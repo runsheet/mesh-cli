@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"reflect"
 	"strings"
 	"sync"
@@ -61,6 +62,7 @@ type Grant struct {
 	closed   bool
 	inflight sync.WaitGroup
 	minted   []Token
+	checkout string
 
 	once     sync.Once
 	closeErr error
@@ -77,6 +79,14 @@ func (s *Server) Open(leaseID string, policy Policy, mint Mint, revoke Revoke) (
 	}
 	if mint == nil {
 		return nil, errors.New("gitrelay: a grant needs a token source")
+	}
+	vendor, err := VendorNamed(policy.Vendor)
+	if err != nil {
+		return nil, err
+	}
+	upstream, err := upstreamOf(s.Upstream, policy.Base)
+	if err != nil {
+		return nil, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -99,8 +109,14 @@ func (s *Server) Open(leaseID string, policy Policy, mint Mint, revoke Revoke) (
 	g := &Grant{Lease: leaseID, server: s, capability: hex.EncodeToString(b[:]), policy: policy, revoke: revoke}
 	g.ctx, g.cancel = context.WithCancel(context.Background())
 	g.relay = &Relay{
-		Policy: policy, Upstream: s.Upstream, HTTP: s.HTTP, Now: s.Now,
+		Policy: policy, Upstream: upstream, Vendor: vendor, HTTP: s.HTTP, Now: s.Now,
 		RefreshBefore: grantRefreshBefore,
+		IsAncestor: func(ctx context.Context, old, new string) error {
+			g.mu.Lock()
+			dir := g.checkout
+			g.mu.Unlock()
+			return CheckoutAncestry(dir)(ctx, old, new)
+		},
 		Audit: func(e Event) {
 			e.Lease = leaseID
 			s.audit(e)
@@ -159,6 +175,35 @@ func (g *Grant) Base() string {
 
 // Policy is the grant's git policy.
 func (g *Grant) Policy() Policy { return g.policy }
+
+// SetCheckout names the lease's checkout, where the relay proves a
+// fast-forward-only push is one (fastforward.go): the job actor sets it
+// once its checkout through the grant is made. Until then a push that
+// moves a fast-forward-only ref is refused.
+func (g *Grant) SetCheckout(dir string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.checkout = dir
+}
+
+// upstreamOf is a grant's git origin: the server's when it names one
+// (`--git-upstream`, a test's override for every lease), else the
+// policy's base, else "" for the vendor's own. A base is an absolute
+// http(s) URL.
+func upstreamOf(override, base string) (string, error) {
+	if override != "" {
+		return override, nil
+	}
+	base = strings.TrimSpace(base)
+	if base == "" {
+		return "", nil
+	}
+	u, err := url.Parse(base)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil {
+		return "", fmt.Errorf("gitrelay: the git base %q is not an http(s) origin", base)
+	}
+	return strings.TrimRight(base, "/"), nil
+}
 
 // ServeHTTP serves /git/<owner>/<repo>.git/… for the grant: what the
 // session's sessionproxy hands its /git/ route to, as the loopback
