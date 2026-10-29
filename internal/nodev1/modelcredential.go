@@ -5,9 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/harness"
 )
 
 // A job Mesh picked a model account for runs its session on that
@@ -22,18 +23,22 @@ import (
 //
 // Latchkey reads the job from Mesh, checks the lease is live and the
 // grant is the job's product's, and answers the account's secret. The
-// secret is the one credential that reaches a session, because the
-// harness must hold it: it is in the session process's environment for
-// that run alone, never written to disk, never in a checkout, and masked
-// in anything the session's error carries. A brief with no
-// credential_ref runs on the node's own login, as before.
+// secret never reaches the session (projectmesh-io/api ADR 001
+// amendment "model relay", 2026-10-30): the lease's relay holds it in
+// memory and adds it to each model request the session makes through
+// the sessionproxy's /model/<provider>/ route (modelrelay.go). The
+// session holds a fixed dummy in the variable its harness reads, and
+// its base URL names the relay. A brief with no credential_ref runs on
+// the node's own login, as before; a key of the node's environment is
+// relayed the same way, never passed on.
 
 // forJobPath is Latchkey's model-credential route.
 const forJobPath = "/v1/credentials/for-job"
 
-// modelAuthEnv are the variables that sign the Claude CLI in: none of
-// the node's own reaches a session that runs on the job's account.
-var modelAuthEnv = []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}
+// modelAuthEnv are the variables a harness reads a model credential or
+// its model's address from: none of the node's own reaches a v1
+// session. The relay's own (relayEnv) are set in their place.
+var modelAuthEnv = harness.ModelEnv
 
 // modelCredential is Latchkey's answer: the account's secret and what
 // it is. Its String never names the secret.
@@ -57,24 +62,21 @@ func (m *modelCredential) apiKey() bool {
 	return m != nil && strings.EqualFold(m.Kind, "api_key")
 }
 
-// env is the variable that signs the Claude CLI in on the account: an
-// Anthropic subscription's OAuth token as CLAUDE_CODE_OAUTH_TOKEN, an
-// api key as ANTHROPIC_API_KEY. Any other vendor or kind is an account
-// this node's harness cannot run.
-func (m *modelCredential) env() (string, error) {
+// auth is how the account's secret travels: the relay's header and the
+// variable the session's harness holds the dummy in. Any other vendor
+// or kind is an account this node's claude-code harness cannot run.
+func (m *modelCredential) auth() (modelAuth, error) {
 	if m.Secret == "" {
-		return "", errors.New("Latchkey answered the job's model credential with no secret")
+		return modelAuth{}, errors.New("Latchkey answered the job's model credential with no secret")
 	}
 	if !strings.EqualFold(m.Vendor, "anthropic") {
-		return "", fmt.Errorf("the job's %s is a %q account, which the node's claude-code harness cannot run", m, m.Vendor)
+		return modelAuth{}, fmt.Errorf("the job's %s is a %q account, which the node's claude-code harness cannot run", m, m.Vendor)
 	}
-	switch strings.ToLower(m.Kind) {
-	case "subscription", "personal_subscription", "oauth_token":
-		return "CLAUDE_CODE_OAUTH_TOKEN=" + m.Secret, nil
-	case "api_key":
-		return "ANTHROPIC_API_KEY=" + m.Secret, nil
+	a, ok := authOf(m.Vendor, m.Kind)
+	if !ok {
+		return modelAuth{}, fmt.Errorf("the job's %s is of kind %q, which the node does not run", m, m.Kind)
 	}
-	return "", fmt.Errorf("the job's %s is of kind %q, which the node does not run", m, m.Kind)
+	return a, nil
 }
 
 // ModelCredential reads the job's model credential on the session token.
@@ -89,16 +91,12 @@ func (s *sessionTokens) ModelCredential(ctx context.Context) (*modelCredential, 
 	return &out, nil
 }
 
-// sessionAccount is what a session runs on: the job's model account, or
-// the node's own login when the brief names none.
-type sessionAccount struct {
-	cred *modelCredential
-}
-
-// open reads the brief's account when it names one.
-func openAccount(ctx context.Context, credentialRef string, tokens *sessionTokens) (*sessionAccount, error) {
+// openAccount reads the brief's account when it names one; else the
+// node's own login, relayed when it is a key in the node's environment
+// (environ), or left to the CLI's own sign-in on the node's disk.
+func openAccount(ctx context.Context, credentialRef string, tokens *sessionTokens, environ []string) (*sessionAccount, error) {
 	if credentialRef == "" {
-		return &sessionAccount{}, nil
+		return ownLogin(environ), nil
 	}
 	if tokens == nil {
 		return nil, errors.New("the brief names a model account but the lease has no session to read it on")
@@ -107,29 +105,9 @@ func openAccount(ctx context.Context, credentialRef string, tokens *sessionToken
 	if err != nil {
 		return nil, err
 	}
-	if _, err := cred.env(); err != nil {
+	a, err := cred.auth()
+	if err != nil {
 		return nil, err
 	}
-	return &sessionAccount{cred: cred}, nil
-}
-
-// ref is the account's opaque ref; "" on the node's own login.
-func (a *sessionAccount) ref() string {
-	if a == nil || a.cred == nil {
-		return ""
-	}
-	return a.cred.AccountRef
-}
-
-// apply puts the account into the session's spec: its variable in the
-// session's environment, the node's own model variables dropped, and
-// the secret masked. The node's own login is left alone.
-func (a *sessionAccount) apply(spec *SessionSpec) {
-	if a == nil || a.cred == nil {
-		return
-	}
-	kv, _ := a.cred.env() // checked by openAccount
-	spec.Unset = append(slices.Clone(spec.Unset), modelAuthEnv...)
-	spec.Env = append(spec.Env, kv)
-	spec.Secrets = append(spec.Secrets, a.cred.Secret)
+	return &sessionAccount{cred: cred, auth: a, reread: tokens.ModelCredential}, nil
 }

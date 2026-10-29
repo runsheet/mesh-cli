@@ -226,3 +226,19 @@ func TestRunSuiteRunsThroughItsRunner(t *testing.T) {
 		t.Fatal("a step ran on the host beside its runner")
 	}
 }
+
+// A suite on the host is the session's own commands, so it sees none of
+// the node's model variables (ADR 001 amendment "model relay").
+func TestHostSuitesSeeNoModelKey(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-api03-the-nodes-own-key")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-the-nodes-own-token")
+	t.Setenv("MESH_TEST_KEPT", "kept")
+	steps := []validate.Step{{Name: "env", Command: `test -z "$ANTHROPIC_API_KEY$CLAUDE_CODE_OAUTH_TOKEN" && test "$MESH_TEST_KEPT" = kept`}}
+	res, err := HostSuites(context.Background(), t.TempDir(), steps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) != 1 || res[0].ExitCode != 0 {
+		t.Fatalf("the step saw a model key, or lost the node's other variables: %+v", res)
+	}
+}

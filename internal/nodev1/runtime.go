@@ -68,6 +68,10 @@ type Runtime struct {
 	// whatever its brief names — a test's fake vendor; else each lease's
 	// grant reaches its brief's vendor and base.
 	GitUpstream string
+	// ModelUpstreams, when set, are the origins a lease's model relay
+	// reaches by provider (anthropic, openai) — a test's fake model; else
+	// $MESH_MODEL_UPSTREAM_<PROVIDER>, else each provider's API.
+	ModelUpstreams map[string]string
 	// SigningKey is the node's ed25519 key, whose public half it
 	// registers: a node tool's record is signed with it when Fulcio or
 	// Rekor cannot be used.

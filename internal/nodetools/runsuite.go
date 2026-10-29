@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/mcptool"
 	"projectmesh.io/mesh-cli/internal/validate"
 )
@@ -27,9 +28,12 @@ const RunSuiteTool = "run_suite"
 type SuiteRunner func(ctx context.Context, workspace string, steps []validate.Step) ([]validate.StepResult, error)
 
 // HostSuites runs steps on the host, in the workspace, every step run
-// whatever an earlier one did.
+// whatever an earlier one did. The steps are the session's own, so they
+// see none of the node's model variables (harness.ModelEnv; ADR 001
+// amendment "model relay").
 func HostSuites(ctx context.Context, workspace string, steps []validate.Step) ([]validate.StepResult, error) {
-	return validate.Run(ctx, steps, validate.HostRunner{Dir: workspace}, validate.Options{Dir: workspace, ContinueOnFailure: true})
+	host := validate.HostRunner{Dir: workspace, Env: harness.EnvironWithoutModel()}
+	return validate.Run(ctx, steps, host, validate.Options{Dir: workspace, ContinueOnFailure: true})
 }
 
 // ErrNoSuiteRunner is run_suite refused: the lease has nowhere to run
