@@ -29,7 +29,7 @@ import (
 // StopRefusals refusals the gate lets the session stop, and the node
 // checks its last message against the kind's finish_schema (settle.go).
 //
-// The hook is `mesh session-stop-hook --socket <stop.sock>`: the gate
+// The hook is `mesh session-stop-hook --socket <lease socket dir>/h`: the gate
 // listens on a socket of its own in the lease's socket directory, beside
 // the sessionproxy's. A hook that cannot reach the gate lets the session
 // stop; the node's check after the session still holds the finish, so a
@@ -38,8 +38,10 @@ import (
 // StopHookCommand is the mesh subcommand a session's Stop hook runs.
 const StopHookCommand = "session-stop-hook"
 
-// stopSocketName is the gate's socket in the lease's socket directory.
-const stopSocketName = "stop.sock"
+// stopSocketName is the gate's socket in the lease's socket directory:
+// one byte, as the proxy's own (leaseSocketName) is, so it fits wherever
+// that does.
+const stopSocketName = "h"
 
 // DefaultStopRefusals is how many times the gate refuses a session's
 // stop before it lets the session end and the node checks its last

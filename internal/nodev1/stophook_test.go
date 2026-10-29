@@ -4,18 +4,23 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"projectmesh.io/mesh-cli/internal/meshapi"
 )
 
-// shortDir is a directory short enough for a unix socket's path.
+// shortDir is a directory short enough for a unix socket's path: a
+// lease socket directory, as the node makes one — never under TMPDIR,
+// which on a validating node is a job's deep scratch directory.
 func shortDir(t *testing.T) string {
 	t.Helper()
-	d, err := os.MkdirTemp("", "sg")
+	r := &Runtime{}
+	d, err := r.leaseSocketDir(fmt.Sprintf("%s-%d", t.Name(), time.Now().UnixNano()))
 	if err != nil {
 		t.Fatal(err)
 	}
