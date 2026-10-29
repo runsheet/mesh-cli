@@ -56,7 +56,7 @@ type fakeLease struct {
 
 // Call is one request the fake answered.
 type Call struct {
-	Route   string // register, connect, heartbeat, take, renew, session, evidence, access, usage, finish, fail, hand-back, blob
+	Route   string // register, connect, heartbeat, take, renew, session, evidence, access, usage, progress, finish, fail, hand-back, blob
 	LeaseID string
 	Auth    string
 	Body    json.RawMessage
@@ -445,6 +445,22 @@ func (f *Fake) lease(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusCreated, meshapi.EvidenceResponse{IDs: ids})
 	case "access", "usage":
 		w.WriteHeader(http.StatusNoContent)
+	case "progress":
+		// the lease's newest note, counted as Mesh's LeaseProgress counts
+		var req meshapi.ProgressRequest
+		json.Unmarshal(body, &req)
+		at := time.Now().UTC().Truncate(time.Second)
+		f.mu.Lock()
+		var notes int64
+		for _, c := range f.calls {
+			if c.Route == "progress" && c.LeaseID == id {
+				notes++
+			}
+		}
+		job := l.brief.JobID
+		f.mu.Unlock()
+		writeJSON(w, http.StatusOK, meshapi.Progressed{JobID: job, Status: "running",
+			Progress: &meshapi.ProgressNote{LeaseID: id, Note: req.Note, At: &at, Notes: notes}})
 	case "finish", "fail", "hand-back":
 		f.mu.Lock()
 		l.ended = route
