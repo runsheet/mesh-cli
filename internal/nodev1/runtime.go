@@ -118,6 +118,18 @@ type Runtime struct {
 	// when zero); SuperviseEvery and ReconcileEvery are how often it
 	// looks (15 s) and reconciles (a minute).
 	SupervisorMode supervisor.Mode
+	// CacheTrim, with Scheduler, trims the node's Go build cache off the
+	// take loop, holding it exclusively (PR 3.4; `--cache-trim`); its
+	// Scheduler is the runtime's.
+	CacheTrim *resources.CacheTrim
+	// Updater, when set, keeps the node on the newest release (PR 3.4;
+	// `--self-update`): every UpdateEvery (10 minutes) it looks, and a
+	// newer release drains the node, waits DrainWait (30 minutes) for
+	// its leases, hands back node_update what still runs, installs, and
+	// ends Run with ErrRestartForUpdate.
+	Updater        resources.Updater
+	UpdateEvery    time.Duration
+	DrainWait      time.Duration
 	QuietAfter     time.Duration
 	SuperviseEvery time.Duration
 	ReconcileEvery time.Duration
@@ -132,6 +144,10 @@ type Runtime struct {
 	// sessions' rate-limit readings, for the heartbeat (accounts.go)
 	accounts map[string]*accountReading
 	drain    bool
+	// updating is a drain the self-update asked for; updated closes when
+	// it ends, holding the version it installed
+	updating bool
+	updated  chan string
 }
 
 // running is one lease in flight.
@@ -282,11 +298,16 @@ func (r *Runtime) Run(ctx context.Context) error {
 	if s := r.supervisor(); s != nil {
 		go s.Run(hbCtx)
 	}
+	r.startResources(hbCtx)
 
 	var leases sync.WaitGroup
 	defer leases.Wait()
 	for ctx.Err() == nil {
 		if r.draining() {
+			leases.Wait()
+			if err := r.awaitUpdate(ctx); err != nil {
+				return err
+			}
 			r.logf("nodev1: Mesh asked the node to drain; it takes no more leases")
 			return nil
 		}

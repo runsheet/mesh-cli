@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -19,7 +20,9 @@ import (
 	"projectmesh.io/mesh-cli/internal/node"
 	"projectmesh.io/mesh-cli/internal/nodev1"
 	"projectmesh.io/mesh-cli/internal/paths"
+	"projectmesh.io/mesh-cli/internal/resources"
 	"projectmesh.io/mesh-cli/internal/scheduler"
+	"projectmesh.io/mesh-cli/internal/selfupdate"
 	"projectmesh.io/mesh-cli/internal/sigstore"
 	"projectmesh.io/mesh-cli/internal/supervisor"
 	"projectmesh.io/mesh-cli/internal/version"
@@ -46,6 +49,10 @@ var (
 	nodeRunActors       bool
 	nodeRunSupervisor   string
 	nodeRunQuietAfter   time.Duration
+	nodeRunCacheTrim    bool
+	nodeRunCacheDir     string
+	nodeRunCacheMaxGB   float64
+	nodeRunSelfUpdate   bool
 )
 
 // nodeRunCmd is the Mesh v1 node runtime (internal/nodev1), beside the
@@ -130,9 +137,32 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 			return fmt.Errorf("mesh node run: --supervisor=%s watches job actors: it needs --actors", mode)
 		}
 		rt.SupervisorMode, rt.QuietAfter = mode, nodeRunQuietAfter
+		if nodeRunCacheTrim {
+			if rt.Scheduler == nil {
+				return errors.New("mesh node run: --cache-trim holds the build cache in the scheduler: it needs --actors-scheduler")
+			}
+			dir := nodeRunCacheDir
+			if dir == "" {
+				out, err := exec.Command("go", "env", "GOCACHE").Output()
+				if err != nil {
+					return fmt.Errorf("mesh node run: --cache-trim: no --cache-dir and `go env GOCACHE` failed: %w", err)
+				}
+				dir = strings.TrimSpace(string(out))
+			}
+			rt.CacheTrim = &resources.CacheTrim{Root: dir, MaxBytes: int64(nodeRunCacheMaxGB * (1 << 30)), Logf: logger.Printf}
+		}
+		if nodeRunSelfUpdate {
+			rt.Updater = &resources.ReleaseUpdater{Releases: selfupdate.GitHub{}, Current: version.Resolved(), Exe: meshBinary()}
+		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		if err := rt.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		err = rt.Run(ctx)
+		if errors.Is(err, nodev1.ErrRestartForUpdate) {
+			// exit 0: the service manager starts the binary now in place
+			logger.Printf("updated; exiting for the service manager to start the new binary")
+			return nil
+		}
+		if err != nil && !errors.Is(err, context.Canceled) {
 			return err
 		}
 		return nil
@@ -224,6 +254,10 @@ func init() {
 	f.BoolVar(&nodeRunActors, "actors", false, "run each lease as a job actor (ADR-044): it owns the lease's directory, room, grant and proxy, writes actor.json before each state change, releases everything however the lease ends, and hands back pod_killed a session killed from outside; a restarted node releases the actors it left")
 	f.StringVar(&nodeRunSupervisor, "supervisor", "off", "with --actors, the supervisor (ADR-044): off; warn (or report) logs quiet sessions and what the minute's reconcile finds; cancel escalates a quiet session, then hands it back stalled, and removes pods, job directories and grants no actor holds")
 	f.DurationVar(&nodeRunQuietAfter, "quiet-after", 0, "with --supervisor, how long a session may show no progress before it is escalated, and again before it is stopped (default 15m)")
+	f.BoolVar(&nodeRunCacheTrim, "cache-trim", false, "with --actors-scheduler, trim the Go build cache hourly when over --cache-max-gb, holding it alone in the scheduler so no build runs under the trim")
+	f.StringVar(&nodeRunCacheDir, "cache-dir", "", "with --cache-trim, the Go build cache (default `go env GOCACHE`)")
+	f.Float64Var(&nodeRunCacheMaxGB, "cache-max-gb", 50, "with --cache-trim, the build cache's cap in GB")
+	f.BoolVar(&nodeRunSelfUpdate, "self-update", false, "keep the node on the newest release: drain, hand back node_update what still runs after 30 minutes, install the verified release and exit for the service manager to restart it")
 	_ = nodeRunCmd.MarkFlagRequired("api")
 	nodeCmd.AddCommand(nodeRunCmd)
 }

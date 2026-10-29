@@ -393,8 +393,15 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) actor.End {
 	case errors.Is(o.cause, errLeaseGone):
 		r.logf("nodev1: lease %s ended without a report: %v", id, o.cause)
 		return actor.End{Report: actor.ReportNone, Reason: o.cause.Error()}
+	case errors.Is(o.cause, errNodeUpdate):
+		r.postAccess(id, o.access)
+		r.postUsage(id, o)
+		reason := afterWrites(r.cancelReason(id), writes)
+		r.handBack(id, meshapi.CauseNodeUpdate, reason, o.result.SessionID)
+		return actor.End{Report: actor.ReportHandBack, Cause: meshapi.CauseNodeUpdate, Reason: reason}
 	case errors.Is(o.cause, errStalled):
 		r.postAccess(id, o.access)
+		r.postUsage(id, o)
 		reason := afterWrites(r.cancelReason(id), writes)
 		r.handBack(id, meshapi.CauseStalled, reason, o.result.SessionID)
 		return actor.End{Report: actor.ReportHandBack, Cause: meshapi.CauseStalled, Reason: reason}
