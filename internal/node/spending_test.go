@@ -330,9 +330,11 @@ func TestFixedNodeHeartbeatsItsCapacityOnAnyNumberOfAccounts(t *testing.T) {
 }
 
 // The whole heartbeat of a fixed node on the operator's own login, one
-// account: version, running and scaling {capacity, min, max, reason,
-// accounts} with its capacity — nothing else rides it, and a gateway
-// whose schema lacks scaling gets the heartbeat without it.
+// account: version, running, scaling {capacity, min, max, reason,
+// accounts} with its capacity and inFlight, its sessions by kind (none
+// here; no validation slots before a pass judged them) — nothing else
+// rides it, and a gateway whose schema lacks scaling gets the heartbeat
+// without it.
 func TestFixedSingleAccountHeartbeatBody(t *testing.T) {
 	n := newScaled(t, Fixed(3), false)
 	n.loop.Version = "v0.2.203"
@@ -345,7 +347,7 @@ func TestFixedSingleAccountHeartbeatBody(t *testing.T) {
 	delete(in, "nodeId")
 	delete(in, "aggregateId")
 	got, _ := json.Marshal(in)
-	const want = `{"namespace":"runsheet","running":0,"scaling":{"accounts":[],"capacity":3,"max":3,"min":3,"reason":"fixed"},"version":"v0.2.203"}`
+	const want = `{"inFlight":{"building":0,"evaluating":0,"planning":0,"rebasing":0,"researching":0,"validating":0},"namespace":"runsheet","running":0,"scaling":{"accounts":[],"capacity":3,"max":3,"min":3,"reason":"fixed"},"version":"v0.2.203"}`
 	if string(got) != want {
 		t.Fatalf("heartbeat body =\n%s\nwant\n%s", got, want)
 	}

@@ -204,6 +204,13 @@ type Client struct {
 	// sessionsSchema is whether the gateway's HeartbeatNodeInput was last
 	// found to take `sessions` (see takesSessions).
 	sessionsSchema holdingProbe
+	// inFlightSchema is whether the gateway's HeartbeatNodeInput was last
+	// found to take `inFlight`; inFlightValidatingSchema and
+	// inFlightSlotsSchema whether its NodeInFlightInput takes
+	// `validating` and `validationSlots` (inFlightInput).
+	inFlightSchema           holdingProbe
+	inFlightValidatingSchema holdingProbe
+	inFlightSlotsSchema      holdingProbe
 	// resumedSchema is whether the gateway's HeartbeatNodeInput was last
 	// found to have `resumed` (see takesResumed).
 	resumedSchema holdingProbe
@@ -2367,6 +2374,45 @@ type HeartbeatExtras struct {
 	// what running jobs hold. nil sends none; set, it is sent only when
 	// the gateway's HeartbeatNodeInput has `cpuBudget` (takesCPUBudget).
 	CPUBudget *CPUBudget
+	// InFlight is the node's sessions in flight by kind (trd §6a, Busy
+	// counts every session kind): the platform's busy is their sum, and
+	// its validation capacity reads validating and validationSlots
+	// (runsheet ADR 079, the window within capacity). nil sends none;
+	// set, it is sent only when the gateway's HeartbeatNodeInput has
+	// `inFlight` (takesInFlight), validating and validationSlots only
+	// when its NodeInFlightInput has each.
+	InFlight *InFlight
+}
+
+// InFlight is the heartbeat's `inFlight`, runsheet's NodeInFlight: the
+// builds, evaluations, plans, research runs and rebases the node runs
+// now; Validating, the main validations it runs — merge batch
+// candidates, merged items' and hand-opened pull requests'; and
+// ValidationSlots, how many more it would start (the free slots its
+// validation pass offers, ADR 079), nil when it has not judged yet.
+type InFlight struct {
+	Building        int  `json:"building"`
+	Evaluating      int  `json:"evaluating"`
+	Planning        int  `json:"planning"`
+	Researching     int  `json:"researching"`
+	Rebasing        int  `json:"rebasing"`
+	Validating      int  `json:"validating"`
+	ValidationSlots *int `json:"validationSlots,omitempty"`
+}
+
+// inFlightInput is f as the gateway's NodeInFlightInput takes it: the
+// five kinds always, validating and validationSlots only when its schema
+// has them (an older platform refuses the whole heartbeat on a field it
+// does not know).
+func (c *Client) inFlightInput(ctx context.Context, f InFlight) map[string]any {
+	in := map[string]any{"building": f.Building, "evaluating": f.Evaluating, "planning": f.Planning, "researching": f.Researching, "rebasing": f.Rebasing}
+	if c.takesInputField(ctx, &c.inFlightValidatingSchema, "NodeInFlightInput", "validating") {
+		in["validating"] = f.Validating
+	}
+	if f.ValidationSlots != nil && c.takesInputField(ctx, &c.inFlightSlotsSchema, "NodeInFlightInput", "validationSlots") {
+		in["validationSlots"] = *f.ValidationSlots
+	}
+	return in
 }
 
 // CPUBudget is the heartbeat's `cpuBudget`: the budget in CPUs, what the
@@ -2733,6 +2779,9 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 		}
 		if x.CPUBudget != nil && c.takesCPUBudget(ctx) {
 			in["cpuBudget"] = x.CPUBudget
+		}
+		if x.InFlight != nil && c.takesInputField(ctx, &c.inFlightSchema, "HeartbeatNodeInput", "inFlight") {
+			in["inFlight"] = c.inFlightInput(ctx, *x.InFlight)
 		}
 	}
 	// A node can be newer than the platform it reports to: a field the

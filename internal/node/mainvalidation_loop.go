@@ -237,6 +237,53 @@ func (l *Loop) Validating() int {
 	return len(l.validating)
 }
 
+// InFlight is the heartbeat's inFlight (trd §6a): the sessions this
+// node runs by kind, its main validations among them, and the
+// validation slots its last pass found free (validationSlotsFor; nil
+// before its first pass), which the platform's validation capacity
+// reads (runsheet ADR 079, the window within capacity). A draining
+// node offers none.
+func (l *Loop) InFlight() *gateway.InFlight {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	f := &gateway.InFlight{Building: l.buildingLocked(), Evaluating: len(l.evaluating), Planning: len(l.planning),
+		Researching: len(l.researching), Rebasing: len(l.rebasing), Validating: len(l.validating)}
+	if l.validationSlotsSeen {
+		n := l.validationSlots
+		if l.draining {
+			n = 0
+		}
+		f.ValidationSlots = &n
+	}
+	return f
+}
+
+// noteValidationSlots keeps n, this pass's validationSlotsFor, for the
+// next heartbeat's inFlight.
+func (l *Loop) noteValidationSlots(n int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.validationSlots, l.validationSlotsSeen = n, true
+}
+
+// validationSlotsFor is how many main validations free capacity slots
+// leave room for, as validateBatches offers them: none on a node that
+// validates nothing, low on disk or memory, hot, or waiting out its
+// running validations for a self-update; else free, within node.yaml's
+// evaluate cap.
+func (l *Loop) validationSlotsFor(free int) int {
+	free = max(free, 0)
+	switch {
+	case l.ValidateBatch == nil && l.ValidateMain == nil && l.ValidatePullRequest == nil,
+		l.diskLow() || l.memLow(), l.hostHot(), l.holdingValidations():
+		return 0
+	}
+	if c := l.takesCap(harness.KindEvaluate); c.capped {
+		free = min(free, c.room)
+	}
+	return free
+}
+
 // jobKind is what a main validation validates: a merge batch's
 // candidate, a merged item's merge commit on main, or a hand-opened
 // pull request's head.
