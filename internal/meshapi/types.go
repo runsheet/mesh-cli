@@ -301,26 +301,70 @@ func (s *SessionCredential) String() string {
 	return "session " + s.SessionID
 }
 
-// ToolRecord is one node tool's run, signed by the node.
-type ToolRecord struct {
-	Tool         string    `json:"tool"`
-	InputDigest  string    `json:"input_digest"`
-	StartedAt    time.Time `json:"started_at"`
-	EndedAt      time.Time `json:"ended_at"`
-	Exit         int       `json:"exit"`
-	Summary      string    `json:"summary"`
-	OutputDigest string    `json:"output_digest,omitempty"`
-	Signature    string    `json:"signature"`
+// Evidence (Mesh v1 spec, "Evidence signing"): each node tool signs
+// its own ToolRecord, an in-toto statement (ToolPredicateType) in a DSSE
+// envelope, before the model sees its output. The evidence id is
+// "sha256:" and the hex SHA-256 of the statement's bytes.
+const (
+	// ToolPredicateType is a ToolRecord statement's predicate type.
+	ToolPredicateType = "https://projectmesh.io/attest/tool/v1"
+	// SigningSigstore is a record signed keylessly: a Fulcio certificate
+	// for the lease's mesh-session identity, the signature in Rekor.
+	SigningSigstore = "sigstore"
+	// SigningNode is a record signed by the node's own ed25519 key, when
+	// Fulcio or Rekor could not be used.
+	SigningNode = "node"
+	// NoteNodeSigned is how Mesh marks a node-signed record.
+	NoteNodeSigned = "node-signed, unverified identity"
+)
+
+// EvidencePost is one signed ToolRecord as the node posts it: the DSSE
+// envelope of its statement, how it was signed, Rekor's entry for a
+// sigstore signature, and why a node-signed one is not sigstore's.
+type EvidencePost struct {
+	Signing          string          `json:"signing"`
+	Envelope         json.RawMessage `json:"envelope"`
+	RekorEntry       json.RawMessage `json:"rekor_entry,omitempty"`
+	UnverifiedReason string          `json:"unverified_reason,omitempty"`
 }
 
 // EvidenceRequest is POST /v1/leases/{id}/evidence.
 type EvidenceRequest struct {
-	Records []ToolRecord `json:"records"`
+	Records []EvidencePost `json:"records"`
 }
 
-// EvidenceResponse names the evidence ids Mesh gave the records, in order.
+// EvidenceResponse names the evidence ids Mesh gave the records, in
+// order: each its statement's digest.
 type EvidenceResponse struct {
 	IDs []string `json:"ids"`
+}
+
+// EvidenceRecord is one record as a product reads it (GET
+// /v1/evidence/{digest}).
+type EvidenceRecord struct {
+	ID               string          `json:"id"`
+	JobID            string          `json:"job_id"`
+	LeaseID          string          `json:"lease_id"`
+	LeaseN           int             `json:"lease_n"`
+	Tool             string          `json:"tool"`
+	Exit             int             `json:"exit"`
+	Summary          string          `json:"summary"`
+	InputDigest      string          `json:"input_digest"`
+	OutputDigest     string          `json:"output_digest,omitempty"`
+	StartedAt        time.Time       `json:"started_at"`
+	EndedAt          time.Time       `json:"ended_at"`
+	Signing          string          `json:"signing"`
+	Note             string          `json:"note,omitempty"`
+	UnverifiedReason string          `json:"unverified_reason,omitempty"`
+	Envelope         json.RawMessage `json:"envelope"`
+	RekorEntry       json.RawMessage `json:"rekor_entry,omitempty"`
+	RecordedAt       time.Time       `json:"recorded_at"`
+}
+
+// BlobPut is PUT /v1/blobs/{digest}'s answer.
+type BlobPut struct {
+	Digest string `json:"digest"`
+	Size   int64  `json:"size"`
 }
 
 // AccessRecord is one access the node's relay answered for a lease.

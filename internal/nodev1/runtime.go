@@ -14,6 +14,7 @@ package nodev1
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gitrelay"
 	"projectmesh.io/mesh-cli/internal/meshapi"
+	"projectmesh.io/mesh-cli/internal/sigstore"
 )
 
 // Runtime is one v1 node.
@@ -58,6 +60,14 @@ type Runtime struct {
 	// whatever its brief names — a test's fake vendor; else each lease's
 	// grant reaches its brief's vendor and base.
 	GitUpstream string
+	// SigningKey is the node's ed25519 key, whose public half it
+	// registers: a node tool's record is signed with it when Fulcio or
+	// Rekor cannot be used.
+	SigningKey ed25519.PrivateKey
+	// Sigstore is the node's Fulcio and Rekor: a node tool's record is
+	// signed keylessly through them as the lease's session. Nil signs
+	// every record with SigningKey, marked node-signed.
+	Sigstore *sigstore.Signer
 	// Once stops the runtime after its first lease ends.
 	Once bool
 	// Logf hears the runtime's lines; nothing is logged when nil.
