@@ -66,6 +66,10 @@ type outcome struct {
 	// harness and model are the session's harness and the model it
 	// ended on, for the usage report.
 	harness, model string
+	// counts are the session's content-free counts and stopped the stop
+	// rule that ended it, nil when none did (stoprules.go).
+	counts  meshapi.Counts
+	stopped *ruleStop
 }
 
 // runLease runs one lease to its report: the lease's directory and
@@ -279,11 +283,14 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 			return outcome{err: err, cause: context.Cause(ctx)}
 		}
 	}
+	sctx, watch := r.watchLease(sctx, b, workspace, mb, ladder, &spec, tokens, grant, account)
 	res, err := r.Session.Run(sctx, spec)
 	o := outcome{result: res, err: err, finish: fin.result(), handBack: hb.asked(), escalations: taken(ladder.Steps()), evidence: rec.IDs(),
-		account: account, harness: b.Harness.Name, model: ladder.Model(), parked: res.Parked}
+		account: account, harness: b.Harness.Name, model: ladder.Model(), parked: res.Parked, counts: watch.close()}
 	if ctx.Err() != nil {
 		o.cause = context.Cause(ctx)
+	} else if rs := stoppedBy(sctx); rs != nil {
+		o.stopped, o.err = rs, nil
 	} else if errors.Is(err, context.DeadlineExceeded) || sctx.Err() != nil {
 		o.err = fmt.Errorf("the session ran past its %d-minute budget", b.Harness.Budget.Minutes)
 	}
@@ -469,6 +476,16 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) actor.End {
 		r.handBack(id, meshapi.CauseNodeRestart, reason, o.result.SessionID)
 		return actor.End{Report: actor.ReportHandBack, Cause: meshapi.CauseNodeRestart, Reason: reason}
 	}
+	// a stop rule's end fails the job, the rule named first in the
+	// reason (projectmesh-io/api adr-001-amendment-learnings-and-
+	// transcripts.md)
+	if o.stopped != nil {
+		r.postAccess(id, o.access)
+		r.postUsage(id, o)
+		reason := afterWrites(o.stopped.fired.Reason(), writes)
+		r.fail(id, meshapi.CauseStoppedByRule, reason)
+		return actor.End{Report: actor.ReportFail, Cause: meshapi.CauseStoppedByRule, Reason: reason}
+	}
 	// a thread quiet for its park_after hands back parked, keeping its
 	// session for the next turn (projectmesh-io/api ADR 001, Threads)
 	if o.parked && o.err == nil && o.cause == nil {
@@ -603,7 +620,9 @@ func (r *Runtime) handBack(id, cause, reason, sessionRef string) {
 // login.
 func usageOf(o outcome) *meshapi.UsageRequest {
 	res := o.result
-	if res.Usage == nil && res.CostUSD == 0 && len(res.Models) == 0 && len(o.escalations) == 0 {
+	c := o.counts
+	if res.Usage == nil && res.CostUSD == 0 && len(res.Models) == 0 && len(o.escalations) == 0 &&
+		c.ToolCalls == 0 && len(c.StopRules) == 0 && c.Transcript == nil {
 		return nil
 	}
 	apiKey := o.account.apiKey()
@@ -616,7 +635,7 @@ func usageOf(o outcome) *meshapi.UsageRequest {
 	u := &meshapi.UsageRequest{
 		Harness: o.harness, Model: o.model, AccountRef: o.account.ref(),
 		Turns: int64(res.Turns), DurationMS: res.Duration.Milliseconds(),
-		Models: []meshapi.ModelUsage{}, Escalations: o.escalations,
+		Models: []meshapi.ModelUsage{}, Escalations: o.escalations, Counts: o.counts,
 	}
 	if u.Harness == "" {
 		u.Harness = "claude-code"
