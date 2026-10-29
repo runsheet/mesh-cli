@@ -450,6 +450,22 @@ func (f *Fake) finishJobAliases(r *http.Request, in map[string]any, bearer strin
 			err = send("finishWorkItemRebase", v)
 		}
 	case "runsheet/validate candidate", "runsheet/validate main", "runsheet/validate pull_request":
+		if typ == "candidate" {
+			// a chain batch's (runsheet ADR 079): a conflict ends it with
+			// no attestation, the platform's to act on; a candidate part
+			// is recorded as the batch's candidate before the finish
+			if _, ok := fin["conflict"].(map[string]any); ok {
+				if row := f.MergeBatches[id]; row != nil {
+					row[validationState] = "conflict"
+				}
+				break
+			}
+			if c, ok := fin["candidate"].(map[string]any); ok {
+				if row := f.MergeBatches[id]; row != nil {
+					row["sha"], row["tree"] = c["sha"], c["tree"]
+				}
+			}
+		}
 		var att map[string]any
 		if att, err = part("attestation"); err != nil {
 			return nil, err
@@ -518,7 +534,24 @@ func (f *Fake) jobAccessAliases(r *http.Request, in map[string]any, bearer strin
 			return nil, err
 		}
 	case "runsheet/validate candidate":
+		// a chain batch's asked with its brief's pushTo (runsheet ADR
+		// 079), refs/heads/<candidate branch>: a write token; any other
+		// pushTo is not served
+		push, _ := in["pushTo"].(string)
+		branch := ""
+		if row := f.MergeBatches[id]; row != nil {
+			branch, _ = row["candidateBranch"].(string)
+		}
+		if push != "" && push != "refs/heads/"+branch {
+			missing = append(missing, map[string]any{"access": "repo", "reason": fmt.Sprintf("the validation pushes refs/heads/%s, not %s", branch, push)})
+			break
+		}
 		token("mutation($id: UUID!) { issueItemRepoToken(mergeBatchId: $id) }", "issueItemRepoToken")
+		if row, ok := out["repo"].(map[string]any); ok && push != "" {
+			row = copyRow(row)
+			row["access"] = "write"
+			out["repo"] = row
+		}
 	case "runsheet/validate main", "runsheet/validate pull_request":
 		// a read token of the merged item's repo, whatever the item's
 		// status: the validation holds the claim, not the item — or, for

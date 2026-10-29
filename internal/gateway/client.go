@@ -210,6 +210,9 @@ type Client struct {
 	// manifestSchema is whether the gateway's HeartbeatNodeInput was
 	// last seen to take `manifest` (takesManifest).
 	manifestSchema holdingProbe
+	// manifestCapabilitiesSchema is whether the gateway's
+	// NodeManifestInput was last seen to take `capabilities`.
+	manifestCapabilitiesSchema holdingProbe
 	// attestationSchema is whether the gateway's Mutation was last found
 	// to have recordValidationAttestation (see takesAttestations).
 	attestationSchema attestationProbe
@@ -2680,7 +2683,12 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 			in["sandbox"] = x.Sandbox
 		}
 		if x.Manifest != nil && c.takesManifest(ctx) {
-			in["manifest"] = x.Manifest
+			m := *x.Manifest
+			if len(m.Capabilities) > 0 && !c.takesInputField(ctx, &c.manifestCapabilitiesSchema, "NodeManifestInput", "capabilities") {
+				// a platform before the field refuses the whole heartbeat
+				m.Capabilities = nil
+			}
+			in["manifest"] = &m
 		}
 		if x.Status != "" {
 			in["status"] = x.Status
@@ -3459,7 +3467,20 @@ type NodeManifest struct {
 	Runtimes  []string     `json:"runtimes,omitempty"`
 	Harnesses []string     `json:"harnesses,omitempty"`
 	Sandbox   *SandboxInfo `json:"sandbox,omitempty"`
+	// Capabilities are the job shapes this node's release can run beyond
+	// the ordinary ones (CapabilityApply), so the platform hands such a
+	// job only to a node that runs it. Sent only when the gateway's
+	// NodeManifestInput has `capabilities` (HeartbeatNode).
+	Capabilities []string `json:"capabilities,omitempty"`
 }
+
+// CapabilityApply is the capability of a node that validates a merge
+// batch's chain candidate (runsheet ADR 079): it applies the brief's
+// changes onto onto in merge mode as applyAs, pushes the result to
+// pushTo, validates it and finishes with a candidate or a conflict part.
+// The platform hands a chain batch's validation only to a node that
+// names it.
+const CapabilityApply = "apply-v1"
 
 // NodeTool is one toolchain of a NodeManifest and its version.
 type NodeTool struct {
