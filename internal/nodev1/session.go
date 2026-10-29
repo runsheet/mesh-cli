@@ -50,6 +50,15 @@ type SessionSpec struct {
 	// turn; a one-shot job's input closes once a turn ends with no more
 	// to do.
 	Thread bool
+	// ParkAfter is a thread's quiet time: once no turn has been in flight
+	// for it, the session's input closes and the session ends parked,
+	// for the lease to hand back with cause parked and its session_ref
+	// (projectmesh-io/api ADR 001, Threads). Zero never parks.
+	ParkAfter time.Duration
+	// Resume is a session this node parked earlier, which the session
+	// resumes (`claude -p --resume <id>`) with its context, rather than
+	// starting afresh.
+	Resume string
 	// OnEvent hears every event of the session's output as it comes:
 	// the lease's liveness (progress_at) and the evidence hooks. It must
 	// not block.
@@ -72,6 +81,8 @@ type SessionResult struct {
 	// ModelTurns are Turns by model, as the CLI names each.
 	ModelTurns map[string]int
 	Duration   time.Duration
+	// Parked is a thread's session that ended after ParkAfter of quiet.
+	Parked bool
 }
 
 // Session runs one harnessed session to its end. A cancelled ctx kills
@@ -104,6 +115,9 @@ type ClaudeSession struct {
 // Args is spec's command line after -p and the stream flags.
 func (c *ClaudeSession) Args(spec SessionSpec) []string {
 	var args []string
+	if spec.Resume != "" {
+		args = append(args, "--resume", spec.Resume)
+	}
 	if spec.Model != "" {
 		args = append(args, "--model", spec.Model)
 	}
@@ -150,14 +164,15 @@ func (c *ClaudeSession) Run(ctx context.Context, spec SessionSpec) (SessionResul
 	if s == nil {
 		return SessionResult{}, fmt.Errorf("claude: %s", harness.Redact(err.Error(), spec.Secrets...))
 	}
+	parked := false
 	if err == nil {
-		c.loop(ctx, s, spec, results, lastEvent)
+		parked = c.loop(ctx, s, spec, results, lastEvent)
 	}
 	close(loopDone)
 	s.CloseInput()
 	res, waitErr := s.Wait()
 	sr := SessionResult{SessionID: res.SessionID, Text: res.Text, CostUSD: res.CostUSD, Turns: res.Turns,
-		Usage: res.Stream.Usage, Models: res.Models, ModelTurns: res.ModelTurns, Duration: res.Duration}
+		Usage: res.Stream.Usage, Models: res.Models, ModelTurns: res.ModelTurns, Duration: res.Duration, Parked: parked}
 	if ctx.Err() != nil {
 		return sr, ctx.Err()
 	}
@@ -182,7 +197,9 @@ func (c *ClaudeSession) Run(ctx context.Context, spec SessionSpec) (SessionResul
 // goes quiet, and — once a turn ends with nothing more to do — the end
 // of a one-shot job's input. The product answering the finish tool
 // closes the input at once: the turn in flight still runs to its result.
-func (c *ClaudeSession) loop(ctx context.Context, s *session.Session, spec SessionSpec, results <-chan harness.Event, lastEvent <-chan struct{}) {
+// A thread whose session has had no turn in flight for its ParkAfter
+// parks: the input closes and loop answers true.
+func (c *ClaudeSession) loop(ctx context.Context, s *session.Session, spec SessionSpec, results <-chan harness.Event, lastEvent <-chan struct{}) bool {
 	var mail <-chan Message
 	var finished <-chan struct{}
 	if spec.Mailbox != nil {
@@ -196,22 +213,47 @@ func (c *ClaudeSession) loop(ctx context.Context, s *session.Session, spec Sessi
 	defer stall.Stop()
 	inFlight := 1    // the first message
 	carryOn := false // an escalation in the turn in flight: the next turn says so
+	// a thread's park timer runs while no turn is in flight
+	var park <-chan time.Time
+	var parkTimer *time.Timer
+	quiet := func() {
+		if spec.Thread && spec.ParkAfter > 0 {
+			parkTimer = time.NewTimer(spec.ParkAfter)
+			park = parkTimer.C
+		}
+	}
+	busy := func() {
+		if parkTimer != nil {
+			parkTimer.Stop()
+			parkTimer, park = nil, nil
+		}
+	}
+	defer busy()
 	send := func(text string) {
 		if err := s.Send(text); err != nil {
 			c.logf("nodev1: lease %s: a turn for the session: %v", spec.Label, err)
 			return
 		}
 		inFlight++
+		busy()
 	}
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return false
 		case <-s.Done():
-			return
+			return false
 		case <-finished:
 			s.CloseInput()
-			return
+			return false
+		case <-park:
+			if inFlight > 0 {
+				busy()
+				continue
+			}
+			c.logf("nodev1: lease %s: the thread was quiet for %s; parking its session", spec.Label, spec.ParkAfter)
+			s.CloseInput()
+			return true
 		case <-lastEvent:
 			stall.Reset(stallAfter)
 		case <-results:
@@ -225,7 +267,10 @@ func (c *ClaudeSession) loop(ctx context.Context, s *session.Session, spec Sessi
 				send(fmt.Sprintf("The node moved this session to the model %s. Carry on with the job where you left off.", spec.Ladder.Model()))
 			case !spec.Thread:
 				s.CloseInput()
-				return
+				return false
+			default:
+				busy()
+				quiet()
 			}
 		case m := <-mail:
 			switch m.Kind {

@@ -69,12 +69,14 @@ func (m *Mailbox) Finish() { m.once.Do(func() { close(m.finished) }) }
 // Finished closes once Finish is called.
 func (m *Mailbox) Finished() <-chan struct{} { return m.finished }
 
-// turnMessage is the user turn a thread's turn event becomes: the ids
-// alone (threads carry no content), with the product's tool to read it.
-func turnMessage(turnTool, turnID string, seq int64) string {
-	read := "the product's turn tool"
-	if turnTool != "" {
-		read = "`" + turnTool + "`"
+// turnLine is the one fixed line a thread's turn becomes in the session
+// (projectmesh-io/api ADR 001, "Threads carry no content"): its ids
+// alone, and the session-visible tool that reads it, tool the brief's
+// turn tool as turnToolFor qualified it. With no turn tool the line
+// still names the turn.
+func turnLine(tool, turnID string, seq int64) string {
+	if tool == "" {
+		tool = "the product's turn tool"
 	}
-	return fmt.Sprintf("A new turn arrived on this thread: turn_id %s (seq %d). Read it with %s, do what it asks, and reply with the product's reply tool.", turnID, seq, read)
+	return fmt.Sprintf("turn %d arrived: read it with %s(%s)", seq, tool, turnID)
 }

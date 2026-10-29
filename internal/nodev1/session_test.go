@@ -154,13 +154,13 @@ func TestAThreadTakesTurnsFromItsMailbox(t *testing.T) {
 			}
 		}})
 	waitFor(t, "the first turn", resultsSeen(&mu, &results))
-	if err := mb.Post(Message{Kind: MsgTurn, Text: turnMessage("conform.turn", "turn-1", 1)}); err != nil {
+	if err := mb.Post(Message{Kind: MsgTurn, Text: turnLine("mcp__conform__turn", "turn-1", 1)}); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the second turn", func() bool { mu.Lock(); defer mu.Unlock(); return results == 2 })
 	mb.Finish()
 	d := waitDone(t, done)
-	if d.err != nil || d.res.Turns != 2 || !strings.Contains(d.res.Text, "turn_id turn-1 (seq 1)") || !strings.Contains(d.res.Text, "`conform.turn`") {
+	if d.err != nil || d.res.Turns != 2 || !strings.Contains(d.res.Text, "turn 1 arrived: read it with mcp__conform__turn(turn-1)") {
 		t.Fatalf("%+v %v", d.res, d.err)
 	}
 }

@@ -158,10 +158,13 @@ type running struct {
 	progressAt time.Time
 	// cancelled is why Mesh cancelled the lease, once it has
 	cancelled string
-	// mailbox reaches the lease's live session; turnTool is the brief's,
-	// to read a turn with.
+	// mailbox reaches the lease's live session; turnTool is the brief's
+	// turn tool as the session names it (turnToolFor), to read a turn
+	// with.
 	mailbox  *Mailbox
 	turnTool string
+	// jobID is the lease's job, for the thread sweep (thread.go).
+	jobID string
 	// actor is the lease's job actor, under --actors; pod its pod, and
 	// escalatedAt when the supervisor last escalated it for quiet.
 	actor       *actor.Actor
@@ -286,6 +289,8 @@ func (r *Runtime) Run(ctx context.Context) error {
 	if r.Actors {
 		r.releaseLeftovers()
 	}
+	// parked threads past their keep, and threads a stopped node left
+	r.sweepThreads(time.Now())
 
 	every := r.HeartbeatEvery
 	if every <= 0 && node.HeartbeatEveryS > 0 {

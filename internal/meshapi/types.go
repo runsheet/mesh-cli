@@ -139,22 +139,28 @@ type Lease struct {
 
 // Brief is everything a node needs to run one lease of a job.
 type Brief struct {
-	JobID            string            `json:"job_id"`
-	LeaseID          string            `json:"lease_id"`
-	LeaseExpiresAt   time.Time         `json:"lease_expires_at"`
-	RenewEveryS      int               `json:"renew_every_s"`
-	Kind             string            `json:"kind"`
-	Product          string            `json:"product"`
-	Tenant           string            `json:"tenant"`
-	Subject          Subject           `json:"subject"`
-	LeaseN           int               `json:"lease_n"`
-	Handbacks        int               `json:"handbacks"`
-	Harness          BriefHarness      `json:"harness"`
-	Guidance         string            `json:"guidance"`
-	BriefTool        string            `json:"brief_tool"`
-	FinishTool       string            `json:"finish_tool"`
-	FinishSchema     json.RawMessage   `json:"finish_schema,omitempty"`
-	TurnTool         string            `json:"turn_tool,omitempty"`
+	JobID          string          `json:"job_id"`
+	LeaseID        string          `json:"lease_id"`
+	LeaseExpiresAt time.Time       `json:"lease_expires_at"`
+	RenewEveryS    int             `json:"renew_every_s"`
+	Kind           string          `json:"kind"`
+	Product        string          `json:"product"`
+	Tenant         string          `json:"tenant"`
+	Subject        Subject         `json:"subject"`
+	LeaseN         int             `json:"lease_n"`
+	Handbacks      int             `json:"handbacks"`
+	Harness        BriefHarness    `json:"harness"`
+	Guidance       string          `json:"guidance"`
+	BriefTool      string          `json:"brief_tool"`
+	FinishTool     string          `json:"finish_tool"`
+	FinishSchema   json.RawMessage `json:"finish_schema,omitempty"`
+	TurnTool       string          `json:"turn_tool,omitempty"`
+	// LastTurn is a thread's newest turn when the lease was taken, and
+	// SessionRef the session its last lease parked or ended with: a node
+	// that holds that session resumes it and starts with the turn
+	// (projectmesh-io/api ADR 001 amendment "threads").
+	LastTurn         *Turn             `json:"last_turn,omitempty"`
+	SessionRef       string            `json:"session_ref,omitempty"`
 	Servers          []Server          `json:"servers"`
 	NodeTools        []string          `json:"node_tools"`
 	EvidenceRequired []string          `json:"evidence_required"`
@@ -279,6 +285,12 @@ type APIAccess struct {
 	Vendor  string   `json:"vendor"`
 	Methods []string `json:"methods"`
 	Paths   []string `json:"paths"`
+}
+
+// Turn is a thread's turn by its ids alone.
+type Turn struct {
+	TurnID string `json:"turn_id"`
+	Seq    int64  `json:"seq"`
 }
 
 // Thread is a thread job's timing.

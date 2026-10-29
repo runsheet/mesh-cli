@@ -76,7 +76,7 @@ func (r *Runtime) onEvent(e meshapi.NodeEvent) {
 			r.logf("nodev1: a turn event names no lease or turn: %s", e.Data)
 			return
 		}
-		if err := r.deliver(t.LeaseID, Message{Kind: MsgTurn, Text: turnMessage(r.turnTool(t.LeaseID), t.TurnID, t.Seq)}); err != nil {
+		if err := r.deliver(t.LeaseID, Message{Kind: MsgTurn, Text: turnLine(r.turnTool(t.LeaseID), t.TurnID, t.Seq)}); err != nil {
 			r.logf("nodev1: turn %s for lease %s: %v", t.TurnID, t.LeaseID, err)
 			return
 		}
