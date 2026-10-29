@@ -18,12 +18,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/gitrelay"
 	"projectmesh.io/mesh-cli/internal/meshapi"
+	"projectmesh.io/mesh-cli/internal/resources"
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
 	"projectmesh.io/mesh-cli/internal/sigstore"
 )
@@ -69,6 +71,13 @@ type Runtime struct {
 	// signed keylessly through them as the lease's session. Nil signs
 	// every record with SigningKey, marked node-signed.
 	Sigstore *sigstore.Signer
+	// NoMirrors clones each lease's repository whole, keeping no mirror
+	// of it between leases (wave 2.8's per-tenant mirrors are on by
+	// default, under WorkRoot/mirrors).
+	NoMirrors bool
+	// MirrorsUnusedFor is how long a mirror no lease uses is kept; 14
+	// days when zero.
+	MirrorsUnusedFor time.Duration
 	// Once stops the runtime after its first lease ends.
 	Once bool
 	// Logf hears the runtime's lines; nothing is logged when nil.
@@ -79,12 +88,13 @@ type Runtime struct {
 	// Backoff is the wait after a failed take; 5 s when zero.
 	Backoff time.Duration
 
-	nodeID string
-	relay  *gitrelay.Server
-	mu     sync.Mutex
-	live   map[string]*running
-	access map[string][]meshapi.AccessRecord
-	drain  bool
+	nodeID  string
+	relay   *gitrelay.Server
+	mirrors *resources.Mirrors
+	mu      sync.Mutex
+	live    map[string]*running
+	access  map[string][]meshapi.AccessRecord
+	drain   bool
 }
 
 // running is one lease in flight.
@@ -191,6 +201,10 @@ func (r *Runtime) Run(ctx context.Context) error {
 	r.relay = &gitrelay.Server{Upstream: r.GitUpstream, Audit: r.audit}
 	if err := r.relay.Start(ctx); err != nil {
 		return fmt.Errorf("nodev1: the git relay: %w", err)
+	}
+	if !r.NoMirrors {
+		r.mirrors = &resources.Mirrors{Root: filepath.Join(r.WorkRoot, "mirrors"), Env: gitEnv(), GitArgs: noCredentials}
+		go r.trimMirrors()
 	}
 	node, err := r.API.Register(ctx, r.Node)
 	if err != nil {
@@ -346,6 +360,22 @@ func (r *Runtime) audit(e gitrelay.Event) {
 	defer r.mu.Unlock()
 	if r.access != nil {
 		r.access[e.Lease] = append(r.access[e.Lease], rec)
+	}
+}
+
+// trimMirrors removes the mirrors no lease has used for
+// MirrorsUnusedFor, once, off the take loop.
+func (r *Runtime) trimMirrors() {
+	unused := r.MirrorsUnusedFor
+	if unused <= 0 {
+		unused = 14 * 24 * time.Hour
+	}
+	removed, err := r.mirrors.Trim(unused)
+	if err != nil {
+		r.logf("nodev1: trimming mirrors: %v", err)
+	}
+	for _, d := range removed {
+		r.logf("nodev1: removed the mirror %s, unused for %s", d, unused)
 	}
 }
 
