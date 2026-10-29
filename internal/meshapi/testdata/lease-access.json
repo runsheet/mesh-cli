@@ -1,19 +1,57 @@
 {
   "name": "lease-access",
   "method": "POST",
-  "path": "/v1/leases/lse_01JD7K2Q9N3V/access",
+  "path": "/v1/leases/bfbb10e4-0e24-5f4a-94c9-bfc897d816ed/access",
+  "caller": "node",
   "request": {
     "records": [
       {
+        "at": "2026-01-01T00:00:00Z",
+        "bytes": 2048,
         "kind": "git",
+        "outcome": "ok",
         "repo": "acme/fixture",
         "service": "upload-pack",
+        "vendor": "github"
+      },
+      {
+        "at": "2026-01-01T00:00:00Z",
+        "bytes": 0,
+        "kind": "git",
+        "outcome": "refused",
+        "pushed": [
+          {
+            "ref": "refs/heads/main",
+            "sha": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"
+          }
+        ],
+        "reason": "this job may not push refs/heads/main",
+        "refs": [
+          "refs/heads/main"
+        ],
+        "repo": "acme/fixture",
+        "service": "receive-pack",
+        "vendor": "github"
+      },
+      {
+        "at": "2026-01-01T00:00:00Z",
+        "bytes": 512,
+        "kind": "git",
         "outcome": "ok",
-        "bytes": 2048,
-        "at": "2026-10-29T10:00:03Z"
+        "pushed": [
+          {
+            "ref": "refs/heads/mesh/access-1",
+            "sha": "5f1d3c0a9b8e7d6c5b4a39281706f5e4d3c2b1a0"
+          }
+        ],
+        "refs": [
+          "refs/heads/mesh/access-1"
+        ],
+        "repo": "acme/fixture",
+        "service": "receive-pack",
+        "vendor": "github"
       }
     ]
   },
-  "status": 204,
-  "response": null
+  "status": 204
 }

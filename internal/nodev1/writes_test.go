@@ -90,17 +90,26 @@ func pushOnTop(t *testing.T, g *rig, ref string) string {
 	return sha
 }
 
-// A retried write lease of a job naming push_to starts from what an
-// earlier lease pushed there, so its own push is a fast-forward; the
-// first lease starts from the base whatever push_to holds.
+// A retried write lease starts from what an earlier lease of its job
+// pushed, so its own push is a fast-forward: the most recent of the
+// brief's pushed (Mesh's record of the earlier leases' ok pushes), else —
+// from a Mesh that names none — the job's push_to. The first lease, and a
+// lease whose pushed ref is gone, start from the base; the prompt says
+// where the checkout starts.
 func TestARetriedLeaseBuildsOnWhatAnEarlierLeasePushed(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		leaseN int
-		pushed bool // HEAD is the earlier push
+		name    string
+		leaseN  int
+		pushTo  string
+		pushed  []meshapi.BriefPushed // the earlier push's sha is filled in
+		resumed bool                  // HEAD is the earlier push
+		says    string
 	}{
-		{"the first lease", 1, false},
-		{"a retried lease", 2, true},
+		{"the first lease", 1, "mesh/j-1", nil, false, ""},
+		{"a retry named by push_to", 2, "mesh/j-1", nil, true, "An earlier run of this job already pushed mesh/j-1"},
+		{"a retry named by the brief's pushed", 2, "", []meshapi.BriefPushed{{Ref: "refs/pins/old", LeaseN: 1}, {Ref: "refs/heads/mesh/j-1", LeaseN: 1}}, true,
+			"An earlier run of this job (lease 1) already pushed mesh/j-1"},
+		{"a pushed ref that is gone", 3, "", []meshapi.BriefPushed{{Ref: "refs/heads/mesh/gone", LeaseN: 2}}, false, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var head, prompt string
@@ -109,7 +118,7 @@ func TestARetriedLeaseBuildsOnWhatAnEarlierLeasePushed(t *testing.T) {
 				out, _ := sessionGit(spec.Workspace, "rev-parse", "HEAD")
 				head, prompt = strings.TrimSpace(out), spec.Prompt
 				commitIn(t, spec.Workspace, "this lease's")
-				if text, refused, err := callTool(context.Background(), spec.Servers[NodeToolsServer], PushTool, map[string]any{"ref": "mesh/j-1"}); err != nil || refused != !tc.pushed {
+				if text, refused, err := callTool(context.Background(), spec.Servers[NodeToolsServer], PushTool, map[string]any{"ref": "mesh/j-1"}); err != nil || refused != !tc.resumed {
 					t.Errorf("the push: refused %v %s %v", refused, text, err)
 				}
 			}
@@ -118,23 +127,60 @@ func TestARetriedLeaseBuildsOnWhatAnEarlierLeasePushed(t *testing.T) {
 			g.offer(t, func(b *meshapi.Brief) {
 				writeBrief(b)
 				b.LeaseN = tc.leaseN
-				b.Code.PushTo = "mesh/j-1"
+				b.Code.PushTo = tc.pushTo
+				for _, p := range tc.pushed {
+					p.SHA = earlier
+					b.Pushed = append(b.Pushed, p)
+				}
 			})
 			if err := run(t, g, context.Background()); err != nil {
 				t.Fatal(err)
 			}
 			want := g.github.head
-			if tc.pushed {
+			if tc.resumed {
 				want = earlier
 			}
 			if head != want {
 				t.Fatalf("the checkout is at %s, want %s", head, want)
 			}
-			if says := strings.Contains(prompt, "already pushed mesh/j-1"); says != (tc.leaseN > 1) {
-				t.Fatalf("the prompt says of the earlier push %v:\n%s", says, prompt)
+			if tc.says != "" && !strings.Contains(prompt, tc.says+", at "+earlier[:12]) {
+				t.Fatalf("the prompt does not say %q:\n%s", tc.says, prompt)
+			}
+			if tc.says == "" && strings.Contains(prompt, "already pushed") {
+				t.Fatalf("the prompt says of an earlier push:\n%s", prompt)
 			}
 		})
 	}
+}
+
+// The relay's record of a push names each ref it updated and the
+// commit, which Mesh hands to the job's next lease as its brief's
+// pushed.
+func TestAPushIsRecordedWithItsCommit(t *testing.T) {
+	var pushed string
+	sess := &stubSession{result: SessionResult{SessionID: "s"}}
+	sess.inspect = func(spec SessionSpec) {
+		pushed = commitIn(t, spec.Workspace, "two")
+		if text, refused, err := callTool(context.Background(), spec.Servers[NodeToolsServer], PushTool, map[string]any{"ref": "mesh/j-1"}); err != nil || refused {
+			t.Errorf("the push: %s %v", text, err)
+		}
+	}
+	g := newRig(t, sess)
+	g.offer(t, writeBrief)
+	if err := run(t, g, context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var access meshapi.AccessRequest
+	json.Unmarshal(g.fake.Calls("access")[0].Body, &access)
+	for _, rec := range access.Records {
+		if rec.Service == "receive-pack" && rec.Outcome == "ok" && len(rec.Refs) > 0 {
+			if len(rec.Pushed) != 1 || rec.Pushed[0] != (meshapi.PushedRef{Ref: "refs/heads/mesh/j-1", SHA: pushed}) {
+				t.Fatalf("the push is recorded as %+v", rec)
+			}
+			return
+		}
+	}
+	t.Fatalf("no ok push in %+v", access.Records)
 }
 
 // Two nodes of one OS user holding a lease of the same id — Mesh's

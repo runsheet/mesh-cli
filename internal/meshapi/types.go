@@ -165,6 +165,9 @@ type Brief struct {
 	Pods             []json.RawMessage `json:"pods,omitempty"`
 	Thread           *Thread           `json:"thread,omitempty"`
 	CredentialRef    string            `json:"credential_ref,omitempty"`
+	// Pushed are the refs the job's earlier leases pushed, ok, the most
+	// recent last; a retried lease's checkout starts from the last.
+	Pushed []BriefPushed `json:"pushed,omitempty"`
 }
 
 // Subject is what a job is about, in the product's own terms.
@@ -383,17 +386,35 @@ type BlobPut struct {
 
 // AccessRecord is one access the node's relay answered for a lease.
 type AccessRecord struct {
-	Kind    string    `json:"kind"` // git, api or mcp
-	Repo    string    `json:"repo,omitempty"`
-	Vendor  string    `json:"vendor,omitempty"`
-	Service string    `json:"service,omitempty"`
-	Method  string    `json:"method,omitempty"`
-	Path    string    `json:"path,omitempty"`
-	Refs    []string  `json:"refs,omitempty"`
-	Outcome string    `json:"outcome"`
-	Reason  string    `json:"reason,omitempty"`
-	Bytes   int64     `json:"bytes"`
-	At      time.Time `json:"at"`
+	Kind    string   `json:"kind"` // git, api or mcp
+	Repo    string   `json:"repo,omitempty"`
+	Vendor  string   `json:"vendor,omitempty"`
+	Service string   `json:"service,omitempty"`
+	Method  string   `json:"method,omitempty"`
+	Path    string   `json:"path,omitempty"`
+	Refs    []string `json:"refs,omitempty"`
+	// Pushed are a push's ref updates and the commit each names after
+	// it (git receive-pack only).
+	Pushed  []PushedRef `json:"pushed,omitempty"`
+	Outcome string      `json:"outcome"`
+	Reason  string      `json:"reason,omitempty"`
+	Bytes   int64       `json:"bytes"`
+	At      time.Time   `json:"at"`
+}
+
+// PushedRef is one ref a push updated and the commit it names now.
+type PushedRef struct {
+	Ref string `json:"ref"`
+	SHA string `json:"sha"`
+}
+
+// BriefPushed is one ref an earlier lease of the job pushed, ok, at its
+// latest commit: the brief's pushed (projectmesh-io/api #33), the most
+// recent last.
+type BriefPushed struct {
+	Ref    string `json:"ref"`
+	SHA    string `json:"sha"`
+	LeaseN int    `json:"lease_n"`
 }
 
 // AccessRequest is POST /v1/leases/{id}/access.
