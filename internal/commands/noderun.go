@@ -15,8 +15,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"projectmesh.io/mesh-cli/internal/meshapi"
+	"projectmesh.io/mesh-cli/internal/node"
 	"projectmesh.io/mesh-cli/internal/nodev1"
 	"projectmesh.io/mesh-cli/internal/paths"
+	"projectmesh.io/mesh-cli/internal/sigstore"
 	"projectmesh.io/mesh-cli/internal/version"
 )
 
@@ -32,6 +34,8 @@ var (
 	nodeRunSlots      int
 	nodeRunGitHost    string
 	nodeRunConnect    []string
+	nodeRunFulcioURL  string
+	nodeRunRekorURL   string
 )
 
 // nodeRunCmd is the Mesh v1 node runtime (internal/nodev1), beside the
@@ -89,6 +93,8 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 				CapacityTotal: meshapi.Capacity{CPUs: cpus, MemGB: nodeRunMemGB, Slots: max(nodeRunSlots, 1)},
 				SigningKey:    nodev1.PublicKey(key),
 			},
+			SigningKey:  key,
+			Sigstore:    nodeRunSigstore(logger),
 			Connect:     connect,
 			WorkRoot:    root,
 			MeshBinary:  meshBinary(),
@@ -128,6 +134,35 @@ func gitUpstream() string {
 	return strings.TrimSpace(os.Getenv("MESH_GIT_UPSTREAM"))
 }
 
+// nodeRunSigstore is the Fulcio and Rekor a lease's node tools sign
+// their records through (Mesh v1 spec, "Evidence signing"):
+// --fulcio-url and --rekor-url, else MESH_FULCIO_URL and MESH_REKOR_URL,
+// else node.yaml's `sigstore: {fulcio_url, rekor_url}` (the legacy
+// node's, which dl360 sets to its own Fulcio and Rekor on loopback).
+// None leaves every record signed by the node's key, marked
+// node-signed.
+func nodeRunSigstore(logger *log.Logger) *sigstore.Signer {
+	fulcio, rekor := strings.TrimSpace(nodeRunFulcioURL), strings.TrimSpace(nodeRunRekorURL)
+	if fulcio == "" {
+		fulcio = strings.TrimSpace(os.Getenv("MESH_FULCIO_URL"))
+	}
+	if rekor == "" {
+		rekor = strings.TrimSpace(os.Getenv("MESH_REKOR_URL"))
+	}
+	if fulcio == "" && rekor == "" {
+		if cfg, err := node.LoadSettings(); err == nil {
+			fulcio, rekor = cfg.Sigstore.FulcioURL, cfg.Sigstore.RekorURL
+		}
+	}
+	s := &sigstore.Signer{FulcioURL: fulcio, RekorURL: rekor}
+	if !s.Enabled() {
+		logger.Printf("sigstore: no Fulcio and Rekor: node tools sign their records with the node's key, marked node-signed")
+		return nil
+	}
+	logger.Printf("sigstore: node tools sign their records through %s and log them in %s", fulcio, rekor)
+	return s
+}
+
 // connectionsOf reads --connect's tenant/product pairs.
 func connectionsOf(pairs []string) ([]meshapi.ConnectRequest, error) {
 	var out []meshapi.ConnectRequest
@@ -154,6 +189,8 @@ func init() {
 	f.IntVar(&nodeRunSlots, "slots", 1, "sessions at once")
 	f.StringVar(&nodeRunGitHost, "git-upstream", "", "the git host leases' relay reaches (default $MESH_GIT_UPSTREAM, else https://github.com)")
 	f.StringSliceVar(&nodeRunConnect, "connect", nil, "offer the node to a tenant for a product, tenant/product (repeatable); Mesh offers a node only its connections' jobs")
+	f.StringVar(&nodeRunFulcioURL, "fulcio-url", "", "the Fulcio node tools' records are certified by (default $MESH_FULCIO_URL, else node.yaml's sigstore.fulcio_url)")
+	f.StringVar(&nodeRunRekorURL, "rekor-url", "", "the Rekor node tools' records are logged in (default $MESH_REKOR_URL, else node.yaml's sigstore.rekor_url)")
 	_ = nodeRunCmd.MarkFlagRequired("api")
 	nodeCmd.AddCommand(nodeRunCmd)
 }

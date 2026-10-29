@@ -191,6 +191,31 @@ func TestPushGoesThroughTheRelayUnderThePushRules(t *testing.T) {
 		t.Errorf("Latchkey minted %v", acc)
 	}
 
+	// every push the relay answered is a signed ToolRecord at Mesh —
+	// node-signed here, the rig having no Fulcio — and the finish names
+	// every one of them
+	var evidence []meshapi.EvidencePost
+	for _, c := range g.fake.Calls("evidence") {
+		var req meshapi.EvidenceRequest
+		json.Unmarshal(c.Body, &req)
+		evidence = append(evidence, req.Records...)
+	}
+	if len(evidence) != 5 {
+		t.Errorf("%d push records posted, want the five the tool ran", len(evidence))
+	}
+	for _, p := range evidence {
+		if p.Signing != meshapi.SigningNode || p.UnverifiedReason == "" {
+			t.Errorf("a push record is %q (%q), want node-signed with a reason", p.Signing, p.UnverifiedReason)
+		}
+	}
+	var fin meshapi.FinishRequest
+	if calls := g.fake.Calls("finish"); len(calls) == 1 {
+		json.Unmarshal(calls[0].Body, &fin)
+	}
+	if len(fin.Evidence) != len(evidence) || !slices.ContainsFunc(results, func(r string) bool { return strings.Contains(r, `"evidence_id":"`+fin.Evidence[0]+`"`) }) {
+		t.Errorf("the finish names evidence %v; the tool answered:\n%s", fin.Evidence, strings.Join(results, "\n"))
+	}
+
 	// every push is an AccessRecord at Mesh, the refusals with their reason
 	var posted meshapi.AccessRequest
 	for _, c := range g.fake.Calls("access") {

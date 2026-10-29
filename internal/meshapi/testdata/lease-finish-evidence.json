@@ -1,0 +1,22 @@
+{
+  "name": "lease-finish-evidence",
+  "method": "POST",
+  "path": "/v1/leases/bade8fc8-c599-5823-8715-5a0fa52c72e9/finish",
+  "caller": "node",
+  "request": {
+    "evidence": [
+      "sha256:8c8a44e0b53ddea94295f523d452f1512689fb8cc76f7b7af2e2e26615914f45",
+      "sha256:3a9bc772f300983022ba4a7a07e675530332af83f3821f1ab2e346eccc621ced"
+    ],
+    "result": {
+      "verdict": "green"
+    }
+  },
+  "status": 200,
+  "response": {
+    "end": "finished",
+    "handbacks": 0,
+    "job_id": "a4c2e17e-af46-50a8-8ccb-b578ff9fa832",
+    "status": "ended"
+  }
+}

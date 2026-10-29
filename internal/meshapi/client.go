@@ -229,8 +229,8 @@ func (c *Client) Session(ctx context.Context, leaseID, jkt string) (*SessionCred
 }
 
 // Evidence records the lease's signed ToolRecords: POST
-// /v1/leases/{id}/evidence.
-func (c *Client) Evidence(ctx context.Context, leaseID string, records []ToolRecord) (*EvidenceResponse, error) {
+// /v1/leases/{id}/evidence. Mesh answers each record's evidence id.
+func (c *Client) Evidence(ctx context.Context, leaseID string, records []EvidencePost) (*EvidenceResponse, error) {
 	var out EvidenceResponse
 	if _, _, err := c.do(ctx, http.MethodPost, leasePath(leaseID, "evidence"), EvidenceRequest{Records: records}, &out); err != nil {
 		return nil, err
@@ -238,9 +238,11 @@ func (c *Client) Evidence(ctx context.Context, leaseID string, records []ToolRec
 	return &out, nil
 }
 
-// PutBlob uploads one evidence blob by its digest: PUT /v1/blobs/{digest}.
+// PutBlob uploads one evidence blob by its digest ("sha256:<hex>" of
+// its bytes): PUT /v1/blobs/{digest}. A blob Mesh holds already is
+// answered the same.
 func (c *Client) PutBlob(ctx context.Context, digest string, data []byte) error {
-	_, _, err := c.do(ctx, http.MethodPut, "/v1/blobs/"+url.PathEscape(digest), data, nil)
+	_, _, err := c.do(ctx, http.MethodPut, "/v1/blobs/"+digest, data, nil)
 	return err
 }
 
