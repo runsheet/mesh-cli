@@ -430,7 +430,8 @@ type FinishRequest struct {
 }
 
 // FailRequest is POST /v1/leases/{id}/fail: a work failure, which ends
-// the job.
+// the job, or a product, platform or infrastructure failure, which Mesh
+// takes as a hand-back.
 type FailRequest struct {
 	Cause  string `json:"cause"`
 	Reason string `json:"reason"`
@@ -464,6 +465,13 @@ const (
 	CausePanic       = "panic"
 	CauseRevoked     = "revoked"
 	CauseParked      = "parked"
+	// CauseProduct, CausePlatform and CauseInfrastructure are failures
+	// that are not the work's own: Mesh counts them as hand-backs, which
+	// feed the kind breaker and re-offer the job (Mesh v1 spec, "Job and
+	// Lease").
+	CauseProduct        = "product"
+	CausePlatform       = "platform"
+	CauseInfrastructure = "infrastructure"
 	// CauseCancelled is a node stopping on Mesh's cancel: the job then
 	// ends cancelled (projectmesh-io/api wave 1.5).
 	CauseCancelled = "cancelled"

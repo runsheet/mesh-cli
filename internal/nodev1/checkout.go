@@ -98,7 +98,32 @@ func checkout(ctx context.Context, grant *gitrelay.Grant, b *meshapi.Brief, work
 		target = "FETCH_HEAD"
 	}
 	if target != "" {
-		return git(workspace, "checkout", "-q", "--detach", target)
+		if err := git(workspace, "checkout", "-q", "--detach", target); err != nil {
+			return err
+		}
 	}
-	return nil
+	return resumePushed(ctx, git, b, workspace)
+}
+
+// resumePushed moves a retried write lease's checkout onto its job's
+// push_to when an earlier lease of the job already pushed there and the
+// push is on top of the base: a lease that failed after its push landed
+// is handed back (report), and a run from the base again could only
+// push a non-fast-forward the relay refuses. The first lease, a read
+// lease and a job naming no push_to keep the base.
+func resumePushed(ctx context.Context, git func(string, ...string) error, b *meshapi.Brief, workspace string) error {
+	if b.LeaseN <= 1 || b.Code.PushTo == "" || b.Git.Access != string(gitrelay.Write) {
+		return nil
+	}
+	ref := b.Code.PushTo
+	if !strings.HasPrefix(ref, "refs/") {
+		ref = "refs/heads/" + ref
+	}
+	if err := git(workspace, "fetch", "-q", "origin", ref); err != nil {
+		return nil // nothing was pushed there
+	}
+	if err := git(workspace, "merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD"); err != nil {
+		return nil // not on top of the base: the session starts from the base
+	}
+	return git(workspace, "checkout", "-q", "--detach", "FETCH_HEAD")
 }

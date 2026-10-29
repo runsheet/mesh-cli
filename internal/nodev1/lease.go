@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"sort"
+	"strings"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/escalate"
@@ -136,9 +137,9 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox) outco
 	ladder := escalate.New(b.Harness.Model)
 	fin := &finishCapture{tool: b.FinishTool, onFinish: mb.Finish}
 	tools, rec := r.nodeTools(b, grant, workspace, tokens, ladder, mb)
-	servers, closeProxy, err := r.openProxy(b, tokens, grant, tools, fin.observe)
+	servers, closeProxy, err := r.openProxy(ctx, b, tokens, grant, tools, fin.observe)
 	if err != nil {
-		return outcome{err: fmt.Errorf("the lease's sessionproxy: %w", err)}
+		return outcome{err: fmt.Errorf("the lease's sessionproxy: %w", err), cause: context.Cause(ctx)}
 	}
 	defer closeProxy()
 
@@ -179,8 +180,9 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox) outco
 // Each product server is reached on the lease's mesh-session token with
 // a DPoP proof signed for the server's own URL; the node's own tools,
 // when the kind names any, are served in process at NodeToolsServer; the
-// grant, when there is one, serves the proxy's /git/ route.
-func (r *Runtime) openProxy(b *meshapi.Brief, tokens *sessionTokens, grant *gitrelay.Grant, tools []mcptool.Tool, observe func(string, []byte, []byte)) (map[string]any, func(), error) {
+// grant, when there is one, serves the proxy's /git/ route. It answers
+// only once the socket does (waitListening).
+func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief, tokens *sessionTokens, grant *gitrelay.Grant, tools []mcptool.Tool, observe func(string, []byte, []byte)) (map[string]any, func(), error) {
 	ups := map[string]sessionproxy.Upstream{}
 	for _, s := range b.Servers {
 		if s.Name == "" || s.URL == "" {
@@ -206,6 +208,11 @@ func (r *Runtime) openProxy(b *meshapi.Brief, tokens *sessionTokens, grant *gitr
 		p.Git = grant
 	}
 	if err := p.Listen(sock); err != nil {
+		os.RemoveAll(sockDir)
+		return nil, nil, err
+	}
+	if err := waitListening(ctx, sock, socketReadyWait); err != nil {
+		p.Close()
 		os.RemoveAll(sockDir)
 		return nil, nil, err
 	}
@@ -261,18 +268,31 @@ func (r *Runtime) renew(ctx context.Context, lease *meshapi.Lease, cancel contex
 // report tells Mesh how the lease ended: usage then finish on success; a
 // hand-back with its cause when the session could not run or the node
 // is ending; nothing when the lease is no longer the node's.
+//
+// A lease that failed after an irreversible write (landedWrites) is not
+// handed back cannot_run, which says the job never started and has Mesh
+// offer it to run again from scratch: it fails with cause
+// infrastructure, a reason naming every write, and a log line that says
+// so. Mesh counts infrastructure as a hand-back too (Mesh v1 spec, "Job
+// and Lease"): the job keeps its place, the kind breaker hears a node
+// fault rather than a red verdict, and max_handbacks still bounds it. A
+// work failure would end the job instead, but would charge the work
+// with the node's fault. What makes the retry safe is that it builds on
+// the writes: the next lease's checkout starts from the job's push_to
+// when an earlier lease pushed there (checkout).
 func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) {
+	writes := landedWrites(o.access)
 	switch {
 	case errors.Is(o.cause, errLeaseGone):
 		r.logf("nodev1: lease %s ended without a report: %v", id, o.cause)
 		return
 	case errors.Is(o.cause, errCancelled):
 		r.postAccess(id, o.access)
-		r.handBack(id, meshapi.CauseCancelled, r.cancelReason(id), o.result.SessionID)
+		r.handBack(id, meshapi.CauseCancelled, afterWrites(r.cancelReason(id), writes), o.result.SessionID)
 		return
 	case o.nodeEnding:
 		r.postAccess(id, o.access)
-		r.handBack(id, meshapi.CauseNodeRestart, "the node stopped while the session ran", o.result.SessionID)
+		r.handBack(id, meshapi.CauseNodeRestart, afterWrites("the node stopped while the session ran", writes), o.result.SessionID)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
@@ -282,6 +302,11 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) {
 		if err := r.API.Usage(ctx, id, *u); err != nil {
 			r.logf("nodev1: lease %s: usage: %v", id, err)
 		}
+	}
+	if o.err != nil && len(writes) > 0 {
+		r.logf("nodev1: lease %s failed AFTER IRREVERSIBLE WRITES (%s): %v", id, strings.Join(writes, "; "), o.err)
+		r.fail(id, meshapi.CauseInfrastructure, afterWrites(o.err.Error(), writes))
+		return
 	}
 	if o.err != nil {
 		r.handBack(id, meshapi.CauseCannotRun, o.err.Error(), o.result.SessionID)
@@ -309,6 +334,23 @@ func (r *Runtime) postAccess(id string, records []meshapi.AccessRecord) {
 	if err := r.API.Access(ctx, id, records); err != nil {
 		r.logf("nodev1: lease %s: access records: %v", id, err)
 	}
+}
+
+// fail reports the lease failed with cause: work ends the job, any
+// other cause Mesh takes as a hand-back.
+func (r *Runtime) fail(id, cause, reason string) {
+	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
+	defer cancel()
+	st, err := r.API.Fail(ctx, id, meshapi.FailRequest{Cause: cause, Reason: clip(reason, maxReason)})
+	if err != nil && meshapi.LeaseGone(err) {
+		r.logf("nodev1: lease %s was no longer the node's to fail (%s)", id, cause)
+		return
+	}
+	if err != nil {
+		r.logf("nodev1: lease %s: fail (%s): %v", id, cause, err)
+		return
+	}
+	r.logf("nodev1: lease %s failed (%s); job %s is %s", id, cause, st.JobID, st.Status)
 }
 
 func (r *Runtime) handBack(id, cause, reason, sessionRef string) {
