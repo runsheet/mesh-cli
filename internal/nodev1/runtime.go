@@ -26,6 +26,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/gitrelay"
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/resources"
+	"projectmesh.io/mesh-cli/internal/scheduler"
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
 	"projectmesh.io/mesh-cli/internal/sigstore"
 )
@@ -87,6 +88,11 @@ type Runtime struct {
 	HeartbeatEvery time.Duration
 	// Backoff is the wait after a failed take; 5 s when zero.
 	Backoff time.Duration
+	// Scheduler, when set, owns the node's capacity (ADR-044, PR 3.1;
+	// `--actors-scheduler`): each lease holds its resources there, the
+	// node reports what is free on every take and runs its leases side
+	// by side, a slot each. Nil runs one lease at a time.
+	Scheduler *scheduler.Scheduler
 
 	nodeID  string
 	relay   *gitrelay.Server
@@ -232,10 +238,16 @@ func (r *Runtime) Run(ctx context.Context) error {
 	go r.heartbeats(hbCtx, every)
 	go r.events(hbCtx)
 
+	var leases sync.WaitGroup
+	defer leases.Wait()
 	for ctx.Err() == nil {
 		if r.draining() {
 			r.logf("nodev1: Mesh asked the node to drain; it takes no more leases")
 			return nil
+		}
+		r.waitForSlot(ctx)
+		if ctx.Err() != nil {
+			break
 		}
 		tk, err := r.API.Take(ctx, meshapi.TakeRequest{
 			NodeID: node.NodeID, Free: r.free(), Harnesses: r.Node.Harnesses, WaitS: meshapi.MaxWaitS,
@@ -251,10 +263,23 @@ func (r *Runtime) Run(ctx context.Context) error {
 		if tk.Lease == nil {
 			continue
 		}
-		r.runLease(ctx, tk)
-		if r.Once {
-			return nil
+		// the lease's room is taken before the next take reads what is
+		// free
+		room, roomErr := r.holdCapacity(ctx, tk.Brief, tk.Lease)
+		if r.Scheduler == nil || r.Once {
+			r.runLease(ctx, tk, room, roomErr)
+			if r.Once {
+				return nil
+			}
+			continue
 		}
+		// with a scheduler the lease runs beside the others, holding its
+		// slot until it ends
+		leases.Add(1)
+		go func() {
+			defer leases.Done()
+			r.runLease(ctx, tk, room, roomErr)
+		}()
 	}
 	return ctx.Err()
 }
@@ -291,9 +316,12 @@ func (r *Runtime) sleep(ctx context.Context, d time.Duration) {
 	}
 }
 
-// free is what the node can take now: its whole capacity, since this
-// runtime runs one lease at a time.
+// free is what the node can take now: what its scheduler's leases leave
+// free, else its whole capacity, since it runs one lease at a time.
 func (r *Runtime) free() *meshapi.Capacity {
+	if r.Scheduler != nil {
+		return freeOf(r.Scheduler)
+	}
 	c := r.Node.CapacityTotal
 	if c.Slots == 0 {
 		c.Slots = 1

@@ -17,6 +17,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/mcptool"
 	"projectmesh.io/mesh-cli/internal/meshapi"
+	"projectmesh.io/mesh-cli/internal/scheduler"
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
 )
 
@@ -49,8 +50,10 @@ type outcome struct {
 // runLease runs one lease to its report: the lease's directory and
 // sessionproxy, the renewals, the session, then finish, hand-back or
 // nothing (the lease is no longer this node's). A panic hands the lease
-// back with cause panic.
-func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take) {
+// back with cause panic. room is the lease's hold on the scheduler (nil
+// without one); roomErr, why the scheduler had no room, hands the lease
+// back cannot_run.
+func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take, room *scheduler.Lease, roomErr error) {
 	b, lease := tk.Brief, tk.Lease
 	id := lease.LeaseID
 	r.logf("nodev1: took lease %s of job %s (%s, %s/%s)", id, b.JobID, b.Kind, b.Subject.Type, b.Subject.ID)
@@ -72,10 +75,16 @@ func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take) {
 		}
 	}()
 
+	defer room.Release()
+	if roomErr != nil {
+		r.handBack(id, meshapi.CauseCannotRun, "the node had no room for the lease: "+roomErr.Error(), "")
+		return
+	}
+
 	renewDone := make(chan struct{})
 	go func() {
 		defer close(renewDone)
-		r.renew(leaseCtx, lease, cancel)
+		r.renew(leaseCtx, lease, cancel, room)
 	}()
 	out := r.work(leaseCtx, b, mb)
 	cancel(nil)
@@ -245,7 +254,11 @@ func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief, tokens *sessi
 // saying the lease is gone cancels the lease's work; a renewal that
 // cannot reach Mesh is tried again until the lease's own expiry passes,
 // which cancels it too.
-func (r *Runtime) renew(ctx context.Context, lease *meshapi.Lease, cancel context.CancelCauseFunc) {
+//
+// Each tick also renews the lease's room in the scheduler, when it
+// holds one: a room that lapsed (the renewals stalled past its TTL) is
+// taken again, and logged, since the lease runs on whatever it holds.
+func (r *Runtime) renew(ctx context.Context, lease *meshapi.Lease, cancel context.CancelCauseFunc, room *scheduler.Lease) {
 	every := time.Duration(lease.RenewEveryS) * time.Second
 	if every <= 0 {
 		every = 30 * time.Second
@@ -258,6 +271,16 @@ func (r *Runtime) renew(ctx context.Context, lease *meshapi.Lease, cancel contex
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		}
+		if room != nil && !room.Renew() {
+			r.logf("nodev1: lease %s: its room in the scheduler lapsed; the node counts it again", lease.LeaseID)
+			if again, err := r.Scheduler.TryTake(room.Ask()); err == nil {
+				defer again.Release()
+				room = again
+			} else {
+				r.logf("nodev1: lease %s runs past the scheduler: %v", lease.LeaseID, err)
+				room = nil
+			}
 		}
 		resp, err := r.API.Renew(ctx, lease.LeaseID)
 		switch {

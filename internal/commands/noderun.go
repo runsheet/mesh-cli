@@ -18,6 +18,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/node"
 	"projectmesh.io/mesh-cli/internal/nodev1"
 	"projectmesh.io/mesh-cli/internal/paths"
+	"projectmesh.io/mesh-cli/internal/scheduler"
 	"projectmesh.io/mesh-cli/internal/sigstore"
 	"projectmesh.io/mesh-cli/internal/version"
 )
@@ -37,6 +38,9 @@ var (
 	nodeRunConnect    []string
 	nodeRunFulcioURL  string
 	nodeRunRekorURL   string
+	// The actor node's flags (ADR-044), each off by default.
+	nodeRunScheduler    bool
+	nodeRunAccountSlots int
 )
 
 // nodeRunCmd is the Mesh v1 node runtime (internal/nodev1), beside the
@@ -104,6 +108,13 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 			Session:     sess,
 			Once:        nodeRunOnce,
 			Logf:        logger.Printf,
+		}
+		if nodeRunScheduler {
+			rt.Scheduler = scheduler.New(scheduler.Capacity{
+				CPUs: rt.Node.CapacityTotal.CPUs, MemGB: rt.Node.CapacityTotal.MemGB, Slots: rt.Node.CapacityTotal.Slots,
+				AccountSlots: nodeRunAccountSlots,
+			})
+			rt.Scheduler.Logf = logger.Printf
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
@@ -194,6 +205,8 @@ func init() {
 	f.StringSliceVar(&nodeRunConnect, "connect", nil, "offer the node to a tenant for a product, tenant/product (repeatable); Mesh offers a node only its connections' jobs")
 	f.StringVar(&nodeRunFulcioURL, "fulcio-url", "", "the Fulcio node tools' records are certified by (default $MESH_FULCIO_URL, else node.yaml's sigstore.fulcio_url)")
 	f.StringVar(&nodeRunRekorURL, "rekor-url", "", "the Rekor node tools' records are logged in (default $MESH_REKOR_URL, else node.yaml's sigstore.rekor_url)")
+	f.BoolVar(&nodeRunScheduler, "actors-scheduler", false, "the scheduler owns the node's capacity (ADR-044): leases hold their resources as scheduler leases, the node reports what is free on each take and runs up to --slots leases side by side")
+	f.IntVar(&nodeRunAccountSlots, "account-slots", 0, "with --actors-scheduler, sessions at once per model account (0 is unbounded)")
 	_ = nodeRunCmd.MarkFlagRequired("api")
 	nodeCmd.AddCommand(nodeRunCmd)
 }
