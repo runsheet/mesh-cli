@@ -55,6 +55,7 @@
       },
       "job_id": "e73d89af-ffaf-5bbd-80bd-c28304fa7647",
       "kind": "echo",
+      "learnings_tool": "learn",
       "lease_expires_at": "2026-01-01T00:00:00Z",
       "lease_id": "bcd02c25-1ba1-52b5-8bee-d4a7768345e2",
       "lease_n": 2,
