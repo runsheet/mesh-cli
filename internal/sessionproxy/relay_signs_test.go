@@ -49,7 +49,7 @@ func TestRelaySignsEachRequest(t *testing.T) {
 					}))
 					defer up.Close()
 
-					p := New(map[string]Upstream{"runsheet": Runsheet{URL: up.URL + "/mcp", Key: key,
+					p := New(map[string]Upstream{"runsheet": Product{URL: up.URL + "/mcp", Key: key,
 						Bearer: func(context.Context) (string, error) { return bearerNew, nil }}})
 					c, _ := listen(t, p)
 					resp, body := post(t, c, "runsheet", nil, initialize)
@@ -106,7 +106,7 @@ func TestRelaySignsEachRequest(t *testing.T) {
 			}))
 			defer up.Close()
 
-			p := New(map[string]Upstream{"runsheet": Runsheet{URL: up.URL + "/mcp", Key: key,
+			p := New(map[string]Upstream{"runsheet": Product{URL: up.URL + "/mcp", Key: key,
 				Bearer: func(context.Context) (string, error) { return bearerNew, nil }}})
 			c, _ := listen(t, p)
 			resp, body := post(t, c, "runsheet", nil, initialize)
@@ -154,7 +154,7 @@ func TestRelaySignsEachRequest(t *testing.T) {
 			}))
 			defer up.Close()
 
-			p := New(map[string]Upstream{"runsheet": Runsheet{URL: up.URL + "/mcp", Key: key,
+			p := New(map[string]Upstream{"runsheet": Product{URL: up.URL + "/mcp", Key: key,
 				Bearer: func(context.Context) (string, error) { return bearerNew, nil }}})
 			c, _ := listen(t, p)
 			resp, body := post(t, c, "runsheet", nil, initialize)
@@ -201,7 +201,7 @@ func TestRelaySignsEachRequest(t *testing.T) {
 			}))
 			defer up.Close()
 
-			p := New(map[string]Upstream{"runsheet": Runsheet{URL: up.URL + "/mcp", Key: key,
+			p := New(map[string]Upstream{"runsheet": Product{URL: up.URL + "/mcp", Key: key,
 				Bearer: func(context.Context) (string, error) { return bearerNew, nil }}})
 			c, _ := listen(t, p)
 			post(t, c, "runsheet", nil, initialize)
