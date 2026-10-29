@@ -76,11 +76,7 @@ func (r *Runtime) onEvent(e meshapi.NodeEvent) {
 			r.logf("nodev1: a turn event names no lease or turn: %s", e.Data)
 			return
 		}
-		if err := r.deliver(t.LeaseID, Message{Kind: MsgTurn, Text: turnLine(r.turnTool(t.LeaseID), t.TurnID, t.Seq)}); err != nil {
-			r.logf("nodev1: turn %s for lease %s: %v", t.TurnID, t.LeaseID, err)
-			return
-		}
-		r.logf("nodev1: lease %s: turn %s (seq %d) went to the session", t.LeaseID, t.TurnID, t.Seq)
+		r.deliverTurn(t.LeaseID, meshapi.Turn{TurnID: t.TurnID, Seq: t.Seq}, "the event stream")
 	default:
 		// pause is the actor node's (wave 3)
 		r.logf("nodev1: event %s ignored by this runtime", e.Event)

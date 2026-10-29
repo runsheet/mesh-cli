@@ -73,6 +73,7 @@ func (r *Runtime) runActor(ctx context.Context, tk *meshapi.Take, room *schedule
 	leaseCtx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	mb := NewMailbox()
+	mb.turns = newTurnLedger(b)
 	r.mu.Lock()
 	r.leases.Put(id, &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: turnToolFor(b), jobID: b.JobID, actor: a})
 	r.mu.Unlock()

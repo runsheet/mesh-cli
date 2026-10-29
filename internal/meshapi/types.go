@@ -299,11 +299,23 @@ type Thread struct {
 	IdleCloseS int `json:"idle_close_s"`
 }
 
-// RenewResponse is POST /v1/leases/{id}/renew's answer.
+// RenewRequest is POST /v1/leases/{id}/renew's body. TurnsSeen is, for
+// a thread's lease, the newest seq at or below which its session has
+// every turn: Mesh acks those and answers the ones above.
+type RenewRequest struct {
+	TurnsSeen *int64 `json:"turns_seen,omitempty"`
+}
+
+// RenewResponse is POST /v1/leases/{id}/renew's answer. Turns are the
+// thread's turns above the renewal's turns_seen, oldest first, and
+// TurnsThrough the seq Mesh looked through: once the session has every
+// one of Turns, the lease has the thread through TurnsThrough.
 type RenewResponse struct {
-	LeaseID     string    `json:"lease_id"`
-	ExpiresAt   time.Time `json:"expires_at"`
-	RenewEveryS int       `json:"renew_every_s"`
+	LeaseID      string    `json:"lease_id"`
+	ExpiresAt    time.Time `json:"expires_at"`
+	RenewEveryS  int       `json:"renew_every_s"`
+	Turns        []Turn    `json:"turns,omitempty"`
+	TurnsThrough int64     `json:"turns_through,omitempty"`
 }
 
 // SessionRequest is POST /v1/leases/{id}/session: the thumbprint of the
