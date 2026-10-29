@@ -91,7 +91,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief) outcome {
 	defer os.RemoveAll(dir)
 
 	var tokens *sessionTokens
-	if len(b.Servers) > 0 || b.Git != nil {
+	if len(b.Servers) > 0 || b.Git != nil || len(apiRules(b)) > 0 {
 		var err error
 		if tokens, err = openSession(ctx, r.API, b.LeaseID, r.LatchkeyHTTP); err != nil {
 			return outcome{err: err, cause: context.Cause(ctx)}
@@ -121,20 +121,24 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief) outcome {
 	}
 
 	fin := &finishCapture{tool: b.FinishTool}
-	servers, closeProxy, err := r.openProxy(b, tokens, grant, r.nodeTools(b, grant, workspace), fin.observe)
+	servers, sock, closeProxy, err := r.openProxy(b, tokens, grant, r.nodeTools(b, grant, workspace), fin.observe)
 	if err != nil {
 		return outcome{err: fmt.Errorf("the lease's sessionproxy: %w", err)}
 	}
 	defer closeProxy()
+	env := []string{"GIT_TERMINAL_PROMPT=0"}
+	if len(apiRules(b)) > 0 {
+		env = append(env, RelaySocketEnv+"="+sock)
+	}
 
 	spec := SessionSpec{
 		Label:     b.LeaseID,
 		Workspace: workspace,
-		Prompt:    Prompt(b),
+		Prompt:    promptWithRelay(b, sock),
 		Model:     b.Harness.Model.Default,
 		BudgetUSD: b.Harness.Budget.USD,
 		Servers:   servers,
-		Env:       []string{"GIT_TERMINAL_PROMPT=0"},
+		Env:       env,
 		Unset:     gitEnvUnset,
 	}
 	sctx := ctx
@@ -154,21 +158,23 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief) outcome {
 }
 
 // openProxy serves the brief's servers on a sessionproxy of the lease's
-// own, a unix socket in a short directory of the lease's own
-// (leaseSocketDir), and answers the session's
-// MCP config: each server a `mesh mcp-relay --socket` entry naming it.
+// own — one per lease, a unix socket in a short directory of the lease's
+// own (leaseSocketDir) — and answers the session's MCP config (each
+// server a `mesh mcp-relay --socket` entry naming it) and the socket.
 // Each product server is reached on the lease's mesh-session token with
 // a DPoP proof signed for the server's own URL; the node's own tools,
 // when the kind names any, are served in process at NodeToolsServer; the
-// grant, when there is one, serves the proxy's /git/ route.
-func (r *Runtime) openProxy(b *meshapi.Brief, tokens *sessionTokens, grant *gitrelay.Grant, tools []mcptool.Tool, observe func(string, []byte, []byte)) (map[string]any, func(), error) {
+// grant, when there is one, serves the proxy's /git/ route; and when the
+// brief's access names vendor APIs, the proxy's /latchkey/<vendor>/
+// route reaches Latchkey's proxy on the session token (wave 2.7).
+func (r *Runtime) openProxy(b *meshapi.Brief, tokens *sessionTokens, grant *gitrelay.Grant, tools []mcptool.Tool, observe func(string, []byte, []byte)) (map[string]any, string, func(), error) {
 	ups := map[string]sessionproxy.Upstream{}
 	for _, s := range b.Servers {
 		if s.Name == "" || s.URL == "" {
-			return nil, nil, fmt.Errorf("the brief names a server without a name or url: %+v", s)
+			return nil, "", nil, fmt.Errorf("the brief names a server without a name or url: %+v", s)
 		}
 		if s.Name == NodeToolsServer {
-			return nil, nil, fmt.Errorf("the brief names a server %q, the node's own tools' name", s.Name)
+			return nil, "", nil, fmt.Errorf("the brief names a server %q, the node's own tools' name", s.Name)
 		}
 		ups[s.Name] = sessionproxy.Product{URL: s.URL, Bearer: tokens.Token, Key: tokens.Key()}
 	}
@@ -177,7 +183,7 @@ func (r *Runtime) openProxy(b *meshapi.Brief, tokens *sessionTokens, grant *gitr
 	}
 	sockDir, err := r.leaseSocketDir(b.LeaseID)
 	if err != nil {
-		return nil, nil, err
+		return nil, "", nil, err
 	}
 	sock := filepath.Join(sockDir, leaseSocketName)
 	p := sessionproxy.New(ups)
@@ -186,15 +192,27 @@ func (r *Runtime) openProxy(b *meshapi.Brief, tokens *sessionTokens, grant *gitr
 	if grant != nil {
 		p.Git = grant
 	}
+	if rules := apiRules(b); len(rules) > 0 && tokens != nil {
+		iss, err := tokens.issuer()
+		if err != nil {
+			os.RemoveAll(sockDir)
+			return nil, "", nil, err
+		}
+		p.Latchkey = &sessionproxy.Latchkey{
+			URL: iss, Token: tokens.Token, Key: tokens.Key(),
+			Allow: apiAllows(rules),
+			Audit: func(c sessionproxy.APICall) { r.auditAPI(b.LeaseID, c) },
+		}
+	}
 	if err := p.Listen(sock); err != nil {
 		os.RemoveAll(sockDir)
-		return nil, nil, err
+		return nil, "", nil, err
 	}
 	servers := map[string]any{}
 	for name := range ups {
 		servers[name] = harness.ProxyRelay(r.MeshBinary, sock, name)
 	}
-	return servers, func() { p.Close(); os.RemoveAll(sockDir) }, nil
+	return servers, sock, func() { p.Close(); os.RemoveAll(sockDir) }, nil
 }
 
 // nodeTools are the node tools the brief's kind names that this node

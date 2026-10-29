@@ -50,7 +50,7 @@ var returned = []string{
 	"Mcp-Protocol-Version",
 }
 
-// Upstream is one server the proxy fronts: Remote, Runsheet, Local or
+// Upstream is one server the proxy fronts: Remote, Product, Local or
 // InProcess.
 type Upstream interface {
 	endpoint() string
@@ -82,35 +82,33 @@ func (r Remote) authorize(_ context.Context, out *http.Request, _ bool) ([]strin
 	return secrets, nil
 }
 
-// Runsheet is the gateway's /mcp, reached on a bearer Bearer gives per
-// request: held in memory for that request alone, asked again after a
-// 401 and tried once more, as mcprelay re-reads its token file. With
-// Key the bearer is a DPoP-bound session token (runsheet ADR 064): it
-// goes as `Authorization: DPoP <token>` with a fresh proof by Key of
-// the request's method and URL and the token's hash, the key never
-// leaving the node. Without it the bearer goes as `Bearer` (the
-// machine's, on a platform that opens no mesh sessions).
-type Runsheet struct {
+// Product is a product's MCP server reached on a bearer Bearer gives
+// per request — a Mesh v1 lease's mesh-session token, or the legacy
+// node's runsheet gateway bearer: held in memory for that request alone,
+// asked again after a 401 and tried once more, as mcprelay re-reads its
+// token file. With Key the bearer is a DPoP-bound session token
+// (runsheet ADR 064): it goes as `Authorization: DPoP <token>` with a
+// fresh proof by Key of the request's method and URL and the token's
+// hash, the key never leaving the node. Without it the bearer goes as
+// `Bearer` (the machine's, on a platform that opens no mesh sessions).
+// The Mesh v1 spec renamed it from Runsheet (wave 2.7): runsheet is one
+// product among many.
+type Product struct {
 	URL    string
 	Bearer func(ctx context.Context) (string, error)
 	Key    Signer
 }
-
-// Product is a product's MCP server reached on a lease's DPoP-bound
-// mesh-session token (Mesh v1): the same upstream as Runsheet, whose
-// name the Mesh v1 spec retires for this one (wave 2.7).
-type Product = Runsheet
 
 // Signer signs one request's DPoP proof (internal/dpop.Key).
 type Signer interface {
 	Proof(method, rawURL, token string) (string, error)
 }
 
-func (r Runsheet) endpoint() string { return r.URL }
+func (r Product) endpoint() string { return r.URL }
 
-func (r Runsheet) retries401() bool { return true }
+func (r Product) retries401() bool { return true }
 
-func (r Runsheet) authorize(ctx context.Context, out *http.Request, _ bool) ([]string, error) {
+func (r Product) authorize(ctx context.Context, out *http.Request, _ bool) ([]string, error) {
 	if r.Bearer == nil {
 		return nil, errors.New("no bearer")
 	}
@@ -164,8 +162,12 @@ type Proxy struct {
 	Logf func(format string, args ...any)
 	// Git serves /git/<owner>/<repo>.git on the same socket: the node's
 	// git relay for the session's job, which holds
-	// the GitHub token so the session never does. Nil serves no git.
+	// the vendor token so the session never does. Nil serves no git.
 	Git http.Handler
+	// Latchkey serves /latchkey/<vendor>/<path> on the same socket: the
+	// lease's vendor API calls, through Latchkey's proxy on its session
+	// token (latchkey.go). Nil serves none.
+	Latchkey *Latchkey
 	// Observe, when set, hears each JSON-RPC message a remote upstream
 	// answers, masked, beside the request it answers: a JSON answer
 	// whole, an event stream's each event's data. It is how a node reads
@@ -377,6 +379,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		p.Git.ServeHTTP(w, req)
 		return
 	}
+	if strings.HasPrefix(req.URL.Path, LatchkeyPrefix) {
+		if p.Latchkey == nil {
+			w.Header().Set(RelayErrorHeader, "no_api")
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "no_api", "message": "relay: this session reaches no vendor API"})
+			return
+		}
+		p.serveLatchkey(w, req)
+		return
+	}
 	name, ok := strings.CutPrefix(req.URL.Path, Prefix)
 	name = strings.TrimSuffix(name, "/")
 	u, found := p.upstream(name)
@@ -542,6 +553,14 @@ func (p *Proxy) reply(w http.ResponseWriter, resp *http.Response, name string, r
 			return
 		}
 	}
+}
+
+// writeJSON answers v as JSON.
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	b, _ := json.Marshal(v)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(b)
 }
 
 // writeError answers with a JSON-RPC error of the proxy's own.
