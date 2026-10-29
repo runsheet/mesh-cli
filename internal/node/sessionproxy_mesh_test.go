@@ -16,9 +16,9 @@ func TestUpstreamsOfBriefServer(t *testing.T) {
 		t.Fatalf("added %v", added)
 	}
 	ups := upstreamsOf(specs, "https://platform.test/mcp", nil, nil)
-	m, ok := ups["jobs"].(sessionproxy.Runsheet)
+	m, ok := ups["jobs"].(sessionproxy.Product)
 	if !ok {
-		t.Fatalf("jobs upstream %T, want the session's own bearer (sessionproxy.Runsheet)", ups["jobs"])
+		t.Fatalf("jobs upstream %T, want the session's own bearer (sessionproxy.Product)", ups["jobs"])
 	}
 	if m.URL != "https://platform.test/jobs/mcp" {
 		t.Fatalf("jobs upstream at %q", m.URL)

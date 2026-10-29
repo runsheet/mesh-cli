@@ -34,6 +34,7 @@ type fakeLatchkey struct {
 	access   []string // each mint's access, read or write
 	revoked  []string
 	failures []string
+	api      []string // each proxied call: METHOD vendor/path
 	n        int
 }
 
@@ -43,6 +44,7 @@ func newFakeLatchkey(t *testing.T) *fakeLatchkey {
 	mux.HandleFunc("/oauth/session-token/request", l.sessionToken)
 	mux.HandleFunc("POST /v1/credentials/for-job/source", l.source)
 	mux.HandleFunc("DELETE /v1/credentials/for-job/source", l.source)
+	mux.HandleFunc("/github/{path...}", l.proxy)
 	l.srv = httptest.NewServer(mux)
 	t.Cleanup(l.srv.Close)
 	return l
@@ -126,6 +128,29 @@ func (l *fakeLatchkey) source(w http.ResponseWriter, r *http.Request) {
 	l.minted = append(l.minted, tok)
 	l.access = append(l.access, body.Access)
 	json.NewEncoder(w).Encode(map[string]any{"token": tok, "expires_at": time.Now().Add(time.Hour).UTC(), "repository": body.Repository, "access": body.Access})
+}
+
+// proxy is Latchkey's vendor API proxy (L4) as the relay reaches it:
+// the session token and a proof of the call, answered with what the
+// call was.
+func (l *fakeLatchkey) proxy(w http.ResponseWriter, r *http.Request) {
+	if _, err := l.checkToken(r, l.srv.URL+r.URL.Path); err != nil {
+		l.fail(w, http.StatusUnauthorized, "proxy: "+err.Error())
+		return
+	}
+	l.mu.Lock()
+	l.api = append(l.api, r.Method+" github/"+r.PathValue("path"))
+	l.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]any{"number": 1})
+}
+
+// apiCalls are the proxied calls, in order.
+func (l *fakeLatchkey) apiCalls() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.api...)
 }
 
 // accesses are each mint's access, in order.
