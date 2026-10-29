@@ -17,7 +17,7 @@ import (
 // that key, every request — what runsheet's /mcp takes of a session
 // token (runsheet ADR 064 §2) — and a DPoP the agent sends is never
 // forwarded.
-func TestProxyRunsheetSignsEachRequestWithTheSessionsKey(t *testing.T) {
+func TestProxyProductSignsEachRequestWithTheSessionsKey(t *testing.T) {
 	key, err := dpop.NewKey()
 	if err != nil {
 		t.Fatal(err)
@@ -42,7 +42,7 @@ func TestProxyRunsheetSignsEachRequestWithTheSessionsKey(t *testing.T) {
 	}))
 	defer up.Close()
 
-	p := New(map[string]Upstream{"runsheet": Runsheet{URL: up.URL + "/mcp", Key: key,
+	p := New(map[string]Upstream{"runsheet": Product{URL: up.URL + "/mcp", Key: key,
 		Bearer: func(context.Context) (string, error) { return bearerNew, nil }}})
 	c, _ := listen(t, p)
 	for i := 0; i < 2; i++ {

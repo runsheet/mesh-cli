@@ -23,6 +23,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gitrelay"
 	"projectmesh.io/mesh-cli/internal/meshapi"
+	"projectmesh.io/mesh-cli/internal/sessionproxy"
 )
 
 // Runtime is one v1 node.
@@ -309,6 +310,17 @@ func (r *Runtime) audit(e gitrelay.Event) {
 	defer r.mu.Unlock()
 	if r.access != nil {
 		r.access[e.Lease] = append(r.access[e.Lease], rec)
+	}
+}
+
+// auditAPI keeps one vendor API call the lease's relay answered as an
+// AccessRecord of kind api, posted to Mesh when the lease ends.
+func (r *Runtime) auditAPI(lease string, c sessionproxy.APICall) {
+	rec := meshapi.AccessRecord{Kind: "api", Vendor: c.Vendor, Method: c.Method, Path: c.Path, Outcome: c.Outcome, Reason: c.Reason, Bytes: c.Bytes, At: c.At.UTC()}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.access != nil {
+		r.access[lease] = append(r.access[lease], rec)
 	}
 }
 

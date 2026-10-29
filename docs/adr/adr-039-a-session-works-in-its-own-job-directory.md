@@ -243,7 +243,7 @@ with a proof by that key (Latchkey binds it, `cnf.jkt`; a
 `use_dpop_nonce` answer is asked again once with its nonce), and the
 proxy sends every runsheet request as `Authorization: DPoP <token>` with
 a fresh proof of the request's method, URL and the token's hash
-(`sessionproxy.Runsheet.Key`). A 401 `WWW-Authenticate: DPoP
+(`sessionproxy.Product.Key`). A 401 `WWW-Authenticate: DPoP
 error="invalid_token"` from runsheet is forwarded again exactly once,
 re-authorized with a fresh proof — another DPoP header and jti, valid for
 the retried request's method, URL and token — and a second 401 is the

@@ -161,11 +161,11 @@ func upstreamsOf(specs map[string]tools.UpstreamSpec, builtinURL string, bearer 
 	for name, sp := range specs {
 		switch {
 		case name == tools.Builtin:
-			ups[name] = sessionproxy.Runsheet{URL: builtinURL, Bearer: bearer, Key: key}
+			ups[name] = sessionproxy.Product{URL: builtinURL, Bearer: bearer, Key: key}
 		case sp.Session:
 			// a server the job's brief names: the session's own bearer,
 			// signed with its own key, as the built-in is
-			ups[name] = sessionproxy.Runsheet{URL: sp.URL, Bearer: bearer, Key: key}
+			ups[name] = sessionproxy.Product{URL: sp.URL, Bearer: bearer, Key: key}
 		case sp.Transport == tools.Local:
 			ups[name] = sessionproxy.Local{Command: sp.Command, Args: sp.Args, Env: sp.Env, Secrets: sp.Secrets}
 		default:

@@ -136,7 +136,7 @@ func TestProxyRemoteGetsHeldSecretAndDropsClientAuthorization(t *testing.T) {
 	}
 }
 
-func TestProxyRunsheetBearerAskedPerRequestAndOnceMoreAfter401(t *testing.T) {
+func TestProxyProductBearerAskedPerRequestAndOnceMoreAfter401(t *testing.T) {
 	var s seen
 	var mu sync.Mutex
 	accept := bearerNew
@@ -163,7 +163,7 @@ func TestProxyRunsheetBearerAskedPerRequestAndOnceMoreAfter401(t *testing.T) {
 		asks++
 		return tok, nil
 	}
-	p := New(map[string]Upstream{"runsheet": Runsheet{URL: up.URL, Bearer: bearer}})
+	p := New(map[string]Upstream{"runsheet": Product{URL: up.URL, Bearer: bearer}})
 	c, _ := listen(t, p)
 
 	resp, body := post(t, c, "runsheet", map[string]string{"Authorization": "Bearer agent"}, initialize)
@@ -198,7 +198,7 @@ func TestProxyRunsheetBearerAskedPerRequestAndOnceMoreAfter401(t *testing.T) {
 }
 
 func TestProxyUnknownServerIs404(t *testing.T) {
-	p := New(map[string]Upstream{"runsheet": Runsheet{URL: "http://127.0.0.1:1", Bearer: func(context.Context) (string, error) { return bearerNew, nil }}})
+	p := New(map[string]Upstream{"runsheet": Product{URL: "http://127.0.0.1:1", Bearer: func(context.Context) (string, error) { return bearerNew, nil }}})
 	c, _ := listen(t, p)
 	for _, server := range []string{"nope", "", "runsheet/extra"} {
 		resp, body := post(t, c, server, nil, initialize)
@@ -238,7 +238,7 @@ func TestProxyCarriesSessionIdAndStreamsEventStream(t *testing.T) {
 			close(release)
 		}
 	}()
-	p := New(map[string]Upstream{"runsheet": Runsheet{URL: up.URL, Bearer: func(context.Context) (string, error) { return bearerNew, nil }}})
+	p := New(map[string]Upstream{"runsheet": Product{URL: up.URL, Bearer: func(context.Context) (string, error) { return bearerNew, nil }}})
 	c, _ := listen(t, p)
 
 	resp, _ := post(t, c, "runsheet", nil, initialize)
@@ -318,9 +318,9 @@ func TestProxyNeverRepliesOrLogsTheSecretOrBearer(t *testing.T) {
 	p.Logf = logs.logf
 	for _, as := range []string{"json", "error", "stream"} {
 		p.Add("tool-"+as, Remote{URL: up.URL + "?as=" + as, Headers: map[string]string{"X-Api-Key": toolSecret, "Authorization": "Token " + toolSecret + "-auth"}})
-		p.Add("runsheet-"+as, Runsheet{URL: up.URL + "?as=" + as, Bearer: func(context.Context) (string, error) { return bearerNew, nil }})
+		p.Add("runsheet-"+as, Product{URL: up.URL + "?as=" + as, Bearer: func(context.Context) (string, error) { return bearerNew, nil }})
 	}
-	p.Add("runsheet-broken", Runsheet{URL: up.URL, Bearer: func(context.Context) (string, error) {
+	p.Add("runsheet-broken", Product{URL: up.URL, Bearer: func(context.Context) (string, error) {
 		return "", fmt.Errorf("token file holds %s but it expired", bearerNew)
 	}})
 	p.Add("tool-down", Remote{URL: "http://127.0.0.1:1/?k=" + toolSecret, Headers: map[string]string{"X-Api-Key": toolSecret}})
