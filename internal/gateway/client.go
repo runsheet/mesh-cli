@@ -3620,6 +3620,7 @@ func (c *Client) FinishWorkItem(ctx context.Context, itemID, branch, headSha str
 	if base := finishBaseFrom(ctx); base != "" {
 		in[BaseShaAtFinishField] = base
 	}
+	withRebaseNeeded(ctx, in)
 	c.withDescription(ctx, in, description)
 	return c.mutateWithUsage(ctx, "finishWorkItem", itemID, in, usage)
 }

@@ -187,6 +187,7 @@ func (c *Client) FinishWorkItemChangeset(ctx context.Context, itemID, branch, ch
 	if baseSHA != "" {
 		in[BaseShaAtFinishField] = baseSHA
 	}
+	withRebaseNeeded(ctx, in)
 	c.withDescription(ctx, in, description)
 	return c.mutateWithUsage(ctx, "finishWorkItem", itemID, in, usage)
 }
