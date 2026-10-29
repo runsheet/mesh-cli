@@ -304,7 +304,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	} else if errors.Is(err, context.DeadlineExceeded) || sctx.Err() != nil {
 		o.err = fmt.Errorf("the session ran past its %d-minute budget", b.Harness.Budget.Minutes)
 	}
-	if o.err == nil && o.cause == nil && b.Thread == nil && !res.Parked && o.handBack == nil {
+	if o.err == nil && o.cause == nil && o.stopped == nil && b.Thread == nil && !res.Parked && o.handBack == nil {
 		// a one-shot session's finish is its finish tool's answer, or its
 		// last message when that fits the kind's finish_schema, or none
 		// (settle.go); the learnings the finish carried go to the
