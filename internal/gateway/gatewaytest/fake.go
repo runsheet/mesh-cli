@@ -1021,6 +1021,21 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request, q string, vars map[
 		writeData(w, map[string]any{"__type": f.dispatchResultType()})
 	case strings.HasPrefix(q, "mutation") && strings.Contains(q, "recordValidationAttestation("):
 		f.recordValidationAttestation(w, r, q, req.Variables, bearer)
+	case strings.Contains(q, "__type(") && req.Variables["t"] == "NodeInFlightInput":
+		// the five kinds, and validating and validationSlots (runsheet
+		// ADR 079) unless UnknownFields names each
+		f.Reads = append(f.Reads, Call{Name: "__type NodeInFlightInput", Input: map[string]any{}})
+		if f.Unsupported["__type"] {
+			writeErrors(w, 200, "GraphQL introspection is not allowed")
+			return
+		}
+		fields := []any{}
+		for _, n := range []string{"building", "evaluating", "planning", "researching", "rebasing", "validating", "validationSlots"} {
+			if !f.UnknownFields[n] {
+				fields = append(fields, map[string]any{"name": n})
+			}
+		}
+		writeData(w, map[string]any{"__type": map[string]any{"inputFields": fields}})
 	case strings.Contains(q, "__type("):
 		f.Reads = append(f.Reads, Call{Name: "__type", Input: map[string]any{}})
 		if f.Unsupported["__type"] {
@@ -1578,7 +1593,7 @@ func (f *Fake) heartbeatInputType() map[string]any {
 		return map[string]any{"name": name}
 	}
 	var fields []any
-	for _, name := range []string{"aggregateId", "namespace", "version", "running", "draining", "updateError", "limits", "scaling", "runtimes", "adapters", "holding", "commit", "adopted", "resumed", "findings", "manifest"} {
+	for _, name := range []string{"aggregateId", "namespace", "version", "running", "draining", "updateError", "limits", "scaling", "runtimes", "adapters", "holding", "commit", "adopted", "resumed", "findings", "manifest", "inFlight"} {
 		if f.UnknownFields[name] {
 			continue
 		}
