@@ -47,6 +47,28 @@ type Node struct {
 	HeartbeatEveryS int `json:"heartbeat_every_s,omitempty"`
 }
 
+// ConnectRequest is POST /v1/nodes/{id}/connections: the node's keeper
+// offers it to a tenant for a product (runsheet ADR 066). Mesh accepts it
+// on creation when the keeper is the estate admin or owns the tenant;
+// otherwise it waits as offered.
+type ConnectRequest struct {
+	Tenant  string `json:"tenant"`
+	Product string `json:"product"`
+}
+
+// Connection is a node's connection as Mesh answers it: status offered,
+// accepted or revoked, and via estate or own when accepted on creation.
+// Only an accepted connection lets the node take the product's jobs for
+// the tenant.
+type Connection struct {
+	ConnectionID string `json:"connection_id"`
+	NodeID       string `json:"node_id,omitempty"`
+	Tenant       string `json:"tenant"`
+	Product      string `json:"product"`
+	Status       string `json:"status"`
+	Via          string `json:"via,omitempty"`
+}
+
 // LeaseBeat is one live lease in a heartbeat.
 type LeaseBeat struct {
 	LeaseID    string    `json:"lease_id"`

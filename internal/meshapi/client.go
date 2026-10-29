@@ -152,6 +152,16 @@ func (c *Client) Register(ctx context.Context, req RegisterRequest) (*Node, erro
 	return &out, nil
 }
 
+// Connect offers the node to a tenant for a product: POST
+// /v1/nodes/{id}/connections. The answer says whether it was accepted.
+func (c *Client) Connect(ctx context.Context, nodeID string, req ConnectRequest) (*Connection, error) {
+	var out Connection
+	if _, _, err := c.do(ctx, http.MethodPost, "/v1/nodes/"+url.PathEscape(nodeID)+"/connections", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // Heartbeat reports the node: POST /v1/nodes/{id}/heartbeat.
 func (c *Client) Heartbeat(ctx context.Context, nodeID string, req HeartbeatRequest) (*HeartbeatResponse, error) {
 	if req.Leases == nil {

@@ -32,6 +32,12 @@ type Runtime struct {
 	// Node is what the node registers as; OS and Arch default to this
 	// build's.
 	Node meshapi.RegisterRequest
+	// Connect are the (tenant, product) pairs the node offers itself to
+	// once registered (runsheet ADR 066): Mesh offers a node only the
+	// jobs of a product connected to it for the job's tenant, and accepts
+	// an offer on creation when the keeper is the estate admin or owns the
+	// tenant. An offer Mesh leaves waiting is logged, not fatal.
+	Connect []meshapi.ConnectRequest
 	// WorkRoot holds each lease's directory, leases/<lease_id>.
 	WorkRoot string
 	// SocketRoot is where each lease's sessionproxy socket directory is
@@ -127,6 +133,9 @@ func (r *Runtime) Run(ctx context.Context) error {
 	r.access = map[string][]meshapi.AccessRecord{}
 	r.mu.Unlock()
 	r.logf("nodev1: registered as %s (%s)", node.NodeID, r.Node.Name)
+	if err := r.connect(ctx, node.NodeID); err != nil {
+		return err
+	}
 
 	every := r.HeartbeatEvery
 	if every <= 0 && node.HeartbeatEveryS > 0 {
@@ -164,6 +173,22 @@ func (r *Runtime) Run(ctx context.Context) error {
 		}
 	}
 	return ctx.Err()
+}
+
+// connect offers the node to each of Connect.
+func (r *Runtime) connect(ctx context.Context, nodeID string) error {
+	for _, want := range r.Connect {
+		c, err := r.API.Connect(ctx, nodeID, want)
+		if err != nil {
+			return fmt.Errorf("nodev1: connect to %s for %s: %w", want.Tenant, want.Product, err)
+		}
+		if c.Status == "accepted" {
+			r.logf("nodev1: connected to %s for %s (%s)", c.Tenant, c.Product, c.Via)
+			continue
+		}
+		r.logf("nodev1: the connection to %s for %s is %s: it runs nothing until the tenant accepts it", c.Tenant, c.Product, c.Status)
+	}
+	return nil
 }
 
 func (r *Runtime) backoff() time.Duration {
