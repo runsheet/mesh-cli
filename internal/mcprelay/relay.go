@@ -19,6 +19,8 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 )
 
 // MaxMessage is the longest line the relay reads from stdin and the
@@ -56,6 +58,9 @@ type Relay struct {
 	// Stderr takes what the relay cannot answer on stdout; os.Stderr
 	// when nil.
 	Stderr io.Writer
+	// SocketWait is how long a dial of Socket is tried again while the
+	// socket is missing or refuses; DefaultSocketWait when zero.
+	SocketWait time.Duration
 
 	mu      sync.Mutex
 	session string
@@ -353,7 +358,7 @@ func (r *Relay) client() *http.Client {
 	if r.Socket != "" {
 		return &http.Client{Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, "unix", r.Socket)
+				return dialSocket(ctx, r.Socket, r.SocketWait)
 			},
 		}}
 	}
@@ -366,4 +371,38 @@ func (r *Relay) logf(format string, args ...any) {
 		w = os.Stderr
 	}
 	fmt.Fprintf(w, format+"\n", args...)
+}
+
+// DefaultSocketWait is how long a Socket relay tries a dial again while
+// its sessionproxy's socket is not there or not yet accepting.
+const DefaultSocketWait = 10 * time.Second
+
+// dialSocket dials the unix socket at path, trying again while it is
+// missing (ENOENT) or refusing (ECONNREFUSED) for up to wait: a session
+// whose first MCP call races its lease's sessionproxy coming up waits
+// for it instead of failing the call (mesh mcp-relay: dial unix …:
+// connect: no such file or directory; TestWritePath, 2026-10-30). Any
+// other error, or wait passing, answers the last error.
+func dialSocket(ctx context.Context, path string, wait time.Duration) (net.Conn, error) {
+	if wait <= 0 {
+		wait = DefaultSocketWait
+	}
+	deadline := time.Now().Add(wait)
+	backoff := 10 * time.Millisecond
+	var d net.Dialer
+	for {
+		c, err := d.DialContext(ctx, "unix", path)
+		if err == nil {
+			return c, nil
+		}
+		if !errors.Is(err, syscall.ENOENT) && !errors.Is(err, syscall.ECONNREFUSED) || time.Now().Add(backoff).After(deadline) {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(backoff):
+		}
+		backoff = min(backoff*2, 250*time.Millisecond)
+	}
 }

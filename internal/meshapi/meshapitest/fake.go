@@ -415,7 +415,16 @@ func (f *Fake) lease(w http.ResponseWriter, r *http.Request) {
 		case "finish":
 			state.End = "finished"
 		case "fail":
-			state.End = "failed"
+			// only cause work ends the job; any other cause is a
+			// hand-back, as Mesh's FailJob has it
+			var fr meshapi.FailRequest
+			json.Unmarshal(body, &fr)
+			if fr.Cause == meshapi.CauseWork {
+				state.End = "failed"
+				break
+			}
+			state.Status = "queued"
+			state.Handbacks++
 		default:
 			var hb meshapi.HandBackRequest
 			json.Unmarshal(body, &hb)

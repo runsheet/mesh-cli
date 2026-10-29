@@ -16,10 +16,9 @@ import (
 // directory.
 const leaseSocketName = "s"
 
-// leaseDirLen is how many hex characters of the lease id's hash name its
+// leaseDirLen is how many hex characters of the lease's hash name its
 // socket directory: short, since a unix socket's path is bounded
-// (mcprelay.MaxSocketPath), and stable, so a node restarted on the same
-// lease finds the directory again.
+// (mcprelay.MaxSocketPath).
 const leaseDirLen = 12
 
 // socketRoots are where the lease socket directories may go, in order:
@@ -48,13 +47,26 @@ func fitsSocket(root string) bool {
 	return len(filepath.Join(root, "0123456789ab", leaseSocketName)) <= mcprelay.MaxSocketPath
 }
 
+// leaseSocketLeaf names a lease's socket directory: a hash of the lease
+// and of this node process — its node id, work root and pid. Lease ids
+// are Mesh's derived ids, the same for the same job in every database,
+// so two nodes of one OS user (two e2e runs on one laptop) can hold
+// leases of the same id at once; named for the lease alone, each made
+// the other's directory afresh and removed it on release, and a session
+// dialled a socket that was gone or, worse, the other node's
+// (TestWritePath, 2026-10-30). Nothing needs the name to outlive the
+// process: a restarted node hands its leases back.
+func (r *Runtime) leaseSocketLeaf(lease string) string {
+	sum := sha256.Sum256([]byte(r.nodeID + "\x00" + r.WorkRoot + "\x00" + strconv.Itoa(os.Getpid()) + "\x00" + lease))
+	return hex.EncodeToString(sum[:])[:leaseDirLen]
+}
+
 // leaseSocketDir makes lease's socket directory, 0700, under the first
 // socket root whose socket path fits and which is a directory of this
-// user's own: one it can make 0700. A directory a crashed node left for
-// the lease is made afresh. The caller removes it when the lease ends.
+// user's own: one it can make 0700. A directory this node left for the
+// lease is made afresh. The caller removes it when the lease ends.
 func (r *Runtime) leaseSocketDir(lease string) (string, error) {
-	sum := sha256.Sum256([]byte(lease))
-	leaf := hex.EncodeToString(sum[:])[:leaseDirLen]
+	leaf := r.leaseSocketLeaf(lease)
 	var errs []error
 	for _, root := range r.socketRoots() {
 		if !fitsSocket(root) {
