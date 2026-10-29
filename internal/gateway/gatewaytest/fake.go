@@ -1036,6 +1036,21 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request, q string, vars map[
 			}
 		}
 		writeData(w, map[string]any{"__type": map[string]any{"inputFields": fields}})
+	case strings.Contains(q, "__type(") && req.Variables["t"] == "NodeManifestInput":
+		// the manifest's fields, and capabilities (runsheet ADR 079)
+		// unless UnknownFields names it
+		f.Reads = append(f.Reads, Call{Name: "__type NodeManifestInput", Input: map[string]any{}})
+		if f.Unsupported["__type"] {
+			writeErrors(w, 200, "GraphQL introspection is not allowed")
+			return
+		}
+		fields := []any{}
+		for _, n := range []string{"os", "arch", "tools", "runtimes", "harnesses", "sandbox", "capabilities"} {
+			if !f.UnknownFields[n] {
+				fields = append(fields, map[string]any{"name": n})
+			}
+		}
+		writeData(w, map[string]any{"__type": map[string]any{"inputFields": fields}})
 	case strings.Contains(q, "__type("):
 		f.Reads = append(f.Reads, Call{Name: "__type", Input: map[string]any{}})
 		if f.Unsupported["__type"] {

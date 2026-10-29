@@ -2284,8 +2284,9 @@ const ManifestEvery = time.Hour
 
 // Manifest is what the heartbeat says the node has to run work on: its
 // os, arch and toolchains (nodecaps.Probe, every ManifestEvery), with
-// this tick's runtimes, adapters and sandbox beside them. nil when the
-// node has no LookPath to probe with.
+// this tick's runtimes, adapters and sandbox beside them, and the
+// capabilities its release runs (apply-v1 on a node that validates merge
+// batches). nil when the node has no LookPath to probe with.
 func (l *Loop) Manifest(ctx context.Context, runtimes, adapters []string) *gateway.NodeManifest {
 	if l.LookPath == nil {
 		return nil
@@ -2318,6 +2319,11 @@ func (l *Loop) Manifest(ctx context.Context, runtimes, adapters []string) *gatew
 	if l.Sandbox != nil {
 		sb := *l.Sandbox
 		out.Sandbox = &sb
+	}
+	// a node that validates merge batches writes a chain's candidate
+	// itself (chain.go, runsheet ADR 079)
+	if l.ValidateBatch != nil {
+		out.Capabilities = []string{gateway.CapabilityApply}
 	}
 	return out
 }
