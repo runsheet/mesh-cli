@@ -94,15 +94,18 @@ func TestRunSuiteRecordsItsRun(t *testing.T) {
 
 	m := &fakeMesh{}
 	rec, signer := recorder(t, m, RunSuiteTool)
-	tool := (&RunSuite{Workspace: dir, Recorder: rec}).Tool()
+	var heard []string
+	tool := (&RunSuite{Workspace: dir, Recorder: rec,
+		Escalate: func(why string) string { heard = append(heard, why); return "opus" }}).Tool()
 	for _, c := range []struct {
-		args     map[string]any
-		exit     int
-		steps    int
-		failures []string
+		args      map[string]any
+		exit      int
+		steps     int
+		failures  []string
+		escalated string
 	}{
 		{args: map[string]any{"suites": []any{"unit"}}, exit: 0, steps: 1, failures: []string{"pkg.TestB"}},
-		{args: map[string]any{}, exit: 1, steps: 2, failures: []string{"pkg.TestB"}},
+		{args: map[string]any{}, exit: 1, steps: 2, failures: []string{"pkg.TestB"}, escalated: "opus"},
 	} {
 		text, err := tool.Call(context.Background(), c.args)
 		if err != nil {
@@ -115,9 +118,10 @@ func TestRunSuiteRecordsItsRun(t *testing.T) {
 			EvidenceID   string   `json:"evidence_id"`
 			OutputDigest string   `json:"output_digest"`
 			Head         string   `json:"head"`
+			Escalated    string   `json:"escalated_to"`
 		}
 		json.Unmarshal([]byte(text), &ans)
-		if ans.Exit != c.exit || len(ans.Steps) != c.steps || !reflect.DeepEqual(ans.Failing, c.failures) || ans.EvidenceID == "" {
+		if ans.Exit != c.exit || len(ans.Steps) != c.steps || !reflect.DeepEqual(ans.Failing, c.failures) || ans.EvidenceID == "" || ans.Escalated != c.escalated {
 			t.Fatalf("%v answered %s", c.args, text)
 		}
 		post := m.records[len(m.records)-1]
@@ -138,6 +142,10 @@ func TestRunSuiteRecordsItsRun(t *testing.T) {
 	}
 	if got := rec.IDs(); len(got) != 2 {
 		t.Fatalf("the recorder keeps %v", got)
+	}
+	// only the red run escalates (PR 2.11, trigger "red")
+	if len(heard) != 1 || !strings.HasPrefix(heard[0], "run_suite went red: ") {
+		t.Fatalf("escalations heard: %q", heard)
 	}
 	if m.order[0] != "blob" || m.order[1] != "evidence" {
 		t.Fatalf("the blob goes up before its record: %v", m.order)

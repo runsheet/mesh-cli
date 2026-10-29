@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"projectmesh.io/mesh-cli/internal/meshapi"
@@ -59,7 +60,8 @@ func TestApplyOnto(t *testing.T) {
 		m := &fakeMesh{}
 		rec, _ := recorder(t, m)
 		w := work()
-		text, err := (&ApplyOnto{Grant: grant, Repo: "acme/fixture", Workspace: w, Code: ok, Recorder: rec}).Tool().Call(context.Background(), nil)
+		escalate := func(string) string { t.Fatal("a clean apply escalated"); return "" }
+		text, err := (&ApplyOnto{Grant: grant, Repo: "acme/fixture", Workspace: w, Code: ok, Recorder: rec, Escalate: escalate}).Tool().Call(context.Background(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -90,7 +92,9 @@ func TestApplyOnto(t *testing.T) {
 
 	m := &fakeMesh{}
 	rec, _ := recorder(t, m)
-	text, err := (&ApplyOnto{Grant: grant, Repo: "acme/fixture", Workspace: work(), Code: bad, Recorder: rec}).Tool().Call(context.Background(), nil)
+	var heard []string
+	escalate := func(why string) string { heard = append(heard, why); return "opus" }
+	text, err := (&ApplyOnto{Grant: grant, Repo: "acme/fixture", Workspace: work(), Code: bad, Recorder: rec, Escalate: escalate}).Tool().Call(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,10 +104,15 @@ func TestApplyOnto(t *testing.T) {
 			Paths []string `json:"paths"`
 		} `json:"conflict"`
 		EvidenceID string `json:"evidence_id"`
+		Escalated  string `json:"escalated_to"`
 	}
 	json.Unmarshal([]byte(text), &ans)
 	if ans.Conflict == nil || ans.Conflict.Index != 0 || len(ans.Conflict.Paths) != 1 || ans.Conflict.Paths[0] != "a.txt" || ans.EvidenceID == "" {
 		t.Fatalf("a clash answered %s", text)
+	}
+	// a conflict escalates (PR 2.11, trigger "conflict")
+	if len(heard) != 1 || !strings.HasPrefix(heard[0], "apply_onto conflicted: ") || ans.Escalated != "opus" {
+		t.Fatalf("escalations heard %q, answered %s", heard, text)
 	}
 	if st, _ := statementOf(t, m.records[0]); st.Predicate.Exit != 1 {
 		t.Fatalf("a conflict is recorded with exit %d", st.Predicate.Exit)
