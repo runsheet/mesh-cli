@@ -64,13 +64,14 @@ func freePort(t *testing.T) int {
 // environment alone plus the fake claude's switch, on its streams. pre,
 // set, runs in the agent's environment before the session (sh -c).
 func hostAgent(t *testing.T, out, pre string) func(context.Context, sandbox.AgentSpec) (sandbox.Exit, error) {
-	nodeBin, nodeErr := exec.LookPath("node")
+	t.Helper()
+	nodeBin, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("no node on this machine to run the pod's git bridge")
+	}
 	return func(ctx context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
 		argv := slices.Clone(spec.Command)
 		if argv[0] == "node" {
-			if nodeErr != nil {
-				t.Skip("no node on this machine to run the pod's git bridge")
-			}
 			argv[0] = nodeBin
 		}
 		if pre != "" {
