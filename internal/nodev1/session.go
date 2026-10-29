@@ -54,6 +54,10 @@ type SessionSpec struct {
 	// the lease's liveness (progress_at) and the evidence hooks. It must
 	// not block.
 	OnEvent func(harness.Event)
+	// Pod is the lease's pod when its actor opened one (the brief named
+	// pods and the node has a sandbox runtime): a sandboxed session runs
+	// its agent there, as sandbox.AgentName(pod). "" is none.
+	Pod string
 }
 
 // SessionResult is how a session ended.

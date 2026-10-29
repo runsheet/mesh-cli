@@ -41,6 +41,7 @@ var (
 	// The actor node's flags (ADR-044), each off by default.
 	nodeRunScheduler    bool
 	nodeRunAccountSlots int
+	nodeRunActors       bool
 )
 
 // nodeRunCmd is the Mesh v1 node runtime (internal/nodev1), beside the
@@ -116,6 +117,7 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 			})
 			rt.Scheduler.Logf = logger.Printf
 		}
+		rt.Actors = nodeRunActors
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		if err := rt.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -207,6 +209,7 @@ func init() {
 	f.StringVar(&nodeRunRekorURL, "rekor-url", "", "the Rekor node tools' records are logged in (default $MESH_REKOR_URL, else node.yaml's sigstore.rekor_url)")
 	f.BoolVar(&nodeRunScheduler, "actors-scheduler", false, "the scheduler owns the node's capacity (ADR-044): leases hold their resources as scheduler leases, the node reports what is free on each take and runs up to --slots leases side by side")
 	f.IntVar(&nodeRunAccountSlots, "account-slots", 0, "with --actors-scheduler, sessions at once per model account (0 is unbounded)")
+	f.BoolVar(&nodeRunActors, "actors", false, "run each lease as a job actor (ADR-044): it owns the lease's directory, room, grant and proxy, writes actor.json before each state change, releases everything however the lease ends, and hands back pod_killed a session killed from outside; a restarted node releases the actors it left")
 	_ = nodeRunCmd.MarkFlagRequired("api")
 	nodeCmd.AddCommand(nodeRunCmd)
 }

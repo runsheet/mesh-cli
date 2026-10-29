@@ -263,6 +263,24 @@ func (f *Fake) StopAgent(_ context.Context, name string) error {
 	return nil
 }
 
+// KillAgent kills a running agent from outside, as the OOM killer or an
+// operator's `podman kill` would: its container exits code (137 for
+// SIGKILL when 0), a detached Agent's ctx is cancelled, and the pod and
+// its sidecars stay standing — a pod left running only a sidecar.
+func (f *Fake) KillAgent(name string, code int) {
+	if code == 0 {
+		code = 137
+	}
+	f.call("kill-agent " + name)
+	// the exit is set first, so the agent's own end does not replace it
+	f.EndAgent(name, Exit{Code: code})
+	f.mu.Lock()
+	if cancel := f.cancels[name]; cancel != nil {
+		cancel()
+	}
+	f.mu.Unlock()
+}
+
 // AddSidecar implements Runtime.
 func (f *Fake) AddSidecar(_ context.Context, pod Pod, spec SidecarSpec) error {
 	f.call("sidecar " + pod.Name + " " + spec.Name)
