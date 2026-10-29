@@ -138,8 +138,10 @@ type Runtime struct {
 	relay   *gitrelay.Server
 	mirrors *resources.Mirrors
 	mu      sync.Mutex
-	live    map[string]*running
-	access  map[string][]meshapi.AccessRecord
+	// leases are the leases in flight, each its own record (the job
+	// actor's, under --actors): the node keeps no other in-flight state
+	// of a lease (ADR-044; guard_test.go)
+	leases actor.Registry[*running]
 	// accounts are the model accounts' latest standing, from their
 	// sessions' rate-limit readings, for the heartbeat (accounts.go)
 	accounts map[string]*accountReading
@@ -165,6 +167,9 @@ type running struct {
 	actor       *actor.Actor
 	pod         string
 	escalatedAt time.Time
+	// access are the relay's AccessRecords of the lease, posted to Mesh
+	// when it ends.
+	access []meshapi.AccessRecord
 }
 
 // touch is the lease's session showing progress: its progress_at in the
@@ -172,7 +177,7 @@ type running struct {
 func (r *Runtime) touch(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if l := r.live[id]; l != nil {
+	if l := r.lease(id); l != nil {
 		l.progressAt = time.Now()
 	}
 }
@@ -181,7 +186,7 @@ func (r *Runtime) touch(id string) {
 // hold has none.
 func (r *Runtime) deliver(id string, msg Message) error {
 	r.mu.Lock()
-	l := r.live[id]
+	l := r.lease(id)
 	r.mu.Unlock()
 	if l == nil || l.mailbox == nil {
 		return fmt.Errorf("the node holds no lease %s", id)
@@ -204,7 +209,7 @@ var (
 func (r *Runtime) cancelLease(id, why string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	l := r.live[id]
+	l := r.lease(id)
 	if l == nil {
 		return false
 	}
@@ -222,7 +227,7 @@ func (r *Runtime) cancelLease(id, why string) bool {
 func (r *Runtime) cancelReason(id string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if l := r.live[id]; l != nil && l.cancelled != "" {
+	if l := r.lease(id); l != nil && l.cancelled != "" {
 		return l.cancelled
 	}
 	return "Mesh cancelled the lease"
@@ -273,8 +278,6 @@ func (r *Runtime) Run(ctx context.Context) error {
 	}
 	r.mu.Lock()
 	r.nodeID = node.NodeID
-	r.live = map[string]*running{}
-	r.access = map[string][]meshapi.AccessRecord{}
 	r.mu.Unlock()
 	r.logf("nodev1: registered as %s (%s)", node.NodeID, r.Node.Name)
 	if err := r.connect(ctx, node.NodeID); err != nil {
@@ -420,8 +423,8 @@ func (r *Runtime) heartbeats(ctx context.Context, every time.Duration) {
 func (r *Runtime) heartbeat(ctx context.Context) {
 	r.mu.Lock()
 	var beats []meshapi.LeaseBeat
-	for id, l := range r.live {
-		beats = append(beats, meshapi.LeaseBeat{LeaseID: id, ProgressAt: l.progressAt.UTC()})
+	for _, e := range r.leases.All() {
+		beats = append(beats, meshapi.LeaseBeat{LeaseID: e.ID, ProgressAt: e.Value.progressAt.UTC()})
 	}
 	nodeID := r.nodeID
 	r.mu.Unlock()
@@ -456,11 +459,24 @@ func (r *Runtime) audit(e gitrelay.Event) {
 	for _, p := range e.Pushed {
 		rec.Pushed = append(rec.Pushed, meshapi.PushedRef{Ref: p.Ref, SHA: p.SHA})
 	}
+	r.keepAccess(e.Lease, rec)
+}
+
+// keepAccess keeps rec with the lease's own record; a lease the node no
+// longer runs keeps nothing.
+func (r *Runtime) keepAccess(id string, rec meshapi.AccessRecord) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.access != nil {
-		r.access[e.Lease] = append(r.access[e.Lease], rec)
+	if l := r.lease(id); l != nil {
+		l.access = append(l.access, rec)
 	}
+}
+
+// lease is the lease's record in flight, nil when the node runs no such
+// lease.
+func (r *Runtime) lease(id string) *running {
+	l, _ := r.leases.Get(id)
+	return l
 }
 
 // trimMirrors removes the mirrors no lease has used for
@@ -483,19 +499,19 @@ func (r *Runtime) trimMirrors() {
 // AccessRecord of kind api, posted to Mesh when the lease ends.
 func (r *Runtime) auditAPI(lease string, c sessionproxy.APICall) {
 	rec := meshapi.AccessRecord{Kind: "api", Vendor: c.Vendor, Method: c.Method, Path: c.Path, Outcome: c.Outcome, Reason: c.Reason, Bytes: c.Bytes, At: c.At.UTC()}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.access != nil {
-		r.access[lease] = append(r.access[lease], rec)
-	}
+	r.keepAccess(lease, rec)
 }
 
 // takeAccess answers and forgets the lease's AccessRecords.
 func (r *Runtime) takeAccess(lease string) []meshapi.AccessRecord {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := r.access[lease]
-	delete(r.access, lease)
+	l := r.lease(lease)
+	if l == nil {
+		return nil
+	}
+	out := l.access
+	l.access = nil
 	return out
 }
 
@@ -503,7 +519,7 @@ func (r *Runtime) takeAccess(lease string) []meshapi.AccessRecord {
 func (r *Runtime) turnTool(id string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if l := r.live[id]; l != nil {
+	if l := r.lease(id); l != nil {
 		return l.turnTool
 	}
 	return ""

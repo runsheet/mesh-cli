@@ -29,8 +29,10 @@ var _ supervisor.Fleet = fleet{}
 func (f fleet) Live() []supervisor.Live {
 	f.r.mu.Lock()
 	defer f.r.mu.Unlock()
-	out := make([]supervisor.Live, 0, len(f.r.live))
-	for id, l := range f.r.live {
+	all := f.r.leases.All()
+	out := make([]supervisor.Live, 0, len(all))
+	for _, e := range all {
+		id, l := e.ID, e.Value
 		if l.actor == nil {
 			continue
 		}
@@ -47,7 +49,7 @@ func (f fleet) Live() []supervisor.Live {
 // when the kind escalates on stall.
 func (f fleet) Escalate(id, why string) bool {
 	f.r.mu.Lock()
-	l := f.r.live[id]
+	l := f.r.lease(id)
 	if l != nil {
 		l.escalatedAt = time.Now()
 	}
@@ -63,7 +65,7 @@ func (f fleet) Escalate(id, why string) bool {
 func (f fleet) Stall(id, why string) {
 	f.r.mu.Lock()
 	defer f.r.mu.Unlock()
-	l := f.r.live[id]
+	l := f.r.lease(id)
 	if l == nil {
 		return
 	}
