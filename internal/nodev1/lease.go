@@ -1,10 +1,12 @@
 package nodev1
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -45,6 +47,12 @@ type outcome struct {
 	// evidence are the ids of every ToolRecord the lease's node tools
 	// posted, which the finish names.
 	evidence []string
+	// account is what the session ran on: the job's model account or
+	// the node's own login.
+	account *sessionAccount
+	// harness and model are the session's harness and the model it
+	// ended on, for the usage report.
+	harness, model string
 }
 
 // runLease runs one lease to its report: the lease's directory and
@@ -92,6 +100,11 @@ func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take, room *schedule
 	out.nodeEnding = ctx.Err() != nil
 	out.access = r.takeAccess(id)
 	r.report(id, b, out)
+	// the account's standing as the session last read it reaches Mesh now,
+	// before the node's next take, not a heartbeat period later
+	if len(r.unsentAccounts()) > 0 && ctx.Err() == nil {
+		r.heartbeat(ctx)
+	}
 }
 
 // work prepares the lease and runs its session: the lease's Latchkey
@@ -114,13 +127,20 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox) outco
 	defer os.RemoveAll(dir)
 
 	var tokens *sessionTokens
-	if len(b.Servers) > 0 || b.Git != nil || len(apiRules(b)) > 0 {
+	if len(b.Servers) > 0 || b.Git != nil || len(apiRules(b)) > 0 || b.CredentialRef != "" {
 		var err error
 		if tokens, err = openSession(ctx, r.API, b.LeaseID, r.LatchkeyHTTP); err != nil {
 			return outcome{err: err, cause: context.Cause(ctx)}
 		}
 	}
+	// the job's model account, when Mesh picked one: read now, so a lease
+	// whose account Latchkey refuses is handed back before any checkout
+	account, err := openAccount(ctx, b.CredentialRef, tokens)
+	if err != nil {
+		return outcome{err: err, cause: context.Cause(ctx)}
+	}
 	var grant *gitrelay.Grant
+	var resumed *resumePoint
 	if b.Git != nil && b.Git.Repo != "" {
 		policy := policyOf(b.Git)
 		mint := func(ctx context.Context) (gitrelay.Token, error) {
@@ -136,7 +156,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox) outco
 				r.logf("nodev1: lease %s: %v", b.LeaseID, err)
 			}
 		}()
-		if err := checkout(ctx, grant, b, workspace, r.mirrors, r.logf); err != nil {
+		if resumed, err = checkout(ctx, grant, b, workspace, r.mirrors, r.logf); err != nil {
 			return outcome{err: fmt.Errorf("checking out %s: %w", b.Git.Repo, err), cause: context.Cause(ctx)}
 		}
 		// the relay proves a fast-forward-only push in this checkout
@@ -159,7 +179,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox) outco
 	spec := SessionSpec{
 		Label:     b.LeaseID,
 		Workspace: workspace,
-		Prompt:    promptWithRelay(b, sock),
+		Prompt:    promptWithRelay(b, sock, resumed),
 		Model:     b.Harness.Model.Default,
 		BudgetUSD: b.Harness.Budget.USD,
 		Servers:   servers,
@@ -168,8 +188,12 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox) outco
 		Mailbox:   mb,
 		Ladder:    ladder,
 		Thread:    b.Thread != nil,
-		OnEvent:   func(harness.Event) { r.touch(b.LeaseID) },
+		OnEvent: func(ev harness.Event) {
+			r.touch(b.LeaseID)
+			r.readAccount(account.ref(), ev)
+		},
 	}
+	account.apply(&spec)
 	sctx := ctx
 	if m := b.Harness.Budget.Minutes; m > 0 {
 		var stop context.CancelFunc
@@ -177,7 +201,8 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox) outco
 		defer stop()
 	}
 	res, err := r.Session.Run(sctx, spec)
-	o := outcome{result: res, err: err, finish: fin.result(), escalations: taken(ladder.Steps()), evidence: rec.IDs()}
+	o := outcome{result: res, err: err, finish: fin.result(), escalations: taken(ladder.Steps()), evidence: rec.IDs(),
+		account: account, harness: b.Harness.Name, model: ladder.Model()}
 	if ctx.Err() != nil {
 		o.cause = context.Cause(ctx)
 	} else if errors.Is(err, context.DeadlineExceeded) || sctx.Err() != nil {
@@ -319,8 +344,9 @@ func (r *Runtime) renew(ctx context.Context, lease *meshapi.Lease, cancel contex
 // fault rather than a red verdict, and max_handbacks still bounds it. A
 // work failure would end the job instead, but would charge the work
 // with the node's fault. What makes the retry safe is that it builds on
-// the writes: the next lease's checkout starts from the job's push_to
-// when an earlier lease pushed there (checkout).
+// the writes: Mesh records the lease's pushes from its AccessRecords,
+// and the next lease's checkout starts from the most recent of them (the
+// brief's pushed; checkout).
 func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) {
 	writes := landedWrites(o.access)
 	switch {
@@ -329,21 +355,19 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) {
 		return
 	case errors.Is(o.cause, errCancelled):
 		r.postAccess(id, o.access)
+		r.postUsage(id, o)
 		r.handBack(id, meshapi.CauseCancelled, afterWrites(r.cancelReason(id), writes), o.result.SessionID)
 		return
 	case o.nodeEnding:
 		r.postAccess(id, o.access)
+		r.postUsage(id, o)
 		r.handBack(id, meshapi.CauseNodeRestart, afterWrites("the node stopped while the session ran", writes), o.result.SessionID)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
 	defer cancel()
 	r.postAccess(id, o.access)
-	if u := usageOf(o.result, o.escalations); u != nil {
-		if err := r.API.Usage(ctx, id, *u); err != nil {
-			r.logf("nodev1: lease %s: usage: %v", id, err)
-		}
-	}
+	r.postUsage(id, o)
 	if o.err != nil && len(writes) > 0 {
 		r.logf("nodev1: lease %s failed AFTER IRREVERSIBLE WRITES (%s): %v", id, strings.Join(writes, "; "), o.err)
 		r.fail(id, meshapi.CauseInfrastructure, afterWrites(o.err.Error(), writes))
@@ -374,6 +398,21 @@ func (r *Runtime) postAccess(id string, records []meshapi.AccessRecord) {
 	defer cancel()
 	if err := r.API.Access(ctx, id, records); err != nil {
 		r.logf("nodev1: lease %s: access records: %v", id, err)
+	}
+}
+
+// postUsage reports what the lease's session spent, when it spent
+// anything: the lease's whole usage so far, which replaces any earlier
+// report at Mesh. A hand-back's spend is the job's too.
+func (r *Runtime) postUsage(id string, o outcome) {
+	u := usageOf(o)
+	if u == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
+	defer cancel()
+	if err := r.API.Usage(ctx, id, *u); err != nil {
+		r.logf("nodev1: lease %s: usage: %v", id, err)
 	}
 }
 
@@ -409,14 +448,37 @@ func (r *Runtime) handBack(id, cause, reason, sessionRef string) {
 	r.logf("nodev1: lease %s handed back (%s); job %s is %s", id, cause, st.JobID, st.Status)
 }
 
-// usageOf is what the session spent, by model, and the escalations it
-// took; nil when it reported nothing. A streaming session names its
-// spend by model; a session that did not (an older CLI) has one model's.
-func usageOf(res SessionResult, escalations []meshapi.Escalation) *meshapi.UsageRequest {
-	if res.Usage == nil && res.CostUSD == 0 && len(res.Models) == 0 && len(escalations) == 0 {
+// usageOf is what the session spent — summed, by model, and the
+// escalations it took — in Mesh's JobUsage shape (projectmesh-io/api
+// contracts/v1/lease-usage.json); nil when it reported nothing. A
+// streaming session names its spend by model; a session that did not
+// (an older CLI) has one model's. Input tokens count the cached ones
+// too. The list cost is the CLI's; the actual cost is the list cost on
+// an api-key account and nothing on a subscription or the node's own
+// login.
+func usageOf(o outcome) *meshapi.UsageRequest {
+	res := o.result
+	if res.Usage == nil && res.CostUSD == 0 && len(res.Models) == 0 && len(o.escalations) == 0 {
 		return nil
 	}
-	u := &meshapi.UsageRequest{Turns: res.Turns, DurationMS: res.Duration.Milliseconds(), Escalations: escalations}
+	apiKey := o.account != nil && o.account.cred.apiKey()
+	actual := func(list int64) int64 {
+		if apiKey {
+			return list
+		}
+		return 0
+	}
+	u := &meshapi.UsageRequest{
+		Harness: o.harness, Model: o.model, AccountRef: o.account.ref(),
+		Turns: int64(res.Turns), DurationMS: res.Duration.Milliseconds(),
+		Models: []meshapi.ModelUsage{}, Escalations: o.escalations,
+	}
+	if u.Harness == "" {
+		u.Harness = "claude-code"
+	}
+	if u.Escalations == nil {
+		u.Escalations = []meshapi.Escalation{}
+	}
 	if len(res.Models) > 0 {
 		names := make([]string, 0, len(res.Models))
 		for name := range res.Models {
@@ -425,25 +487,48 @@ func usageOf(res SessionResult, escalations []meshapi.Escalation) *meshapi.Usage
 		sort.Strings(names)
 		for _, name := range names {
 			m := res.Models[name]
-			u.Usage = append(u.Usage, meshapi.ModelUsage{
-				Model:                 name,
-				InputTokens:           m.InputTokens + m.CacheReadInputTokens + m.CacheCreationInputTokens,
-				CachedInputTokens:     m.CacheReadInputTokens,
-				CacheWriteInputTokens: m.CacheCreationInputTokens,
-				OutputTokens:          m.OutputTokens,
-				CostUSD:               m.CostUSD,
+			list := cents(m.CostUSD)
+			u.Models = append(u.Models, meshapi.ModelUsage{
+				Model:            name,
+				TokensInput:      m.InputTokens + m.CacheReadInputTokens + m.CacheCreationInputTokens,
+				TokensOutput:     m.OutputTokens,
+				TokensCacheRead:  m.CacheReadInputTokens,
+				TokensCacheWrite: m.CacheCreationInputTokens,
+				CostListCents:    list,
+				CostActualCents:  actual(list),
+				Turns:            int64(res.ModelTurns[name]),
 			})
 		}
-		return u
+	} else if r := res.Usage; r != nil || res.CostUSD > 0 {
+		m := meshapi.ModelUsage{CostListCents: cents(res.CostUSD), Turns: int64(res.Turns)}
+		if r != nil {
+			m.Model = r.Model
+			m.TokensInput, m.TokensCacheRead, m.TokensCacheWrite = r.InputTokens, r.CachedInputTokens, r.CacheWriteInputTokens
+			m.TokensOutput = r.OutputTokens
+		}
+		m.CostActualCents = actual(m.CostListCents)
+		if m.Model == "" {
+			m.Model = cmp.Or(o.model, "unknown")
+		}
+		u.Models = []meshapi.ModelUsage{m}
 	}
-	m := meshapi.ModelUsage{CostUSD: res.CostUSD}
-	if r := res.Usage; r != nil {
-		m.Model = r.Model
-		m.InputTokens, m.CachedInputTokens, m.CacheWriteInputTokens = r.InputTokens, r.CachedInputTokens, r.CacheWriteInputTokens
-		m.OutputTokens = r.OutputTokens
+	for _, m := range u.Models {
+		u.TokensInput += m.TokensInput
+		u.TokensOutput += m.TokensOutput
+		u.TokensCacheRead += m.TokensCacheRead
+		u.TokensCacheWrite += m.TokensCacheWrite
+		u.CostListCents += m.CostListCents
+		u.CostActualCents += m.CostActualCents
 	}
-	u.Usage = []meshapi.ModelUsage{m}
+	if u.Model == "" && len(u.Models) == 1 {
+		u.Model = u.Models[0].Model
+	}
 	return u
+}
+
+// cents is a dollar amount in whole cents, rounded.
+func cents(usd float64) int64 {
+	return int64(math.Round(usd * 100))
 }
 
 // taken are the escalations the session took, leaving those it refused.

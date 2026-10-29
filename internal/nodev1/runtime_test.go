@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -250,7 +251,7 @@ func TestRunTakesALeaseRunsOneSessionAndFinishes(t *testing.T) {
 	}
 	var usage meshapi.UsageRequest
 	json.Unmarshal(g.fake.Calls("usage")[0].Body, &usage)
-	if len(usage.Usage) != 1 || usage.Usage[0].Model != "claude-haiku-4-5" || usage.Turns != 3 {
+	if len(usage.Models) != 1 || usage.Models[0].Model != "claude-haiku-4-5" || usage.Turns != 3 || usage.Harness != "claude-code" || usage.AccountRef != "acct-fake" {
 		t.Fatalf("usage %+v", usage)
 	}
 
@@ -270,6 +271,12 @@ func TestRunTakesALeaseRunsOneSessionAndFinishes(t *testing.T) {
 		t.Fatalf("grants left open: %v", g.rt.relay.Leases())
 	}
 	spec := sess.specs[0]
+	// the brief's credential_ref: the session runs on the job's account,
+	// its secret in the session's environment alone and masked
+	if !slices.Contains(spec.Env, "CLAUDE_CODE_OAUTH_TOKEN="+fakeModelSecret) || !slices.Contains(spec.Secrets, fakeModelSecret) ||
+		!slices.Contains(spec.Unset, "ANTHROPIC_API_KEY") || !slices.Contains(spec.Unset, "CLAUDE_CODE_OAUTH_TOKEN") {
+		t.Fatalf("the session's account env %v unset %v", spec.Env, spec.Unset)
+	}
 	if spec.Model != "haiku" || !strings.Contains(spec.Prompt, "`brief`") || !strings.Contains(spec.Prompt, "`submit`") {
 		t.Fatalf("spec model %q prompt %q", spec.Model, spec.Prompt)
 	}

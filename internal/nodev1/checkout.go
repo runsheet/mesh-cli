@@ -76,23 +76,35 @@ func baseOf(g *meshapi.Git) string {
 	return ""
 }
 
+// resumePoint is where a retried lease's checkout starts instead of the
+// base: a ref an earlier lease of the job pushed, and its commit. LeaseN
+// is the lease that pushed it, 0 when only push_to says so.
+type resumePoint struct {
+	Ref    string
+	SHA    string
+	LeaseN int
+}
+
 // checkout clones the lease's repository through its grant into
-// workspace and checks out the brief's base: origin is the relay's
-// capability URL, and no credential helper, askpass or token is in the
-// checkout's config or git's environment. With mirrors, the tenant's
-// mirror of the repository is first brought up to date through the same
-// grant and the clone borrows its objects, then copies them
-// (--dissociate), so the checkout never depends on the mirror; a mirror
-// that cannot be synced is skipped and logged.
-func checkout(ctx context.Context, grant *gitrelay.Grant, b *meshapi.Brief, workspace string, mirrors *resources.Mirrors, logf func(string, ...any)) error {
-	git := func(dir string, args ...string) error {
+// workspace and checks out the brief's base — or, for a retried write
+// lease, what an earlier lease of the job pushed (resumePushed), which it
+// answers: origin is the relay's capability URL, and no credential
+// helper, askpass or token is in the checkout's config or git's
+// environment. With mirrors, the tenant's mirror of the repository is
+// first brought up to date through the same grant and the clone borrows
+// its objects, then copies them (--dissociate), so the checkout never
+// depends on the mirror; a mirror that cannot be synced is skipped and
+// logged.
+func checkout(ctx context.Context, grant *gitrelay.Grant, b *meshapi.Brief, workspace string, mirrors *resources.Mirrors, logf func(string, ...any)) (*resumePoint, error) {
+	git := func(dir string, args ...string) (string, error) {
 		cmd := exec.CommandContext(ctx, "git", append(append([]string(nil), noCredentials...), args...)...)
 		cmd.Dir = dir
 		cmd.Env = gitEnv()
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("git %s: %v: %s", args[0], err, strings.TrimSpace(lastLines(string(out), 5)))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("git %s: %v: %s", args[0], err, strings.TrimSpace(lastLines(string(out), 5)))
 		}
-		return nil
+		return strings.TrimSpace(string(out)), nil
 	}
 	origin := grant.Base() + b.Git.Repo + ".git"
 	clone := []string{"clone", "-q"}
@@ -105,15 +117,15 @@ func checkout(ctx context.Context, grant *gitrelay.Grant, b *meshapi.Brief, work
 			clone = append(clone, "--reference", dir, "--dissociate")
 		}
 	}
-	if err := git(workspace, append(clone, origin, ".")...); err != nil {
-		return err
+	if _, err := git(workspace, append(clone, origin, ".")...); err != nil {
+		return nil, err
 	}
 	if b.Code == nil {
-		return nil
+		return nil, nil
 	}
 	if ref := b.Code.BaseRef; ref != "" {
-		if err := git(workspace, "fetch", "-q", "origin", ref); err != nil {
-			return err
+		if _, err := git(workspace, "fetch", "-q", "origin", ref); err != nil {
+			return nil, err
 		}
 	}
 	target := b.Code.BaseSHA
@@ -121,32 +133,60 @@ func checkout(ctx context.Context, grant *gitrelay.Grant, b *meshapi.Brief, work
 		target = "FETCH_HEAD"
 	}
 	if target != "" {
-		if err := git(workspace, "checkout", "-q", "--detach", target); err != nil {
-			return err
+		if _, err := git(workspace, "checkout", "-q", "--detach", target); err != nil {
+			return nil, err
 		}
 	}
-	return resumePushed(ctx, git, b, workspace)
+	return resumePushed(git, b, workspace, logf)
 }
 
-// resumePushed moves a retried write lease's checkout onto its job's
-// push_to when an earlier lease of the job already pushed there and the
-// push is on top of the base: a lease that failed after its push landed
-// is handed back (report), and a run from the base again could only
-// push a non-fast-forward the relay refuses. The first lease, a read
-// lease and a job naming no push_to keep the base.
-func resumePushed(ctx context.Context, git func(string, ...string) error, b *meshapi.Brief, workspace string) error {
-	if b.LeaseN <= 1 || b.Code.PushTo == "" || b.Git.Access != string(gitrelay.Write) {
-		return nil
+// resumePushed moves a retried write lease's checkout onto what an
+// earlier lease of its job pushed, when that is on top of the base, and
+// answers where it moved to. A lease that pushed and then ended without
+// finishing leaves its push at the vendor, and a run from the base again
+// could only push a non-fast-forward the relay refuses.
+//
+// The brief's pushed (Mesh's record of the earlier leases' ok pushes,
+// from their relays' AccessRecords) names the refs, the most recent
+// last: the checkout starts from that ref as the vendor holds it now, so
+// a ref that moved on since still gives a fast-forward. A brief from a
+// Mesh that names no pushed falls back to the job's push_to (#1678). The
+// first lease, a read lease, and a push that is not on top of the base
+// keep the base.
+func resumePushed(git func(string, ...string) (string, error), b *meshapi.Brief, workspace string, logf func(string, ...any)) (*resumePoint, error) {
+	if b.Git == nil || b.Git.Access != string(gitrelay.Write) {
+		return nil, nil
 	}
-	ref := b.Code.PushTo
-	if !strings.HasPrefix(ref, "refs/") {
-		ref = "refs/heads/" + ref
+	var at resumePoint
+	switch {
+	case len(b.Pushed) > 0:
+		p := b.Pushed[len(b.Pushed)-1]
+		at = resumePoint{Ref: p.Ref, SHA: p.SHA, LeaseN: p.LeaseN}
+	case b.LeaseN > 1 && b.Code.PushTo != "":
+		at = resumePoint{Ref: b.Code.PushTo}
+	default:
+		return nil, nil
 	}
-	if err := git(workspace, "fetch", "-q", "origin", ref); err != nil {
-		return nil // nothing was pushed there
+	if !strings.HasPrefix(at.Ref, "refs/") {
+		at.Ref = "refs/heads/" + at.Ref
 	}
-	if err := git(workspace, "merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD"); err != nil {
-		return nil // not on top of the base: the session starts from the base
+	if _, err := git(workspace, "fetch", "-q", "origin", at.Ref); err != nil {
+		if at.LeaseN > 0 {
+			logf("nodev1: lease %s: %s, which lease %d pushed, is gone: the session starts from the base", b.LeaseID, at.Ref, at.LeaseN)
+		}
+		return nil, nil // nothing is there now
 	}
-	return git(workspace, "checkout", "-q", "--detach", "FETCH_HEAD")
+	if _, err := git(workspace, "merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD"); err != nil {
+		logf("nodev1: lease %s: %s is not on top of the base: the session starts from the base", b.LeaseID, at.Ref)
+		return nil, nil
+	}
+	if _, err := git(workspace, "checkout", "-q", "--detach", "FETCH_HEAD"); err != nil {
+		return nil, err
+	}
+	sha, err := git(workspace, "rev-parse", "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	at.SHA = sha
+	return &at, nil
 }

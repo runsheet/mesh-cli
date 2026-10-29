@@ -84,7 +84,9 @@ type Session struct {
 	turns   int
 	results int
 	models  map[string]harness.ModelSpend
-	ended   bool
+	// modelTurns are the model turns by the model that ran them
+	modelTurns map[string]int
+	ended      bool
 
 	parsed chan harness.Result
 	done   chan struct{}
@@ -109,6 +111,10 @@ type Result struct {
 	// Models is the spend by model, as the CLI names each, from the last
 	// result event's modelUsage.
 	Models map[string]harness.ModelSpend
+	// ModelTurns are Turns by the model that ran them, as the CLI names
+	// it: each user turn's model turns go to the model whose spend grew
+	// most in it (a turn escalated mid-way is credited to one model).
+	ModelTurns map[string]int
 	// Stream is everything else the stream parser kept.
 	Stream   harness.Result
 	Duration time.Duration
@@ -184,6 +190,12 @@ func (s *Session) observe(next func(harness.Event)) func(harness.Event) {
 			s.turns += ev.NumTurns
 			s.results++
 			if ev.ModelUsage != nil {
+				if m := grewMost(s.models, ev.ModelUsage); m != "" && ev.NumTurns > 0 {
+					if s.modelTurns == nil {
+						s.modelTurns = map[string]int{}
+					}
+					s.modelTurns[m] += ev.NumTurns
+				}
 				s.models = ev.ModelUsage
 			}
 			s.mu.Unlock()
@@ -192,6 +204,29 @@ func (s *Session) observe(next func(harness.Event)) func(harness.Event) {
 			next(ev)
 		}
 	}
+}
+
+// grewMost is the model whose spend grew most from before to now — a
+// result's modelUsage is the session's whole spend so far — by tokens,
+// then cost; "" when none grew.
+func grewMost(before, now map[string]harness.ModelSpend) string {
+	best, bestTokens, bestCost := "", int64(0), 0.0
+	for name, m := range now {
+		b := before[name]
+		tokens := (m.InputTokens + m.OutputTokens + m.CacheReadInputTokens + m.CacheCreationInputTokens) -
+			(b.InputTokens + b.OutputTokens + b.CacheReadInputTokens + b.CacheCreationInputTokens)
+		cost := m.CostUSD - b.CostUSD
+		if tokens <= 0 && cost <= 0 {
+			continue
+		}
+		better := tokens > bestTokens ||
+			tokens == bestTokens && cost > bestCost ||
+			tokens == bestTokens && cost == bestCost && (best == "" || name < best)
+		if better {
+			best, bestTokens, bestCost = name, tokens, cost
+		}
+	}
+	return best
 }
 
 // read splits the output: control responses go to their waiters, every
@@ -244,7 +279,7 @@ func (s *Session) wait() {
 	s.mu.Lock()
 	s.res = Result{
 		SessionID: parsed.SessionID, Text: parsed.Text, Success: parsed.Success, CostUSD: parsed.CostUSD,
-		Turns: s.turns, Results: s.results, Models: s.models, Stream: parsed, Duration: time.Since(s.start),
+		Turns: s.turns, Results: s.results, Models: s.models, ModelTurns: s.modelTurns, Stream: parsed, Duration: time.Since(s.start),
 	}
 	s.err = err
 	s.mu.Unlock()

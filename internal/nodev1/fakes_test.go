@@ -36,12 +36,22 @@ type fakeLatchkey struct {
 	failures []string
 	api      []string // each proxied call: METHOD vendor/path
 	mints    []SourceRequest
-	n        int
+	// model is the for-job model credential the fake answers; refuseModel,
+	// when set, is why it refuses instead; modelReads counts the reads
+	model       modelCredential
+	refuseModel string
+	modelReads  int
+	n           int
 }
 
+// fakeModelSecret is the fake account's secret.
+const fakeModelSecret = "sk-ant-oat01-fake-model-secret"
+
 func newFakeLatchkey(t *testing.T) *fakeLatchkey {
-	l := &fakeLatchkey{jkt: map[string]string{}, creds: map[string]string{}, tokens: map[string]string{}}
+	l := &fakeLatchkey{jkt: map[string]string{}, creds: map[string]string{}, tokens: map[string]string{},
+		model: modelCredential{Secret: fakeModelSecret, Vendor: "anthropic", Kind: "subscription", Plan: "max", AccountRef: "acct-fake"}}
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/credentials/for-job", l.modelForJob)
 	mux.HandleFunc("/oauth/session-token/request", l.sessionToken)
 	mux.HandleFunc("POST /v1/credentials/for-job/source", l.source)
 	mux.HandleFunc("DELETE /v1/credentials/for-job/source", l.source)
@@ -108,6 +118,25 @@ func (l *fakeLatchkey) checkToken(r *http.Request, url string) (string, error) {
 		return "", err
 	}
 	return tok, nil
+}
+
+// modelForJob answers the job's model credential on the session token,
+// as Latchkey's for-job route does.
+func (l *fakeLatchkey) modelForJob(w http.ResponseWriter, r *http.Request) {
+	if _, err := l.checkToken(r, l.srv.URL+r.URL.Path); err != nil {
+		l.fail(w, http.StatusUnauthorized, "for-job: "+err.Error())
+		return
+	}
+	l.mu.Lock()
+	l.modelReads++
+	cred, refuse := l.model, l.refuseModel
+	l.mu.Unlock()
+	if refuse != "" {
+		l.fail(w, http.StatusForbidden, refuse)
+		return
+	}
+	cred.ExpiresAt = time.Now().Add(10 * time.Minute).UTC()
+	json.NewEncoder(w).Encode(cred)
 }
 
 func (l *fakeLatchkey) source(w http.ResponseWriter, r *http.Request) {
