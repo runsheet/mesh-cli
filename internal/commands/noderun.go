@@ -21,6 +21,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/nodev1"
 	"projectmesh.io/mesh-cli/internal/paths"
 	"projectmesh.io/mesh-cli/internal/resources"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/scheduler"
 	"projectmesh.io/mesh-cli/internal/selfupdate"
 	"projectmesh.io/mesh-cli/internal/sigstore"
@@ -53,6 +54,7 @@ var (
 	nodeRunCacheDir     string
 	nodeRunCacheMaxGB   float64
 	nodeRunSelfUpdate   bool
+	nodeRunSandbox      bool
 )
 
 // nodeRunCmd is the Mesh v1 node runtime (internal/nodev1), beside the
@@ -156,6 +158,16 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
+		if nodeRunSandbox {
+			if !nodeRunActors {
+				return errors.New("mesh node run: --sandbox runs each lease's pod as its job actor's: it needs --actors")
+			}
+			sb, err := nodeRunPods(ctx, logger)
+			if err != nil {
+				return err
+			}
+			rt.Pods = sb
+		}
 		err = rt.Run(ctx)
 		if errors.Is(err, nodev1.ErrRestartForUpdate) {
 			// exit 0: the service manager starts the binary now in place
@@ -220,6 +232,31 @@ func nodeRunSigstore(logger *log.Logger) *sigstore.Signer {
 	return s
 }
 
+// nodeRunPods is the sandbox each lease's session and services run in
+// with --sandbox: rootless podman, as the legacy node's (mesh-specs ADR
+// 007), on node.yaml's `sandbox:` settings — image, cpus, memory, pids,
+// services' budget, registries, service timeout and tmpfs — with the
+// mode on whatever node.yaml says, since the flag asked for it: no
+// runtime that answers refuses to start, never a lease run unsandboxed.
+// A node run as root refuses too: root podman against a node user's
+// store poisons it (2026-10-16), and rootless is the only mode.
+func nodeRunPods(ctx context.Context, logger *log.Logger) (*sandbox.Sandbox, error) {
+	if os.Geteuid() == 0 {
+		return nil, errors.New("mesh node run: --sandbox runs rootless podman as the node's own user; run the node as that user, never as root")
+	}
+	var c node.SandboxConfig
+	if cfg, err := node.LoadSettings(); err == nil {
+		c = cfg.Sandbox
+	}
+	c.Mode = node.SandboxOn
+	sb, _, err := node.OpenSandbox(ctx, c, &sandbox.Podman{}, version.Resolved(), logger.Printf)
+	if err != nil {
+		return nil, fmt.Errorf("mesh node run: --sandbox: %w", err)
+	}
+	sb.Config.TZ = os.Getenv("TZ")
+	return sb, nil
+}
+
 // connectionsOf reads --connect's tenant/product pairs.
 func connectionsOf(pairs []string) ([]meshapi.ConnectRequest, error) {
 	var out []meshapi.ConnectRequest
@@ -258,6 +295,7 @@ func init() {
 	f.StringVar(&nodeRunCacheDir, "cache-dir", "", "with --cache-trim, the Go build cache (default `go env GOCACHE`)")
 	f.Float64Var(&nodeRunCacheMaxGB, "cache-max-gb", 50, "with --cache-trim, the build cache's cap in GB")
 	f.BoolVar(&nodeRunSelfUpdate, "self-update", false, "keep the node on the newest release: drain, hand back node_update what still runs after 30 minutes, install the verified release and exit for the service manager to restart it")
+	f.BoolVar(&nodeRunSandbox, "sandbox", false, "with --actors, run each lease's session and its services (the checkout's .mesh/services.yml and the brief's pods) in a rootless podman pod of the lease's own, on node.yaml's sandbox settings and the brief's CPUs and memory; the relay is reached only through the lease's socket")
 	_ = nodeRunCmd.MarkFlagRequired("api")
 	nodeCmd.AddCommand(nodeRunCmd)
 }
