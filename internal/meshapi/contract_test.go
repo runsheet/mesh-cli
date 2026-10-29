@@ -145,6 +145,16 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			}
 			return st, err
 		},
+		"lease-fail-no-finish": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.FailRequest
+			decode(t, f.Request, &req)
+			return c.Fail(context.Background(), idOf(f.Path, 3), req)
+		},
+		"lease-hand-back-exit-code": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.HandBackRequest
+			decode(t, f.Request, &req)
+			return c.HandBack(context.Background(), idOf(f.Path, 3), req)
+		},
 		"lease-hand-back": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
 			var req meshapi.HandBackRequest
 			decode(t, f.Request, &req)

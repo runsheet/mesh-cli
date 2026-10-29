@@ -133,7 +133,7 @@ func TestPushGoesThroughTheRelayUnderThePushRules(t *testing.T) {
 		{name: "a non-fast-forward by the tool", do: push(map[string]any{"ref": "mesh/j-1"}), refused: "may only fast-forward"},
 		{name: "a delete", do: raw("push", "origin", ":refs/heads/mesh/j-1"), refused: "may not delete"},
 	}
-	sess := &stubSession{result: SessionResult{SessionID: "sess-push", Text: "pushed"}}
+	sess := &stubSession{calls: []string{"conform/submit"}, result: SessionResult{SessionID: "sess-push", Text: "pushed"}}
 	sess.inspect = func(spec SessionSpec) {
 		ctx := context.Background()
 		if _, ok := spec.Servers[NodeToolsServer]; !ok {
@@ -250,7 +250,7 @@ func TestPushGoesThroughTheRelayUnderThePushRules(t *testing.T) {
 func TestAReadJobMintsReadAndCannotPush(t *testing.T) {
 	var text string
 	var refused bool
-	sess := &stubSession{result: SessionResult{SessionID: "sess-read"}}
+	sess := &stubSession{calls: []string{"conform/submit"}, result: SessionResult{SessionID: "sess-read"}}
 	sess.inspect = func(spec SessionSpec) {
 		commitIn(t, spec.Workspace, "two")
 		var err error
@@ -285,7 +285,7 @@ func TestAReadJobMintsReadAndCannotPush(t *testing.T) {
 func TestPushToolIgnoresWhatTheSessionDidToItsCheckout(t *testing.T) {
 	var answers []string
 	var hookRan string
-	sess := &stubSession{result: SessionResult{SessionID: "sess-guard"}}
+	sess := &stubSession{calls: []string{"conform/submit"}, result: SessionResult{SessionID: "sess-guard"}}
 	var vendorURL string
 	sess.inspect = func(spec SessionSpec) {
 		ctx := context.Background()
