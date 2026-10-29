@@ -30,6 +30,7 @@ var (
 	nodeRunCPUs       float64
 	nodeRunMemGB      float64
 	nodeRunSlots      int
+	nodeRunGitHost    string
 )
 
 // nodeRunCmd is the Mesh v1 node runtime (internal/nodev1), beside the
@@ -83,11 +84,12 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 				CapacityTotal: meshapi.Capacity{CPUs: cpus, MemGB: nodeRunMemGB, Slots: max(nodeRunSlots, 1)},
 				SigningKey:    nodev1.PublicKey(key),
 			},
-			WorkRoot:   root,
-			MeshBinary: meshBinary(),
-			Session:    sess,
-			Once:       nodeRunOnce,
-			Logf:       logger.Printf,
+			WorkRoot:    root,
+			MeshBinary:  meshBinary(),
+			GitUpstream: gitUpstream(),
+			Session:     sess,
+			Once:        nodeRunOnce,
+			Logf:        logger.Printf,
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
@@ -110,6 +112,16 @@ func meshAPIURL() string {
 	return meshapi.DefaultURL
 }
 
+// gitUpstream is the git host a lease's relay reaches on its minted
+// token: --git-upstream, else MESH_GIT_UPSTREAM, else GitHub (empty).
+// Mesh's e2e rig points it at its fake GitHub.
+func gitUpstream() string {
+	if v := strings.TrimSpace(nodeRunGitHost); v != "" {
+		return v
+	}
+	return strings.TrimSpace(os.Getenv("MESH_GIT_UPSTREAM"))
+}
+
 func init() {
 	f := nodeRunCmd.Flags()
 	f.StringVar(&nodeRunAPI, "api", "", "the API the node speaks: v1 (required)")
@@ -121,6 +133,7 @@ func init() {
 	f.Float64Var(&nodeRunCPUs, "cpus", 0, "CPUs offered (default all)")
 	f.Float64Var(&nodeRunMemGB, "mem-gb", 0, "memory offered, in GB")
 	f.IntVar(&nodeRunSlots, "slots", 1, "sessions at once")
+	f.StringVar(&nodeRunGitHost, "git-upstream", "", "the git host leases' relay reaches (default $MESH_GIT_UPSTREAM, else https://github.com)")
 	_ = nodeRunCmd.MarkFlagRequired("api")
 	nodeCmd.AddCommand(nodeRunCmd)
 }
