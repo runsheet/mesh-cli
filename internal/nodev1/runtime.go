@@ -23,9 +23,11 @@ import (
 	"sync"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/actor"
 	"projectmesh.io/mesh-cli/internal/gitrelay"
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/resources"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/scheduler"
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
 	"projectmesh.io/mesh-cli/internal/sigstore"
@@ -93,6 +95,20 @@ type Runtime struct {
 	// node reports what is free on every take and runs its leases side
 	// by side, a slot each. Nil runs one lease at a time.
 	Scheduler *scheduler.Scheduler
+	// Actors runs each lease as a job actor (ADR-044, PR 3.2; `--actors`):
+	// it owns everything the lease uses, writes actor.json before each
+	// state change, recovers a panic into its release, and hands back
+	// pod_killed a session or pod killed from outside. At start the node
+	// releases what actors a stopped node left behind.
+	Actors bool
+	// Sandbox, when set, is where a job actor makes its lease's pod for
+	// the brief's pods (each a sidecar) and watches its agent; PodImage
+	// is the image its network rules load from.
+	Sandbox  sandbox.Runtime
+	PodImage string
+	// PodWatchEvery is how often an actor reads its pod's agent; 5 s
+	// when zero.
+	PodWatchEvery time.Duration
 
 	nodeID  string
 	relay   *gitrelay.Server
@@ -113,6 +129,8 @@ type running struct {
 	// to read a turn with.
 	mailbox  *Mailbox
 	turnTool string
+	// actor is the lease's job actor, under --actors.
+	actor *actor.Actor
 }
 
 // touch is the lease's session showing progress: its progress_at in the
@@ -158,6 +176,9 @@ func (r *Runtime) cancelLease(id, why string) bool {
 	}
 	if l.cancelled == "" {
 		l.cancelled = why
+	}
+	if l.actor != nil {
+		l.actor.Cancel(why)
 	}
 	l.cancel(errCancelled)
 	return true
@@ -224,6 +245,9 @@ func (r *Runtime) Run(ctx context.Context) error {
 	r.logf("nodev1: registered as %s (%s)", node.NodeID, r.Node.Name)
 	if err := r.connect(ctx, node.NodeID); err != nil {
 		return err
+	}
+	if r.Actors {
+		r.releaseLeftovers()
 	}
 
 	every := r.HeartbeatEvery
