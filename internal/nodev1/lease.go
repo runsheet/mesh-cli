@@ -20,6 +20,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/mcptool"
 	"projectmesh.io/mesh-cli/internal/meshapi"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/scheduler"
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
 )
@@ -219,12 +220,32 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		// the relay proves a fast-forward-only push in this checkout
 		grant.SetCheckout(workspace)
 	}
+	// the lease's pod, with --sandbox: its services start once the
+	// checkout declares them, before the session (podsession.go)
+	var lp *leasePod
+	if r.Pods != nil {
+		var podCancel context.CancelCauseFunc
+		ctx, podCancel = context.WithCancelCause(ctx)
+		defer podCancel(nil)
+		lp, err = r.openLeasePod(ctx, b, workspace, a, keep)
+		if lp != nil {
+			r.setPod(b.LeaseID, lp.name)
+			go r.watchPod(ctx, lp.name, podCancel)
+		}
+		if err != nil {
+			return outcome{err: fmt.Errorf("the lease's pod: %w", err), cause: context.Cause(ctx)}
+		}
+	}
 
 	ladder := escalate.New(b.Harness.Model)
 	fin := &finishCapture{tool: b.FinishTool, onFinish: mb.Finish}
 	// run_suite's steps run in the lease's pod, never on a sandboxed
 	// node's host (podsuites.go)
 	suites := r.suiteRunner(b, pod)
+	if lp != nil {
+		// the session's own pod, beside its services (podsession.go)
+		suites = lp.suites
+	}
 	tools, rec := r.nodeTools(b, grant, workspace, tokens, ladder, mb, suites)
 	servers, sock, closeProxy, err := r.openProxy(ctx, b, tokens, grant, tools, fin.observe, account)
 	if err != nil {
@@ -235,11 +256,29 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	if len(apiRules(b)) > 0 {
 		env = append(env, RelaySocketEnv+"="+sock)
 	}
+	prompt := promptWithRelay(b, sock, resumed)
+	var inPod PodRun
+	if lp != nil {
+		if servers, err = lp.podServers(servers, filepath.Dir(sock)); err != nil {
+			return outcome{err: err, cause: context.Cause(ctx)}
+		}
+		gitBase := ""
+		if grant != nil {
+			gitBase = grant.Base()
+		}
+		if inPod, err = lp.run(workspace, gitBase, sock); err != nil {
+			return outcome{err: err, cause: context.Cause(ctx)}
+		}
+		if line := sandbox.ServicesLine(lp.statuses); line != "" {
+			prompt += "\n" + line + "\n"
+		}
+		pod = lp.name
+	}
 
 	spec := SessionSpec{
 		Label:     b.LeaseID,
 		Workspace: workspace,
-		Prompt:    threadPrompt(b, promptWithRelay(b, sock, resumed), resume),
+		Prompt:    threadPrompt(b, prompt, resume),
 		Resume:    resume,
 		Model:     b.Harness.Model.Default,
 		BudgetUSD: b.Harness.Budget.USD,
@@ -253,7 +292,8 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 			r.touch(b.LeaseID)
 			r.readAccount(account.ref(), ev)
 		},
-		Pod: pod,
+		Pod:   pod,
+		InPod: inPod,
 	}
 	if b.Thread != nil {
 		spec.ParkAfter = time.Duration(b.Thread.ParkAfterS) * time.Second
