@@ -124,17 +124,22 @@ func TestAFinishedShardsPodIsRemovedWhileOthersRun(t *testing.T) {
 		done <- err
 	}()
 	<-held
+	// lanes open side by side (validate.Run), so shard 2/2 may be held
+	// before shard 1/2's pod is opened: a session with no pod yet is not
+	// removed, and the wait below goes on
 	podOf := func(label string) string {
 		for _, p := range rt.PodSpecs() {
 			if p.Labels[sandbox.SessionLabel] == label {
 				return p.Name
 			}
 		}
-		t.Fatalf("no pod of session %s in %v", label, rt.PodSpecs())
 		return ""
 	}
 	removed := func(label string) bool {
 		name := podOf(label)
+		if name == "" {
+			return false
+		}
 		_, ok := rt.Called("remove " + name)
 		return ok
 	}
