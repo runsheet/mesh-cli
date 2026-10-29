@@ -63,6 +63,10 @@ type SessionSpec struct {
 	// the lease's liveness (progress_at) and the evidence hooks. It must
 	// not block.
 	OnEvent func(harness.Event)
+	// OnLine hears every raw line of the session's output, before its
+	// event: the lease's transcript upload (stoprules.go). It must not
+	// block.
+	OnLine func(line []byte)
 	// Pod is the lease's pod when its actor opened one (the brief named
 	// pods and the node has a sandbox runtime): a sandboxed session runs
 	// its agent there, as sandbox.AgentName(pod). "" is none.
@@ -159,7 +163,7 @@ func (c *ClaudeSession) Run(ctx context.Context, spec SessionSpec) (SessionResul
 	s, err := session.Start(ctx, session.Options{
 		Binary: c.Binary, Args: c.Args(spec), Dir: spec.Workspace,
 		Env:    harness.SessionEnviron(os.Environ(), harness.Job{Env: spec.Env, Unset: spec.Unset}),
-		Stderr: stderr, OnEvent: onEvent,
+		Stderr: stderr, OnEvent: onEvent, OnLine: spec.OnLine,
 	}, spec.Prompt)
 	if s == nil {
 		return SessionResult{}, fmt.Errorf("claude: %s", harness.Redact(err.Error(), spec.Secrets...))
@@ -281,7 +285,7 @@ func (c *ClaudeSession) loop(ctx context.Context, s *session.Session, spec Sessi
 					c.logf("nodev1: lease %s: interrupt: %v", spec.Label, err)
 				}
 			case MsgEscalate:
-				if c.escalate(ctx, s, spec, m.On, m.Text, false) && inFlight > 0 {
+				if c.escalate(ctx, s, spec, m.On, m.Text, m.Interrupt) && inFlight > 0 {
 					carryOn = true
 				}
 			}

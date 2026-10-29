@@ -174,6 +174,11 @@ type Brief struct {
 	// Pushed are the refs the job's earlier leases pushed, ok, the most
 	// recent last; a retried lease's checkout starts from the last.
 	Pushed []BriefPushed `json:"pushed,omitempty"`
+	// StopRules are the kind's stop rules, which the node checks over the
+	// session's stream, and Transcript the product's location for the
+	// session's redacted transcript (stoprules.go).
+	StopRules  []StopRule  `json:"stop_rules,omitempty"`
+	Transcript *Transcript `json:"transcript,omitempty"`
 }
 
 // Subject is what a job is about, in the product's own terms.
@@ -482,6 +487,8 @@ type UsageRequest struct {
 	Turns            int64        `json:"turns"`
 	Models           []ModelUsage `json:"models"`
 	Escalations      []Escalation `json:"escalations"`
+	// Counts are the lease's content-free counts (stoprules.go).
+	Counts
 }
 
 // Escalation is one step up a kind's model ladder in a lease's session:

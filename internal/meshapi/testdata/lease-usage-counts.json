@@ -1,0 +1,179 @@
+{
+  "name": "lease-usage-counts",
+  "method": "POST",
+  "path": "/v1/leases/8a67eae2-7aec-5593-91a0-f3143ced65c8/usage",
+  "caller": "node",
+  "request": {
+    "account_ref": "",
+    "cost_actual_cents": 0,
+    "cost_list_cents": 3,
+    "duration_ms": 60000,
+    "edits": 1,
+    "escalations": null,
+    "first_tool_ms": 1200,
+    "harness": "claude-code",
+    "model": "haiku",
+    "models": [
+      {
+        "cost_actual_cents": 0,
+        "cost_list_cents": 3,
+        "model": "haiku",
+        "tokens_cache_read": 0,
+        "tokens_cache_write": 0,
+        "tokens_input": 300,
+        "tokens_output": 75,
+        "turns": 3
+      }
+    ],
+    "stop_rules": [
+      "error-loop"
+    ],
+    "tokens_cache_read": 0,
+    "tokens_cache_write": 0,
+    "tokens_input": 300,
+    "tokens_output": 75,
+    "tool_calls": 5,
+    "tool_errors": 3,
+    "tools": [
+      {
+        "calls": 3,
+        "errors": 3,
+        "tool": "Bash"
+      },
+      {
+        "calls": 1,
+        "errors": 0,
+        "tool": "Edit"
+      },
+      {
+        "calls": 1,
+        "errors": 0,
+        "tool": "mcp__conform__brief"
+      }
+    ],
+    "transcript": {
+      "bytes": 4096,
+      "chunks": 2,
+      "digest": "sha256:abababababababababababababababababababababababababababababababab",
+      "failed": 0
+    },
+    "turns": 3
+  },
+  "status": 200,
+  "response": {
+    "job_id": "9feb7815-a5e2-5a1c-b395-12bae4162464",
+    "job_usage": {
+      "account_ref": "",
+      "cost_actual_cents": 0,
+      "cost_list_cents": 3,
+      "duration_ms": 60000,
+      "edits": 1,
+      "escalations": null,
+      "first_tool_ms": 1200,
+      "harness": "claude-code",
+      "model": "haiku",
+      "models": [
+        {
+          "cost_actual_cents": 0,
+          "cost_list_cents": 3,
+          "model": "haiku",
+          "tokens_cache_read": 0,
+          "tokens_cache_write": 0,
+          "tokens_input": 300,
+          "tokens_output": 75,
+          "turns": 3
+        }
+      ],
+      "stop_rules": [
+        "error-loop"
+      ],
+      "tokens_cache_read": 0,
+      "tokens_cache_write": 0,
+      "tokens_input": 300,
+      "tokens_output": 75,
+      "tool_calls": 5,
+      "tool_errors": 3,
+      "tools": [
+        {
+          "calls": 3,
+          "errors": 3,
+          "tool": "Bash"
+        },
+        {
+          "calls": 1,
+          "errors": 0,
+          "tool": "Edit"
+        },
+        {
+          "calls": 1,
+          "errors": 0,
+          "tool": "mcp__conform__brief"
+        }
+      ],
+      "transcript": {
+        "bytes": 4096,
+        "chunks": 2,
+        "digest": "sha256:abababababababababababababababababababababababababababababababab",
+        "failed": 0
+      },
+      "turns": 3
+    },
+    "lease_id": "8a67eae2-7aec-5593-91a0-f3143ced65c8",
+    "usage": {
+      "account_ref": "",
+      "cost_actual_cents": 0,
+      "cost_list_cents": 3,
+      "duration_ms": 60000,
+      "edits": 1,
+      "escalations": null,
+      "first_tool_ms": 1200,
+      "harness": "claude-code",
+      "model": "haiku",
+      "models": [
+        {
+          "cost_actual_cents": 0,
+          "cost_list_cents": 3,
+          "model": "haiku",
+          "tokens_cache_read": 0,
+          "tokens_cache_write": 0,
+          "tokens_input": 300,
+          "tokens_output": 75,
+          "turns": 3
+        }
+      ],
+      "stop_rules": [
+        "error-loop"
+      ],
+      "tokens_cache_read": 0,
+      "tokens_cache_write": 0,
+      "tokens_input": 300,
+      "tokens_output": 75,
+      "tool_calls": 5,
+      "tool_errors": 3,
+      "tools": [
+        {
+          "calls": 3,
+          "errors": 3,
+          "tool": "Bash"
+        },
+        {
+          "calls": 1,
+          "errors": 0,
+          "tool": "Edit"
+        },
+        {
+          "calls": 1,
+          "errors": 0,
+          "tool": "mcp__conform__brief"
+        }
+      ],
+      "transcript": {
+        "bytes": 4096,
+        "chunks": 2,
+        "digest": "sha256:abababababababababababababababababababababababababababababababab",
+        "failed": 0
+      },
+      "turns": 3
+    }
+  }
+}

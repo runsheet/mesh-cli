@@ -25,6 +25,11 @@ const (
 	OnStall = "stall"
 	// OnAsked is the session asking, through the escalate node tool.
 	OnAsked = "asked"
+	// OnRule is a kind's stop rule whose action is escalate
+	// (projectmesh-io/api docs/adr/adr-001-amendment-learnings-and-
+	// transcripts.md): the kind asked for it by declaring the rule, so it
+	// steps the ladder whatever the policy's on names.
+	OnRule = "rule"
 )
 
 // Ladder is one lease's walk up its kind's model policy. It is safe for
@@ -54,7 +59,7 @@ func (l *Ladder) Model() string {
 // or its ceiling.
 func (l *Ladder) next(on string) (string, error) {
 	p := l.policy
-	if !slices.Contains(p.On, on) {
+	if on != OnRule && !slices.Contains(p.On, on) {
 		return "", fmt.Errorf("this kind does not escalate on %s", on)
 	}
 	top := len(p.Escalate)
