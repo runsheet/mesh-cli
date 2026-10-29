@@ -321,3 +321,34 @@ func TestVersionOK(t *testing.T) {
 		}
 	}
 }
+
+// Git.Command makes every git Apply runs: a caller's hardened git sees
+// each invocation, and the result is the same commit.
+func TestApplyOnCallersGit(t *testing.T) {
+	r := newRepo(t)
+	r.run("checkout", "-q", "-b", "item")
+	r.write("new.txt", "new\n")
+	head := r.commit("add new")
+	r.run("checkout", "-q", "main")
+	var ran []string
+	g := Git{Command: func(ctx context.Context, dir string, env []string, args ...string) *exec.Cmd {
+		ran = append(ran, firstWord(args))
+		cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "core.fsmonitor=false"}, args...)...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), env...)
+		return cmd
+	}}
+	steps, conflict, err := g.Apply(context.Background(), r.dir, "main", []Change{{Head: head}}, Linear, ident)
+	if err != nil || conflict != nil {
+		t.Fatalf("Apply: %v %v", err, conflict)
+	}
+	want, _, _ := Apply(context.Background(), r.dir, "main", []Change{{Head: head}}, Linear, ident)
+	if steps[0].Commit != want[0].Commit {
+		t.Errorf("caller's git wrote %s, plain git %s", steps[0].Commit, want[0].Commit)
+	}
+	for _, sub := range []string{"version", "merge-tree", "commit-tree", "diff-tree"} {
+		if !strings.Contains(strings.Join(ran, " "), sub) {
+			t.Errorf("Command never ran %s: %v", sub, ran)
+		}
+	}
+}
