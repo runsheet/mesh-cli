@@ -200,6 +200,7 @@ func TestLatchkeyRouteRefusesBeforeLeaving(t *testing.T) {
 		{"bad method", "PROPFIND", "/latchkey/github/repos/acme/app/pulls", 405, "bad_method"},
 		{"traversal", http.MethodGet, "/latchkey/github/repos/acme/app/pulls/%2e%2e/x", 400, "bad_path"},
 		{"empty path", http.MethodGet, "/latchkey/github/", 400, "bad_path"},
+		{"encoded dot segment", http.MethodGet, "/latchkey/github/repos/acme/app/pulls/%2E%2E", 400, "bad_path"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -288,5 +289,18 @@ func TestNoLatchkeyRouteWithoutAPIAccess(t *testing.T) {
 	p.ServeHTTP(rec, httptest.NewRequest("GET", "/latchkey/github/repos/acme/app", nil))
 	if rec.Code != http.StatusNotFound || rec.Header().Get(RelayErrorHeader) != "no_api" {
 		t.Fatalf("got %d %q", rec.Code, rec.Header().Get(RelayErrorHeader))
+	}
+}
+
+// An escaped segment goes on escaped: GitLab's project path is one
+// segment, never decoded into more.
+func TestLatchkeyRouteKeepsEscapedSegments(t *testing.T) {
+	g := newLatchkeyRig(t, func(w http.ResponseWriter, r *http.Request, body string) { io.WriteString(w, "{}") })
+	resp, _ := g.call(t, http.MethodGet, "/latchkey/gitlab/api/v4/projects/acme%2Fapp", "", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d (%v)", resp.StatusCode, g.lk.bad)
+	}
+	if got := g.lk.seen()[0].URL.EscapedPath(); got != "/gitlab/api/v4/projects/acme%2Fapp" {
+		t.Fatalf("Latchkey saw %s", got)
 	}
 }
