@@ -829,7 +829,11 @@ type buildRun struct {
 	dir   string
 	// baseSHA is the commit origin/<base> was at when the checkout was
 	// made (checkoutBaseSHA), "" when unknown — an adopted session
-	baseSHA  string
+	baseSHA string
+	// ontoSHA is the brief's onto the change was applied onto before its
+	// validation (buildOnto, runsheet ADR 077): the suites are selected by
+	// the diff from it. "" for a build validated on its own base.
+	ontoSHA  string
 	cred     *ItemCred
 	acct     *SessionAccount // nil for an adopted session
 	runtimes []string
@@ -1026,6 +1030,9 @@ type buildTail struct {
 	// set once the session's end is the node's to handle.
 	v             *buildValidation
 	removeSession bool
+	// rebaseNeeded is a change that would not apply onto the brief's
+	// onto (buildOnto): the finish says so.
+	rebaseNeeded bool
 	// ret is what the build answers.
 	ret error
 }
@@ -1190,6 +1197,11 @@ func (t *buildTail) validate(ctx context.Context) error {
 		head, _ := gitHead(ctx, b.dir)
 		r.logf("item %s: committed %d path(s) the build session left uncommitted as %s (%q): %s", b.label, len(paths), short(head), LeftoverCommitMessage, strings.Join(paths, ", "))
 	}
+	// the would-be merge (runsheet ADR 077): a brief naming onto has the
+	// change validated on it; a brief without one, as always
+	if code := jobBriefOf(ctx, r.GW, BuildKind, item.ID).Code; code.Onto != nil {
+		t.rebaseNeeded = r.buildOnto(ctx, b, code)
+	}
 	v, err := r.startValidation(ctx, b)
 	if err != nil {
 		b.report(ctx, "validation: "+err.Error())
@@ -1259,6 +1271,9 @@ func (t *buildTail) finish(ctx context.Context, state *sessionsteps.State) error
 	// job (runsheet ADR 078); the finish carries a usage report only on a
 	// platform that takes none there
 	ledger := r.meshUsage(ctx, item, b.acct.Report(result))
+	if t.rebaseNeeded {
+		ctx = gateway.WithFinishRebaseNeeded(ctx)
+	}
 	var pushErr error
 	var pushEnvelope, pushEntry string
 	f := &sessionsteps.Finish{

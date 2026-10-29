@@ -119,6 +119,26 @@ func finishBaseFrom(ctx context.Context) string {
 	return s
 }
 
+type finishRebaseNeededKey struct{}
+
+// WithFinishRebaseNeeded marks ctx's FinishWorkItem as one whose change
+// would not apply onto the brief's onto (runsheet ADR 077): it was
+// validated on its own base, and the finish says rebaseNeeded so the
+// platform asks for a rebase rather than a merge.
+func WithFinishRebaseNeeded(ctx context.Context) context.Context {
+	return context.WithValue(ctx, finishRebaseNeededKey{}, true)
+}
+
+// withRebaseNeeded adds rebaseNeeded to a finish's input when ctx says so.
+func withRebaseNeeded(ctx context.Context, in map[string]any) {
+	if v, _ := ctx.Value(finishRebaseNeededKey{}).(bool); v {
+		in[RebaseNeededField] = true
+	}
+}
+
+// RebaseNeededField is FinishWorkItemInput's rebaseNeeded.
+const RebaseNeededField = "rebaseNeeded"
+
 type finishPinSignatureKey struct{}
 
 // WithFinishPinSignature carries the session's signed push statement

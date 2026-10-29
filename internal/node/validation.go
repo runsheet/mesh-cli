@@ -271,7 +271,8 @@ func (vr validator) removeScratch(dir string) error {
 // target is the build as its validation needs it.
 func (b *buildRun) target() validationTarget {
 	return validationTarget{item: b.item, dir: b.dir, base: b.spec.BaseRef, defaultBranch: defaultBranchOf(b.res), prefix: "item " + b.label, label: b.label,
-		job: b.job, pod: b.podSession(), session: b.session, redact: b.acct.RedactErr, report: func(ctx context.Context, note string) { b.report(ctx, note) }, cred: b.cred, spec: b.spec}
+		job: b.job, pod: b.podSession(), session: b.session, redact: b.acct.RedactErr, report: func(ctx context.Context, note string) { b.report(ctx, note) }, cred: b.cred, spec: b.spec,
+		diffFrom: b.ontoSHA}
 }
 
 // defaultBranchOf is res's repo's default branch, "main" when unread,
