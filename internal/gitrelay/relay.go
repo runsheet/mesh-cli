@@ -1,8 +1,9 @@
 // Package gitrelay is the node's git smart-HTTP relay:
 // a session's checkout fetches and pushes through it, the relay adds the
-// job's GitHub token on the way out, and the job's git policy decides
-// what it may reach. No GitHub token is in the session's env, disk or
-// git config.
+// job's token on the way out in its vendor's shape (vendor.go), and the
+// job's git policy decides what it may reach. No vendor token is in the
+// session's env, disk or git config, and in Mesh v1 every write to a
+// vendor goes through it.
 //
 // It serves /git/<owner>/<repo>.git/{info/refs,git-upload-pack,
 // git-receive-pack} and streams both ways: a pack is never buffered.
@@ -12,7 +13,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -43,17 +43,27 @@ type Policy struct {
 	// Access is read or write; read refuses git-receive-pack.
 	Access Access
 	// Push are the refs a push may update; anything else is refused, and
-	// so is any deletion. Whether an update may be a non-fast-forward is
-	// left to git and GitHub's own branch rules.
+	// so is any deletion. A rule that is FastForwardOnly refuses a
+	// non-fast-forward itself; one that is not leaves it to git and the
+	// vendor's own branch rules (the legacy node's, which names none).
 	Push []RefRule
+	// Vendor is the git vendor the job reaches (VendorNamed): GitHub
+	// when empty.
+	Vendor string
+	// Base is the vendor's git origin for this job — a self-hosted
+	// GitLab's, say — when it is not the vendor's own (Vendor.Origin).
+	Base string
 }
 
 // RefRule is one ref a push may touch: an exact ref, or a prefix ending
 // "/*" for any ref under it; CreateOnly allows creating it but never
-// moving one that exists.
+// moving one that exists; FastForwardOnly allows moving it only to a
+// descendant of where it is, which the relay proves in the pushing
+// checkout (fastforward.go). Mesh v1's briefs default it true.
 type RefRule struct {
-	Ref        string
-	CreateOnly bool
+	Ref             string
+	CreateOnly      bool
+	FastForwardOnly bool
 }
 
 func (r RefRule) matches(ref string) bool {
@@ -73,7 +83,9 @@ type Token struct {
 type Event struct {
 	// Lease is the lease whose grant answered it (Server.Open); empty
 	// for a token-keyed registration's.
-	Lease   string
+	Lease string
+	// Vendor is the git vendor the relay reached (Vendor.Name).
+	Vendor  string
 	Repo    string
 	Service string // upload-pack or receive-pack
 	Refs    []string
@@ -90,8 +102,15 @@ type Relay struct {
 	// Mint returns a fresh token for the job; the relay caches it until
 	// RefreshBefore of its expiry.
 	Mint func(ctx context.Context) (Token, error)
-	// Upstream is GitHub's git origin; https://github.com when empty.
+	// Upstream is the vendor's git origin; the Vendor's own when empty.
 	Upstream string
+	// Vendor is the adapter that puts the token on the request going
+	// upstream and filters what comes back; GitHub when nil.
+	Vendor Vendor
+	// IsAncestor proves a FastForwardOnly rule's update is a
+	// fast-forward; with none, such an update of an existing ref is
+	// refused.
+	IsAncestor Ancestry
 	// HTTP reaches Upstream; a client with no timeout when nil, since a
 	// clone may stream for as long as it takes.
 	HTTP *http.Client
@@ -111,9 +130,6 @@ type Relay struct {
 // HTTP needs. Authorization and anything else never leave the relay.
 var forwarded = []string{"Content-Type", "Accept", "Content-Encoding", "Git-Protocol", "User-Agent"}
 
-// returned are the only upstream headers sent back.
-var returned = []string{"Content-Type", "Cache-Control", "Expires", "Pragma"}
-
 // ServeHTTP relays one git request after checking it against the policy.
 func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	repo, rest, ok := splitPath(req.URL.Path)
@@ -122,7 +138,8 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	service := serviceOf(req, rest)
-	ev := Event{Repo: repo, Service: service, At: r.now()}
+	vendor := r.vendor()
+	ev := Event{Vendor: vendor.Name(), Repo: repo, Service: service, At: r.now()}
 	refuse := func(reason string) {
 		ev.Outcome, ev.Reason = "refused", reason
 		r.audit(ev)
@@ -156,7 +173,7 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 		for _, c := range cmds {
 			ev.Refs = append(ev.Refs, c.ref)
-			if reason := r.Policy.check(c); reason != "" {
+			if reason := r.check(req.Context(), c); reason != "" {
 				refuse(reason)
 				return
 			}
@@ -185,7 +202,7 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			out.Header.Set(h, v)
 		}
 	}
-	out.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("x-access-token:"+tok)))
+	vendor.Authorize(out, tok)
 	resp, err := r.client().Do(out)
 	if err != nil {
 		ev.Outcome, ev.Reason = "failed", strings.ReplaceAll(err.Error(), tok, "***")
@@ -194,7 +211,7 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
-	for _, h := range returned {
+	for _, h := range vendor.Returned() {
 		if v := resp.Header.Get(h); v != "" {
 			w.Header().Set(h, v)
 		}
@@ -204,7 +221,7 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	ev.Bytes = n
 	ev.Outcome = "ok"
 	if resp.StatusCode/100 != 2 {
-		ev.Outcome, ev.Reason = "failed", fmt.Sprintf("GitHub answered %d", resp.StatusCode)
+		ev.Outcome, ev.Reason = "failed", fmt.Sprintf("%s answered %d", vendor.Name(), resp.StatusCode)
 	}
 	r.audit(ev)
 }
@@ -247,21 +264,39 @@ type command struct {
 
 const zeroID = "0000000000000000000000000000000000000000"
 
-// check refuses a ref update the policy does not name, and any deletion.
-func (p Policy) check(c command) string {
+// check refuses a ref update the policy does not name, any deletion,
+// moving a create-only ref, and a fast-forward-only ref's update that is
+// not proved a fast-forward.
+func (r *Relay) check(ctx context.Context, c command) string {
+	rule, reason := r.Policy.check(c)
+	if reason != "" || !rule.FastForwardOnly || strings.Trim(c.old, "0") == "" {
+		return reason
+	}
+	if r.IsAncestor == nil {
+		return c.ref + " may only fast-forward, and this relay cannot prove one"
+	}
+	if err := r.IsAncestor(ctx, c.old, c.new); err != nil {
+		return c.ref + " may only fast-forward: " + err.Error()
+	}
+	return ""
+}
+
+// check answers the rule that allows c, or why none does: c deletes a
+// ref, names one no rule names, or moves a create-only one.
+func (p Policy) check(c command) (RefRule, string) {
 	if strings.Trim(c.new, "0") == "" {
-		return "this job may not delete " + c.ref
+		return RefRule{}, "this job may not delete " + c.ref
 	}
 	for _, r := range p.Push {
 		if !r.matches(c.ref) {
 			continue
 		}
 		if r.CreateOnly && strings.Trim(c.old, "0") != "" {
-			return c.ref + " may be created, never moved"
+			return r, c.ref + " may be created, never moved"
 		}
-		return ""
+		return r, ""
 	}
-	return "this job may not push " + c.ref
+	return RefRule{}, "this job may not push " + c.ref
 }
 
 // readCommands reads a receive-pack request's command list (pkt-lines up
@@ -337,7 +372,14 @@ func (r *Relay) upstream() string {
 	if r.Upstream != "" {
 		return strings.TrimRight(r.Upstream, "/")
 	}
-	return "https://github.com"
+	return strings.TrimRight(r.vendor().Origin(), "/")
+}
+
+func (r *Relay) vendor() Vendor {
+	if r.Vendor != nil {
+		return r.Vendor
+	}
+	return GitHub{}
 }
 
 func (r *Relay) client() *http.Client {

@@ -48,8 +48,9 @@ type Runtime struct {
 	// LatchkeyHTTP reaches Latchkey for a lease's session tokens and git
 	// tokens; a plain client when nil.
 	LatchkeyHTTP *http.Client
-	// GitUpstream is the git host the relay reaches on a lease's token;
-	// https://github.com when empty.
+	// GitUpstream, when set, is the git host every lease's relay reaches
+	// whatever its brief names — a test's fake vendor; else each lease's
+	// grant reaches its brief's vendor and base.
 	GitUpstream string
 	// Once stops the runtime after its first lease ends.
 	Once bool
@@ -248,7 +249,7 @@ func (r *Runtime) audit(e gitrelay.Event) {
 	if e.Lease == "" {
 		return
 	}
-	rec := meshapi.AccessRecord{Kind: "git", Repo: e.Repo, Service: e.Service, Refs: e.Refs, Outcome: e.Outcome, Reason: e.Reason, Bytes: e.Bytes, At: e.At.UTC()}
+	rec := meshapi.AccessRecord{Kind: "git", Vendor: e.Vendor, Repo: e.Repo, Service: e.Service, Refs: e.Refs, Outcome: e.Outcome, Reason: e.Reason, Bytes: e.Bytes, At: e.At.UTC()}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.access != nil {

@@ -19,9 +19,13 @@ import (
 // the node runs for that job — told the URL by their environment — reach
 // it, and each reaches only its own policy.
 type Server struct {
-	// Upstream and HTTP are every Relay's (GitHub, a plain client).
+	// Upstream, when set, is every relay's git origin whatever its
+	// policy names: the legacy node's GitHub, or a test's fake vendor
+	// (`mesh node run --git-upstream`). A Mesh v1 grant otherwise reaches
+	// its policy's base, else its vendor's origin.
 	Upstream string
-	HTTP     *http.Client
+	// HTTP reaches the upstreams; a plain client when nil.
+	HTTP *http.Client
 	// Audit takes every relay's events.
 	Audit func(Event)
 	// Counts, when set, counts every relay's events by repository,
@@ -85,6 +89,9 @@ func (s *Server) Register(policy Policy, token Token) (string, error) {
 	key := token.Value + "\x00" + policy.Repo + "\x00" + string(policy.Access)
 	for _, r := range policy.Push {
 		key += fmt.Sprintf("\x00%s %t", r.Ref, r.CreateOnly)
+		if r.FastForwardOnly {
+			key += " ff"
+		}
 	}
 	for c, e := range s.entries {
 		if e.grant != nil {
