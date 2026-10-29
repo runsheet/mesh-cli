@@ -67,7 +67,15 @@ type SessionSpec struct {
 	// pods and the node has a sandbox runtime): a sandboxed session runs
 	// its agent there, as sandbox.AgentName(pod). "" is none.
 	Pod string
+	// InPod, when set, runs the session's process in the lease's pod
+	// (`--sandbox`, podsession.go) in place of on the host: argv, the
+	// session's Env (the pod's allow-list applies) and its streams. The
+	// node's own environment never reaches it.
+	InPod PodRun
 }
+
+// PodRun runs a session's process in its lease's pod to its end.
+type PodRun func(ctx context.Context, argv, env []string, stdin io.Reader, stdout, stderr io.Writer) error
 
 // SessionResult is how a session ended.
 type SessionResult struct {
@@ -98,6 +106,9 @@ type Session interface {
 type ClaudeSession struct {
 	// Binary is the claude executable; "claude" on PATH when empty.
 	Binary string
+	// PodBinary is the claude executable in a lease's pod (InPod): the
+	// node image's "claude" when empty.
+	PodBinary string
 	// ExtraArgs are added to every session (--dangerously-skip-permissions
 	// on an unattended node).
 	ExtraArgs []string
@@ -156,11 +167,22 @@ func (c *ClaudeSession) Run(ctx context.Context, spec SessionSpec) (SessionResul
 			}
 		}
 	}
-	s, err := session.Start(ctx, session.Options{
+	opts := session.Options{
 		Binary: c.Binary, Args: c.Args(spec), Dir: spec.Workspace,
 		Env:    harness.SessionEnviron(os.Environ(), harness.Job{Env: spec.Env, Unset: spec.Unset}),
 		Stderr: stderr, OnEvent: onEvent,
-	}, spec.Prompt)
+	}
+	if spec.InPod != nil {
+		// the pod's environment is the session's own, never the node's
+		opts.Binary, opts.Env = c.PodBinary, nil
+		if opts.Binary == "" {
+			opts.Binary = "claude"
+		}
+		opts.Spawn = func(ctx context.Context, argv []string, stdin io.Reader, stdout, stderr io.Writer) error {
+			return spec.InPod(ctx, argv, spec.Env, stdin, stdout, stderr)
+		}
+	}
+	s, err := session.Start(ctx, opts, spec.Prompt)
 	if s == nil {
 		return SessionResult{}, fmt.Errorf("claude: %s", harness.Redact(err.Error(), spec.Secrets...))
 	}
@@ -176,7 +198,9 @@ func (c *ClaudeSession) Run(ctx context.Context, spec SessionSpec) (SessionResul
 	if ctx.Err() != nil {
 		return sr, ctx.Err()
 	}
-	if err != nil {
+	// a pod that ended before the first message went in says why in its
+	// own end, not in the write that found the input closed
+	if err != nil && (spec.InPod == nil || waitErr == nil) {
 		return sr, fmt.Errorf("claude: %s", harness.Redact(err.Error(), spec.Secrets...))
 	}
 	if waitErr != nil {
@@ -184,7 +208,14 @@ func (c *ClaudeSession) Run(ctx context.Context, spec SessionSpec) (SessionResul
 		if msg == "" {
 			msg = waitErr.Error()
 		}
-		return sr, errors.New("claude: " + harness.Redact(lastLines(msg, 5), spec.Secrets...))
+		msg = "claude: " + harness.Redact(lastLines(msg, 5), spec.Secrets...)
+		if spec.InPod != nil {
+			// the pod's end (an *sandbox.ExitError, a *sandbox.LimitError)
+			// stays readable: an exit 137 or 143 the actor did not cause
+			// is pod_killed (podKilled)
+			return sr, &podEnd{msg: msg, err: waitErr}
+		}
+		return sr, errors.New(msg)
 	}
 	if !res.Success {
 		return sr, errors.New("claude: the session ended with an error: " + harness.Redact(lastLines(res.Text, 5), spec.Secrets...))
@@ -355,6 +386,16 @@ func orDefault(model string) string {
 	}
 	return model
 }
+
+// podEnd is a pod session's end: its words, and the pod's own error
+// beneath them.
+type podEnd struct {
+	msg string
+	err error
+}
+
+func (e *podEnd) Error() string { return e.msg }
+func (e *podEnd) Unwrap() error { return e.err }
 
 // limited keeps the first n bytes written.
 type limited struct {
