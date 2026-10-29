@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -113,7 +114,9 @@ type APICall struct {
 // serveLatchkey relays one /latchkey/<vendor>/<path> call.
 func (p *Proxy) serveLatchkey(w http.ResponseWriter, req *http.Request) {
 	l := p.Latchkey
-	rest := strings.TrimPrefix(req.URL.Path, LatchkeyPrefix)
+	// the path as sent: an escaped segment (a GitLab project path) goes on
+	// escaped, never decoded into more segments
+	rest := strings.TrimPrefix(req.URL.EscapedPath(), LatchkeyPrefix)
 	vendor, path, _ := strings.Cut(rest, "/")
 	call := APICall{Vendor: vendor, Method: req.Method, Path: path, At: l.now()}
 	refuse := func(status int, code, why string) {
@@ -130,7 +133,7 @@ func (p *Proxy) serveLatchkey(w http.ResponseWriter, req *http.Request) {
 	case !apiMethods[req.Method]:
 		refuse(http.StatusMethodNotAllowed, "bad_method", req.Method+" is not a method a vendor API takes")
 		return
-	case !apiPath.MatchString(path) || strings.Contains("/"+path+"/", "/../") || strings.Contains("/"+path+"/", "/./"):
+	case !apiPath.MatchString(path) || dotSegment(path):
 		refuse(http.StatusBadRequest, "bad_path", "the path is not a vendor API path")
 		return
 	case l.Allow == nil || !l.Allow(vendor, req.Method, path):
@@ -291,6 +294,16 @@ func (l *Latchkey) now() time.Time {
 		return l.Now()
 	}
 	return time.Now()
+}
+
+// dotSegment is whether a path segment is, or decodes to, . or ..
+func dotSegment(path string) bool {
+	for _, seg := range strings.Split(path, "/") {
+		if d, err := url.PathUnescape(seg); err != nil || d == "." || d == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // hostOf is the host the session called the socket as, "relay" when it
