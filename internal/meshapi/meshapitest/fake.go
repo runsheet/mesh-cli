@@ -48,7 +48,7 @@ type fakeLease struct {
 
 // Call is one request the fake answered.
 type Call struct {
-	Route   string // register, heartbeat, take, renew, session, evidence, access, usage, finish, fail, hand-back, blob
+	Route   string // register, connect, heartbeat, take, renew, session, evidence, access, usage, finish, fail, hand-back, blob
 	LeaseID string
 	Auth    string
 	Body    json.RawMessage
@@ -60,6 +60,7 @@ func NewFake(t testing.TB) *Fake {
 	f.mux = http.NewServeMux()
 	f.mux.HandleFunc("POST /v1/nodes", f.register)
 	f.mux.HandleFunc("POST /v1/nodes/{id}/heartbeat", f.heartbeat)
+	f.mux.HandleFunc("POST /v1/nodes/{id}/connections", f.connect)
 	f.mux.HandleFunc("POST /v1/take", f.take)
 	f.mux.HandleFunc("POST /v1/leases/{id}/{route}", f.lease)
 	f.mux.HandleFunc("PUT /v1/blobs/{digest}", func(w http.ResponseWriter, r *http.Request) {
@@ -184,6 +185,28 @@ func (f *Fake) register(w http.ResponseWriter, r *http.Request) {
 	f.nodeID = n.NodeID
 	f.mu.Unlock()
 	writeJSON(w, f.fx["nodes-register"].Status, n)
+}
+
+// connect accepts every offer as the nodes-connect fixture does, for
+// the tenant and product asked.
+func (f *Fake) connect(w http.ResponseWriter, r *http.Request) {
+	body := f.record(r, "connect", "")
+	var req meshapi.ConnectRequest
+	if json.Unmarshal(body, &req) != nil || req.Tenant == "" || req.Product == "" {
+		writeErr(w, http.StatusBadRequest, "bad_request", "tenant and product are required")
+		return
+	}
+	f.mu.Lock()
+	known := r.PathValue("id") == f.nodeID
+	f.mu.Unlock()
+	if !known {
+		writeErr(w, http.StatusConflict, "node_not_registered", "the node has not registered")
+		return
+	}
+	var c meshapi.Connection
+	json.Unmarshal(f.fx["nodes-connect"].Response, &c)
+	c.NodeID, c.Tenant, c.Product = r.PathValue("id"), req.Tenant, req.Product
+	writeJSON(w, f.fx["nodes-connect"].Status, c)
 }
 
 func (f *Fake) heartbeat(w http.ResponseWriter, r *http.Request) {
