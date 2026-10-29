@@ -44,6 +44,9 @@ func Prompt(b *meshapi.Brief) string {
 	}
 	if b.Code != nil && b.Code.Repo.FullName != "" {
 		fmt.Fprintf(&sb, "Your working directory is a checkout of %s at %s.\n", b.Code.Repo.FullName, shortSHA(b.Code.BaseSHA))
+		if b.LeaseN > 1 && b.Code.PushTo != "" {
+			fmt.Fprintf(&sb, "If an earlier run of this job already pushed %s, the checkout is at that push instead: build on it, and push only on top of it.\n", b.Code.PushTo)
+		}
 	}
 	return sb.String()
 }
