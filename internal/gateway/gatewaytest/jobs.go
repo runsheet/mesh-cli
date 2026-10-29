@@ -143,8 +143,12 @@ func (f *Fake) jobAPI(w http.ResponseWriter, r *http.Request, q string, vars map
 			return true
 		}
 		kind, _ := in["kind"].(string)
+		code := map[string]any{"form": "commit"}
+		for k, v := range f.KindCode[kind] {
+			code[k] = v
+		}
 		job := map[string]any{
-			"kind": kind, "subject": subject, "code": map[string]any{"form": "commit"}, "claim": field,
+			"kind": kind, "subject": subject, "code": code, "claim": field,
 			"finish": kindFinishes[kind], "guidance": f.KindGuidance[kind], "finishSchema": f.KindFinishSchema[kind], "finishTool": kindFinishTools[kind]}
 		if g := f.KindGit[kind]; g != nil {
 			job["git"] = g

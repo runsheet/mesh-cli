@@ -37,6 +37,49 @@ type JobCode struct {
 	BaseSHA     string `json:"baseSha,omitempty"`
 	SHA         string `json:"sha,omitempty"`
 	ChangesetID string `json:"changesetId,omitempty"`
+	// Onto, Apply, ApplyMode, ApplyAs and PushTo ask the node to validate
+	// the would-be merge rather than the change's own base (runsheet ADR
+	// 077): the changes in Apply applied in order onto Onto
+	// (gitapply.Apply), linear or merge, written as ApplyAs, and the
+	// result pushed to PushTo when it names a ref. A brief without Onto is
+	// validated as it always was.
+	Onto      *JobOnto    `json:"onto,omitempty"`
+	Apply     []JobApply  `json:"apply,omitempty"`
+	ApplyMode string      `json:"applyMode,omitempty"`
+	ApplyAs   *JobApplyAs `json:"applyAs,omitempty"`
+	PushTo    string      `json:"pushTo,omitempty"`
+}
+
+// ApplyMode values: linear rebases the change onto Onto as one commit,
+// merge merges it.
+const (
+	ApplyLinear = "linear"
+	ApplyMerge  = "merge"
+)
+
+// JobOnto is the commit a brief's change is applied onto: a ref, a
+// sha, or both (the sha then being the ref's head when the platform
+// read it).
+type JobOnto struct {
+	Ref string `json:"ref,omitempty"`
+	SHA string `json:"sha,omitempty"`
+}
+
+// JobApply is one change a brief applies: Base..SHA, read from Ref
+// when the node has to fetch it; Base "" is the merge base with the tip.
+type JobApply struct {
+	SHA  string `json:"sha,omitempty"`
+	Ref  string `json:"ref,omitempty"`
+	Base string `json:"base,omitempty"`
+}
+
+// JobApplyAs is the author and committer of the commits the node
+// writes applying a brief's changes: fixed, so every node writes the
+// same shas. Date is RFC 3339.
+type JobApplyAs struct {
+	Name  string `json:"name,omitempty"`
+	Email string `json:"email,omitempty"`
+	Date  string `json:"date,omitempty"`
 }
 
 // JobPod is one pod the brief names (ADR 061 §6): built from the repo's
