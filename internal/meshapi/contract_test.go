@@ -84,7 +84,7 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			var req meshapi.TakeRequest
 			decode(t, f.Request, &req)
 			tk, err := c.Take(context.Background(), req)
-			if err == nil && (tk.Lease != nil || tk.Waiting != "no job fits this node now") {
+			if err == nil && (tk.Lease != nil || tk.Waiting != "no job is queued") {
 				t.Errorf("take-waiting: %+v", tk)
 			}
 			return nil, err

@@ -2,16 +2,15 @@
   "name": "take-waiting",
   "method": "POST",
   "path": "/v1/take",
+  "caller": "node",
   "request": {
-    "node_id": "nod_01JD6Y0M2T8E",
     "harnesses": [
       "claude-code"
     ],
-    "wait_s": 25
+    "node_id": "7f41f005-46b5-5c7d-8af5-9ec6c44c99f9"
   },
   "status": 204,
-  "response": null,
-  "response_headers": {
-    "Mesh-Waiting": "no job fits this node now"
+  "headers": {
+    "Mesh-Waiting": "no job is queued"
   }
 }

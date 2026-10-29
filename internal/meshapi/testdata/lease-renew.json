@@ -1,12 +1,13 @@
 {
   "name": "lease-renew",
   "method": "POST",
-  "path": "/v1/leases/lse_01JD7K2Q9N3V/renew",
+  "path": "/v1/leases/a8951edc-9534-5cdb-a973-7e65c5cba65e/renew",
+  "caller": "node",
   "request": {},
   "status": 200,
   "response": {
-    "lease_id": "lse_01JD7K2Q9N3V",
-    "expires_at": "2026-10-29T10:02:00Z",
+    "expires_at": "2026-01-01T00:00:00Z",
+    "lease_id": "a8951edc-9534-5cdb-a973-7e65c5cba65e",
     "renew_every_s": 30
   }
 }

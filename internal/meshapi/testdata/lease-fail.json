@@ -1,16 +1,17 @@
 {
   "name": "lease-fail",
   "method": "POST",
-  "path": "/v1/leases/lse_01JD7K2Q9N3V/fail",
+  "path": "/v1/leases/87a1844a-f8cc-5ad8-9bf8-5c3c9a959387/fail",
+  "caller": "node",
   "request": {
     "cause": "work",
-    "reason": "the fixture repo has no README.md"
+    "reason": "the sha did not match"
   },
   "status": 200,
   "response": {
-    "job_id": "job_01JD7K1ZC4XA",
-    "status": "ended",
     "end": "failed",
-    "handbacks": 0
+    "handbacks": 1,
+    "job_id": "8002159c-0d31-52e9-8502-595cbb8c0798",
+    "status": "ended"
   }
 }
