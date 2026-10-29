@@ -281,12 +281,14 @@ func (r *Runtime) Run(ctx context.Context) error {
 	if err := r.checkUpdate(); err != nil {
 		return err
 	}
-	ctx, stopRun := context.WithCancelCause(ctx)
-	defer stopRun(nil)
 	r.relay = &gitrelay.Server{Upstream: r.GitUpstream, Audit: r.audit}
 	if err := r.relay.Start(ctx); err != nil {
 		return fmt.Errorf("nodev1: the git relay: %w", err)
 	}
+	// the relay lives on the caller's ctx, as before: only the node's
+	// own work ends with an unconfirmed update (awaitConfirm)
+	ctx, stopRun := context.WithCancelCause(ctx)
+	defer stopRun(nil)
 	if !r.NoMirrors {
 		r.mirrors = &resources.Mirrors{Root: filepath.Join(r.WorkRoot, "mirrors"), Env: gitEnv(), GitArgs: noCredentials}
 		go r.trimMirrors()
