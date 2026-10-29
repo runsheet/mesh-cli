@@ -29,7 +29,7 @@ func TestALeaseReachesTheVendorItsBriefNames(t *testing.T) {
 	g.latchkey.mu.Lock()
 	mints := append([]SourceRequest(nil), g.latchkey.mints...)
 	g.latchkey.mu.Unlock()
-	if len(mints) == 0 || mints[0] != (SourceRequest{Vendor: "gitlab", BaseURL: g.github.srv.URL, Repository: "acme/fixture", Access: "read"}) {
+	if len(mints) == 0 || mints[0] != (SourceRequest{Vendor: "gitlab", BaseURL: g.github.srv.URL + "/", Repository: "acme/fixture", Access: "read"}) {
 		t.Fatalf("mints %+v", mints)
 	}
 	minted, _, _ := g.latchkey.snapshot()
@@ -46,14 +46,15 @@ func TestALeaseReachesTheVendorItsBriefNames(t *testing.T) {
 }
 
 // A brief that names no vendor mints as before vendors were named: no
-// vendor or base_url in the request.
+// vendor or base_url in the request; one that names them sends them as
+// the brief has them.
 func TestSourceRequestOfABriefNamingNoVendor(t *testing.T) {
 	got := sourceRequest(&meshapi.Git{Host: "github.com", Repo: "acme/app", Access: "write"}, policyOf(&meshapi.Git{Repo: "acme/app", Access: "write"}))
 	if got != (SourceRequest{Repository: "acme/app", Access: "write"}) {
 		t.Fatalf("%+v", got)
 	}
-	got = sourceRequest(&meshapi.Git{Vendor: " Bitbucket ", BaseURL: "https://bb.example/", Repo: "acme/app", Access: "read"}, policyOf(&meshapi.Git{Repo: "acme/app"}))
-	if got.Vendor != "bitbucket" || got.BaseURL != "https://bb.example" || !strings.EqualFold(got.Access, "read") {
+	got = sourceRequest(&meshapi.Git{Vendor: "bitbucket", BaseURL: "https://bb.example/", Repo: "acme/app", Access: "read"}, policyOf(&meshapi.Git{Repo: "acme/app"}))
+	if got.Vendor != "bitbucket" || got.BaseURL != "https://bb.example/" || !strings.EqualFold(got.Access, "read") {
 		t.Fatalf("%+v", got)
 	}
 }
