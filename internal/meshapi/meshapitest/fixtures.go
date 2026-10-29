@@ -6,6 +6,7 @@
 package meshapitest
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -133,8 +134,14 @@ func (r *Replay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	WriteFixture(w, f)
 }
 
-// WriteFixture answers f's status, headers and response.
+// WriteFixture answers f's status, headers and response. A node's
+// event stream (GET …/events) is server-sent events: its fixture's
+// response is {"events":[{event, data}]}, written as SSE frames.
 func WriteFixture(w http.ResponseWriter, f Fixture) {
+	if f.Method == http.MethodGet && strings.HasSuffix(f.Path, "/events") && f.Status == http.StatusOK {
+		writeStream(w, f)
+		return
+	}
 	keys := make([]string, 0, len(f.ResponseHeaders))
 	for k := range f.ResponseHeaders {
 		keys = append(keys, k)
@@ -155,4 +162,23 @@ func WriteFixture(w http.ResponseWriter, f Fixture) {
 func readAll(req *http.Request) ([]byte, error) {
 	defer req.Body.Close()
 	return io.ReadAll(req.Body)
+}
+
+// writeStream answers f's events as server-sent events.
+func writeStream(w http.ResponseWriter, f Fixture) {
+	var stream struct {
+		Events []struct {
+			Event string          `json:"event"`
+			Data  json.RawMessage `json:"data"`
+		} `json:"events"`
+	}
+	json.Unmarshal(f.Response, &stream)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, ": open\n\n")
+	for _, e := range stream.Events {
+		var compact bytes.Buffer
+		json.Compact(&compact, e.Data)
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", e.Event, compact.Bytes())
+	}
 }

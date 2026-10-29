@@ -38,6 +38,7 @@ type Fake struct {
 	cancel  []string
 	drain   bool
 	offered chan struct{}
+	streams map[chan meshapi.NodeEvent]struct{}
 }
 
 type fakeLease struct {
@@ -56,11 +57,12 @@ type Call struct {
 
 // NewFake is a fake over the contract's fixtures.
 func NewFake(t testing.TB) *Fake {
-	f := &Fake{fx: Load(t), leases: map[string]*fakeLease{}, offered: make(chan struct{}, 1)}
+	f := &Fake{fx: Load(t), leases: map[string]*fakeLease{}, offered: make(chan struct{}, 1), streams: map[chan meshapi.NodeEvent]struct{}{}}
 	f.mux = http.NewServeMux()
 	f.mux.HandleFunc("POST /v1/nodes", f.register)
 	f.mux.HandleFunc("POST /v1/nodes/{id}/heartbeat", f.heartbeat)
 	f.mux.HandleFunc("POST /v1/nodes/{id}/connections", f.connect)
+	f.mux.HandleFunc("GET /v1/nodes/{id}/events", f.events)
 	f.mux.HandleFunc("POST /v1/take", f.take)
 	f.mux.HandleFunc("POST /v1/leases/{id}/{route}", f.lease)
 	f.mux.HandleFunc("PUT /v1/blobs/{digest}", func(w http.ResponseWriter, r *http.Request) {
@@ -103,11 +105,88 @@ func (f *Fake) Offer(mut func(*meshapi.Brief)) string {
 	return b.JobID
 }
 
-// CancelLease has the next heartbeat ask the node to cancel id.
+// CancelLease has the next heartbeat ask the node to cancel id. As Mesh
+// does, the lease stays live until the node hands it back.
 func (f *Fake) CancelLease(id string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.cancel = append(f.cancel, id)
+}
+
+// StreamCancel sends a cancel for the lease over every connected event
+// stream and answers how many streams took it.
+func (f *Fake) StreamCancel(leaseID, cause, reason string) int {
+	f.mu.Lock()
+	jobID := ""
+	if l := f.leases[leaseID]; l != nil {
+		jobID = l.brief.JobID
+	}
+	f.mu.Unlock()
+	data, _ := json.Marshal(meshapi.CancelEvent{LeaseID: leaseID, JobID: jobID, Cause: cause, Reason: reason})
+	return f.Stream(meshapi.NodeEvent{Event: meshapi.EventCancel, Data: data})
+}
+
+// Stream sends e over every connected event stream and answers how many
+// took it.
+func (f *Fake) Stream(e meshapi.NodeEvent) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for c := range f.streams {
+		select {
+		case c <- e:
+			n++
+		default:
+		}
+	}
+	return n
+}
+
+// Streams is how many event streams are connected.
+func (f *Fake) Streams() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.streams)
+}
+
+// events serves GET /v1/nodes/{id}/events: server-sent events, as Stream
+// sends them, until the client goes.
+func (f *Fake) events(w http.ResponseWriter, r *http.Request) {
+	f.record(r, "events", "")
+	f.mu.Lock()
+	known := r.PathValue("id") == f.nodeID
+	c := make(chan meshapi.NodeEvent, 16)
+	if known {
+		f.streams[c] = struct{}{}
+	}
+	f.mu.Unlock()
+	if !known {
+		writeErr(w, http.StatusForbidden, "forbidden", "not this machine's node")
+		return
+	}
+	defer func() {
+		f.mu.Lock()
+		delete(f.streams, c)
+		f.mu.Unlock()
+	}()
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(http.StatusOK)
+	fl, _ := w.(http.Flusher)
+	fmt.Fprint(w, ": open\n\n")
+	if fl != nil {
+		fl.Flush()
+	}
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case e := <-c:
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", e.Event, e.Data)
+			if fl != nil {
+				fl.Flush()
+			}
+		}
+	}
 }
 
 // ExpireLease ends id as Mesh's timer would: its renew and every other
@@ -217,11 +296,6 @@ func (f *Fake) heartbeat(w http.ResponseWriter, r *http.Request) {
 	if resp.Cancel == nil {
 		resp.Cancel = []string{}
 	}
-	for _, id := range f.cancel {
-		if l := f.leases[id]; l != nil && l.ended == "" {
-			l.ended = "cancelled"
-		}
-	}
 	f.cancel = nil
 	f.mu.Unlock()
 	if !known {
@@ -324,6 +398,13 @@ func (f *Fake) lease(w http.ResponseWriter, r *http.Request) {
 		case "fail":
 			state.End = "failed"
 		default:
+			var hb meshapi.HandBackRequest
+			json.Unmarshal(body, &hb)
+			if hb.Cause == meshapi.CauseCancelled {
+				// a cancelled job's lease ends it cancelled (Mesh wave 1.5)
+				state.End = "cancelled"
+				break
+			}
 			state.Status = "queued"
 			state.Handbacks++
 		}

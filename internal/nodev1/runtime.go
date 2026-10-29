@@ -80,14 +80,45 @@ type Runtime struct {
 type running struct {
 	cancel     context.CancelCauseFunc
 	progressAt time.Time
+	// cancelled is why Mesh cancelled the lease, once it has
+	cancelled string
 }
 
-// errLeaseGone and errCancelled end a lease's work with nothing more
-// to report: Mesh no longer holds the lease as this node's.
+// errLeaseGone ends a lease's work with nothing more to report: Mesh
+// no longer holds the lease as this node's. errCancelled is Mesh asking
+// the node to stop — over its event stream or in a heartbeat's answer —
+// and the node hands the lease back with cause cancelled, which ends
+// the job cancelled (a lease already gone answers 409, and that is all).
 var (
 	errLeaseGone = errors.New("the lease is no longer this node's")
 	errCancelled = errors.New("Mesh cancelled the lease")
 )
+
+// cancelLease stops the lease's work for Mesh's cancel; a lease the node
+// does not hold is nothing to stop.
+func (r *Runtime) cancelLease(id, why string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	l := r.live[id]
+	if l == nil {
+		return false
+	}
+	if l.cancelled == "" {
+		l.cancelled = why
+	}
+	l.cancel(errCancelled)
+	return true
+}
+
+// cancelReason is why Mesh cancelled the lease.
+func (r *Runtime) cancelReason(id string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if l := r.live[id]; l != nil && l.cancelled != "" {
+		return l.cancelled
+	}
+	return "Mesh cancelled the lease"
+}
 
 func (r *Runtime) logf(format string, args ...any) {
 	if r.Logf != nil {
@@ -148,6 +179,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	hbCtx, stopHB := context.WithCancel(ctx)
 	defer stopHB()
 	go r.heartbeats(hbCtx, every)
+	go r.events(hbCtx)
 
 	for ctx.Err() == nil {
 		if r.draining() {
@@ -256,15 +288,13 @@ func (r *Runtime) heartbeat(ctx context.Context) {
 		}
 		return
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	if resp.Drain {
+		r.mu.Lock()
 		r.drain = true
+		r.mu.Unlock()
 	}
 	for _, id := range resp.Cancel {
-		if l := r.live[id]; l != nil {
-			l.cancel(errCancelled)
-		}
+		r.cancelLease(id, "Mesh cancelled the lease (heartbeat)")
 	}
 }
 

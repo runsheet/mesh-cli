@@ -265,8 +265,12 @@ func (r *Runtime) renew(ctx context.Context, lease *meshapi.Lease, cancel contex
 // is ending; nothing when the lease is no longer the node's.
 func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) {
 	switch {
-	case errors.Is(o.cause, errLeaseGone), errors.Is(o.cause, errCancelled):
+	case errors.Is(o.cause, errLeaseGone):
 		r.logf("nodev1: lease %s ended without a report: %v", id, o.cause)
+		return
+	case errors.Is(o.cause, errCancelled):
+		r.postAccess(id, o.access)
+		r.handBack(id, meshapi.CauseCancelled, r.cancelReason(id), o.result.SessionID)
 		return
 	case o.nodeEnding:
 		r.postAccess(id, o.access)
@@ -313,6 +317,10 @@ func (r *Runtime) handBack(id, cause, reason, sessionRef string) {
 	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
 	defer cancel()
 	st, err := r.API.HandBack(ctx, id, meshapi.HandBackRequest{Cause: cause, Reason: clip(reason, maxReason), SessionRef: sessionRef})
+	if err != nil && meshapi.LeaseGone(err) {
+		r.logf("nodev1: lease %s was no longer the node's to hand back (%s)", id, cause)
+		return
+	}
 	if err != nil {
 		r.logf("nodev1: lease %s: hand-back (%s): %v", id, cause, err)
 		return
