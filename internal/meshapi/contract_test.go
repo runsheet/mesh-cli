@@ -37,6 +37,11 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			decode(t, f.Request, &req)
 			return c.Heartbeat(context.Background(), idOf(f.Path, 3), req)
 		},
+		"nodes-heartbeat-accounts": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.HeartbeatRequest
+			decode(t, f.Request, &req)
+			return c.Heartbeat(context.Background(), idOf(f.Path, 3), req)
+		},
 		"nodes-connect": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
 			var req meshapi.ConnectRequest
 			decode(t, f.Request, &req)

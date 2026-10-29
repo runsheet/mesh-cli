@@ -64,8 +64,10 @@ type SessionResult struct {
 	Turns     int
 	Usage     *harness.Usage
 	// Models is the session's spend by model, as the CLI names each.
-	Models   map[string]harness.ModelSpend
-	Duration time.Duration
+	Models map[string]harness.ModelSpend
+	// ModelTurns are Turns by model, as the CLI names each.
+	ModelTurns map[string]int
+	Duration   time.Duration
 }
 
 // Session runs one harnessed session to its end. A cancelled ctx kills
@@ -151,7 +153,7 @@ func (c *ClaudeSession) Run(ctx context.Context, spec SessionSpec) (SessionResul
 	s.CloseInput()
 	res, waitErr := s.Wait()
 	sr := SessionResult{SessionID: res.SessionID, Text: res.Text, CostUSD: res.CostUSD, Turns: res.Turns,
-		Usage: res.Stream.Usage, Models: res.Models, Duration: res.Duration}
+		Usage: res.Stream.Usage, Models: res.Models, ModelTurns: res.ModelTurns, Duration: res.Duration}
 	if ctx.Err() != nil {
 		return sr, ctx.Err()
 	}

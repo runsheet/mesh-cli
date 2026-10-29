@@ -75,10 +75,24 @@ type LeaseBeat struct {
 	ProgressAt time.Time `json:"progress_at"`
 }
 
-// AccountReport is one model account's standing as the node saw it.
+// AccountReport is one model account's standing as the node saw it
+// (projectmesh-io/api wave 2.2): its limit windows, its overage status,
+// and, when the vendor refuses it now, until when. Mesh keeps the
+// latest report per account, whichever node sent it, and paces the
+// account's jobs by it.
 type AccountReport struct {
-	AccountRef   string     `json:"account_ref"`
-	LimitedUntil *time.Time `json:"limited_until,omitempty"`
+	AccountRef   string          `json:"account_ref"`
+	Windows      []AccountWindow `json:"windows,omitempty"`
+	Overage      string          `json:"overage,omitempty"`
+	LimitedUntil *time.Time      `json:"limited_until,omitempty"`
+}
+
+// AccountWindow is one limit window of an account: five_hour,
+// seven_day, …, the percent of it used, and when it resets.
+type AccountWindow struct {
+	Window   string     `json:"window"`
+	UsedPct  int        `json:"used_pct"`
+	ResetsAt *time.Time `json:"resets_at,omitempty"`
 }
 
 // HeartbeatRequest is POST /v1/nodes/{id}/heartbeat.
@@ -387,38 +401,88 @@ type AccessRequest struct {
 	Records []AccessRecord `json:"records"`
 }
 
-// ModelUsage is what a lease spent on one model.
+// ModelUsage is what a lease spent on one model (projectmesh-io/api
+// contracts/v1/lease-usage.json): tokens_input counts every input token,
+// cached ones included; cost_list_cents is the session's spend at list
+// price, and cost_actual_cents what the account was charged for it —
+// the list price on an api-key account, nothing on a subscription.
 type ModelUsage struct {
-	Model                 string  `json:"model"`
-	AccountRef            string  `json:"account_ref,omitempty"`
-	InputTokens           int64   `json:"input_tokens"`
-	CachedInputTokens     int64   `json:"cached_input_tokens"`
-	CacheWriteInputTokens int64   `json:"cache_write_input_tokens"`
-	OutputTokens          int64   `json:"output_tokens"`
-	CostUSD               float64 `json:"cost_usd"`
+	Model            string `json:"model"`
+	TokensInput      int64  `json:"tokens_input"`
+	TokensOutput     int64  `json:"tokens_output"`
+	TokensCacheRead  int64  `json:"tokens_cache_read"`
+	TokensCacheWrite int64  `json:"tokens_cache_write"`
+	CostListCents    int64  `json:"cost_list_cents"`
+	CostActualCents  int64  `json:"cost_actual_cents"`
+	Turns            int64  `json:"turns"`
 }
 
-// UsageRequest is POST /v1/leases/{id}/usage. Escalations are the
-// model steps the lease's session took (PR 2.11), in order.
+// UsageRequest is POST /v1/leases/{id}/usage, runsheet ADR 078's
+// JobUsage as projectmesh-io/api copied it: the lease's spend so far,
+// summed and by model, and the escalations its session took, in order.
+// Each report is the lease's whole usage so far and replaces its last
+// one at Mesh. AccountRef is the account the node ran the session on;
+// Mesh books the one its take picked whatever the node names.
 type UsageRequest struct {
-	Usage       []ModelUsage `json:"usage"`
-	Turns       int          `json:"turns"`
-	DurationMS  int64        `json:"duration_ms"`
-	Escalations []Escalation `json:"escalations,omitempty"`
+	Harness          string       `json:"harness"`
+	Model            string       `json:"model"`
+	AccountRef       string       `json:"account_ref"`
+	TokensInput      int64        `json:"tokens_input"`
+	TokensOutput     int64        `json:"tokens_output"`
+	TokensCacheRead  int64        `json:"tokens_cache_read"`
+	TokensCacheWrite int64        `json:"tokens_cache_write"`
+	CostListCents    int64        `json:"cost_list_cents"`
+	CostActualCents  int64        `json:"cost_actual_cents"`
+	DurationMS       int64        `json:"duration_ms"`
+	Turns            int64        `json:"turns"`
+	Models           []ModelUsage `json:"models"`
+	Escalations      []Escalation `json:"escalations"`
 }
 
 // Escalation is one step up a kind's model ladder in a lease's session:
 // from one model to the next, on a trigger (red, conflict, stall,
-// asked), at a time. Failed, when set, is why the session did not take
-// the step and stayed on From: the node keeps it in its log, and Mesh
-// hears only the steps taken.
+// asked), at a time — null in JSON when unknown. Failed, when set, is
+// why the session did not take the step and stayed on From: the node
+// keeps it in its log, and Mesh hears only the steps taken.
 type Escalation struct {
 	From   string    `json:"from"`
 	To     string    `json:"to"`
 	On     string    `json:"on"`
-	Reason string    `json:"reason,omitempty"`
-	At     time.Time `json:"at"`
+	Reason string    `json:"reason"`
+	At     time.Time `json:"-"`
 	Failed string    `json:"-"`
+}
+
+// escalationJSON is Escalation on the wire: at is null when unknown.
+type escalationJSON struct {
+	From   string     `json:"from"`
+	To     string     `json:"to"`
+	On     string     `json:"on"`
+	Reason string     `json:"reason"`
+	At     *time.Time `json:"at"`
+}
+
+// MarshalJSON writes at as null when it is the zero time.
+func (e Escalation) MarshalJSON() ([]byte, error) {
+	w := escalationJSON{From: e.From, To: e.To, On: e.On, Reason: e.Reason}
+	if !e.At.IsZero() {
+		at := e.At.UTC()
+		w.At = &at
+	}
+	return json.Marshal(w)
+}
+
+// UnmarshalJSON reads a null at as the zero time.
+func (e *Escalation) UnmarshalJSON(b []byte) error {
+	var w escalationJSON
+	if err := json.Unmarshal(b, &w); err != nil {
+		return err
+	}
+	*e = Escalation{From: w.From, To: w.To, On: w.On, Reason: w.Reason}
+	if w.At != nil {
+		e.At = *w.At
+	}
+	return nil
 }
 
 // FinishRequest is POST /v1/leases/{id}/finish: the product's opaque

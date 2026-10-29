@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -263,18 +264,44 @@ func TestARefusedEscalationIsMarkedFailed(t *testing.T) {
 	}
 }
 
-// usageOf reports the spend of every model and the escalations.
+// usageOf reports the lease's spend in Mesh's JobUsage shape: each
+// model's tokens (input counting the cached), list cost in cents and
+// turns, their sums, and the escalations; the actual cost is the list
+// cost only on an api-key account.
 func TestUsageOfAStreamingSession(t *testing.T) {
 	esc := []meshapi.Escalation{{From: "haiku", To: "sonnet", On: "red"}}
-	u := usageOf(SessionResult{Turns: 3, Duration: 2 * time.Second, Models: map[string]harness.ModelSpend{
+	res := SessionResult{Turns: 3, Duration: 2 * time.Second, Models: map[string]harness.ModelSpend{
 		"claude-sonnet": {InputTokens: 10, CacheReadInputTokens: 5, OutputTokens: 2, CostUSD: 0.2},
 		"claude-haiku":  {InputTokens: 4, CacheCreationInputTokens: 1, OutputTokens: 1, CostUSD: 0.01},
-	}}, esc)
-	if u == nil || len(u.Usage) != 2 || u.Usage[0].Model != "claude-haiku" || u.Usage[0].InputTokens != 5 || u.Usage[0].CacheWriteInputTokens != 1 ||
-		u.Usage[1].InputTokens != 15 || u.Usage[1].CachedInputTokens != 5 || u.Usage[1].CostUSD != 0.2 || u.Turns != 3 || u.DurationMS != 2000 || len(u.Escalations) != 1 {
-		t.Fatalf("%+v", u)
+	}, ModelTurns: map[string]int{"claude-haiku": 2, "claude-sonnet": 1}}
+	for _, c := range []struct {
+		name       string
+		account    *sessionAccount
+		ref        string
+		actualCost int64
+	}{
+		{"the node's own login", &sessionAccount{}, "", 0},
+		{"a subscription", &sessionAccount{cred: &modelCredential{AccountRef: "acct-a", Kind: "subscription"}}, "acct-a", 0},
+		{"an api key", &sessionAccount{cred: &modelCredential{AccountRef: "acct-b", Kind: "api_key"}}, "acct-b", 21},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			u := usageOf(outcome{result: res, escalations: esc, account: c.account, harness: "claude-code", model: "sonnet"})
+			want := &meshapi.UsageRequest{
+				Harness: "claude-code", Model: "sonnet", AccountRef: c.ref,
+				TokensInput: 20, TokensOutput: 3, TokensCacheRead: 5, TokensCacheWrite: 1,
+				CostListCents: 21, CostActualCents: c.actualCost, DurationMS: 2000, Turns: 3,
+				Models: []meshapi.ModelUsage{
+					{Model: "claude-haiku", TokensInput: 5, TokensOutput: 1, TokensCacheWrite: 1, CostListCents: 1, CostActualCents: min(c.actualCost, 1), Turns: 2},
+					{Model: "claude-sonnet", TokensInput: 15, TokensOutput: 2, TokensCacheRead: 5, CostListCents: 20, CostActualCents: min(c.actualCost, 20), Turns: 1},
+				},
+				Escalations: esc,
+			}
+			if !reflect.DeepEqual(u, want) {
+				t.Fatalf("got  %+v\nwant %+v", u, want)
+			}
+		})
 	}
-	if usageOf(SessionResult{}, nil) != nil {
+	if usageOf(outcome{}) != nil {
 		t.Fatal("nothing spent is no usage")
 	}
 }

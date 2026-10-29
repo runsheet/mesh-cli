@@ -1,22 +1,143 @@
 {
   "name": "lease-usage",
   "method": "POST",
-  "path": "/v1/leases/lse_01JD7K2Q9N3V/usage",
+  "path": "/v1/leases/c3c5ba4c-4be2-59f9-b230-e77feb5bfee6/usage",
+  "caller": "node",
   "request": {
-    "usage": [
+    "account_ref": "",
+    "cost_actual_cents": 0,
+    "cost_list_cents": 10,
+    "duration_ms": 60000,
+    "escalations": [
       {
-        "model": "claude-haiku-4-5",
-        "account_ref": "9f1c2b7e-3a4d-4e5f-8a6b-7c8d9e0f1a2b",
-        "input_tokens": 12000,
-        "cached_input_tokens": 8000,
-        "cache_write_input_tokens": 1000,
-        "output_tokens": 900,
-        "cost_usd": 0.021
+        "at": null,
+        "from": "haiku",
+        "on": "red",
+        "reason": "the suite went red",
+        "to": "sonnet"
       }
     ],
-    "turns": 6,
-    "duration_ms": 41000
+    "harness": "claude-code",
+    "model": "sonnet",
+    "models": [
+      {
+        "cost_actual_cents": 0,
+        "cost_list_cents": 5,
+        "model": "haiku",
+        "tokens_cache_read": 0,
+        "tokens_cache_write": 0,
+        "tokens_input": 500,
+        "tokens_output": 0,
+        "turns": 2
+      },
+      {
+        "cost_actual_cents": 0,
+        "cost_list_cents": 5,
+        "model": "sonnet",
+        "tokens_cache_read": 0,
+        "tokens_cache_write": 0,
+        "tokens_input": 500,
+        "tokens_output": 250,
+        "turns": 1
+      }
+    ],
+    "tokens_cache_read": 0,
+    "tokens_cache_write": 0,
+    "tokens_input": 1000,
+    "tokens_output": 250,
+    "turns": 3
   },
-  "status": 204,
-  "response": null
+  "status": 200,
+  "response": {
+    "job_id": "05ce926d-b5af-5efe-84fa-9b8c65e1ef9a",
+    "job_usage": {
+      "account_ref": "acct-team-a",
+      "cost_actual_cents": 0,
+      "cost_list_cents": 10,
+      "duration_ms": 60000,
+      "escalations": [
+        {
+          "at": null,
+          "from": "haiku",
+          "on": "red",
+          "reason": "the suite went red",
+          "to": "sonnet"
+        }
+      ],
+      "harness": "claude-code",
+      "model": "sonnet",
+      "models": [
+        {
+          "cost_actual_cents": 0,
+          "cost_list_cents": 5,
+          "model": "haiku",
+          "tokens_cache_read": 0,
+          "tokens_cache_write": 0,
+          "tokens_input": 500,
+          "tokens_output": 0,
+          "turns": 2
+        },
+        {
+          "cost_actual_cents": 0,
+          "cost_list_cents": 5,
+          "model": "sonnet",
+          "tokens_cache_read": 0,
+          "tokens_cache_write": 0,
+          "tokens_input": 500,
+          "tokens_output": 250,
+          "turns": 1
+        }
+      ],
+      "tokens_cache_read": 0,
+      "tokens_cache_write": 0,
+      "tokens_input": 1000,
+      "tokens_output": 250,
+      "turns": 3
+    },
+    "lease_id": "c3c5ba4c-4be2-59f9-b230-e77feb5bfee6",
+    "usage": {
+      "account_ref": "acct-team-a",
+      "cost_actual_cents": 0,
+      "cost_list_cents": 10,
+      "duration_ms": 60000,
+      "escalations": [
+        {
+          "at": null,
+          "from": "haiku",
+          "on": "red",
+          "reason": "the suite went red",
+          "to": "sonnet"
+        }
+      ],
+      "harness": "claude-code",
+      "model": "sonnet",
+      "models": [
+        {
+          "cost_actual_cents": 0,
+          "cost_list_cents": 5,
+          "model": "haiku",
+          "tokens_cache_read": 0,
+          "tokens_cache_write": 0,
+          "tokens_input": 500,
+          "tokens_output": 0,
+          "turns": 2
+        },
+        {
+          "cost_actual_cents": 0,
+          "cost_list_cents": 5,
+          "model": "sonnet",
+          "tokens_cache_read": 0,
+          "tokens_cache_write": 0,
+          "tokens_input": 500,
+          "tokens_output": 250,
+          "turns": 1
+        }
+      ],
+      "tokens_cache_read": 0,
+      "tokens_cache_write": 0,
+      "tokens_input": 1000,
+      "tokens_output": 250,
+      "turns": 3
+    }
+  }
 }
