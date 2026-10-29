@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/escalate"
 	"projectmesh.io/mesh-cli/internal/gitrelay"
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/mcptool"
@@ -36,6 +38,8 @@ type outcome struct {
 	nodeEnding bool
 	// access are the relay's AccessRecords of the lease.
 	access []meshapi.AccessRecord
+	// escalations are the model steps the session took.
+	escalations []meshapi.Escalation
 }
 
 // runLease runs one lease to its report: the lease's directory and
@@ -48,8 +52,9 @@ func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take) {
 	r.logf("nodev1: took lease %s of job %s (%s, %s/%s)", id, b.JobID, b.Kind, b.Subject.Type, b.Subject.ID)
 	leaseCtx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
+	mb := NewMailbox()
 	r.mu.Lock()
-	r.live[id] = &running{cancel: cancel, progressAt: time.Now()}
+	r.live[id] = &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: b.TurnTool}
 	r.mu.Unlock()
 	defer func() {
 		r.mu.Lock()
@@ -68,7 +73,7 @@ func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take) {
 		defer close(renewDone)
 		r.renew(leaseCtx, lease, cancel)
 	}()
-	out := r.work(leaseCtx, b)
+	out := r.work(leaseCtx, b, mb)
 	cancel(nil)
 	<-renewDone
 	out.nodeEnding = ctx.Err() != nil
@@ -82,7 +87,12 @@ func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take) {
 // through it, its sessionproxy, then the session. Leaving, it closes the
 // proxy, then the grant — which revokes the git tokens it minted — and
 // removes the lease's directory.
-func (r *Runtime) work(ctx context.Context, b *meshapi.Brief) outcome {
+//
+// The session streams (PR 2.10): the prompt is its first message, the
+// lease's mailbox feeds it while it runs, every event of its output is
+// the lease's progress, and the product's answer to the finish tool
+// closes its input. Its model walks the kind's ladder (PR 2.11).
+func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox) outcome {
 	dir := filepath.Join(r.WorkRoot, "leases", b.LeaseID)
 	workspace := filepath.Join(dir, "work")
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
@@ -120,8 +130,9 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief) outcome {
 		grant.SetCheckout(workspace)
 	}
 
-	fin := &finishCapture{tool: b.FinishTool}
-	servers, closeProxy, err := r.openProxy(b, tokens, grant, r.nodeTools(b, grant, workspace), fin.observe)
+	ladder := escalate.New(b.Harness.Model)
+	fin := &finishCapture{tool: b.FinishTool, onFinish: mb.Finish}
+	servers, closeProxy, err := r.openProxy(b, tokens, grant, r.nodeTools(b, grant, workspace, ladder, mb), fin.observe)
 	if err != nil {
 		return outcome{err: fmt.Errorf("the lease's sessionproxy: %w", err)}
 	}
@@ -136,6 +147,10 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief) outcome {
 		Servers:   servers,
 		Env:       []string{"GIT_TERMINAL_PROMPT=0"},
 		Unset:     gitEnvUnset,
+		Mailbox:   mb,
+		Ladder:    ladder,
+		Thread:    b.Thread != nil,
+		OnEvent:   func(harness.Event) { r.touch(b.LeaseID) },
 	}
 	sctx := ctx
 	if m := b.Harness.Budget.Minutes; m > 0 {
@@ -144,7 +159,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief) outcome {
 		defer stop()
 	}
 	res, err := r.Session.Run(sctx, spec)
-	o := outcome{result: res, err: err, finish: fin.result()}
+	o := outcome{result: res, err: err, finish: fin.result(), escalations: taken(ladder.Steps())}
 	if ctx.Err() != nil {
 		o.cause = context.Cause(ctx)
 	} else if errors.Is(err, context.DeadlineExceeded) || sctx.Err() != nil {
@@ -198,14 +213,17 @@ func (r *Runtime) openProxy(b *meshapi.Brief, tokens *sessionTokens, grant *gitr
 }
 
 // nodeTools are the node tools the brief's kind names that this node
-// has: push, through the lease's grant. A tool the node does not have
-// yet (run_suite, apply_onto, …: wave 3) is left out and logged.
-func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace string) []mcptool.Tool {
+// has: push, through the lease's grant, and escalate, on the lease's
+// ladder and mailbox. A tool the node does not have yet (run_suite,
+// apply_onto, …: wave 3) is left out and logged.
+func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace string, ladder *escalate.Ladder, mb *Mailbox) []mcptool.Tool {
 	var out []mcptool.Tool
 	for _, name := range b.NodeTools {
 		switch name {
 		case PushTool:
 			out = append(out, r.pushTool(b, grant, workspace))
+		case EscalateTool:
+			out = append(out, escalateTool(ladder, mb))
 		default:
 			r.logf("nodev1: lease %s: the kind names node tool %q, which this node does not have", b.LeaseID, name)
 		}
@@ -239,11 +257,6 @@ func (r *Runtime) renew(ctx context.Context, lease *meshapi.Lease, cancel contex
 				every = time.Duration(resp.RenewEveryS) * time.Second
 				t.Reset(every)
 			}
-			r.mu.Lock()
-			if l := r.live[lease.LeaseID]; l != nil {
-				l.progressAt = time.Now()
-			}
-			r.mu.Unlock()
 		case meshapi.LeaseGone(err):
 			r.logf("nodev1: lease %s: %v", lease.LeaseID, err)
 			cancel(errLeaseGone)
@@ -280,7 +293,7 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) {
 	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
 	defer cancel()
 	r.postAccess(id, o.access)
-	if u := usageOf(o.result); u != nil {
+	if u := usageOf(o.result, o.escalations); u != nil {
 		if err := r.API.Usage(ctx, id, *u); err != nil {
 			r.logf("nodev1: lease %s: usage: %v", id, err)
 		}
@@ -328,18 +341,52 @@ func (r *Runtime) handBack(id, cause, reason, sessionRef string) {
 	r.logf("nodev1: lease %s handed back (%s); job %s is %s", id, cause, st.JobID, st.Status)
 }
 
-// usageOf is what the session spent, by model; nil when it reported nothing.
-func usageOf(res SessionResult) *meshapi.UsageRequest {
-	if res.Usage == nil && res.CostUSD == 0 {
+// usageOf is what the session spent, by model, and the escalations it
+// took; nil when it reported nothing. A streaming session names its
+// spend by model; a session that did not (an older CLI) has one model's.
+func usageOf(res SessionResult, escalations []meshapi.Escalation) *meshapi.UsageRequest {
+	if res.Usage == nil && res.CostUSD == 0 && len(res.Models) == 0 && len(escalations) == 0 {
 		return nil
 	}
-	m := meshapi.ModelUsage{CostUSD: res.CostUSD}
-	if u := res.Usage; u != nil {
-		m.Model = u.Model
-		m.InputTokens, m.CachedInputTokens, m.CacheWriteInputTokens = u.InputTokens, u.CachedInputTokens, u.CacheWriteInputTokens
-		m.OutputTokens = u.OutputTokens
+	u := &meshapi.UsageRequest{Turns: res.Turns, DurationMS: res.Duration.Milliseconds(), Escalations: escalations}
+	if len(res.Models) > 0 {
+		names := make([]string, 0, len(res.Models))
+		for name := range res.Models {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			m := res.Models[name]
+			u.Usage = append(u.Usage, meshapi.ModelUsage{
+				Model:                 name,
+				InputTokens:           m.InputTokens + m.CacheReadInputTokens + m.CacheCreationInputTokens,
+				CachedInputTokens:     m.CacheReadInputTokens,
+				CacheWriteInputTokens: m.CacheCreationInputTokens,
+				OutputTokens:          m.OutputTokens,
+				CostUSD:               m.CostUSD,
+			})
+		}
+		return u
 	}
-	return &meshapi.UsageRequest{Usage: []meshapi.ModelUsage{m}, Turns: res.Turns, DurationMS: res.Duration.Milliseconds()}
+	m := meshapi.ModelUsage{CostUSD: res.CostUSD}
+	if r := res.Usage; r != nil {
+		m.Model = r.Model
+		m.InputTokens, m.CachedInputTokens, m.CacheWriteInputTokens = r.InputTokens, r.CachedInputTokens, r.CacheWriteInputTokens
+		m.OutputTokens = r.OutputTokens
+	}
+	u.Usage = []meshapi.ModelUsage{m}
+	return u
+}
+
+// taken are the escalations the session took, leaving those it refused.
+func taken(steps []meshapi.Escalation) []meshapi.Escalation {
+	var out []meshapi.Escalation
+	for _, e := range steps {
+		if e.Failed == "" {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func clip(s string, n int) string {
