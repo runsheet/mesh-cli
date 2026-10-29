@@ -404,4 +404,7 @@ const (
 	CausePanic       = "panic"
 	CauseRevoked     = "revoked"
 	CauseParked      = "parked"
+	// CauseCancelled is a node stopping on Mesh's cancel: the job then
+	// ends cancelled (projectmesh-io/api wave 1.5).
+	CauseCancelled = "cancelled"
 )

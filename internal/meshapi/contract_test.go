@@ -96,6 +96,11 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			decode(t, f.Request, &req)
 			return c.Fail(context.Background(), idOf(f.Path, 3), req)
 		},
+		"node-events": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var got []meshapi.NodeEvent
+			err := c.Events(context.Background(), idOf(f.Path, 3), func(e meshapi.NodeEvent) { got = append(got, e) })
+			return map[string]any{"events": got}, err
+		},
 		"lease-hand-back": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
 			var req meshapi.HandBackRequest
 			decode(t, f.Request, &req)

@@ -367,8 +367,8 @@ func TestALeaseMeshEndedStopsTheSessionWithoutAReport(t *testing.T) {
 	}
 }
 
-// A heartbeat that names the lease in cancel stops its session; nothing
-// is reported.
+// A heartbeat that names the lease in cancel stops its session, and the
+// lease is handed back with cause cancelled.
 func TestHeartbeatCancelStopsTheSession(t *testing.T) {
 	sess := &stubSession{hold: make(chan struct{})}
 	g := newRig(t, sess)
@@ -386,13 +386,69 @@ func TestHeartbeatCancelStopsTheSession(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the cancelled session went on")
 	}
-	if n := len(g.fake.Calls("hand-back")) + len(g.fake.Calls("finish")); n != 0 {
-		t.Fatalf("%d reports after a cancel", n)
-	}
+	assertCancelledHandBack(t, g, job, "Mesh cancelled the lease (heartbeat)")
 	var hb meshapi.HeartbeatRequest
 	json.Unmarshal(g.fake.Calls("heartbeat")[0].Body, &hb)
 	if len(hb.Leases) != 1 || hb.Leases[0].LeaseID != g.fake.LeaseOf(job) {
 		t.Fatalf("heartbeat leases %+v", hb.Leases)
+	}
+}
+
+// A cancel on the node's event stream stops the session at once — long
+// before any heartbeat — and the lease is handed back with cause
+// cancelled and the cancel's reason (projectmesh-io/api wave 1.5).
+func TestStreamCancelStopsTheSession(t *testing.T) {
+	sess := &stubSession{hold: make(chan struct{})}
+	g := newRig(t, sess)
+	g.rt.HeartbeatEvery = time.Hour
+	job := g.offer(t, nil)
+	done := make(chan error, 1)
+	go func() { done <- g.rt.Run(context.Background()) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for (len(sess.specsSoFar()) == 0 || g.fake.Streams() == 0) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := g.fake.StreamCancel(g.fake.LeaseOf(job), "superseded", "a newer job replaced it"); n != 1 {
+		t.Fatalf("the cancel reached %d streams", n)
+	}
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the cancelled session went on")
+	}
+	assertCancelledHandBack(t, g, job, "Mesh cancelled the job (superseded): a newer job replaced it")
+	if n := len(g.fake.Calls("heartbeat")); n != 0 {
+		t.Fatalf("%d heartbeats: the stream, not a heartbeat, stopped the session", n)
+	}
+}
+
+// A drain on the event stream stops the node taking more leases.
+func TestStreamDrainStopsTaking(t *testing.T) {
+	g := newRig(t, &stubSession{})
+	g.rt.Once = false
+	g.rt.HeartbeatEvery = time.Hour
+	go func() {
+		for g.fake.Stream(meshapi.NodeEvent{Event: meshapi.EventDrain, Data: json.RawMessage(`{}`)}) == 0 {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	if err := run(t, g, context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// assertCancelledHandBack: the job's lease was handed back once, with
+// cause cancelled and reason, and nothing else was reported.
+func assertCancelledHandBack(t *testing.T, g *rig, job, reason string) {
+	t.Helper()
+	calls := g.fake.Calls("hand-back")
+	if len(calls) != 1 || len(g.fake.Calls("finish"))+len(g.fake.Calls("fail")) != 0 {
+		t.Fatalf("%d hand-backs, %d finishes, %d failures after a cancel", len(calls), len(g.fake.Calls("finish")), len(g.fake.Calls("fail")))
+	}
+	var hb meshapi.HandBackRequest
+	json.Unmarshal(calls[0].Body, &hb)
+	if calls[0].LeaseID != g.fake.LeaseOf(job) || hb.Cause != meshapi.CauseCancelled || hb.Reason != reason {
+		t.Fatalf("hand-back %s %+v", calls[0].LeaseID, hb)
 	}
 }
 
