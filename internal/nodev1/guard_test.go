@@ -59,9 +59,15 @@ var vendorMarks = []string{
 // no path that writes to a vendor except through the relay.
 func TestNoWritePathToAVendorButTheRelay(t *testing.T) {
 	fset := token.NewFileSet()
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
+	// the node tools (internal/nodetools) run in nodev1's process: they
+	// are held to the same rule, push.go there being the push tool
+	var files []string
+	for _, pattern := range []string{"*.go", "../nodetools/*.go"} {
+		got, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, got...)
 	}
 	for _, name := range files {
 		if strings.HasSuffix(name, "_test.go") {
@@ -82,7 +88,7 @@ func TestNoWritePathToAVendorButTheRelay(t *testing.T) {
 					t.Errorf("%s names %q (%s): a vendor is reached only through the relay", fset.Position(lit.Pos()), s, m)
 				}
 			}
-			if s == "push" && name != "push.go" {
+			if s == "push" && name != "../nodetools/push.go" {
 				t.Errorf("%s runs git push outside the push tool", fset.Position(lit.Pos()))
 			}
 			return true

@@ -2,6 +2,8 @@ package nodev1
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -109,7 +111,9 @@ func newRig(t *testing.T, sess Session) *rig {
 	t.Cleanup(ps.Close)
 	prod.url = ps.URL + "/mcp"
 	work := t.TempDir()
+	_, nodeKey, _ := ed25519.GenerateKey(rand.Reader)
 	rt := &Runtime{
+		SigningKey:  nodeKey,
 		API:         &meshapi.Client{BaseURL: mesh.URL, Token: func(context.Context) (string, error) { return "machine", nil }},
 		Node:        meshapi.RegisterRequest{Name: "test-node", Version: "v0.0.0-test", CapacityTotal: meshapi.Capacity{CPUs: 4, MemGB: 8, Slots: 1}, SigningKey: "ed25519:AAAA"},
 		WorkRoot:    work,
