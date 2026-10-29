@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/actor"
 	"projectmesh.io/mesh-cli/internal/escalate"
 	"projectmesh.io/mesh-cli/internal/gitrelay"
 	"projectmesh.io/mesh-cli/internal/harness"
@@ -62,6 +63,10 @@ type outcome struct {
 // without one); roomErr, why the scheduler had no room, hands the lease
 // back cannot_run.
 func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take, room *scheduler.Lease, roomErr error) {
+	if r.Actors {
+		r.runActor(ctx, tk, room, roomErr)
+		return
+	}
 	b, lease := tk.Brief, tk.Lease
 	id := lease.LeaseID
 	r.logf("nodev1: took lease %s of job %s (%s, %s/%s)", id, b.JobID, b.Kind, b.Subject.Type, b.Subject.ID)
@@ -94,7 +99,7 @@ func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take, room *schedule
 		defer close(renewDone)
 		r.renew(leaseCtx, lease, cancel, room)
 	}()
-	out := r.work(leaseCtx, b, mb)
+	out := r.work(leaseCtx, b, mb, nil, "")
 	cancel(nil)
 	<-renewDone
 	out.nodeEnding = ctx.Err() != nil
@@ -118,13 +123,34 @@ func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take, room *schedule
 // lease's mailbox feeds it while it runs, every event of its output is
 // the lease's progress, and the product's answer to the finish tool
 // closes its input. Its model walks the kind's ladder (PR 2.11).
-func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox) outcome {
+//
+// Under a job actor (a non-nil; ADR-044, PR 3.2) the actor holds what
+// work opens — the grant and the proxy — and releases them, with the
+// lease's directory, in its releasing state after the report; work
+// enters running as the session starts and runs it in the lease's pod
+// when the actor opened one. Without, work closes them as it leaves.
+func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *actor.Actor, pod string) outcome {
+	var closers []func()
+	keep := func(name string, release func() error) {
+		if a != nil {
+			a.Hold(name, release)
+			return
+		}
+		closers = append(closers, func() { release() })
+	}
+	defer func() {
+		for i := len(closers) - 1; i >= 0; i-- {
+			closers[i]()
+		}
+	}()
 	dir := filepath.Join(r.WorkRoot, "leases", b.LeaseID)
 	workspace := filepath.Join(dir, "work")
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
 		return outcome{err: fmt.Errorf("the lease's directory: %w", err)}
 	}
-	defer os.RemoveAll(dir)
+	if a == nil {
+		keep("the lease's directory", func() error { return os.RemoveAll(dir) })
+	}
 
 	var tokens *sessionTokens
 	if len(b.Servers) > 0 || b.Git != nil || len(apiRules(b)) > 0 || b.CredentialRef != "" {
@@ -151,11 +177,12 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox) outco
 			return outcome{err: fmt.Errorf("the lease's git relay: %w", err)}
 		}
 		grant = g
-		defer func() {
+		keep("the relay grant", func() error {
 			if err := grant.Close(); err != nil {
 				r.logf("nodev1: lease %s: %v", b.LeaseID, err)
 			}
-		}()
+			return nil
+		})
 		if resumed, err = checkout(ctx, grant, b, workspace, r.mirrors, r.logf); err != nil {
 			return outcome{err: fmt.Errorf("checking out %s: %w", b.Git.Repo, err), cause: context.Cause(ctx)}
 		}
@@ -170,7 +197,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox) outco
 	if err != nil {
 		return outcome{err: fmt.Errorf("the lease's sessionproxy: %w", err), cause: context.Cause(ctx)}
 	}
-	defer closeProxy()
+	keep("the sessionproxy", func() error { closeProxy(); return nil })
 	env := []string{"GIT_TERMINAL_PROMPT=0"}
 	if len(apiRules(b)) > 0 {
 		env = append(env, RelaySocketEnv+"="+sock)
@@ -192,6 +219,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox) outco
 			r.touch(b.LeaseID)
 			r.readAccount(account.ref(), ev)
 		},
+		Pod: pod,
 	}
 	account.apply(&spec)
 	sctx := ctx
@@ -199,6 +227,12 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox) outco
 		var stop context.CancelFunc
 		sctx, stop = context.WithTimeout(ctx, time.Duration(m)*time.Minute)
 		defer stop()
+	}
+	if a != nil {
+		if err := a.Enter(actor.Running); err != nil {
+			// a cancelled actor does not run its session
+			return outcome{err: err, cause: context.Cause(ctx)}
+		}
 	}
 	res, err := r.Session.Run(sctx, spec)
 	o := outcome{result: res, err: err, finish: fin.result(), escalations: taken(ladder.Steps()), evidence: rec.IDs(),
@@ -347,22 +381,35 @@ func (r *Runtime) renew(ctx context.Context, lease *meshapi.Lease, cancel contex
 // the writes: Mesh records the lease's pushes from its AccessRecords,
 // and the next lease's checkout starts from the most recent of them (the
 // brief's pushed; checkout).
-func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) {
+func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) actor.End {
 	writes := landedWrites(o.access)
 	switch {
 	case errors.Is(o.cause, errLeaseGone):
 		r.logf("nodev1: lease %s ended without a report: %v", id, o.cause)
-		return
+		return actor.End{Report: actor.ReportNone, Reason: o.cause.Error()}
 	case errors.Is(o.cause, errCancelled):
 		r.postAccess(id, o.access)
 		r.postUsage(id, o)
-		r.handBack(id, meshapi.CauseCancelled, afterWrites(r.cancelReason(id), writes), o.result.SessionID)
-		return
+		reason := afterWrites(r.cancelReason(id), writes)
+		r.handBack(id, meshapi.CauseCancelled, reason, o.result.SessionID)
+		return actor.End{Report: actor.ReportHandBack, Cause: meshapi.CauseCancelled, Reason: reason}
 	case o.nodeEnding:
 		r.postAccess(id, o.access)
 		r.postUsage(id, o)
-		r.handBack(id, meshapi.CauseNodeRestart, afterWrites("the node stopped while the session ran", writes), o.result.SessionID)
-		return
+		reason := afterWrites("the node stopped while the session ran", writes)
+		r.handBack(id, meshapi.CauseNodeRestart, reason, o.result.SessionID)
+		return actor.End{Report: actor.ReportHandBack, Cause: meshapi.CauseNodeRestart, Reason: reason}
+	}
+	// a job actor's session or pod killed from outside is the node's
+	// condition, never the work's (ADR-044): handed back pod_killed,
+	// writes or not, since the next lease builds on what was pushed
+	if why, ok := podKilled(o); ok && r.Actors {
+		r.postAccess(id, o.access)
+		r.postUsage(id, o)
+		reason := afterWrites(why, writes)
+		r.logf("nodev1: lease %s: %s", id, reason)
+		r.handBack(id, meshapi.CausePodKilled, reason, o.result.SessionID)
+		return actor.End{Report: actor.ReportHandBack, Cause: meshapi.CausePodKilled, Reason: reason}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
 	defer cancel()
@@ -370,12 +417,13 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) {
 	r.postUsage(id, o)
 	if o.err != nil && len(writes) > 0 {
 		r.logf("nodev1: lease %s failed AFTER IRREVERSIBLE WRITES (%s): %v", id, strings.Join(writes, "; "), o.err)
-		r.fail(id, meshapi.CauseInfrastructure, afterWrites(o.err.Error(), writes))
-		return
+		reason := afterWrites(o.err.Error(), writes)
+		r.fail(id, meshapi.CauseInfrastructure, reason)
+		return actor.End{Report: actor.ReportFail, Cause: meshapi.CauseInfrastructure, Reason: reason}
 	}
 	if o.err != nil {
 		r.handBack(id, meshapi.CauseCannotRun, o.err.Error(), o.result.SessionID)
-		return
+		return actor.End{Report: actor.ReportHandBack, Cause: meshapi.CauseCannotRun, Reason: o.err.Error()}
 	}
 	result := o.finish
 	if result == nil {
@@ -384,9 +432,10 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) {
 	st, err := r.API.Finish(ctx, id, meshapi.FinishRequest{Result: result, SessionRef: o.result.SessionID, Evidence: o.evidence})
 	if err != nil {
 		r.logf("nodev1: lease %s: finish: %v", id, err)
-		return
+		return actor.End{Report: actor.ReportFinish, Reason: err.Error()}
 	}
 	r.logf("nodev1: lease %s finished; job %s is %s", id, st.JobID, st.Status)
+	return actor.End{Report: actor.ReportFinish}
 }
 
 // postAccess posts the relay's AccessRecords of the lease to Mesh.
