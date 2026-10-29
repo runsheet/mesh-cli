@@ -74,11 +74,11 @@ func (r *Runtime) runActor(ctx context.Context, tk *meshapi.Take, room *schedule
 	defer cancel(nil)
 	mb := NewMailbox()
 	r.mu.Lock()
-	r.live[id] = &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: b.TurnTool, actor: a}
+	r.leases.Put(id, &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: b.TurnTool, actor: a})
 	r.mu.Unlock()
 	defer func() {
 		r.mu.Lock()
-		delete(r.live, id)
+		r.leases.Delete(id)
 		r.mu.Unlock()
 	}()
 	// a panic anywhere in the lease is recovered into its report and
@@ -111,7 +111,7 @@ func (r *Runtime) runActor(ctx context.Context, tk *meshapi.Take, room *schedule
 		} else {
 			if pod != "" {
 				r.mu.Lock()
-				if l := r.live[id]; l != nil {
+				if l := r.lease(id); l != nil {
 					l.pod = pod
 				}
 				r.mu.Unlock()

@@ -39,7 +39,7 @@ func (n updateNode) Drain(why string) {
 func (n updateNode) Live() int {
 	n.r.mu.Lock()
 	defer n.r.mu.Unlock()
-	return len(n.r.live)
+	return n.r.leases.Len()
 }
 
 // HandBackAll implements resources.Node: every live lease is stopped and
@@ -47,7 +47,8 @@ func (n updateNode) Live() int {
 func (n updateNode) HandBackAll(why string) {
 	n.r.mu.Lock()
 	defer n.r.mu.Unlock()
-	for _, l := range n.r.live {
+	for _, e := range n.r.leases.All() {
+		l := e.Value
 		if l.cancelled == "" {
 			l.cancelled = why
 		}

@@ -194,3 +194,22 @@ func TestReleaseNow(t *testing.T) {
 		t.Fatalf("released %v", order)
 	}
 }
+
+func TestRegistry(t *testing.T) {
+	var r Registry[int]
+	if _, ok := r.Get("x"); ok || r.Len() != 0 {
+		t.Fatal("an empty registry has an entry")
+	}
+	r.Put("b", 2)
+	r.Put("a", 1)
+	if v, ok := r.Get("a"); !ok || v != 1 {
+		t.Fatalf("Get(a) = %d %v", v, ok)
+	}
+	if all := r.All(); len(all) != 2 || all[0].ID != "a" || all[1].Value != 2 {
+		t.Fatalf("All = %+v", all)
+	}
+	r.Delete("a")
+	if r.Len() != 1 {
+		t.Fatal("Delete left the entry")
+	}
+}
