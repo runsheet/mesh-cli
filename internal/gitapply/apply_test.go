@@ -292,7 +292,8 @@ func TestApplyNeedsGit240(t *testing.T) {
 		t.Fatal(err)
 	}
 	bin := t.TempDir()
-	fake := "#!/bin/sh\nif [ \"$1\" = version ]; then echo 'git version 2.39.5 (Apple Git-154)'; exit 0; fi\nexec " + real + " \"$@\"\n"
+	// the hardened git puts its -c flags first, so version is the last word
+	fake := "#!/bin/sh\nfor a; do last=$a; done\nif [ \"$last\" = version ]; then echo 'git version 2.39.5 (Apple Git-154)'; exit 0; fi\nexec " + real + " \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(fake), 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/actor"
+	"projectmesh.io/mesh-cli/internal/githarden"
 	"projectmesh.io/mesh-cli/internal/gitrelay"
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/resources"
@@ -107,6 +108,12 @@ type Runtime struct {
 	// is the image its network rules load from.
 	Sandbox  sandbox.Runtime
 	PodImage string
+	// HostSuites is the explicit opt-in to run_suite running its steps
+	// on the host when the lease has no pod: only for a node whose
+	// sessions themselves run on the host, unsandboxed (dev, test, a node
+	// without --sandbox). A node with a Sandbox never does, whatever this
+	// says; the zero value never does (podsuites.go).
+	HostSuites bool
 	// PodWatchEvery is how often an actor reads its pod's agent; 5 s
 	// when zero.
 	PodWatchEvery time.Duration
@@ -272,7 +279,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 		return fmt.Errorf("nodev1: the git relay: %w", err)
 	}
 	if !r.NoMirrors {
-		r.mirrors = &resources.Mirrors{Root: filepath.Join(r.WorkRoot, "mirrors"), Env: gitEnv(), GitArgs: noCredentials}
+		r.mirrors = &resources.Mirrors{Root: filepath.Join(r.WorkRoot, "mirrors"), Env: githarden.Env(nil), GitArgs: githarden.Args()}
 		go r.trimMirrors()
 	}
 	node, err := r.API.Register(ctx, r.Node)
