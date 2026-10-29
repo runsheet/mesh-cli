@@ -168,6 +168,10 @@ type Proxy struct {
 	// lease's vendor API calls, through Latchkey's proxy on its session
 	// token (latchkey.go). Nil serves none.
 	Latchkey *Latchkey
+	// Model serves /model/<provider>/<path> on the same socket, and on
+	// ListenModel's loopback port: the lease's model calls, on the
+	// credential only the node holds (model.go). Nil serves none.
+	Model *Model
 	// Observe, when set, hears each JSON-RPC message a remote upstream
 	// answers, masked, beside the request it answers: a JSON answer
 	// whole, an event stream's each event's data. It is how a node reads
@@ -186,6 +190,8 @@ type Proxy struct {
 	srv  *http.Server
 	ln   net.Listener
 	path string
+	// modelSrv serves the model route on loopback (ListenModel).
+	modelSrv *http.Server
 	// host, set by ListenOn, serves the socket instead of srv.
 	host Host
 }
@@ -353,9 +359,12 @@ func (p *Proxy) Listen(path string) error {
 func (p *Proxy) Close() error {
 	defer p.closeChildren()
 	p.mu.Lock()
-	srv, path, host := p.srv, p.path, p.host
-	p.srv, p.ln, p.path, p.host = nil, nil, "", nil
+	srv, path, host, modelSrv := p.srv, p.path, p.host, p.modelSrv
+	p.srv, p.ln, p.path, p.host, p.modelSrv = nil, nil, "", nil, nil
 	p.mu.Unlock()
+	if modelSrv != nil {
+		modelSrv.Close()
+	}
 	if host != nil {
 		return host.Unlisten(path)
 	}
@@ -386,6 +395,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		p.serveLatchkey(w, req)
+		return
+	}
+	if strings.HasPrefix(req.URL.Path, ModelPrefix) {
+		p.serveModel(w, req)
 		return
 	}
 	name, ok := strings.CutPrefix(req.URL.Path, Prefix)

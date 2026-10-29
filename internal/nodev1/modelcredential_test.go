@@ -13,24 +13,27 @@ import (
 	"projectmesh.io/mesh-cli/internal/meshapi"
 )
 
-// The job's model account signs the CLI in by its kind: a subscription's
-// OAuth token or an api key; another vendor or kind is refused.
-func TestModelCredentialEnv(t *testing.T) {
+// The job's model account travels by its kind: a subscription's OAuth
+// token as a bearer, its dummy in CLAUDE_CODE_OAUTH_TOKEN; an api key as
+// x-api-key, its dummy in ANTHROPIC_API_KEY; another vendor or kind is
+// refused.
+func TestModelCredentialAuth(t *testing.T) {
 	for _, c := range []struct {
 		vendor, kind, secret string
 		want, err            string
 	}{
-		{"anthropic", "subscription", "s", "CLAUDE_CODE_OAUTH_TOKEN=s", ""},
-		{"Anthropic", "personal_subscription", "s", "CLAUDE_CODE_OAUTH_TOKEN=s", ""},
-		{"anthropic", "oauth_token", "s", "CLAUDE_CODE_OAUTH_TOKEN=s", ""},
-		{"anthropic", "api_key", "k", "ANTHROPIC_API_KEY=k", ""},
+		{"anthropic", "subscription", "s", "Authorization CLAUDE_CODE_OAUTH_TOKEN", ""},
+		{"Anthropic", "personal_subscription", "s", "Authorization CLAUDE_CODE_OAUTH_TOKEN", ""},
+		{"anthropic", "oauth_token", "s", "Authorization CLAUDE_CODE_OAUTH_TOKEN", ""},
+		{"anthropic", "api_key", "k", "X-Api-Key ANTHROPIC_API_KEY", ""},
 		{"openai", "api_key", "k", "", `"openai" account`},
 		{"anthropic", "voucher", "k", "", `kind "voucher"`},
 		{"anthropic", "api_key", "", "", "no secret"},
 	} {
 		t.Run(c.vendor+"/"+c.kind, func(t *testing.T) {
 			m := &modelCredential{Secret: c.secret, Vendor: c.vendor, Kind: c.kind, AccountRef: "acct-1"}
-			got, err := m.env()
+			a, err := m.auth()
+			got := a.header + " " + a.envVar
 			if c.err != "" {
 				if err == nil || !strings.Contains(err.Error(), c.err) || strings.Contains(err.Error(), "=k") {
 					t.Fatalf("err %v, want %q", err, c.err)
@@ -51,6 +54,7 @@ func TestModelCredentialEnv(t *testing.T) {
 // for-job read, nothing of an account in the session's environment, and
 // no account in the usage.
 func TestNoCredentialRefKeepsTheNodesLogin(t *testing.T) {
+	clearModelEnv(t)
 	sess := &stubSession{calls: []string{"conform/brief", "conform/submit"}, result: SessionResult{SessionID: "s", CostUSD: 0.1}}
 	g := newRig(t, sess)
 	g.offer(t, func(b *meshapi.Brief) { b.CredentialRef = "" })
@@ -62,12 +66,14 @@ func TestNoCredentialRefKeepsTheNodesLogin(t *testing.T) {
 	}
 	spec := sess.specs[0]
 	for _, kv := range spec.Env {
-		if strings.HasPrefix(kv, "CLAUDE_CODE_OAUTH_TOKEN=") || strings.HasPrefix(kv, "ANTHROPIC_API_KEY=") {
+		if strings.HasPrefix(kv, "CLAUDE_CODE_OAUTH_TOKEN=") || strings.HasPrefix(kv, "ANTHROPIC_API_KEY=") || strings.HasPrefix(kv, "ANTHROPIC_BASE_URL=") {
 			t.Fatalf("the session's env names an account: %v", spec.Env)
 		}
 	}
-	if slices.Contains(spec.Unset, "CLAUDE_CODE_OAUTH_TOKEN") {
-		t.Fatalf("the node's own login was unset: %v", spec.Unset)
+	// the node's own sign-in is the CLI's, on its disk; no model
+	// variable of the node's reaches the session
+	if !slices.Contains(spec.Unset, "CLAUDE_CODE_OAUTH_TOKEN") || !slices.Contains(spec.Unset, "ANTHROPIC_API_KEY") {
+		t.Fatalf("the node's model variables were passed on: %v", spec.Unset)
 	}
 	var u meshapi.UsageRequest
 	json.Unmarshal(g.fake.Calls("usage")[0].Body, &u)
