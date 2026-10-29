@@ -66,7 +66,7 @@ func assertReleased(t *testing.T, g *rig, job string) {
 // everything and is gone.
 func TestAJobActorRunsItsLeaseAndReleases(t *testing.T) {
 	var during actor.Record
-	sess := &stubSession{inspect: func(spec SessionSpec) {
+	sess := &stubSession{calls: []string{"conform/submit"}, inspect: func(spec SessionSpec) {
 		b, err := os.ReadFile(filepath.Join(filepath.Dir(spec.Workspace), actor.FileName))
 		if err != nil {
 			t.Errorf("no actor.json beside the workspace: %v", err)
@@ -217,7 +217,7 @@ func TestOnlyAKillTheActorDidNotCauseIsPodKilled(t *testing.T) {
 // handed back node_restart, its pod and its job directory removed,
 // before the node takes anything new.
 func TestARestartMidJobReleasesTheLeftoverActor(t *testing.T) {
-	g, sb := actorRig(t, &stubSession{})
+	g, sb := actorRig(t, &stubSession{calls: []string{"conform/submit"}})
 	// the node that stopped: an actor running lse_old in its pod
 	dir := g.rt.leaseDir("lse_old")
 	a, err := actor.Start(dir, actor.Record{LeaseID: "lse_old", JobID: "job_old"})

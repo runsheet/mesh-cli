@@ -288,6 +288,8 @@ type product struct {
 	mu       sync.Mutex
 	calls    []string
 	failures []string
+	// learned are the learnings each call of learn carried
+	learned []string
 }
 
 func (p *product) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -303,6 +305,9 @@ func (p *product) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	json.Unmarshal(b, &msg)
 	p.mu.Lock()
 	p.calls = append(p.calls, msg.Method+" "+msg.Params.Name)
+	if msg.Params.Name == "learn" {
+		p.learned = append(p.learned, string(msg.Params.Arguments.Learnings))
+	}
 	p.mu.Unlock()
 	text := "ok"
 	if msg.Params.Name == "submit" {

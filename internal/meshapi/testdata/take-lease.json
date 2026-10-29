@@ -59,6 +59,7 @@
       "guidance": "Read README.md in the checkout and submit its sha256.",
       "brief_tool": "brief",
       "finish_tool": "submit",
+      "learnings_tool": "learn",
       "finish_schema": {
         "type": "object",
         "properties": {
