@@ -118,6 +118,10 @@ func (r *Runtime) runActor(ctx context.Context, tk *meshapi.Take, room *schedule
 	cancel(nil)
 	<-renewDone
 	out.nodeEnding = ctx.Err() != nil
+	// the session's way out ends before Mesh hears the lease is over: the
+	// proxy closes and the grant's capability answers 404, its git tokens
+	// revoked (the spec's first layer of tokens ending with the lease)
+	a.ReleaseNow(holdProxy, holdGrant)
 	out.access = r.takeAccess(id)
 	if err := a.Enter(actor.Reporting); err != nil {
 		r.logf("nodev1: lease %s: %v", id, err)

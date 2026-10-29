@@ -24,6 +24,12 @@ import (
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
 )
 
+// What a job actor holds of work's, by name.
+const (
+	holdGrant = "the relay grant"
+	holdProxy = "the sessionproxy"
+)
+
 // reportTimeout bounds each report to Mesh after the session ends: the
 // node's own ctx may be over (a restart's hand-back) and the report must
 // still go.
@@ -177,7 +183,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 			return outcome{err: fmt.Errorf("the lease's git relay: %w", err)}
 		}
 		grant = g
-		keep("the relay grant", func() error {
+		keep(holdGrant, func() error {
 			if err := grant.Close(); err != nil {
 				r.logf("nodev1: lease %s: %v", b.LeaseID, err)
 			}
@@ -197,7 +203,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	if err != nil {
 		return outcome{err: fmt.Errorf("the lease's sessionproxy: %w", err), cause: context.Cause(ctx)}
 	}
-	keep("the sessionproxy", func() error { closeProxy(); return nil })
+	keep(holdProxy, func() error { closeProxy(); return nil })
 	env := []string{"GIT_TERMINAL_PROMPT=0"}
 	if len(apiRules(b)) > 0 {
 		env = append(env, RelaySocketEnv+"="+sock)

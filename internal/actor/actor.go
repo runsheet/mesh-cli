@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -305,6 +306,40 @@ func (a *Actor) Release() {
 	a.mu.Unlock()
 	if err := os.RemoveAll(a.dir); err != nil {
 		a.logf("actor: lease %s: removing %s: %v", id, a.dir, err)
+	}
+}
+
+// ReleaseNow releases the named holds at once, in the reverse of the
+// order they were taken, and forgets them: what must end before the
+// lease's end is reported (the relay grant, whose capability must answer
+// 404 once Mesh has heard the lease is over). The rest wait for Release.
+func (a *Actor) ReleaseNow(names ...string) {
+	a.mu.Lock()
+	var now, kept []hold
+	for _, h := range a.holds {
+		if slices.Contains(names, h.name) {
+			now = append(now, h)
+		} else {
+			kept = append(kept, h)
+		}
+	}
+	a.holds = kept
+	var recorded []string
+	for _, n := range a.rec.Holds {
+		if !slices.Contains(names, n) {
+			recorded = append(recorded, n)
+		}
+	}
+	a.rec.Holds = recorded
+	if err := a.writeLocked(); err != nil {
+		a.logf("actor: lease %s: %v", a.rec.LeaseID, err)
+	}
+	id := a.rec.LeaseID
+	a.mu.Unlock()
+	for i := len(now) - 1; i >= 0; i-- {
+		if err := releaseOne(now[i]); err != nil {
+			a.logf("actor: lease %s: releasing %s: %v", id, now[i].name, err)
+		}
 	}
 }
 
