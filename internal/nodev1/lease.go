@@ -127,7 +127,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox) outco
 				r.logf("nodev1: lease %s: %v", b.LeaseID, err)
 			}
 		}()
-		if err := checkout(ctx, grant, b, workspace); err != nil {
+		if err := checkout(ctx, grant, b, workspace, r.mirrors, r.logf); err != nil {
 			return outcome{err: fmt.Errorf("checking out %s: %w", b.Git.Repo, err), cause: context.Cause(ctx)}
 		}
 		// the relay proves a fast-forward-only push in this checkout
