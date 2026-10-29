@@ -54,7 +54,7 @@ func assertReleased(t *testing.T, g *rig, job string) {
 		t.Fatalf("the scheduler still holds %+v", held)
 	}
 	g.rt.mu.Lock()
-	n := len(g.rt.live)
+	n := g.rt.leases.Len()
 	g.rt.mu.Unlock()
 	if n != 0 {
 		t.Fatalf("%d leases still live", n)

@@ -3,6 +3,7 @@ package nodev1
 import (
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/nodetools"
 )
 
@@ -27,7 +28,10 @@ const PushTool = nodetools.PushTool
 func (r *Runtime) refusalSince(lease string, since time.Time) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	recs := r.access[lease]
+	var recs []meshapi.AccessRecord
+	if l := r.lease(lease); l != nil {
+		recs = l.access
+	}
 	for i := len(recs) - 1; i >= 0; i-- {
 		rec := recs[i]
 		if rec.At.Before(since.Add(-time.Second)) {

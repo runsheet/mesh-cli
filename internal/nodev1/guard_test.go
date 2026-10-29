@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -112,4 +113,104 @@ func TestNoWritePathToAVendorButTheRelay(t *testing.T) {
 			t.Errorf("nodev1 depends on %s, a vendor client", dep)
 		}
 	}
+}
+
+// longLived are nodev1's types that live as long as the node, not a
+// lease: none may keep a lease's state in a map of its own.
+var longLived = []string{"Runtime", "fleet", "updateNode"}
+
+// mapsAllowed are the long-lived maps that are no lease's: what each
+// holds outlives every lease.
+var mapsAllowed = map[string]string{
+	"Runtime.accounts": "a model account's standing, read across its leases for the heartbeat",
+}
+
+// Actors own everything (ADR-044, Mesh v1 PR 3.9): the node keeps no
+// in-flight map of its own. A lease's state — its cancel, progress,
+// mailbox, pod, access records — lives in its record in the lease
+// registry (actor.Registry), with its job actor under --actors, and goes
+// when the lease ends; no long-lived type of nodev1 holds a map or a
+// sync.Map, and the package declares no map variable, beside the
+// allowed few.
+func TestNoInFlightMaps(t *testing.T) {
+	fset := token.NewFileSet()
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	isMap := func(e ast.Expr) bool {
+		switch x := e.(type) {
+		case *ast.MapType:
+			return true
+		case *ast.SelectorExpr:
+			if id, ok := x.X.(*ast.Ident); ok && id.Name == "sync" && x.Sel.Name == "Map" {
+				return true
+			}
+		}
+		return false
+	}
+	seen := map[string]bool{}
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range f.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				switch s := spec.(type) {
+				case *ast.ValueSpec:
+					if gd.Tok != token.VAR {
+						continue
+					}
+					for i, n := range s.Names {
+						typed := s.Type != nil && isMap(s.Type)
+						lit := i < len(s.Values) && isMapLit(s.Values[i])
+						if typed || lit {
+							t.Errorf("%s: package variable %s is a map: a lease's state belongs to its record", fset.Position(n.Pos()), n.Name)
+						}
+					}
+				case *ast.TypeSpec:
+					seen[s.Name.Name] = true
+					if !slices.Contains(longLived, s.Name.Name) {
+						continue
+					}
+					st, ok := s.Type.(*ast.StructType)
+					if !ok {
+						continue
+					}
+					for _, fld := range st.Fields.List {
+						if !isMap(fld.Type) {
+							continue
+						}
+						for _, n := range fld.Names {
+							key := s.Name.Name + "." + n.Name
+							if _, ok := mapsAllowed[key]; !ok {
+								t.Errorf("%s: %s is a map on a long-lived type: in-flight state belongs to the lease's record (actor.Registry)", fset.Position(n.Pos()), key)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	for _, typ := range longLived {
+		if !seen[typ] {
+			t.Errorf("the guard names %s, which nodev1 no longer declares", typ)
+		}
+	}
+}
+
+func isMapLit(e ast.Expr) bool {
+	if c, ok := e.(*ast.CompositeLit); ok {
+		_, isMap := c.Type.(*ast.MapType)
+		return isMap
+	}
+	return false
 }

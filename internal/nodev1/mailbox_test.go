@@ -74,7 +74,7 @@ func TestAStreamTurnReachesTheLiveSession(t *testing.T) {
 	}
 	lease := g.fake.LeaseOf(job)
 	g.rt.mu.Lock()
-	progress := g.rt.live[lease].progressAt
+	progress := g.rt.lease(lease).progressAt
 	g.rt.mu.Unlock()
 	data, _ := json.Marshal(meshapi.TurnEvent{LeaseID: lease, JobID: job, TurnID: "turn-7", Seq: 3})
 	deadline := time.Now().Add(10 * time.Second)

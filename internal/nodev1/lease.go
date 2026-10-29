@@ -80,11 +80,11 @@ func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take, room *schedule
 	defer cancel(nil)
 	mb := NewMailbox()
 	r.mu.Lock()
-	r.live[id] = &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: b.TurnTool}
+	r.leases.Put(id, &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: b.TurnTool})
 	r.mu.Unlock()
 	defer func() {
 		r.mu.Lock()
-		delete(r.live, id)
+		r.leases.Delete(id)
 		r.mu.Unlock()
 	}()
 	defer func() {
