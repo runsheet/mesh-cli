@@ -433,6 +433,11 @@ func (f *Fake) lease(w http.ResponseWriter, r *http.Request) {
 				state.End = "cancelled"
 				break
 			}
+			if hb.Cause == meshapi.CauseParked {
+				// a thread's park is never counted (Mesh wave 4.1)
+				state.Status = "parked"
+				break
+			}
 			state.Status = "queued"
 			state.Handbacks++
 		}

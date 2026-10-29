@@ -74,7 +74,7 @@ func (r *Runtime) runActor(ctx context.Context, tk *meshapi.Take, room *schedule
 	defer cancel(nil)
 	mb := NewMailbox()
 	r.mu.Lock()
-	r.leases.Put(id, &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: b.TurnTool, actor: a})
+	r.leases.Put(id, &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: turnToolFor(b), jobID: b.JobID, actor: a})
 	r.mu.Unlock()
 	defer func() {
 		r.mu.Lock()
@@ -131,8 +131,10 @@ func (r *Runtime) runActor(ctx context.Context, tk *meshapi.Take, room *schedule
 	if err := a.Enter(actor.Reporting); err != nil {
 		r.logf("nodev1: lease %s: %v", id, err)
 	}
-	a.Ended(r.report(id, b, out))
+	end := r.report(id, b, out)
+	a.Ended(end)
 	a.Reported()
+	r.settleThread(b, out.result.SessionID, end.Cause == meshapi.CauseParked)
 }
 
 // endActor reports an end the actor reached before its session ran.

@@ -1,0 +1,17 @@
+{
+  "name": "lease-hand-back-parked",
+  "method": "POST",
+  "path": "/v1/leases/38ad98aa-c031-55ee-8f9b-60203e2de50b/hand-back",
+  "caller": "node",
+  "request": {
+    "cause": "parked",
+    "reason": "quiet for 60s",
+    "session_ref": "sess-1"
+  },
+  "status": 200,
+  "response": {
+    "handbacks": 0,
+    "job_id": "ed49b3c3-a88f-5d05-bf34-9493c5104201",
+    "status": "parked"
+  }
+}
