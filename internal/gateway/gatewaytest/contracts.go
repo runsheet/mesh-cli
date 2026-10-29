@@ -77,6 +77,14 @@ var FixtureGaps = map[string]Gaps{
 		"job.thread.asker":     "runsheet gateway/claimjob.go: out[\"asker\"], the turn's asker",
 		"job.thread.trigger":   "runsheet gateway/claimjob.go: out[\"trigger\"], the thread's trigger",
 		"job.thread.replyHook": "runsheet gateway/claimjob.go: out[\"replyHook\"], the thread's reply hook",
+		// the would-be merge (runsheet ADR 077, Zuul gate wave 0): jobCode
+		// sends onto for builds and evaluations (W0-D), and onto, apply,
+		// applyMode and pushTo for a hand pull request's validation (W0-G)
+		"job.code.onto":      "runsheet gateway/claimjob.go jobCode: onto {ref, sha}, the commit the change is validated on (ADR 077)",
+		"job.code.apply":     "runsheet gateway/claimjob.go jobCode: apply [{sha, ref, base}], the changes applied onto onto (ADR 077)",
+		"job.code.applyMode": "runsheet gateway/claimjob.go jobCode: applyMode, linear or merge (ADR 077)",
+		"job.code.applyAs":   "runsheet gateway/claimjob.go jobCode: applyAs {name, email, date}, the applied commits' identity (ADR 077)",
+		"job.code.pushTo":    "runsheet gateway/claimjob.go jobCode: pushTo, the ref the applied commit is pushed to (ADR 077)",
 	}},
 	"recordValidationAttestation": {Request: map[string]string{
 		"input.changesetId": "runsheet gateway/attestation.go namedChangeset: m[\"changesetId\"], the changeset a changeset build recorded just before attesting (runsheet #5186; its fixture does not show it yet)",
