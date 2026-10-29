@@ -155,6 +155,12 @@ type Brief struct {
 	FinishTool     string          `json:"finish_tool"`
 	FinishSchema   json.RawMessage `json:"finish_schema,omitempty"`
 	TurnTool       string          `json:"turn_tool,omitempty"`
+	// LearningsTool is the product's tool a session hands its learnings
+	// to, {learnings:[{lesson, kind, area?}]}: the node's Stop hook asks
+	// for them by name, and the node hands the finish's learnings to it
+	// when the session did not (projectmesh-io/api ADR 001 amendment,
+	// learnings and transcripts). Empty when the kind names none.
+	LearningsTool string `json:"learnings_tool,omitempty"`
 	// LastTurn is a thread's newest turn when the lease was taken, and
 	// SessionRef the session its last lease parked or ended with: a node
 	// that holds that session resumes it and starts with the turn
@@ -551,6 +557,9 @@ type FinishRequest struct {
 type FailRequest struct {
 	Cause  string `json:"cause"`
 	Reason string `json:"reason"`
+	// ExitCode is the killed step's exit code (137, 143) when the cause
+	// is a hand-back's (mesh-specs gap 14); 0 sends none.
+	ExitCode int `json:"exit_code,omitempty"`
 }
 
 // HandBackRequest is POST /v1/leases/{id}/hand-back: the lease ends and
@@ -559,6 +568,7 @@ type HandBackRequest struct {
 	Cause      string `json:"cause"`
 	Reason     string `json:"reason"`
 	SessionRef string `json:"session_ref,omitempty"`
+	ExitCode   int    `json:"exit_code,omitempty"`
 }
 
 // JobState is the answer of every route that ends a lease: the job's
@@ -588,6 +598,15 @@ const (
 	CauseProduct        = "product"
 	CausePlatform       = "platform"
 	CauseInfrastructure = "infrastructure"
+	// CauseNoFinish, CauseCredentialTimeout and CauseToolUnavailable are
+	// infrastructure's classes (projectmesh-io/api ADR 001 amendment,
+	// finish enforcement; mesh-specs gaps 1 and 14): a session that ended
+	// without its finish tool and whose last message did not fit the
+	// kind's finish_schema, a credential not had in time, and a tool that
+	// would not serve. Each is a hand-back, never a red verdict.
+	CauseNoFinish          = "no_finish"
+	CauseCredentialTimeout = "credential_timeout"
+	CauseToolUnavailable   = "tool_unavailable"
 	// CauseCancelled is a node stopping on Mesh's cancel: the job then
 	// ends cancelled (projectmesh-io/api wave 1.5).
 	CauseCancelled = "cancelled"
