@@ -42,6 +42,10 @@ type Fake struct {
 	drain   bool
 	offered chan struct{}
 	streams map[chan meshapi.NodeEvent]struct{}
+	// turns are each thread job's turns (Turn), and seen the newest
+	// turns_seen a renewal of the job's lease said.
+	turns map[string][]meshapi.Turn
+	seen  map[string]int64
 }
 
 type fakeLease struct {
@@ -60,7 +64,8 @@ type Call struct {
 
 // NewFake is a fake over the contract's fixtures.
 func NewFake(t testing.TB) *Fake {
-	f := &Fake{fx: Load(t), leases: map[string]*fakeLease{}, offered: make(chan struct{}, 1), streams: map[chan meshapi.NodeEvent]struct{}{}}
+	f := &Fake{fx: Load(t), leases: map[string]*fakeLease{}, offered: make(chan struct{}, 1), streams: map[chan meshapi.NodeEvent]struct{}{},
+		turns: map[string][]meshapi.Turn{}, seen: map[string]int64{}}
 	f.mux = http.NewServeMux()
 	f.mux.HandleFunc("POST /v1/nodes", f.register)
 	f.mux.HandleFunc("POST /v1/nodes/{id}/heartbeat", f.heartbeat)
@@ -227,6 +232,27 @@ func (f *Fake) Calls(route string) []Call {
 	return out
 }
 
+// Turn adds a turn to the thread job, as a product's POST
+// /v1/jobs/{id}/turns would: renewals that say a turns_seen below it
+// answer it (projectmesh-io/api ADR 001 amendment, threads:
+// "Acknowledged turns"). It reaches no event stream; Stream does that.
+func (f *Fake) Turn(jobID string, t meshapi.Turn) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.turns[jobID] = append(f.turns[jobID], t)
+}
+
+// TurnsSeen is the newest turns_seen a renewal of the job's lease said,
+// -1 when none said one.
+func (f *Fake) TurnsSeen(jobID string) int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if s, ok := f.seen[jobID]; ok {
+		return s
+	}
+	return -1
+}
+
 // LeaseOf is the lease the job's last take made, "" when none.
 func (f *Fake) LeaseOf(jobID string) string {
 	f.mu.Lock()
@@ -372,6 +398,18 @@ func (f *Fake) lease(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		l.expires = time.Now().Add(f.ttl()).UTC().Truncate(time.Second)
 		resp := meshapi.RenewResponse{LeaseID: id, ExpiresAt: l.expires, RenewEveryS: l.brief.RenewEveryS}
+		var req meshapi.RenewRequest
+		if json.Unmarshal(body, &req) == nil && req.TurnsSeen != nil && l.brief.Thread != nil {
+			job := l.brief.JobID
+			f.seen[job] = max(f.seen[job], *req.TurnsSeen)
+			resp.TurnsThrough = *req.TurnsSeen
+			for _, t := range f.turns[job] {
+				if t.Seq > *req.TurnsSeen {
+					resp.Turns = append(resp.Turns, t)
+					resp.TurnsThrough = max(resp.TurnsThrough, t.Seq)
+				}
+			}
+		}
 		f.mu.Unlock()
 		writeJSON(w, http.StatusOK, resp)
 	case "session":

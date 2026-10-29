@@ -73,10 +73,15 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			return nil, err
 		},
 		"lease-renew": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
-			return c.Renew(context.Background(), idOf(f.Path, 3))
+			return c.Renew(context.Background(), idOf(f.Path, 3), nil)
+		},
+		"lease-renew-turns": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.RenewRequest
+			decode(t, f.Request, &req)
+			return c.Renew(context.Background(), idOf(f.Path, 3), req.TurnsSeen)
 		},
 		"lease-renew-gone": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
-			_, err := c.Renew(context.Background(), idOf(f.Path, 3))
+			_, err := c.Renew(context.Background(), idOf(f.Path, 3), nil)
 			if !meshapi.LeaseGone(err) || !strings.Contains(err.Error(), "lease_not_live") {
 				t.Errorf("lease-renew-gone: %v", err)
 			}

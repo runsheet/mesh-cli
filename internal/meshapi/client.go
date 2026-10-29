@@ -205,10 +205,13 @@ func leasePath(leaseID, route string) string {
 	return "/v1/leases/" + url.PathEscape(leaseID) + "/" + route
 }
 
-// Renew extends a lease: POST /v1/leases/{id}/renew.
-func (c *Client) Renew(ctx context.Context, leaseID string) (*RenewResponse, error) {
+// Renew extends a lease: POST /v1/leases/{id}/renew {turns_seen?}. A
+// thread's lease names how far its session has the thread, and Mesh
+// answers the turns above that (projectmesh-io/api ADR 001 amendment,
+// threads: "Acknowledged turns"); nil says nothing of turns.
+func (c *Client) Renew(ctx context.Context, leaseID string, turnsSeen *int64) (*RenewResponse, error) {
 	var out RenewResponse
-	if _, _, err := c.do(ctx, http.MethodPost, leasePath(leaseID, "renew"), struct{}{}, &out); err != nil {
+	if _, _, err := c.do(ctx, http.MethodPost, leasePath(leaseID, "renew"), RenewRequest{TurnsSeen: turnsSeen}, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
