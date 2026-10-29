@@ -67,6 +67,11 @@ type Options struct {
 	// OnEvent hears every event of the output, in order, on the
 	// session's reading goroutine: it must not block.
 	OnEvent func(harness.Event)
+	// OnLine hears every line of the output the stream parser reads
+	// (control responses aside), raw, before OnEvent hears its event, on
+	// the same goroutine: it must not block, and must copy what it keeps.
+	// The node's transcript upload reads the stream here.
+	OnLine func(line []byte)
 }
 
 // Session is one running streaming session.
@@ -157,7 +162,7 @@ func Start(ctx context.Context, opts Options, first string) (*Session, error) {
 	pr, pw := io.Pipe()
 	go func() { s.parsed <- harness.ParseStream(pr, s.observe(opts.OnEvent)) }()
 	go func() {
-		s.read(out, pw)
+		s.read(out, pw, opts.OnLine)
 		s.wait()
 	}()
 	go func() {
@@ -231,7 +236,7 @@ func grewMost(before, now map[string]harness.ModelSpend) string {
 
 // read splits the output: control responses go to their waiters, every
 // line to the stream parser.
-func (s *Session) read(out io.Reader, pw *io.PipeWriter) {
+func (s *Session) read(out io.Reader, pw *io.PipeWriter, onLine func([]byte)) {
 	sc := bufio.NewScanner(out)
 	sc.Buffer(make([]byte, 0, 64<<10), 16<<20)
 	for sc.Scan() {
@@ -245,6 +250,9 @@ func (s *Session) read(out io.Reader, pw *io.PipeWriter) {
 				s.answer(msg.Response)
 				continue
 			}
+		}
+		if onLine != nil {
+			onLine(line)
 		}
 		if _, err := pw.Write(append(append([]byte(nil), line...), '\n')); err != nil {
 			break

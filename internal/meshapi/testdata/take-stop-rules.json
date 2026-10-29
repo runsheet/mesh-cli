@@ -1,0 +1,120 @@
+{
+  "name": "take-stop-rules",
+  "method": "POST",
+  "path": "/v1/take",
+  "caller": "node",
+  "request": {
+    "harnesses": [
+      "claude-code"
+    ],
+    "node_id": "7f41f005-46b5-5c7d-8af5-9ec6c44c99f9",
+    "wait_s": 5
+  },
+  "status": 200,
+  "response": {
+    "brief": {
+      "brief_tool": "brief",
+      "code": {
+        "base_ref": "main",
+        "repo": {
+          "full_name": "acme/fixture",
+          "host": "github.test"
+        }
+      },
+      "evidence_required": [],
+      "finish": "result",
+      "finish_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sha256"
+        ],
+        "type": "object"
+      },
+      "finish_tool": "submit",
+      "guidance": "You are the conformance product's ruled job. It proves the node ends a\nsession its kind's stop rules catch.\n\nCall the brief tool first, then do as echo does: read the file it names and submit its SHA-256. Never edit anything under protected/.",
+      "handbacks": 0,
+      "harness": {
+        "model": {
+          "default": "haiku",
+          "escalate": [
+            "sonnet"
+          ],
+          "max": "sonnet",
+          "on": [
+            "red",
+            "stall"
+          ]
+        },
+        "name": "claude-code"
+      },
+      "job_id": "9feb7815-a5e2-5a1c-b395-12bae4162464",
+      "kind": "ruled",
+      "learnings_tool": "learn",
+      "lease_expires_at": "2026-01-01T00:00:00Z",
+      "lease_id": "8a67eae2-7aec-5593-91a0-f3143ced65c8",
+      "lease_n": 1,
+      "node_tools": [
+        "result",
+        "hand_back",
+        "progress"
+      ],
+      "product": "conform",
+      "renew_every_s": 30,
+      "resources": {
+        "cpus": 1,
+        "mem_gb": 1
+      },
+      "servers": [
+        {
+          "audience": "https://conform.test/mcp",
+          "name": "conform",
+          "url": "https://conform.test/mcp"
+        }
+      ],
+      "stop_rules": [
+        {
+          "action": "end",
+          "name": "error-loop",
+          "tool_error_loop": {
+            "count": 3,
+            "window_s": 300
+          }
+        },
+        {
+          "action": "end",
+          "name": "protected",
+          "protected_paths": {
+            "globs": [
+              "protected/**"
+            ]
+          }
+        }
+      ],
+      "subject": {
+        "id": "ruled-1",
+        "type": "fixture"
+      },
+      "tenant": "acme",
+      "transcript": {
+        "expires_at": "2026-01-01T00:00:00Z",
+        "headers": {
+          "X-Conform-Transcript": "ruled-1"
+        },
+        "upload_url": "https://product.example/transcripts/ruled-1?token=TOKEN-NEVER-READ"
+      }
+    },
+    "lease": {
+      "expires_at": "2026-01-01T00:00:00Z",
+      "job_id": "9feb7815-a5e2-5a1c-b395-12bae4162464",
+      "lease_id": "8a67eae2-7aec-5593-91a0-f3143ced65c8",
+      "n": 1,
+      "renew_every_s": 30
+    }
+  }
+}
