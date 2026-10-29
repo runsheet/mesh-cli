@@ -149,6 +149,12 @@ func finishParts() map[string]any {
 		"research":     commandInput("recordDirectionResearch", "RecordDirectionResearchInput"),
 		"rebasedHead":  commandInput("finishWorkItemRebase", "FinishWorkItemRebaseInput"),
 		"deployRecord": nil, // recordDeployAttestation's Map
+		// a chain batch's validation (runsheet ADR 079, the Zuul gate's
+		// W1-D, gateway/finishjob.go): the candidate the node wrote beside
+		// its attestation, or the change of the brief's apply that did not
+		// merge, with no attestation
+		"candidate": map[string]any{"sha": "", "tree": ""},
+		"conflict":  map[string]any{"index": 0.0, "paths": []any{""}},
 	}
 }
 

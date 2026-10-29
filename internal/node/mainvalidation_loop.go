@@ -143,6 +143,10 @@ type mainJob struct {
 	check  func(ctx context.Context) error
 	finish func(ctx context.Context, att validate.Attestation) error
 	fail   func(ctx context.Context, reason string) error
+	// conflict, set, finishes a chain candidate's validation whose
+	// changes did not apply (chain.go): the platform's to act on, never
+	// a failure of the node's. nil fails it with the reason.
+	conflict func(ctx context.Context, ce *ChainConflictError) error
 	// jobID is the job's Mesh job, when the claim named one: a running
 	// job stops by it too (StopJob(JobKey(jobID))), as by its claim
 	jobID string
@@ -161,12 +165,39 @@ func batchJob(l *Loop, gw mainValidationGateway, b gateway.MainValidationBatch, 
 			return gw.ClaimMergeBatchValidation(ctx, b.MergeBatchID, nodeID, validationHarness)
 		},
 		finish: func(ctx context.Context, att validate.Attestation) error {
+			// a chain's candidate is the node's own: the commit attested,
+			// written and pushed, goes back beside its attestation
+			if cf, ok := gw.(chainFinisher); ok && candidateChain(gw, b) != nil {
+				_, err := cf.FinishChainCandidate(ctx, b.MergeBatchID, nodeID, gatewayAttestation(att), gateway.ChainCandidate{SHA: att.Commit, Tree: att.Tree})
+				return err
+			}
 			_, err := gw.FinishValidationJob(ctx, "candidate", b.MergeBatchID, nodeID, gatewayAttestation(att))
 			return err
 		},
 		fail: func(ctx context.Context, reason string) error {
 			return gw.FailMergeBatchValidation(ctx, b.MergeBatchID, nodeID, reason)
 		},
+		conflict: chainConflictOf(gw, b, nodeID),
+	}
+}
+
+// chainFinisher is the gateway's chain finishes (runsheet ADR 079): the
+// client has them, a test's double may not.
+type chainFinisher interface {
+	FinishChainCandidate(ctx context.Context, batchID, nodeID string, att gateway.ValidationAttestation, cand gateway.ChainCandidate) (map[string]any, error)
+	FinishChainConflict(ctx context.Context, batchID, nodeID string, conflict gateway.ChainConflict) error
+}
+
+// chainConflictOf is batch b's conflict finish when gw has the chain
+// finishes; nil, and a chain conflict is failed with its reason, when it
+// has not.
+func chainConflictOf(gw mainValidationGateway, b gateway.MainValidationBatch, nodeID string) func(context.Context, *ChainConflictError) error {
+	cf, ok := gw.(chainFinisher)
+	if !ok {
+		return nil
+	}
+	return func(ctx context.Context, ce *ChainConflictError) error {
+		return cf.FinishChainConflict(ctx, b.MergeBatchID, nodeID, gateway.ChainConflict{Index: ce.Index, Paths: ce.Paths})
 	}
 }
 
@@ -577,6 +608,16 @@ func (l *Loop) runMainJob(ctx context.Context, j mainJob) {
 		l.failMainJob(context.WithoutCancel(ctx), j, reason)
 		return
 	}
+	var ce *ChainConflictError
+	if errors.As(err, &ce) && j.conflict != nil {
+		l.logf("%s: %v; finished as a conflict, not a failure of this node's", j.label, ce)
+		if err := j.conflict(context.WithoutCancel(ctx), ce); err != nil {
+			l.logf("%s: finish refused: %v", j.label, err)
+			return
+		}
+		l.logf("%s: finished", j.label)
+		return
+	}
 	if err != nil {
 		l.failMainJob(context.WithoutCancel(ctx), j, validate.Reason(err))
 		return
@@ -641,13 +682,23 @@ type batchTokenMinter interface {
 	IssueMergeBatchRepoToken(ctx context.Context, batch gateway.MainValidationBatch, nodeID string) (*gateway.GitHubToken, error)
 }
 
+// batchPushMinter is the gateway's chain form of the batch's token
+// (MergeBatchPushToken): the client has it, a test's double may not.
+type batchPushMinter interface {
+	MergeBatchPushToken(ctx context.Context, batch gateway.MainValidationBatch, nodeID, pushTo string) (*gateway.GitHubToken, error)
+}
+
 // ValidateCandidate is validateCandidate on the batch's own token
 // (NewBatchCred): what the loop's ValidateBatch runs. A platform that
 // mints none falls back to the operator's login, said once per run; a
 // mint refused or failing is the validation's error, never the
 // operator's login instead.
 func (r *Runner) ValidateCandidate(ctx context.Context, batch gateway.MainValidationBatch) (validate.Attestation, error) {
-	cred, err := NewBatchCred(ctx, r.GW, r.Scopes, batch, r.BatchFallback, r.logf)
+	var pushTo string
+	if ch := candidateChain(r.GW, batch); ch != nil {
+		pushTo = ch.code.PushTo
+	}
+	cred, err := NewBatchCred(ctx, r.GW, r.Scopes, batch, pushTo, r.BatchFallback, r.logf)
 	if err != nil {
 		r.logf("%s: %v; not fetched", candidatePrefix(batch), err)
 		return validate.Attestation{}, err
@@ -663,7 +714,11 @@ func (r *Runner) ValidateCandidate(ctx context.Context, batch gateway.MainValida
 // or a gateway that has none) answers nil, nil, the operator's login,
 // noted once through fb; any other error is `github token for merge
 // batch N: …`.
-func NewBatchCred(ctx context.Context, gw Gateway, scopes Scopes, batch gateway.MainValidationBatch, fb *TokenFallback, logf func(string, ...any)) (*ItemCred, error) {
+//
+// pushTo, set, is a chain batch's brief's pushTo (chain.go): the token
+// is asked of the exchange with it (MergeBatchPushToken), which answers
+// the write token the node pushes the candidate it writes with.
+func NewBatchCred(ctx context.Context, gw Gateway, scopes Scopes, batch gateway.MainValidationBatch, pushTo string, fb *TokenFallback, logf func(string, ...any)) (*ItemCred, error) {
 	prefix := candidatePrefix(batch)
 	m, ok := gw.(batchTokenMinter)
 	if !ok {
@@ -671,12 +726,18 @@ func NewBatchCred(ctx context.Context, gw Gateway, scopes Scopes, batch gateway.
 		return nil, nil
 	}
 	sc, _ := scopes.ByOrg(batch.OrgID)
+	mint := m.IssueMergeBatchRepoToken
+	if p, ok := gw.(batchPushMinter); ok && pushTo != "" {
+		mint = func(ctx context.Context, batch gateway.MainValidationBatch, nodeID string) (*gateway.GitHubToken, error) {
+			return p.MergeBatchPushToken(ctx, batch, nodeID, pushTo)
+		}
+	}
 	// every mint, the first and each renewal, is checked before any
 	// fetch can carry it: a token withGitToken would not put on git
 	// would leave the fetch on the operator's login, and one for
 	// another repo is not the batch's
 	issue := func(ctx context.Context) (*gateway.GitHubToken, error) {
-		tok, err := m.IssueMergeBatchRepoToken(ctx, batch, sc.NodeID)
+		tok, err := mint(ctx, batch, sc.NodeID)
 		if err != nil {
 			return nil, err
 		}

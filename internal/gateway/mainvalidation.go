@@ -326,6 +326,55 @@ func (c *Client) RecordBatchCandidateAttestation(ctx context.Context, batchID st
 // through finishJob, which records it and ends the claim. It answers
 // the attestation's receipt.
 func (c *Client) FinishValidationJob(ctx context.Context, subject, id, nodeID string, att ValidationAttestation) (map[string]any, error) {
+	return c.finishValidation(ctx, subject, id, nodeID, att, nil)
+}
+
+// ChainCandidate is a chain validation's `candidate` part (runsheet ADR
+// 079): the commit the node wrote applying the brief's changes onto
+// onto, pushed to the brief's pushTo, and its tree. The platform reads
+// it back once and records it as the batch's candidate before it
+// finishes the validation.
+type ChainCandidate struct {
+	SHA  string `json:"sha"`
+	Tree string `json:"tree"`
+}
+
+// ChainConflict is a chain validation's `conflict` part (runsheet ADR
+// 079): the change of the brief's apply that did not merge — its index
+// there, the members ahead first and the batch's own last — and the
+// paths git could not merge. It is no failure of the node's: the
+// platform drops the batch's member, or abandons the batch when the
+// change is one ahead.
+type ChainConflict struct {
+	Index int      `json:"index"`
+	Paths []string `json:"paths"`
+}
+
+// FinishChainCandidate is a chain batch's validation finish: the
+// attestation of the candidate the node wrote, as FinishValidationJob
+// hands it back, with the candidate part beside it — finishJob's
+// {attestation, candidate: {sha, tree}}. It answers the attestation's
+// receipt.
+func (c *Client) FinishChainCandidate(ctx context.Context, batchID, nodeID string, att ValidationAttestation, cand ChainCandidate) (map[string]any, error) {
+	return c.finishValidation(ctx, "candidate", batchID, nodeID, att, map[string]any{"candidate": cand})
+}
+
+// FinishChainConflict ends a chain batch's validation whose changes did
+// not apply: finishJob's {conflict: {index, paths}}, with no
+// attestation — nothing was validated, and nothing pushed.
+func (c *Client) FinishChainConflict(ctx context.Context, batchID, nodeID string, conflict ChainConflict) error {
+	if conflict.Paths == nil {
+		conflict.Paths = []string{}
+	}
+	return retryOnTransient(ctx, func() error {
+		_, err := c.FinishJob(ctx, nodeID, "runsheet/validate", JobSubject{Type: "candidate", ID: batchID}, map[string]any{"conflict": conflict})
+		return err
+	})
+}
+
+// finishValidation is FinishValidationJob with parts set beside the
+// attestation in the finish.
+func (c *Client) finishValidation(ctx context.Context, subject, id, nodeID string, att ValidationAttestation, parts map[string]any) (map[string]any, error) {
 	body, err := json.Marshal(att)
 	if err != nil {
 		return nil, err
@@ -337,10 +386,14 @@ func (c *Client) FinishValidationJob(ctx context.Context, subject, id, nodeID st
 	if subject == "candidate" {
 		in["mergeBatchId"] = id
 	}
+	finish := map[string]any{"attestation": in}
+	for k, v := range parts {
+		finish[k] = v
+	}
 	var out map[string]any
 	err = retryOnTransient(ctx, func() error {
 		var err error
-		out, err = c.FinishJob(ctx, nodeID, "runsheet/validate", JobSubject{Type: subject, ID: id}, map[string]any{"attestation": in})
+		out, err = c.FinishJob(ctx, nodeID, "runsheet/validate", JobSubject{Type: subject, ID: id}, finish)
 		return err
 	})
 	if err != nil {
@@ -356,6 +409,15 @@ func (c *Client) FinishValidationJob(ctx context.Context, subject, id, nodeID st
 // what its fetches carry instead of the operator's login.
 func (c *Client) MainValidationToken(ctx context.Context, itemID, nodeID string) (*GitHubToken, error) {
 	return c.jobRepoToken(withNodeID(ctx, nodeID), "runsheet/validate", JobSubject{Type: "main", ID: itemID})
+}
+
+// MergeBatchPushToken is a chain batch's candidate token from the
+// exchange (jobAccess, subject candidate) asked with pushTo, the brief's
+// code.pushTo (runsheet ADR 079): the write token the node pushes the
+// candidate it writes with, which the node's relay holds to that one
+// ref. It is checked as IssueMergeBatchRepoToken's is.
+func (c *Client) MergeBatchPushToken(ctx context.Context, batch MainValidationBatch, nodeID, pushTo string) (*GitHubToken, error) {
+	return c.jobRepoTokenPushing(withNodeID(ctx, nodeID), "runsheet/validate", JobSubject{Type: "candidate", ID: batch.MergeBatchID}, pushTo)
 }
 
 // PullRequestValidationToken is a hand-opened pull request's validation's
