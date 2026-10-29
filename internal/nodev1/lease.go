@@ -108,7 +108,8 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief) outcome {
 }
 
 // openProxy serves the brief's servers on a sessionproxy of the lease's
-// own, a unix socket in a fresh directory, and answers the session's
+// own, a unix socket in a short directory of the lease's own
+// (leaseSocketDir), and answers the session's
 // MCP config: each server a `mesh mcp-relay --socket` entry naming it.
 func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief) (map[string]any, func(), error) {
 	ups := map[string]sessionproxy.Upstream{}
@@ -122,11 +123,11 @@ func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief) (map[string]a
 			ups[s.Name] = sessionproxy.Remote{URL: s.URL}
 		}
 	}
-	sockDir, err := os.MkdirTemp(r.SocketRoot, "mv1-")
+	sockDir, err := r.leaseSocketDir(b.LeaseID)
 	if err != nil {
 		return nil, nil, err
 	}
-	sock := filepath.Join(sockDir, "s")
+	sock := filepath.Join(sockDir, leaseSocketName)
 	p := sessionproxy.New(ups)
 	p.Logf = r.Logf
 	if err := p.Listen(sock); err != nil {

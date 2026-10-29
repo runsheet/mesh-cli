@@ -34,8 +34,10 @@ type Runtime struct {
 	// WorkRoot holds each lease's directory, leases/<lease_id>.
 	WorkRoot string
 	// SocketRoot is where each lease's sessionproxy socket directory is
-	// made: a short path, since a unix socket's is bounded; os.TempDir()
-	// when empty.
+	// made: a short path, since a unix socket's is bounded. When empty,
+	// $XDG_RUNTIME_DIR/mesh, else mesh-<uid> in the temporary directory,
+	// else /tmp/mesh-<uid>: the first whose socket path fits
+	// (leaseSocketDir).
 	SocketRoot string
 	// MeshBinary is this mesh executable: the session reaches each proxied
 	// server through its `mcp-relay --socket`.
