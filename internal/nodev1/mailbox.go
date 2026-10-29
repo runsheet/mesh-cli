@@ -35,6 +35,10 @@ type Message struct {
 	Kind MessageKind
 	Text string
 	On   string
+	// Interrupt stops the turn in flight before an escalation moves the
+	// session, so the next turn runs on the new model: a stop rule's
+	// escalation, caught mid-turn (stoprules.go).
+	Interrupt bool
 }
 
 // Mailbox is one lease's mailbox.

@@ -63,6 +63,23 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			// a server's audience): only its pushed is held to the fixture
 			return nil, err
 		},
+		"take-stop-rules": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.TakeRequest
+			decode(t, f.Request, &req)
+			tk, err := c.Take(context.Background(), req)
+			if err == nil {
+				b := tk.Brief
+				if b == nil || len(b.StopRules) != 2 || b.StopRules[0].ToolErrorLoop == nil || b.StopRules[0].ToolErrorLoop.Count != 3 ||
+					b.StopRules[0].ToolErrorLoop.WindowS != 300 || b.StopRules[1].ProtectedPaths == nil || len(b.StopRules[1].ProtectedPaths.Globs) != 1 {
+					t.Errorf("take-stop-rules: the brief's stop rules %+v", b)
+				}
+				if b == nil || b.Transcript == nil || b.Transcript.UploadURL == "" || len(b.Transcript.Headers) != 1 || b.Transcript.ExpiresAt.IsZero() {
+					t.Errorf("take-stop-rules: the brief's transcript %+v", b)
+				}
+			}
+			// only the stop rules and the transcript are held to the fixture
+			return nil, err
+		},
 		"take-waiting": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
 			var req meshapi.TakeRequest
 			decode(t, f.Request, &req)
@@ -106,6 +123,22 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			var req meshapi.UsageRequest
 			decode(t, f.Request, &req)
 			return nil, c.Usage(context.Background(), idOf(f.Path, 3), req)
+		},
+		"lease-usage-counts": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.UsageRequest
+			decode(t, f.Request, &req)
+			if req.ToolErrors != 3 || len(req.Tools) != 3 || len(req.StopRules) != 1 || req.Transcript == nil {
+				t.Errorf("lease-usage-counts: the counts %+v", req.Counts)
+			}
+			return nil, c.Usage(context.Background(), idOf(f.Path, 3), req)
+		},
+		"lease-fail-stopped-by-rule": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.FailRequest
+			decode(t, f.Request, &req)
+			if req.Cause != meshapi.CauseStoppedByRule {
+				t.Errorf("lease-fail-stopped-by-rule: cause %q", req.Cause)
+			}
+			return c.Fail(context.Background(), idOf(f.Path, 3), req)
 		},
 		"lease-finish": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
 			var req meshapi.FinishRequest

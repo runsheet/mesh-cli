@@ -1,0 +1,17 @@
+{
+  "name": "lease-fail-stopped-by-rule",
+  "method": "POST",
+  "path": "/v1/leases/8a67eae2-7aec-5593-91a0-f3143ced65c8/fail",
+  "caller": "node",
+  "request": {
+    "cause": "stopped_by_rule",
+    "reason": "error-loop: 3 tool errors within 5m0s"
+  },
+  "status": 200,
+  "response": {
+    "end": "failed",
+    "handbacks": 0,
+    "job_id": "9feb7815-a5e2-5a1c-b395-12bae4162464",
+    "status": "ended"
+  }
+}
