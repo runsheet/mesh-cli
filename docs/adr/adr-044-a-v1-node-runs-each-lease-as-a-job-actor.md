@@ -103,7 +103,10 @@ services' budget, registries, service timeout, tmpfs).
    (`OPENAI_BASE_URL` `…/model/openai/v1`), with the relay's dummy
    credential and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` as a host
    session has them; the bridge runs whenever the lease has a git grant
-   or relays a model account. The pod's
+   or relays a model account. The Stop hook of finish enforcement
+   (#1692) runs in the pod as the node image's `node` on a shim in the
+   session's HOME (`mesh-stop-hook.js`), asking the gate on its socket
+   in the mounted socket directory; the pod has no mesh binary. The pod's
    environment is the sandbox's allow-list: none of the node's own.
 5. **Ends.** An agent exit 137 or 143 the actor did not cause, or a
    sandbox limit's kill (memory, pids), is `pod_killed`.

@@ -116,6 +116,9 @@ func TestASandboxedLeaseRunsItsSessionAndServicesInItsPod(t *testing.T) {
 	}
 	t.Setenv("MESH_NODE_SECRET_FOR_TEST", "never-in-the-pod")
 	job = g.offer(t, func(b *meshapi.Brief) {
+		// the fake claude calls no finish tool: a kind with none finishes
+		// on the session's end (finish enforcement is its own test)
+		b.FinishTool, b.FinishSchema = "", nil
 		b.Resources = meshapi.Resources{CPUs: 1, MemGB: 2}
 		b.Pods = []json.RawMessage{json.RawMessage(`{"name":"postgres","image":"postgres:17-alpine","env":["POSTGRES_PASSWORD=mysecret"]}`)}
 	})
@@ -337,7 +340,7 @@ func TestAPodSessionReachesItsModelThroughTheBridge(t *testing.T) {
 	g.rt.ModelUpstreams = map[string]string{"anthropic": model.srv.URL}
 	out := filepath.Join(t.TempDir(), "claude")
 	sb.Agent = hostAgent(t, out, "")
-	g.offer(t, nil)
+	g.offer(t, func(b *meshapi.Brief) { b.FinishTool, b.FinishSchema = "", nil })
 	run(t, g, context.Background())
 	if n := len(g.fake.Calls("finish")); n != 1 {
 		t.Fatalf("%d finishes; hand-backs %+v", n, g.fake.Calls("hand-back"))
@@ -367,5 +370,68 @@ func TestAPodSessionReachesItsModelThroughTheBridge(t *testing.T) {
 	seen, dummy := model.calls()
 	if len(seen) != 1 || seen[0] != "Bearer "+fakeModelSecret+"|" || dummy {
 		t.Fatalf("the model saw %d call(s), the dummy %v", len(seen), dummy)
+	}
+}
+
+// A pod session's Stop hook resolves in the pod (finish enforcement,
+// #1692): it is the node image's node on a shim in the session's HOME,
+// asking the gate on its socket in the mounted socket directory — no
+// mesh binary, no host path the pod lacks. Run as claude would run it
+// while the session is live, it is refused: the finish is owed.
+func TestAPodSessionsStopHookResolvesInThePod(t *testing.T) {
+	g, sb, _ := podRig(t)
+	out := filepath.Join(t.TempDir(), "claude")
+	agent := hostAgent(t, out, "")
+	nodeBin, _ := exec.LookPath("node")
+	var command, answer string
+	var mounts []sandbox.Mount
+	sb.Agent = func(ctx context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
+		mounts = spec.Mounts
+		i := slices.Index(spec.Command, "--settings")
+		var settings struct {
+			Hooks struct {
+				Stop []struct {
+					Hooks []struct{ Command string } `json:"hooks"`
+				} `json:"Stop"`
+			} `json:"hooks"`
+		}
+		if i >= 0 {
+			json.Unmarshal([]byte(spec.Command[i+1]), &settings)
+		}
+		if len(settings.Hooks.Stop) == 1 && len(settings.Hooks.Stop[0].Hooks) == 1 {
+			command = settings.Hooks.Stop[0].Hooks[0].Command
+			// claude runs the hook in a shell, in the pod's environment
+			hook := exec.CommandContext(ctx, "sh", "-c", command)
+			hook.Env = append(slices.Clone(spec.Env), "PATH="+filepath.Dir(nodeBin)+":"+sandbox.DefaultPath)
+			hook.Stdin = strings.NewReader(`{"hook_event_name":"Stop"}`)
+			b, _ := hook.Output()
+			answer = string(b)
+		}
+		return agent(ctx, spec)
+	}
+	job := g.offer(t, nil)
+	run(t, g, context.Background())
+	lease := g.fake.LeaseOf(job)
+	if !strings.HasPrefix(command, "node '") || !strings.Contains(command, stopHookName) || strings.Contains(command, g.rt.MeshBinary) || strings.Contains(command, StopHookCommand) {
+		t.Fatalf("the pod's Stop hook is %q", command)
+	}
+	fields := strings.Fields(command)
+	shim, socket := strings.Trim(fields[1], "'"), strings.Trim(fields[2], "'")
+	if filepath.Base(socket) != stopSocketName || filepath.Base(filepath.Dir(socket)) != g.rt.leaseSocketLeaf(lease) {
+		t.Fatalf("the hook's socket %s is not the gate's in the lease's socket directory", socket)
+	}
+	under := func(path string) bool {
+		for _, m := range mounts {
+			if m.Source == m.Target && strings.HasPrefix(path, m.Target+string(filepath.Separator)) {
+				return true
+			}
+		}
+		return false
+	}
+	if !under(shim) || !under(socket) {
+		t.Fatalf("the shim %s or the socket %s is not under a pod mount: %+v", shim, socket, mounts)
+	}
+	if !strings.Contains(answer, `"decision":"block"`) || !strings.Contains(answer, "Call ") {
+		t.Fatalf("the hook in the pod was not refused by the gate: %q", answer)
 	}
 }

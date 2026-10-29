@@ -275,8 +275,15 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		env = append(env, RelaySocketEnv+"="+sock)
 	}
 	prompt := promptWithRelay(b, sock, resumed)
+	settings := gate.sessionSettings(r.MeshBinary)
 	var inPod PodRun
 	if lp != nil {
+		// the pod has no mesh binary: its Stop hook is the node image's
+		// node on a shim in the HOME, on the gate's socket, which is in
+		// the mounted socket directory at its own path
+		if settings, err = lp.stopSettings(gate); err != nil {
+			return outcome{err: err, cause: context.Cause(ctx)}
+		}
 		if servers, err = lp.podServers(servers, filepath.Dir(sock)); err != nil {
 			return outcome{err: err, cause: context.Cause(ctx)}
 		}
@@ -306,7 +313,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		Mailbox:   mb,
 		Ladder:    ladder,
 		Thread:    b.Thread != nil,
-		Settings:  gate.sessionSettings(r.MeshBinary),
+		Settings:  settings,
 		OnEvent: func(ev harness.Event) {
 			r.touch(b.LeaseID)
 			r.readAccount(account.ref(), ev)

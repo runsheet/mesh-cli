@@ -141,7 +141,11 @@ func (g *stopGate) close() {
 // settings are the session's --settings hooks: the Stop hook that runs
 // bin's StopHookCommand on the gate's socket.
 func (g *stopGate) settings(bin string) map[string]any {
-	command := shellQuote(bin) + " " + StopHookCommand + " --socket " + shellQuote(g.path)
+	return stopHookSettings(shellQuote(bin) + " " + StopHookCommand + " --socket " + shellQuote(g.path))
+}
+
+// stopHookSettings are --settings hooks whose Stop hook runs command.
+func stopHookSettings(command string) map[string]any {
 	return map[string]any{"hooks": map[string]any{"Stop": []any{
 		map[string]any{"hooks": []any{map[string]any{"type": "command", "command": command, "timeout": stopHookTimeoutS}}},
 	}}}

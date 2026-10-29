@@ -266,6 +266,65 @@ func (p *leasePod) run(workspace, gitBase, sock string, model bool) (PodRun, err
 	}, nil
 }
 
+// stopHookName is the pod's Stop hook shim, written in the session's
+// HOME.
+const stopHookName = "mesh-stop-hook.js"
+
+// stopSettings are the pod session's --settings hooks: with a stop gate,
+// a Stop hook the pod can run — the node image's node on
+// stopHookScript, written in the HOME, asking the gate on its socket,
+// which the pod has at its own path in the mounted socket directory
+// (podServers shares it). nil without a gate.
+func (p *leasePod) stopSettings(g *stopGate) (map[string]any, error) {
+	if g == nil {
+		return nil, nil
+	}
+	shim, err := p.sess.WriteFile(stopHookName, stopHookScript())
+	if err != nil {
+		return nil, fmt.Errorf("the pod's stop hook: %w", err)
+	}
+	return stopHookSettings("node " + shellQuote(shim) + " " + shellQuote(g.path)), nil
+}
+
+// stopHookScript is RunStopHook for a pod (node, in the node image):
+// claude's Stop input on stdin is posted to the gate on the socket in
+// argv[2], and a refusal ({"decision":"block","reason":…}) is written to
+// stdout for claude to read. Anything that goes wrong lets the session
+// stop — exit 0, nothing written — since the node checks the finish
+// again once the session has ended.
+func stopHookScript() []byte {
+	return []byte(`// mesh: the lease's Stop hook; written per lease.
+"use strict";
+const http = require("http");
+const socketPath = process.argv[2];
+const done = () => process.exit(0);
+setTimeout(done, ` + strconv.Itoa((stopHookTimeoutS-5)*1000) + `).unref();
+const chunks = [];
+process.stdin.on("data", (c) => chunks.push(c));
+process.stdin.on("error", done);
+process.stdin.on("end", () => {
+  const body = Buffer.concat(chunks).subarray(0, 65536);
+  const req = http.request({ socketPath, path: "/stop", method: "POST",
+    headers: { "Content-Type": "application/json", "Content-Length": body.length } }, (res) => {
+    const out = [];
+    res.on("data", (c) => out.push(c));
+    res.on("error", done);
+    res.on("end", () => {
+      try {
+        const a = JSON.parse(Buffer.concat(out).toString());
+        if (res.statusCode === 200 && a.decision === "block" && a.reason) {
+          process.stdout.write(JSON.stringify({ decision: "block", reason: a.reason }) + "\n");
+        }
+      } catch (e) {}
+      done();
+    });
+  });
+  req.on("error", (e) => { process.stderr.write("mesh stop hook: " + e.message + "; letting the session stop\n"); done(); });
+  req.end(body);
+});
+`)
+}
+
 // bridgeBase is the bridge's address inside the pod: the lease's socket
 // at the pod's loopback, where the session reaches the model relay's
 // /model/ route (and git's /git/).
