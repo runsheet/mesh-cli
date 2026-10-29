@@ -33,6 +33,7 @@ var (
 	nodeRunMemGB      float64
 	nodeRunSlots      int
 	nodeRunGitHost    string
+	nodeRunNoMirrors  bool
 	nodeRunConnect    []string
 	nodeRunFulcioURL  string
 	nodeRunRekorURL   string
@@ -99,6 +100,7 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 			WorkRoot:    root,
 			MeshBinary:  meshBinary(),
 			GitUpstream: gitUpstream(),
+			NoMirrors:   nodeRunNoMirrors,
 			Session:     sess,
 			Once:        nodeRunOnce,
 			Logf:        logger.Printf,
@@ -187,7 +189,8 @@ func init() {
 	f.Float64Var(&nodeRunCPUs, "cpus", 0, "CPUs offered (default all)")
 	f.Float64Var(&nodeRunMemGB, "mem-gb", 0, "memory offered, in GB")
 	f.IntVar(&nodeRunSlots, "slots", 1, "sessions at once")
-	f.StringVar(&nodeRunGitHost, "git-upstream", "", "the git host leases' relay reaches (default $MESH_GIT_UPSTREAM, else https://github.com)")
+	f.StringVar(&nodeRunGitHost, "git-upstream", "", "a test override: the git host every lease's relay reaches, whatever its brief's vendor and base_url name (default $MESH_GIT_UPSTREAM)")
+	f.BoolVar(&nodeRunNoMirrors, "no-mirrors", false, "clone each lease's repository whole, keeping no per-tenant mirror under the work root")
 	f.StringSliceVar(&nodeRunConnect, "connect", nil, "offer the node to a tenant for a product, tenant/product (repeatable); Mesh offers a node only its connections' jobs")
 	f.StringVar(&nodeRunFulcioURL, "fulcio-url", "", "the Fulcio node tools' records are certified by (default $MESH_FULCIO_URL, else node.yaml's sigstore.fulcio_url)")
 	f.StringVar(&nodeRunRekorURL, "rekor-url", "", "the Rekor node tools' records are logged in (default $MESH_REKOR_URL, else node.yaml's sigstore.rekor_url)")

@@ -9,6 +9,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gitrelay"
 	"projectmesh.io/mesh-cli/internal/meshapi"
+	"projectmesh.io/mesh-cli/internal/resources"
 )
 
 // gitEnvUnset are the variables that could hand git or a session a
@@ -78,8 +79,12 @@ func baseOf(g *meshapi.Git) string {
 // checkout clones the lease's repository through its grant into
 // workspace and checks out the brief's base: origin is the relay's
 // capability URL, and no credential helper, askpass or token is in the
-// checkout's config or git's environment.
-func checkout(ctx context.Context, grant *gitrelay.Grant, b *meshapi.Brief, workspace string) error {
+// checkout's config or git's environment. With mirrors, the tenant's
+// mirror of the repository is first brought up to date through the same
+// grant and the clone borrows its objects, then copies them
+// (--dissociate), so the checkout never depends on the mirror; a mirror
+// that cannot be synced is skipped and logged.
+func checkout(ctx context.Context, grant *gitrelay.Grant, b *meshapi.Brief, workspace string, mirrors *resources.Mirrors, logf func(string, ...any)) error {
 	git := func(dir string, args ...string) error {
 		cmd := exec.CommandContext(ctx, "git", append(append([]string(nil), noCredentials...), args...)...)
 		cmd.Dir = dir
@@ -90,7 +95,17 @@ func checkout(ctx context.Context, grant *gitrelay.Grant, b *meshapi.Brief, work
 		return nil
 	}
 	origin := grant.Base() + b.Git.Repo + ".git"
-	if err := git(workspace, "clone", "-q", origin, "."); err != nil {
+	clone := []string{"clone", "-q"}
+	if mirrors != nil {
+		pol := grant.Policy()
+		key := resources.MirrorKey{Tenant: b.Tenant, Vendor: pol.Vendor, Base: pol.Base, Repo: b.Git.Repo}
+		if dir, err := mirrors.Sync(ctx, key, origin); err != nil {
+			logf("nodev1: lease %s: the mirror of %s is not used: %v", b.LeaseID, b.Git.Repo, err)
+		} else {
+			clone = append(clone, "--reference", dir, "--dissociate")
+		}
+	}
+	if err := git(workspace, append(clone, origin, ".")...); err != nil {
 		return err
 	}
 	if b.Code == nil {
