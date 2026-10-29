@@ -92,7 +92,11 @@ var FixtureGaps = map[string]Gaps{
 		"input.commands[].environmentKind": "mesh-cli ADR-030 (an environment failure names its kind); runsheet reads none yet, dropping the Map key",
 		"input.mergeBatchId":               "mesh-cli sends a batch candidate's mergeBatchId inside the input too (gateway/mainvalidation.go); runsheet reads only the argument (gateway/attestation.go)",
 	}},
-	"jobAccess": {Answer: map[string]string{
+	"jobAccess": {Request: map[string]string{
+		// a hand pull request's validation onto main asks its write
+		// token with the brief's pushTo (runsheet ADR 077, W0-G #5669)
+		"input.pushTo": "runsheet gateway/jobaccess.go readJobAccess: str(in, \"pushTo\"), the ref a validation onto main pushes (ADR 077)",
+	}, Answer: map[string]string{
 		"repo":  "runsheet gateway/jobaccess.go answerJobAccess: out[accessRepo], the item's repo token",
 		"model": "runsheet gateway/jobaccess.go answerJobAccess: out[accessModel], the model account",
 		"cloud": "runsheet gateway/jobaccess.go answerJobAccess: out[accessCloud], the deploy credential",

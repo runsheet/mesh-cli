@@ -361,6 +361,10 @@ func (c *Client) MainValidationToken(ctx context.Context, itemID, nodeID string)
 // PullRequestValidationToken is a hand-opened pull request's validation's
 // read token of its repository, from the exchange (jobAccess, subject
 // pull_request): what its fetches carry instead of the operator's login.
-func (c *Client) PullRequestValidationToken(ctx context.Context, validationID, nodeID string) (*GitHubToken, error) {
-	return c.jobRepoToken(withNodeID(ctx, nodeID), "runsheet/validate", JobSubject{Type: "pull_request", ID: validationID})
+// pushTo, set, is the brief's code.pushTo of a validation onto main
+// (runsheet ADR 077): the exchange is asked with it and answers a write
+// token, which the node's relay holds to that one ref; any other ref is
+// refused, not served.
+func (c *Client) PullRequestValidationToken(ctx context.Context, validationID, nodeID, pushTo string) (*GitHubToken, error) {
+	return c.jobRepoTokenPushing(withNodeID(ctx, nodeID), "runsheet/validate", JobSubject{Type: "pull_request", ID: validationID}, pushTo)
 }

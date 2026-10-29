@@ -475,11 +475,20 @@ type exchangesKey struct{}
 // holding its claim. Within one session start (a context WithJobKind
 // marked) a whole answer, every entry served, is reused.
 func (c *Client) JobAccess(ctx context.Context, kind string, subject JobSubject, harness string) (*JobAccess, error) {
+	return c.jobAccessPushing(ctx, kind, subject, harness, "")
+}
+
+// jobAccessPushing is JobAccess asking with pushTo, the ref the node
+// will push, echoed from its brief's code.pushTo: a hand pull request's
+// validation onto main is answered a write token only when it asks with
+// the brief's own (runsheet gateway/jobaccess.go, ADR 077). "" asks the
+// kind's usual token.
+func (c *Client) jobAccessPushing(ctx context.Context, kind string, subject JobSubject, harness, pushTo string) (*JobAccess, error) {
 	box, _ := ctx.Value(exchangesKey{}).(*exchanges)
 	if box == nil {
-		return c.jobAccess(ctx, kind, subject, harness)
+		return c.jobAccess(ctx, kind, subject, harness, pushTo)
 	}
-	key := nodeIDFrom(ctx) + " " + kind + " " + subject.Type + " " + subject.ID + " " + harness
+	key := nodeIDFrom(ctx) + " " + kind + " " + subject.Type + " " + subject.ID + " " + harness + " " + pushTo
 	now := time.Now()
 	box.mu.Lock()
 	held, ok := box.held[key]
@@ -487,7 +496,7 @@ func (c *Client) JobAccess(ctx context.Context, kind string, subject JobSubject,
 	if ok && now.Before(held.until) {
 		return held.answer, nil
 	}
-	acc, err := c.jobAccess(ctx, kind, subject, harness)
+	acc, err := c.jobAccess(ctx, kind, subject, harness, pushTo)
 	if err != nil || len(acc.NotServed) > 0 {
 		return acc, err
 	}
@@ -508,13 +517,16 @@ func (c *Client) JobAccess(ctx context.Context, kind string, subject JobSubject,
 	return acc, nil
 }
 
-func (c *Client) jobAccess(ctx context.Context, kind string, subject JobSubject, harness string) (*JobAccess, error) {
+func (c *Client) jobAccess(ctx context.Context, kind string, subject JobSubject, harness, pushTo string) (*JobAccess, error) {
 	in := map[string]any{"subject": map[string]any{"type": subject.Type, "id": subject.ID}}
 	if kind != "" {
 		in["kind"] = kind
 	}
 	if harness != "" {
 		in["harness"] = harness
+	}
+	if pushTo != "" {
+		in["pushTo"] = pushTo
 	}
 	var out struct {
 		Access *JobAccess `json:"jobAccess"`
