@@ -33,7 +33,7 @@ func TestALeaseSocketBindsUnderAVeryLongWorkRoot(t *testing.T) {
 	deep := deepDir(t)
 	t.Setenv("TMPDIR", deep)
 	t.Setenv("XDG_RUNTIME_DIR", "")
-	sess := &stubSession{calls: []string{"conform/brief"}, result: SessionResult{SessionID: "sess-long"}}
+	sess := &stubSession{calls: []string{"conform/brief", "conform/submit"}, result: SessionResult{SessionID: "sess-long"}}
 	g := newRig(t, sess)
 	g.rt.WorkRoot = deep
 	job := g.offer(t, nil)
