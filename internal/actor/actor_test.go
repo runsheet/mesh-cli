@@ -175,3 +175,22 @@ func TestKilled(t *testing.T) {
 		}
 	}
 }
+
+// ReleaseNow releases the named holds at once and leaves the rest for
+// Release.
+func TestReleaseNow(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "lse")
+	a, _ := Start(dir, Record{LeaseID: "lse"})
+	var order []string
+	for _, n := range []string{"room", "grant", "proxy"} {
+		a.Hold(n, func() error { order = append(order, n); return nil })
+	}
+	a.ReleaseNow("grant", "proxy")
+	if fmt.Sprint(order) != "[proxy grant]" || fmt.Sprint(readRecord(t, dir).Holds) != "[room]" {
+		t.Fatalf("released %v, actor.json holds %v", order, readRecord(t, dir).Holds)
+	}
+	a.Release()
+	if fmt.Sprint(order) != "[proxy grant room]" {
+		t.Fatalf("released %v", order)
+	}
+}
