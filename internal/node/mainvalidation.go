@@ -125,8 +125,11 @@ func (r *Runner) validateCandidate(ctx context.Context, batch gateway.MainValida
 		cred:      cred,
 		tokenName: fmt.Sprintf("merge batch %d", batch.Number),
 	}
+	// a brief naming apply is a chain's: the candidate is the node's to
+	// write (chain.go); a brief without one, the platform's candidate
 	return r.validateCommit(ctx, t, mainCommit{repo: batch.RepoFullName, branch: batch.CandidateBranch, sha: batch.SHA, atHead: true,
-		what: "candidate " + batch.CandidateBranch, token: fmt.Sprintf("merge batch %d", batch.Number)})
+		what: "candidate " + batch.CandidateBranch, token: fmt.Sprintf("merge batch %d", batch.Number),
+		chain: candidateChain(r.GW, batch)})
 }
 
 // candidatePrefix is a candidate's validation's log prefix: `merge batch
@@ -241,11 +244,16 @@ func orUnnamed(s string) string {
 // onto, set, is a pull request's validation onto main (mergeOnto): the
 // head is checked out as a clone of its own — the served diff makes no
 // merge — merged onto it, and the merge validated in its place.
+//
+// chain, set, is a chain batch's candidate (validateChain): sha is then
+// none, the candidate the node's to write from the brief's changes,
+// push and validate.
 type mainCommit struct {
 	repo, branch, sha string
 	atHead, pull      bool
 	what, token       string
 	onto              *ontoPull
+	chain             *chainCandidate
 }
 
 // validateCommit is a main validation's body, a batch candidate's or a
@@ -274,6 +282,10 @@ func (r *Runner) validateCommit(ctx context.Context, t validationTarget, c mainC
 
 func (r *Runner) validateCommitIn(ctx context.Context, t validationTarget, c mainCommit) (validate.Attestation, error) {
 	prefix := t.prefix
+	if c.chain != nil {
+		r.logf("%s: validating the chain candidate of %d changes onto %s, to write and push to %s", prefix, len(c.chain.code.Apply), t.base, c.chain.code.PushTo)
+		return r.validateChain(ctx, t, c)
+	}
 	r.logf("%s: validating %s at %s", prefix, c.what, short(c.sha))
 	if c.onto != nil {
 		r.logf("%s: onto: checked out as a clone of its own, merged onto %s", prefix, cmp.Or(c.onto.code.Onto.Ref, t.base))
