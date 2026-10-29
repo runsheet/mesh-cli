@@ -70,8 +70,19 @@ func (r *Runtime) onEvent(e meshapi.NodeEvent) {
 		r.drain = true
 		r.mu.Unlock()
 		r.logf("nodev1: Mesh asked the node to drain")
+	case meshapi.EventTurn:
+		var t meshapi.TurnEvent
+		if err := json.Unmarshal(e.Data, &t); err != nil || t.LeaseID == "" || t.TurnID == "" {
+			r.logf("nodev1: a turn event names no lease or turn: %s", e.Data)
+			return
+		}
+		if err := r.deliver(t.LeaseID, Message{Kind: MsgTurn, Text: turnMessage(r.turnTool(t.LeaseID), t.TurnID, t.Seq)}); err != nil {
+			r.logf("nodev1: turn %s for lease %s: %v", t.TurnID, t.LeaseID, err)
+			return
+		}
+		r.logf("nodev1: lease %s: turn %s (seq %d) went to the session", t.LeaseID, t.TurnID, t.Seq)
 	default:
-		// turn and pause are the actor node's (wave 3 and 4)
+		// pause is the actor node's (wave 3)
 		r.logf("nodev1: event %s ignored by this runtime", e.Event)
 	}
 }

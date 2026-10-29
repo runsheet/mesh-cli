@@ -78,7 +78,7 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 			return err
 		}
 		logger := log.New(os.Stderr, "mesh node v1: ", log.LstdFlags)
-		sess := &nodev1.ClaudeSession{Stderr: os.Stderr}
+		sess := &nodev1.ClaudeSession{Stderr: os.Stderr, Logf: logger.Printf}
 		if nodeRunUnattended {
 			sess.ExtraArgs = []string{"--dangerously-skip-permissions"}
 		}

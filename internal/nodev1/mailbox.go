@@ -1,0 +1,80 @@
+package nodev1
+
+import (
+	"fmt"
+	"sync"
+)
+
+// Every v1 job runs in a streaming session, its input held open (Mesh v1
+// spec, "Streaming sessions everywhere"; PR 2.10). A lease's Mailbox is
+// how anything of the node reaches the live session: a thread's turn off
+// the node's event stream, an escalation from a node tool (red,
+// conflict, asked) or the session's own stall, and the product's answer
+// to the finish tool, after which a one-shot job's input closes. The
+// session's loop (ClaudeSession) is the mailbox's one reader. Cancelling
+// is the lease's ctx, not a message: it stops the session at once.
+
+// mailboxSize bounds the messages waiting for the session's loop.
+const mailboxSize = 32
+
+// MessageKind is what a mailbox message asks of the session.
+type MessageKind string
+
+const (
+	// MsgTurn is a user turn for the session: Text.
+	MsgTurn MessageKind = "turn"
+	// MsgEscalate moves the session up its kind's model ladder: On is
+	// the trigger (escalate.OnRed, …), Text why.
+	MsgEscalate MessageKind = "escalate"
+	// MsgInterrupt stops the turn in flight.
+	MsgInterrupt MessageKind = "interrupt"
+)
+
+// Message is one message of a lease's mailbox.
+type Message struct {
+	Kind MessageKind
+	Text string
+	On   string
+}
+
+// Mailbox is one lease's mailbox.
+type Mailbox struct {
+	ch       chan Message
+	once     sync.Once
+	finished chan struct{}
+}
+
+// NewMailbox is an empty mailbox.
+func NewMailbox() *Mailbox {
+	return &Mailbox{ch: make(chan Message, mailboxSize), finished: make(chan struct{})}
+}
+
+// Post leaves m for the session; a full mailbox refuses it.
+func (m *Mailbox) Post(msg Message) error {
+	select {
+	case m.ch <- msg:
+		return nil
+	default:
+		return fmt.Errorf("the lease's mailbox is full (%d messages waiting)", mailboxSize)
+	}
+}
+
+// C is the session loop's end of the mailbox.
+func (m *Mailbox) C() <-chan Message { return m.ch }
+
+// Finish says the product answered the job's finish tool: a one-shot
+// job's input closes and its session ends once its turn does.
+func (m *Mailbox) Finish() { m.once.Do(func() { close(m.finished) }) }
+
+// Finished closes once Finish is called.
+func (m *Mailbox) Finished() <-chan struct{} { return m.finished }
+
+// turnMessage is the user turn a thread's turn event becomes: the ids
+// alone (threads carry no content), with the product's tool to read it.
+func turnMessage(turnTool, turnID string, seq int64) string {
+	read := "the product's turn tool"
+	if turnTool != "" {
+		read = "`" + turnTool + "`"
+	}
+	return fmt.Sprintf("A new turn arrived on this thread: turn_id %s (seq %d). Read it with %s, do what it asks, and reply with the product's reply tool.", turnID, seq, read)
+}

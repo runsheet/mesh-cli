@@ -23,8 +23,14 @@ type Event struct {
 	// Model is the model a system/init event says the session runs on.
 	Model string `json:"model"`
 	// Usage is the session's token counts on the result event.
-	Usage   *streamUsage `json:"usage"`
-	Message *struct {
+	Usage *streamUsage `json:"usage"`
+	// ModelUsage is a result event's spend so far by model, as the CLI
+	// names each one: in a streaming session (--input-format
+	// stream-json) every turn ends in its own result event, its usage
+	// that turn's alone and its modelUsage and total_cost_usd the whole
+	// session's so far (Mesh v1 PR 2.10 spike, claude 2.1.312).
+	ModelUsage map[string]ModelSpend `json:"modelUsage"`
+	Message    *struct {
 		Role string `json:"role"`
 		// ID is the assistant message's own id (msg_…): the CLI can send
 		// more than one event for the same message (a content block
@@ -64,6 +70,15 @@ type Event struct {
 		Name   string `json:"name"`
 		Status string `json:"status"`
 	} `json:"mcp_servers"`
+}
+
+// ModelSpend is one model's share of a result event's modelUsage.
+type ModelSpend struct {
+	InputTokens              int64   `json:"inputTokens"`
+	OutputTokens             int64   `json:"outputTokens"`
+	CacheReadInputTokens     int64   `json:"cacheReadInputTokens"`
+	CacheCreationInputTokens int64   `json:"cacheCreationInputTokens"`
+	CostUSD                  float64 `json:"costUSD"`
 }
 
 // streamUsage is the token counts a result event carries. Its
