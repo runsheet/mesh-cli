@@ -59,6 +59,10 @@ func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace s
 		case EscalateTool:
 			out = append(out, escalateTool(ladder, mb))
 		default:
+			// result, hand_back and progress are endTools' (endtools.go)
+			if isEndTool(name) {
+				continue
+			}
 			r.logf("nodev1: lease %s: the kind names node tool %q, which this node does not have", b.LeaseID, name)
 		}
 	}

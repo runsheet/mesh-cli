@@ -1,0 +1,20 @@
+{
+  "name": "lease-progress",
+  "method": "POST",
+  "path": "/v1/leases/8f2d46db-25cb-553c-8549-41b058095c28/progress",
+  "caller": "node",
+  "request": {
+    "note": "read the fixture"
+  },
+  "status": 200,
+  "response": {
+    "job_id": "a9d90743-1ec0-5bcf-9245-630095273b18",
+    "progress": {
+      "at": "2026-01-01T00:00:00Z",
+      "lease_id": "8f2d46db-25cb-553c-8549-41b058095c28",
+      "note": "read the fixture",
+      "notes": 1
+    },
+    "status": "leased"
+  }
+}
