@@ -1,0 +1,174 @@
+package meshapi_test
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"projectmesh.io/mesh-cli/internal/meshapi"
+	"projectmesh.io/mesh-cli/internal/meshapi/meshapitest"
+)
+
+// decode reads a fixture's request into v.
+func decode(t *testing.T, raw json.RawMessage, v any) {
+	t.Helper()
+	if err := json.Unmarshal(raw, v); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Every fixture of the contract is one client call: the request the
+// client sends is the fixture's, field for field, and the answer it
+// decodes says back everything the fixture's answer said — nothing the
+// contract carries is dropped on either side.
+func TestClientSpeaksTheContract(t *testing.T) {
+	fx := meshapitest.Load(t)
+	calls := map[string]func(c *meshapi.Client, f meshapitest.Fixture) (any, error){
+		"nodes-register": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.RegisterRequest
+			decode(t, f.Request, &req)
+			return c.Register(context.Background(), req)
+		},
+		"nodes-heartbeat": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.HeartbeatRequest
+			decode(t, f.Request, &req)
+			return c.Heartbeat(context.Background(), idOf(f.Path, 3), req)
+		},
+		"take-lease": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.TakeRequest
+			decode(t, f.Request, &req)
+			return c.Take(context.Background(), req)
+		},
+		"take-waiting": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.TakeRequest
+			decode(t, f.Request, &req)
+			tk, err := c.Take(context.Background(), req)
+			if err == nil && (tk.Lease != nil || tk.Waiting != "no job fits this node now") {
+				t.Errorf("take-waiting: %+v", tk)
+			}
+			return nil, err
+		},
+		"lease-renew": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			return c.Renew(context.Background(), idOf(f.Path, 3))
+		},
+		"lease-renew-gone": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			_, err := c.Renew(context.Background(), idOf(f.Path, 3))
+			if !meshapi.LeaseGone(err) || !strings.Contains(err.Error(), "lease_not_live") {
+				t.Errorf("lease-renew-gone: %v", err)
+			}
+			return nil, nil
+		},
+		"lease-session": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.SessionRequest
+			decode(t, f.Request, &req)
+			return c.Session(context.Background(), idOf(f.Path, 3), req.JKT)
+		},
+		"lease-evidence": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.EvidenceRequest
+			decode(t, f.Request, &req)
+			return c.Evidence(context.Background(), idOf(f.Path, 3), req.Records)
+		},
+		"lease-access": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.AccessRequest
+			decode(t, f.Request, &req)
+			return nil, c.Access(context.Background(), idOf(f.Path, 3), req.Records)
+		},
+		"lease-usage": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.UsageRequest
+			decode(t, f.Request, &req)
+			return nil, c.Usage(context.Background(), idOf(f.Path, 3), req)
+		},
+		"lease-finish": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.FinishRequest
+			decode(t, f.Request, &req)
+			return c.Finish(context.Background(), idOf(f.Path, 3), req)
+		},
+		"lease-fail": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.FailRequest
+			decode(t, f.Request, &req)
+			return c.Fail(context.Background(), idOf(f.Path, 3), req)
+		},
+		"lease-hand-back": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.HandBackRequest
+			decode(t, f.Request, &req)
+			return c.HandBack(context.Background(), idOf(f.Path, 3), req)
+		},
+	}
+	for name := range fx {
+		if calls[name] == nil {
+			t.Errorf("fixture %s has no client call", name)
+		}
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			f, ok := fx[name]
+			if !ok {
+				t.Fatalf("no fixture %s", name)
+			}
+			rp := &meshapitest.Replay{}
+			rp.Use(f)
+			srv := httptest.NewServer(rp)
+			defer srv.Close()
+			c := &meshapi.Client{BaseURL: srv.URL, Token: func(context.Context) (string, error) { return "machine-token", nil }}
+			got, err := call(c, f)
+			if len(rp.Mismatches) > 0 {
+				t.Fatalf("%s", strings.Join(rp.Mismatches, "\n"))
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rp.Auth[0] != "Bearer machine-token" {
+				t.Fatalf("auth %q", rp.Auth[0])
+			}
+			if got == nil || !f.HasResponse() || f.Status >= 300 {
+				return
+			}
+			raw, _ := json.Marshal(got)
+			if same, have, want := meshapitest.SameJSON(raw, f.Response); !same {
+				t.Fatalf("decoded answer says back %s, the contract has %s", have, want)
+			}
+		})
+	}
+}
+
+// idOf is the i-th segment of a fixture's path.
+func idOf(path string, i int) string {
+	return strings.Split(path, "/")[i]
+}
+
+// A blob goes up as its raw bytes under its digest.
+func TestPutBlob(t *testing.T) {
+	var gotPath, gotType, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b := new(strings.Builder)
+		buf := make([]byte, 64)
+		n, _ := r.Body.Read(buf)
+		b.Write(buf[:n])
+		gotPath, gotType, gotBody = r.Method+" "+r.URL.Path, r.Header.Get("Content-Type"), b.String()
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+	c := &meshapi.Client{BaseURL: srv.URL}
+	if err := c.PutBlob(context.Background(), "sha256:ab", []byte("bytes")); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "PUT /v1/blobs/sha256:ab" || gotType != "application/octet-stream" || gotBody != "bytes" {
+		t.Fatalf("%s %s %q", gotPath, gotType, gotBody)
+	}
+}
+
+// A take whose 200 names no lease is a wait, as a 204 is.
+func TestTakeWithoutALeaseWaits(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"waiting":"account acme-max full until 14:00"}`))
+	}))
+	defer srv.Close()
+	c := &meshapi.Client{BaseURL: srv.URL}
+	tk, err := c.Take(context.Background(), meshapi.TakeRequest{NodeID: "n", WaitS: 99})
+	if err != nil || tk.Lease != nil || tk.Waiting != "account acme-max full until 14:00" {
+		t.Fatalf("%+v %v", tk, err)
+	}
+}

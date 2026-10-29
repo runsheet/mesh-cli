@@ -1,0 +1,19 @@
+{
+  "name": "lease-access",
+  "method": "POST",
+  "path": "/v1/leases/lse_01JD7K2Q9N3V/access",
+  "request": {
+    "records": [
+      {
+        "kind": "git",
+        "repo": "acme/fixture",
+        "service": "upload-pack",
+        "outcome": "ok",
+        "bytes": 2048,
+        "at": "2026-10-29T10:00:03Z"
+      }
+    ]
+  },
+  "status": 204,
+  "response": null
+}

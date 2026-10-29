@@ -1,0 +1,30 @@
+{
+  "name": "nodes-heartbeat",
+  "method": "POST",
+  "path": "/v1/nodes/nod_01JD6Y0M2T8E/heartbeat",
+  "request": {
+    "version": "v0.3.0",
+    "capacity_total": {
+      "cpus": 16,
+      "mem_gb": 64,
+      "slots": 4
+    },
+    "unavailable": {
+      "cpus": 0,
+      "mem_gb": 0
+    },
+    "leases": [
+      {
+        "lease_id": "lse_01JD7K2Q9N3V",
+        "progress_at": "2026-10-29T10:00:20Z"
+      }
+    ],
+    "accounts": []
+  },
+  "status": 200,
+  "response": {
+    "cancel": [],
+    "drain": false,
+    "renew_every_s": 30
+  }
+}

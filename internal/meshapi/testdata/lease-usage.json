@@ -1,0 +1,22 @@
+{
+  "name": "lease-usage",
+  "method": "POST",
+  "path": "/v1/leases/lse_01JD7K2Q9N3V/usage",
+  "request": {
+    "usage": [
+      {
+        "model": "claude-haiku-4-5",
+        "account_ref": "9f1c2b7e-3a4d-4e5f-8a6b-7c8d9e0f1a2b",
+        "input_tokens": 12000,
+        "cached_input_tokens": 8000,
+        "cache_write_input_tokens": 1000,
+        "output_tokens": 900,
+        "cost_usd": 0.021
+      }
+    ],
+    "turns": 6,
+    "duration_ms": 41000
+  },
+  "status": 204,
+  "response": null
+}

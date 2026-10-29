@@ -1,0 +1,25 @@
+{
+  "name": "lease-evidence",
+  "method": "POST",
+  "path": "/v1/leases/lse_01JD7K2Q9N3V/evidence",
+  "request": {
+    "records": [
+      {
+        "tool": "run_suite",
+        "input_digest": "sha256:aa",
+        "started_at": "2026-10-29T10:00:05Z",
+        "ended_at": "2026-10-29T10:00:40Z",
+        "exit": 0,
+        "summary": "42 passed",
+        "output_digest": "sha256:bb",
+        "signature": "ed25519:c2ln"
+      }
+    ]
+  },
+  "status": 201,
+  "response": {
+    "ids": [
+      "ev_01JD7K3A"
+    ]
+  }
+}

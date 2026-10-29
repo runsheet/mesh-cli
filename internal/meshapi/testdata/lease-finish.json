@@ -1,0 +1,18 @@
+{
+  "name": "lease-finish",
+  "method": "POST",
+  "path": "/v1/leases/lse_01JD7K2Q9N3V/finish",
+  "request": {
+    "result": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "session_ref": "c0ffee00-0000-4000-8000-000000000001"
+  },
+  "status": 200,
+  "response": {
+    "job_id": "job_01JD7K1ZC4XA",
+    "status": "ended",
+    "end": "finished",
+    "handbacks": 0
+  }
+}
