@@ -14,7 +14,7 @@ import (
 // slot each, reports what the live leases leave free on every take, and
 // takes nothing while every slot is held.
 func TestTheSchedulerOwnsTheNodesCapacity(t *testing.T) {
-	sess := &stubSession{hold: make(chan struct{})}
+	sess := &stubSession{calls: []string{"conform/submit"}, hold: make(chan struct{})}
 	g := newRig(t, sess)
 	g.rt.Once = false
 	g.rt.Scheduler = scheduler.New(scheduler.Capacity{CPUs: 4, MemGB: 8, Slots: 2})
@@ -59,7 +59,7 @@ func TestTheSchedulerOwnsTheNodesCapacity(t *testing.T) {
 // ledger and the node's disagreeing) is handed back cannot_run, naming
 // why, and spends no attempt.
 func TestALeaseWithNoRoomHandsBack(t *testing.T) {
-	g := newRig(t, &stubSession{})
+	g := newRig(t, &stubSession{calls: []string{"conform/submit"}})
 	g.rt.Scheduler = scheduler.New(scheduler.Capacity{CPUs: 4, Slots: 1})
 	// a trim holds the build cache past the lease's wait
 	trim, err := g.rt.Scheduler.TryTake(scheduler.Ask{Owner: "trim", Cache: scheduler.CacheExclusive})

@@ -59,6 +59,10 @@ type Runtime struct {
 	// MeshBinary is this mesh executable: the session reaches each proxied
 	// server through its `mcp-relay --socket`.
 	MeshBinary string
+	// StopRefusals is how many times a one-shot session's Stop hook
+	// refuses its end while its finish tool is owed (stophook.go);
+	// DefaultStopRefusals when zero.
+	StopRefusals int
 	// Session runs each lease's session.
 	Session Session
 	// LatchkeyHTTP reaches Latchkey for a lease's session tokens and git

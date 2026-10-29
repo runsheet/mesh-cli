@@ -23,6 +23,8 @@ import (
 type streamSession struct {
 	lines func() []string
 	hold  bool
+	// text is the session's last message; "done" when empty
+	text string
 
 	mu   sync.Mutex
 	spec SessionSpec
@@ -45,7 +47,11 @@ func (s *streamSession) Run(ctx context.Context, spec SessionSpec) (SessionResul
 		<-ctx.Done()
 		return SessionResult{SessionID: "sess-ruled", Turns: 1}, ctx.Err()
 	}
-	return SessionResult{SessionID: "sess-ruled", Turns: 1, Text: "done"}, nil
+	text := s.text
+	if text == "" {
+		text = "done"
+	}
+	return SessionResult{SessionID: "sess-ruled", Turns: 1, Text: text}, nil
 }
 
 func toolUse(id, tool string) string {
@@ -156,7 +162,9 @@ func TestTheTranscriptReachesTheProductRedacted(t *testing.T) {
 		return append(out, fakeModelSecret)
 	}
 	var secrets []string
-	sess := &streamSession{lines: func() []string {
+	// its last message is its result (settle.go): the transcript's job
+	// finishes
+	sess := &streamSession{text: `{"sha256":"5f0c"}`, lines: func() []string {
 		secrets = held()
 		var lines []string
 		for _, s := range secrets {

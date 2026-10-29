@@ -1,0 +1,15 @@
+{
+  "name": "lease-fail-no-finish",
+  "method": "POST",
+  "path": "/v1/leases/lse_01JD7K2Q9N3V/fail",
+  "request": {
+    "cause": "no_finish",
+    "reason": "the session ended without calling its finish tool submit, after 3 refused stops, and its last message is not a JSON object to take as the result"
+  },
+  "status": 200,
+  "response": {
+    "job_id": "job_01JD7K1ZC4XA",
+    "status": "queued",
+    "handbacks": 1
+  }
+}
