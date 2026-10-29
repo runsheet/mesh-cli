@@ -100,7 +100,10 @@ type Runtime struct {
 	mu      sync.Mutex
 	live    map[string]*running
 	access  map[string][]meshapi.AccessRecord
-	drain   bool
+	// accounts are the model accounts' latest standing, from their
+	// sessions' rate-limit readings, for the heartbeat (accounts.go)
+	accounts map[string]*accountReading
+	drain    bool
 }
 
 // running is one lease in flight.
@@ -336,7 +339,8 @@ func (r *Runtime) draining() bool {
 }
 
 // heartbeats reports the node every period: its leases and their
-// progress; Mesh's answer cancels leases and drains the node.
+// progress, and its model accounts' standing as their sessions read it
+// (accounts.go); Mesh's answer cancels leases and drains the node.
 func (r *Runtime) heartbeats(ctx context.Context, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
@@ -358,8 +362,9 @@ func (r *Runtime) heartbeat(ctx context.Context) {
 	}
 	nodeID := r.nodeID
 	r.mu.Unlock()
+	accounts := r.unsentAccounts()
 	resp, err := r.API.Heartbeat(ctx, nodeID, meshapi.HeartbeatRequest{
-		Version: r.Node.Version, CapacityTotal: r.Node.CapacityTotal, Leases: beats,
+		Version: r.Node.Version, CapacityTotal: r.Node.CapacityTotal, Leases: beats, Accounts: accounts,
 	})
 	if err != nil {
 		if ctx.Err() == nil {
@@ -367,6 +372,7 @@ func (r *Runtime) heartbeat(ctx context.Context) {
 		}
 		return
 	}
+	r.sentAccounts(accounts)
 	if resp.Drain {
 		r.mu.Lock()
 		r.drain = true

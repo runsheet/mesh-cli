@@ -164,7 +164,7 @@ func (s *sessionTokens) RevokeSource(ctx context.Context, minted []gitrelay.Toke
 }
 
 // onToken calls Latchkey at path with `Authorization: DPoP <session
-// token>` and a proof of the request.
+// token>` and a proof of the request; a nil body sends none.
 func (s *sessionTokens) onToken(ctx context.Context, method, path string, body, out any) error {
 	tok, err := s.Token(ctx)
 	if err != nil {
@@ -174,9 +174,11 @@ func (s *sessionTokens) onToken(ctx context.Context, method, path string, body, 
 	if err != nil {
 		return err
 	}
-	b, err := json.Marshal(body)
-	if err != nil {
-		return err
+	var b []byte
+	if body != nil {
+		if b, err = json.Marshal(body); err != nil {
+			return err
+		}
 	}
 	raw, status, err := s.send(ctx, method, iss+path, "DPoP "+tok, tok, b)
 	if err != nil {
