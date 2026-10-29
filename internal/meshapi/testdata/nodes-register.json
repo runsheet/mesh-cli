@@ -2,28 +2,26 @@
   "name": "nodes-register",
   "method": "POST",
   "path": "/v1/nodes",
+  "caller": "node",
   "request": {
-    "name": "dl360",
-    "version": "v0.3.0",
-    "os": "linux",
     "arch": "amd64",
+    "capacity_total": {
+      "cpus": 4,
+      "mem_gb": 8,
+      "slots": 1
+    },
     "harnesses": [
       "claude-code"
     ],
-    "tools": [
-      "git",
-      "go"
-    ],
-    "capacity_total": {
-      "cpus": 16,
-      "mem_gb": 64,
-      "slots": 4
-    },
-    "signing_key": "ed25519:11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="
+    "name": "node-a",
+    "os": "linux",
+    "signing_key": "ed25519:iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+    "tools": [],
+    "version": "v0.0.0"
   },
   "status": 201,
   "response": {
-    "node_id": "nod_01JD6Y0M2T8E",
-    "heartbeat_every_s": 30
+    "heartbeat_every_s": 30,
+    "node_id": "7f41f005-46b5-5c7d-8af5-9ec6c44c99f9"
   }
 }
