@@ -122,6 +122,24 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			err := c.Events(context.Background(), idOf(f.Path, 3), func(e meshapi.NodeEvent) { got = append(got, e) })
 			return map[string]any{"events": got}, err
 		},
+		"node-events-turn": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var got []meshapi.NodeEvent
+			err := c.Events(context.Background(), idOf(f.Path, 3), func(e meshapi.NodeEvent) { got = append(got, e) })
+			var turn meshapi.TurnEvent
+			if err == nil && (len(got) != 1 || got[0].Event != meshapi.EventTurn || json.Unmarshal(got[0].Data, &turn) != nil || turn.TurnID == "" || turn.LeaseID == "") {
+				t.Errorf("node-events-turn: %+v", got)
+			}
+			return map[string]any{"events": got}, err
+		},
+		"lease-hand-back-parked": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.HandBackRequest
+			decode(t, f.Request, &req)
+			st, err := c.HandBack(context.Background(), idOf(f.Path, 3), req)
+			if err == nil && st.Status != "parked" {
+				t.Errorf("lease-hand-back-parked: %+v", st)
+			}
+			return st, err
+		},
 		"lease-hand-back": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
 			var req meshapi.HandBackRequest
 			decode(t, f.Request, &req)

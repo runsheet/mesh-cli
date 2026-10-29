@@ -47,6 +47,9 @@ type outcome struct {
 	err        error
 	cause      error // the lease ctx's cause when it was cancelled
 	nodeEnding bool
+	// parked is a thread's session that ended after its park_after of
+	// quiet: the lease is handed back parked with its session_ref.
+	parked bool
 	// access are the relay's AccessRecords of the lease.
 	access []meshapi.AccessRecord
 	// escalations are the model steps the session took.
@@ -80,7 +83,7 @@ func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take, room *schedule
 	defer cancel(nil)
 	mb := NewMailbox()
 	r.mu.Lock()
-	r.leases.Put(id, &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: b.TurnTool})
+	r.leases.Put(id, &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: turnToolFor(b), jobID: b.JobID})
 	r.mu.Unlock()
 	defer func() {
 		r.mu.Lock()
@@ -110,7 +113,8 @@ func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take, room *schedule
 	<-renewDone
 	out.nodeEnding = ctx.Err() != nil
 	out.access = r.takeAccess(id)
-	r.report(id, b, out)
+	end := r.report(id, b, out)
+	r.settleThread(b, out.result.SessionID, end.Cause == meshapi.CauseParked)
 	// the account's standing as the session last read it reaches Mesh now,
 	// before the node's next take, not a heartbeat period later
 	if len(r.unsentAccounts()) > 0 && ctx.Err() == nil {
@@ -154,6 +158,15 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
 		return outcome{err: fmt.Errorf("the lease's directory: %w", err)}
 	}
+	// a thread's workspace is its job's, kept across a park so its
+	// session resumes where it ran (thread.go)
+	var resume string
+	if b.Thread != nil {
+		var err error
+		if workspace, resume, err = r.threadWorkspace(b); err != nil {
+			return outcome{err: err}
+		}
+	}
 	if a == nil {
 		keep("the lease's directory", func() error { return os.RemoveAll(dir) })
 	}
@@ -189,8 +202,18 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 			}
 			return nil
 		})
-		if resumed, err = checkout(ctx, grant, b, workspace, r.mirrors, r.logf); err != nil {
-			return outcome{err: fmt.Errorf("checking out %s: %w", b.Git.Repo, err), cause: context.Cause(ctx)}
+		if resume != "" {
+			if err := reattach(ctx, grant, b, workspace); err != nil {
+				r.logf("nodev1: lease %s: the parked thread's checkout is not reused (%v); starting afresh", b.LeaseID, err)
+				resume = ""
+				_ = os.RemoveAll(workspace)
+				_ = os.MkdirAll(workspace, 0o700)
+			}
+		}
+		if resume == "" {
+			if resumed, err = checkout(ctx, grant, b, workspace, r.mirrors, r.logf); err != nil {
+				return outcome{err: fmt.Errorf("checking out %s: %w", b.Git.Repo, err), cause: context.Cause(ctx)}
+			}
 		}
 		// the relay proves a fast-forward-only push in this checkout
 		grant.SetCheckout(workspace)
@@ -212,7 +235,8 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	spec := SessionSpec{
 		Label:     b.LeaseID,
 		Workspace: workspace,
-		Prompt:    promptWithRelay(b, sock, resumed),
+		Prompt:    threadPrompt(b, promptWithRelay(b, sock, resumed), resume),
+		Resume:    resume,
 		Model:     b.Harness.Model.Default,
 		BudgetUSD: b.Harness.Budget.USD,
 		Servers:   servers,
@@ -226,6 +250,12 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 			r.readAccount(account.ref(), ev)
 		},
 		Pod: pod,
+	}
+	if b.Thread != nil {
+		spec.ParkAfter = time.Duration(b.Thread.ParkAfterS) * time.Second
+	}
+	if resume != "" {
+		r.logf("nodev1: lease %s resumes the thread's parked session %s", b.LeaseID, resume)
 	}
 	account.apply(&spec)
 	sctx := ctx
@@ -242,7 +272,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	}
 	res, err := r.Session.Run(sctx, spec)
 	o := outcome{result: res, err: err, finish: fin.result(), escalations: taken(ladder.Steps()), evidence: rec.IDs(),
-		account: account, harness: b.Harness.Name, model: ladder.Model()}
+		account: account, harness: b.Harness.Name, model: ladder.Model(), parked: res.Parked}
 	if ctx.Err() != nil {
 		o.cause = context.Cause(ctx)
 	} else if errors.Is(err, context.DeadlineExceeded) || sctx.Err() != nil {
@@ -417,6 +447,15 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) actor.End {
 		reason := afterWrites("the node stopped while the session ran", writes)
 		r.handBack(id, meshapi.CauseNodeRestart, reason, o.result.SessionID)
 		return actor.End{Report: actor.ReportHandBack, Cause: meshapi.CauseNodeRestart, Reason: reason}
+	}
+	// a thread quiet for its park_after hands back parked, keeping its
+	// session for the next turn (projectmesh-io/api ADR 001, Threads)
+	if o.parked && o.err == nil && o.cause == nil {
+		r.postAccess(id, o.access)
+		r.postUsage(id, o)
+		reason := "the thread was quiet for its park_after"
+		r.handBack(id, meshapi.CauseParked, reason, o.result.SessionID)
+		return actor.End{Report: actor.ReportHandBack, Cause: meshapi.CauseParked, Reason: reason}
 	}
 	// a job actor's session or pod killed from outside is the node's
 	// condition, never the work's (ADR-044): handed back pod_killed,

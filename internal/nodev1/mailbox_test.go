@@ -62,7 +62,7 @@ func TestAStreamTurnReachesTheLiveSession(t *testing.T) {
 	g := newRig(t, sess)
 	g.rt.HeartbeatEvery = time.Hour
 	job := g.offer(t, func(b *meshapi.Brief) {
-		b.TurnTool = "conform.turn"
+		b.TurnTool = "turn"
 		b.Thread = &meshapi.Thread{ParkAfterS: 60}
 	})
 	done := make(chan error, 1)
@@ -88,7 +88,7 @@ func TestAStreamTurnReachesTheLiveSession(t *testing.T) {
 	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	if len(sess.got) != 1 || sess.got[0].Kind != MsgTurn || !strings.Contains(sess.got[0].Text, "turn_id turn-7 (seq 3)") || !strings.Contains(sess.got[0].Text, "`conform.turn`") {
+	if len(sess.got) != 1 || sess.got[0].Kind != MsgTurn || sess.got[0].Text != "turn 3 arrived: read it with mcp__conform__turn(turn-7)" {
 		t.Fatalf("the session got %+v", sess.got)
 	}
 	if !sess.spec.Thread || sess.spec.Ladder == nil || progress.IsZero() {
