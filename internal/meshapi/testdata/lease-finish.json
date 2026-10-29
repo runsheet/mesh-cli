@@ -1,18 +1,19 @@
 {
   "name": "lease-finish",
   "method": "POST",
-  "path": "/v1/leases/lse_01JD7K2Q9N3V/finish",
+  "path": "/v1/leases/a8951edc-9534-5cdb-a973-7e65c5cba65e/finish",
+  "caller": "node",
   "request": {
     "result": {
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     },
-    "session_ref": "c0ffee00-0000-4000-8000-000000000001"
+    "session_ref": "session-1"
   },
   "status": 200,
   "response": {
-    "job_id": "job_01JD7K1ZC4XA",
-    "status": "ended",
     "end": "finished",
-    "handbacks": 0
+    "handbacks": 0,
+    "job_id": "25a842cb-ec6d-5f16-a0be-a964c996cdf7",
+    "status": "ended"
   }
 }

@@ -113,11 +113,13 @@ type HeartbeatResponse struct {
 }
 
 // TakeRequest is POST /v1/take, a long-poll of at most WaitS (≤25) seconds.
+// A WaitS of 0 is left out, as contracts/v1/take-waiting sends it: the
+// service answers at once either way.
 type TakeRequest struct {
 	NodeID    string    `json:"node_id"`
 	Free      *Capacity `json:"free,omitempty"`
 	Harnesses []string  `json:"harnesses"`
-	WaitS     int       `json:"wait_s"`
+	WaitS     int       `json:"wait_s,omitempty"`
 }
 
 // Take is a take's answer: a lease and its brief, or Waiting — why no
