@@ -91,6 +91,11 @@ func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take) {
 	out.nodeEnding = ctx.Err() != nil
 	out.access = r.takeAccess(id)
 	r.report(id, b, out)
+	// the account's standing as the session last read it reaches Mesh now,
+	// before the node's next take, not a heartbeat period later
+	if len(r.unsentAccounts()) > 0 && ctx.Err() == nil {
+		r.heartbeat(ctx)
+	}
 }
 
 // work prepares the lease and runs its session: the lease's Latchkey
