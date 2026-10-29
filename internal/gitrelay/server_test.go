@@ -60,11 +60,11 @@ func TestServerRoutesEachRegistrationToItsOwnPolicy(t *testing.T) {
 func TestPushRefPrefix(t *testing.T) {
 	p := Policy{Repo: "a/b", Access: Write, Push: []RefRule{{Ref: "refs/heads/mesh/*"}}}
 	ok := command{old: zeroID, new: "1111111111111111111111111111111111111111", ref: "refs/heads/mesh/g-1"}
-	if r := p.check(ok); r != "" {
+	if _, r := p.check(ok); r != "" {
 		t.Fatalf("a mesh branch: %s", r)
 	}
 	for _, ref := range []string{"refs/heads/main", "refs/heads/mesh/", "refs/heads/meshx"} {
-		if r := p.check(command{old: zeroID, new: ok.new, ref: ref}); r == "" {
+		if _, r := p.check(command{old: zeroID, new: ok.new, ref: ref}); r == "" {
 			t.Fatalf("%s allowed", ref)
 		}
 	}

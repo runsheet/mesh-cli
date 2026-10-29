@@ -12,6 +12,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gitrelay"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/mcptool"
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
 )
@@ -115,10 +116,12 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief) outcome {
 		if err := checkout(ctx, grant, b, workspace); err != nil {
 			return outcome{err: fmt.Errorf("checking out %s: %w", b.Git.Repo, err), cause: context.Cause(ctx)}
 		}
+		// the relay proves a fast-forward-only push in this checkout
+		grant.SetCheckout(workspace)
 	}
 
 	fin := &finishCapture{tool: b.FinishTool}
-	servers, closeProxy, err := r.openProxy(b, tokens, grant, fin.observe)
+	servers, closeProxy, err := r.openProxy(b, tokens, grant, r.nodeTools(b, grant, workspace), fin.observe)
 	if err != nil {
 		return outcome{err: fmt.Errorf("the lease's sessionproxy: %w", err)}
 	}
@@ -155,15 +158,22 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief) outcome {
 // (leaseSocketDir), and answers the session's
 // MCP config: each server a `mesh mcp-relay --socket` entry naming it.
 // Each product server is reached on the lease's mesh-session token with
-// a DPoP proof signed for the server's own URL; the grant, when there is
-// one, serves the proxy's /git/ route.
-func (r *Runtime) openProxy(b *meshapi.Brief, tokens *sessionTokens, grant *gitrelay.Grant, observe func(string, []byte, []byte)) (map[string]any, func(), error) {
+// a DPoP proof signed for the server's own URL; the node's own tools,
+// when the kind names any, are served in process at NodeToolsServer; the
+// grant, when there is one, serves the proxy's /git/ route.
+func (r *Runtime) openProxy(b *meshapi.Brief, tokens *sessionTokens, grant *gitrelay.Grant, tools []mcptool.Tool, observe func(string, []byte, []byte)) (map[string]any, func(), error) {
 	ups := map[string]sessionproxy.Upstream{}
 	for _, s := range b.Servers {
 		if s.Name == "" || s.URL == "" {
 			return nil, nil, fmt.Errorf("the brief names a server without a name or url: %+v", s)
 		}
+		if s.Name == NodeToolsServer {
+			return nil, nil, fmt.Errorf("the brief names a server %q, the node's own tools' name", s.Name)
+		}
 		ups[s.Name] = sessionproxy.Product{URL: s.URL, Bearer: tokens.Token, Key: tokens.Key()}
+	}
+	if len(tools) > 0 {
+		ups[NodeToolsServer] = sessionproxy.InProcess{Handler: &mcptool.Handler{Name: NodeToolsServer, Tools: tools}}
 	}
 	sockDir, err := r.leaseSocketDir(b.LeaseID)
 	if err != nil {
@@ -185,6 +195,22 @@ func (r *Runtime) openProxy(b *meshapi.Brief, tokens *sessionTokens, grant *gitr
 		servers[name] = harness.ProxyRelay(r.MeshBinary, sock, name)
 	}
 	return servers, func() { p.Close(); os.RemoveAll(sockDir) }, nil
+}
+
+// nodeTools are the node tools the brief's kind names that this node
+// has: push, through the lease's grant. A tool the node does not have
+// yet (run_suite, apply_onto, …: wave 3) is left out and logged.
+func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace string) []mcptool.Tool {
+	var out []mcptool.Tool
+	for _, name := range b.NodeTools {
+		switch name {
+		case PushTool:
+			out = append(out, r.pushTool(b, grant, workspace))
+		default:
+			r.logf("nodev1: lease %s: the kind names node tool %q, which this node does not have", b.LeaseID, name)
+		}
+	}
+	return out
 }
 
 // renew extends the lease every renew_every_s until ctx ends. Mesh

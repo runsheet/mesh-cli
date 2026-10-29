@@ -31,6 +31,7 @@ type fakeLatchkey struct {
 	creds    map[string]string // lksr_ → session id
 	tokens   map[string]string // session token → jkt
 	minted   []string
+	access   []string // each mint's access, read or write
 	revoked  []string
 	failures []string
 	n        int
@@ -123,7 +124,15 @@ func (l *fakeLatchkey) source(w http.ResponseWriter, r *http.Request) {
 	l.n++
 	tok := fmt.Sprintf("ghs_%d", l.n)
 	l.minted = append(l.minted, tok)
+	l.access = append(l.access, body.Access)
 	json.NewEncoder(w).Encode(map[string]any{"token": tok, "expires_at": time.Now().Add(time.Hour).UTC(), "repository": body.Repository, "access": body.Access})
+}
+
+// accesses are each mint's access, in order.
+func (l *fakeLatchkey) accesses() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.access...)
 }
 
 func (l *fakeLatchkey) snapshot() (minted, revoked, failures []string) {
@@ -137,6 +146,7 @@ func (l *fakeLatchkey) snapshot() (minted, revoked, failures []string) {
 type fakeGitHub struct {
 	srv  *httptest.Server
 	head string
+	bare string
 	mu   sync.Mutex
 	auth []string
 }
@@ -178,7 +188,7 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 	git(seed, "add", ".")
 	git(seed, "commit", "-qm", "one")
 	git(seed, "push", "-q", bare, "main")
-	g := &fakeGitHub{head: git(seed, "rev-parse", "HEAD")}
+	g := &fakeGitHub{head: git(seed, "rev-parse", "HEAD"), bare: bare}
 	g.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		g.auth = append(g.auth, r.Header.Get("Authorization"))
@@ -187,6 +197,15 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 	}))
 	t.Cleanup(g.srv.Close)
 	return g
+}
+
+// ref is the sha ref names in the fixture, "" when it names none.
+func (g *fakeGitHub) ref(name string) string {
+	out, err := exec.Command("git", "-C", g.bare, "rev-parse", "-q", "--verify", name).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func (g *fakeGitHub) auths() []string {

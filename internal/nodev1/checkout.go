@@ -38,17 +38,33 @@ func gitEnv() []string {
 // and askpass the node's own git config may name.
 var noCredentials = []string{"-c", "credential.helper=", "-c", "core.askPass="}
 
-// policyOf is the relay policy of the brief's git: its repository, read
-// or write, and the refs a push may touch.
+// policyOf is the relay policy of the brief's git: its vendor and base,
+// its repository, read or write, and the refs a push may touch, each
+// fast-forward-only unless the brief's rule says false. Only a write
+// policy names push rules, and only a write policy has its relay mint a
+// write token (MintSource with the policy's access).
 func policyOf(g *meshapi.Git) gitrelay.Policy {
-	p := gitrelay.Policy{Repo: g.Repo, Access: gitrelay.Read}
+	p := gitrelay.Policy{Repo: g.Repo, Access: gitrelay.Read, Vendor: g.Vendor, Base: baseOf(g)}
 	if g.Access == string(gitrelay.Write) {
 		p.Access = gitrelay.Write
 		for _, r := range g.Push {
-			p.Push = append(p.Push, gitrelay.RefRule{Ref: r.Ref, CreateOnly: r.CreateOnly})
+			ff := r.FastForwardOnly == nil || *r.FastForwardOnly
+			p.Push = append(p.Push, gitrelay.RefRule{Ref: r.Ref, CreateOnly: r.CreateOnly, FastForwardOnly: ff})
 		}
 	}
 	return p
+}
+
+// baseOf is the vendor origin the brief's git names: its base_url, else
+// https://<host>, else "" for the vendor's own.
+func baseOf(g *meshapi.Git) string {
+	switch {
+	case g.BaseURL != "":
+		return g.BaseURL
+	case g.Host != "":
+		return "https://" + g.Host
+	}
+	return ""
 }
 
 // checkout clones the lease's repository through its grant into

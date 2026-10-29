@@ -206,16 +206,21 @@ type ApplyAs struct {
 }
 
 // Git is the job's git policy, opaque to Mesh and enforced by the
-// node's relay.
+// node's relay. Vendor and BaseURL name the git vendor the job reaches
+// (Mesh v1 spec, "Many git vendors"): GitHub at Host when empty.
 type Git struct {
 	Host      string     `json:"host"`
+	Vendor    string     `json:"vendor,omitempty"`
+	BaseURL   string     `json:"base_url,omitempty"`
 	Repo      string     `json:"repo"`
 	Access    string     `json:"access"`
 	ReadRepos []string   `json:"read_repos,omitempty"`
 	Push      []PushRule `json:"push,omitempty"`
 }
 
-// PushRule is one ref a push may touch.
+// PushRule is one ref a push may touch: an exact ref or a prefix
+// ending "/*". FastForwardOnly is true when absent: the relay refuses a
+// force push unless the rule says false.
 type PushRule struct {
 	Ref             string `json:"ref"`
 	CreateOnly      bool   `json:"create_only"`
