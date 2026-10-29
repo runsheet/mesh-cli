@@ -266,7 +266,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		if grant != nil {
 			gitBase = grant.Base()
 		}
-		if inPod, err = lp.run(workspace, gitBase, sock); err != nil {
+		if inPod, err = lp.run(workspace, gitBase, sock, account.relays()); err != nil {
 			return outcome{err: err, cause: context.Cause(ctx)}
 		}
 		if line := sandbox.ServicesLine(lp.statuses); line != "" {
@@ -302,6 +302,11 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		r.logf("nodev1: lease %s resumes the thread's parked session %s", b.LeaseID, resume)
 	}
 	account.apply(&spec)
+	if lp != nil {
+		// the pod reaches the model relay through its bridge, not the
+		// host's loopback the account was served on
+		spec.Env = account.podEnv(spec.Env, lp.bridgeBase())
+	}
 	sctx := ctx
 	if m := b.Harness.Budget.Minutes; m > 0 {
 		var stop context.CancelFunc

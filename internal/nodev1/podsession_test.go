@@ -321,3 +321,51 @@ func TestTheGitBridge(t *testing.T) {
 		t.Fatalf("a killed command is not 137 through the bridge: %v", err)
 	}
 }
+
+// A pod session reaches its model through the bridge (the model relay,
+// #1691): its environment names http://127.0.0.1:<bridge>/model/anthropic
+// as ANTHROPIC_BASE_URL — not the host's loopback, which the pod cannot
+// reach — and holds only the relay's dummy and no non-essential traffic,
+// never the account's secret nor the node's own key; the fake claude's
+// model call goes bridge → lease socket → relay, and the upstream sees
+// the account's real bearer.
+func TestAPodSessionReachesItsModelThroughTheBridge(t *testing.T) {
+	clearModelEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", nodeOwnSecret)
+	g, sb, _ := podRig(t)
+	model := newFakeModel(t, func(r *http.Request) bool { return r.Header.Get("Authorization") == "Bearer "+fakeModelSecret })
+	g.rt.ModelUpstreams = map[string]string{"anthropic": model.srv.URL}
+	out := filepath.Join(t.TempDir(), "claude")
+	sb.Agent = hostAgent(t, out, "")
+	g.offer(t, nil)
+	run(t, g, context.Background())
+	if n := len(g.fake.Calls("finish")); n != 1 {
+		t.Fatalf("%d finishes; hand-backs %+v", n, g.fake.Calls("hand-back"))
+	}
+	agents := sb.AgentSpecs()
+	if len(agents) != 1 {
+		t.Fatalf("agents %+v", agents)
+	}
+	a := agents[0]
+	if a.Command[0] != "node" || !strings.HasSuffix(a.Command[1], gitBridgeName) {
+		t.Fatalf("the agent does not run under the bridge: %q", a.Command)
+	}
+	want := "http://127.0.0.1:" + strconv.Itoa(g.rt.gitBridgePort) + "/model/anthropic"
+	if envValue(a.Env, "ANTHROPIC_BASE_URL") != want || envValue(a.Env, "CLAUDE_CODE_OAUTH_TOKEN") != ModelDummy ||
+		envValue(a.Env, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC") != "1" || envValue(a.Env, "ANTHROPIC_API_KEY") != "" {
+		t.Fatalf("the pod's model environment: base %q, want %q; oauth %q", envValue(a.Env, "ANTHROPIC_BASE_URL"), want, envValue(a.Env, "CLAUDE_CODE_OAUTH_TOKEN"))
+	}
+	for _, kv := range a.Env {
+		if strings.Contains(kv, fakeModelSecret) || strings.Contains(kv, nodeOwnSecret) {
+			t.Fatalf("the pod's environment holds a model key: %s", strings.SplitN(kv, "=", 2)[0])
+		}
+	}
+	answer, _ := os.ReadFile(out + ".model")
+	if !strings.HasPrefix(string(answer), "200 ") {
+		t.Fatalf("the pod session's model call answered %q", answer)
+	}
+	seen, dummy := model.calls()
+	if len(seen) != 1 || seen[0] != "Bearer "+fakeModelSecret+"|" || dummy {
+		t.Fatalf("the model saw %d call(s), the dummy %v", len(seen), dummy)
+	}
+}

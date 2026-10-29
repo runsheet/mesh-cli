@@ -47,10 +47,13 @@ import (
 // socket, whose directory alone is mounted (sandbox.Session.ShareProxyDir,
 // as the legacy node mounts its sessionproxy's): the product's MCP
 // servers through the node image's proxy shim, vendor APIs at
-// /latchkey/<vendor>/ on $MESH_RELAY_SOCKET, and git through a loopback
-// bridge in the agent's own container (gitBridgeScript) that the
-// checkout's origin is rewritten onto (insteadOf), since git cannot
-// speak to a unix socket. No credential is in the pod but the model's.
+// /latchkey/<vendor>/ on $MESH_RELAY_SOCKET, and git and the model
+// through a loopback bridge in the agent's own container
+// (gitBridgeScript), since neither git nor the harness speaks to a unix
+// socket: the checkout's origin is rewritten onto the bridge's /git/
+// (insteadOf), and the harness's ANTHROPIC_BASE_URL (OPENAI_BASE_URL)
+// names the bridge's /model/<provider>/, the lease's model relay
+// (modelrelay.go), holding only its dummy. No credential is in the pod.
 
 // Labels a lease's pod carries beside PodLeaseLabel.
 const (
@@ -228,12 +231,14 @@ func (p *leasePod) podServers(servers map[string]any, sockDir string) (map[strin
 // agent. The session's variables the pod's allow-list admits (the
 // model's credential, the commit identity) go in as the job's; the rest
 // are the node's own (the relay socket's path, git's settings) and go
-// past it. With a git grant the agent runs under the git bridge, and the
-// checkout's origin — the grant's loopback capability on the host,
-// which the pod cannot reach — is rewritten onto the bridge.
-func (p *leasePod) run(workspace, gitBase, sock string) (PodRun, error) {
+// past it. With a git grant or a relayed model account the agent runs
+// under the bridge; with a grant the checkout's origin — the grant's
+// loopback capability on the host, which the pod cannot reach — is
+// rewritten onto it, and the model's base URL already names it
+// (sessionAccount.podEnv).
+func (p *leasePod) run(workspace, gitBase, sock string, model bool) (PodRun, error) {
 	var bridge string
-	if gitBase != "" {
+	if gitBase != "" || model {
 		path, err := p.sess.WriteFile(gitBridgeName, gitBridgeScript())
 		if err != nil {
 			return nil, fmt.Errorf("the pod's git bridge: %w", err)
@@ -253,11 +258,18 @@ func (p *leasePod) run(workspace, gitBase, sock string) (PodRun, error) {
 		cmd := argv
 		if bridge != "" {
 			cmd = append([]string{"node", bridge, sock, strconv.Itoa(p.gitPort), "--"}, argv...)
-			vars = append(vars, bridgeGitConfig(gitBase, p.gitPort)...)
+			if gitBase != "" {
+				vars = append(vars, bridgeGitConfig(gitBase, p.gitPort)...)
+			}
 		}
 		return p.sess.RunAgent(ctx, sandbox.RunSpec{Workspace: workspace, Env: jobEnv, Vars: vars, Command: cmd, Stdin: stdin, Stdout: stdout, Stderr: stderr})
 	}, nil
 }
+
+// bridgeBase is the bridge's address inside the pod: the lease's socket
+// at the pod's loopback, where the session reaches the model relay's
+// /model/ route (and git's /git/).
+func (p *leasePod) bridgeBase() string { return "http://127.0.0.1:" + strconv.Itoa(p.gitPort) }
 
 // bridgeGitConfig points every git command in the pod at the bridge for
 // the grant's base: git's own environment configuration, which neither
@@ -306,7 +318,8 @@ func (s podSteps) Run(ctx context.Context, cmd string, timeout time.Duration, st
 
 // gitBridgeScript is the git bridge (node, in the node image): it
 // listens on 127.0.0.1:<port> inside the pod and pipes each connection
-// to the lease's socket, whose sessionproxy serves the grant at /git/,
+// to the lease's socket, whose sessionproxy serves the grant at /git/
+// and the model relay at /model/,
 // then runs the command after "--" with its own stdio and exits as it
 // does — the signal's 128+n when one ended it — passing on the signals
 // it is sent. It carries no credential: the relay adds the token on the

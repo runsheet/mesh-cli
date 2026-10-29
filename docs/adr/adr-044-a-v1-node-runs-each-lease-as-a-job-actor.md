@@ -97,7 +97,13 @@ services' budget, registries, service timeout, tmpfs).
    `$MESH_RELAY_SOCKET`, and git through a loopback bridge in the agent's
    container (`node mesh-git-bridge.js <socket> <port> -- claude …`)
    that the checkout's origin is rewritten onto by `GIT_CONFIG_*`
-   `insteadOf`, since git cannot speak to a unix socket. The pod's
+   `insteadOf`, since git cannot speak to a unix socket. The model relay
+   (#1691) is reached through the same bridge: the pod's
+   `ANTHROPIC_BASE_URL` is `http://127.0.0.1:<bridge>/model/anthropic`
+   (`OPENAI_BASE_URL` `…/model/openai/v1`), with the relay's dummy
+   credential and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` as a host
+   session has them; the bridge runs whenever the lease has a git grant
+   or relays a model account. The pod's
    environment is the sandbox's allow-list: none of the node's own.
 5. **Ends.** An agent exit 137 or 143 the actor did not cause, or a
    sandbox limit's kill (memory, pids), is `pod_killed`.
