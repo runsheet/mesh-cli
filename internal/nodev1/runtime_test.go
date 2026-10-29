@@ -438,3 +438,24 @@ func TestDrainStopsTaking(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Once registered, the node offers itself to each connection it was
+// given before it takes anything (runsheet ADR 066).
+func TestRunOffersItsConnections(t *testing.T) {
+	g := newRig(t, &stubSession{})
+	g.rt.Once = false
+	g.rt.HeartbeatEvery = 20 * time.Millisecond
+	g.rt.Connect = []meshapi.ConnectRequest{{Tenant: "acme", Product: "conform"}, {Tenant: "globex", Product: "conform"}}
+	g.fake.Drain()
+	if err := run(t, g, context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	calls := g.fake.Calls("connect")
+	if len(calls) != 2 {
+		t.Fatalf("connect calls %d", len(calls))
+	}
+	var first meshapi.ConnectRequest
+	if json.Unmarshal(calls[0].Body, &first) != nil || first.Tenant != "acme" || first.Product != "conform" {
+		t.Fatalf("first connect %s", calls[0].Body)
+	}
+}

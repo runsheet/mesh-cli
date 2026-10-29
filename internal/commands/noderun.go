@@ -31,6 +31,7 @@ var (
 	nodeRunMemGB      float64
 	nodeRunSlots      int
 	nodeRunGitHost    string
+	nodeRunConnect    []string
 )
 
 // nodeRunCmd is the Mesh v1 node runtime (internal/nodev1), beside the
@@ -72,6 +73,10 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 		if cpus <= 0 {
 			cpus = float64(runtime.NumCPU())
 		}
+		connect, err := connectionsOf(nodeRunConnect)
+		if err != nil {
+			return err
+		}
 		logger := log.New(os.Stderr, "mesh node v1: ", log.LstdFlags)
 		sess := &nodev1.ClaudeSession{Stderr: os.Stderr}
 		if nodeRunUnattended {
@@ -84,6 +89,7 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 				CapacityTotal: meshapi.Capacity{CPUs: cpus, MemGB: nodeRunMemGB, Slots: max(nodeRunSlots, 1)},
 				SigningKey:    nodev1.PublicKey(key),
 			},
+			Connect:     connect,
 			WorkRoot:    root,
 			MeshBinary:  meshBinary(),
 			GitUpstream: gitUpstream(),
@@ -122,6 +128,19 @@ func gitUpstream() string {
 	return strings.TrimSpace(os.Getenv("MESH_GIT_UPSTREAM"))
 }
 
+// connectionsOf reads --connect's tenant/product pairs.
+func connectionsOf(pairs []string) ([]meshapi.ConnectRequest, error) {
+	var out []meshapi.ConnectRequest
+	for _, p := range pairs {
+		tenant, product, ok := strings.Cut(strings.TrimSpace(p), "/")
+		if !ok || tenant == "" || product == "" || strings.Contains(product, "/") {
+			return nil, fmt.Errorf("mesh node run: --connect is tenant/product, not %q", p)
+		}
+		out = append(out, meshapi.ConnectRequest{Tenant: tenant, Product: product})
+	}
+	return out, nil
+}
+
 func init() {
 	f := nodeRunCmd.Flags()
 	f.StringVar(&nodeRunAPI, "api", "", "the API the node speaks: v1 (required)")
@@ -134,6 +153,7 @@ func init() {
 	f.Float64Var(&nodeRunMemGB, "mem-gb", 0, "memory offered, in GB")
 	f.IntVar(&nodeRunSlots, "slots", 1, "sessions at once")
 	f.StringVar(&nodeRunGitHost, "git-upstream", "", "the git host leases' relay reaches (default $MESH_GIT_UPSTREAM, else https://github.com)")
+	f.StringSliceVar(&nodeRunConnect, "connect", nil, "offer the node to a tenant for a product, tenant/product (repeatable); Mesh offers a node only its connections' jobs")
 	_ = nodeRunCmd.MarkFlagRequired("api")
 	nodeCmd.AddCommand(nodeRunCmd)
 }
