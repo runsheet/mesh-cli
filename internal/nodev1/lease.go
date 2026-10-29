@@ -36,6 +36,9 @@ type outcome struct {
 	nodeEnding bool
 	// access are the relay's AccessRecords of the lease.
 	access []meshapi.AccessRecord
+	// evidence are the ids of every ToolRecord the lease's node tools
+	// posted, which the finish names.
+	evidence []string
 }
 
 // runLease runs one lease to its report: the lease's directory and
@@ -121,7 +124,8 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief) outcome {
 	}
 
 	fin := &finishCapture{tool: b.FinishTool}
-	servers, closeProxy, err := r.openProxy(b, tokens, grant, r.nodeTools(b, grant, workspace), fin.observe)
+	tools, rec := r.nodeTools(b, grant, workspace, tokens)
+	servers, closeProxy, err := r.openProxy(b, tokens, grant, tools, fin.observe)
 	if err != nil {
 		return outcome{err: fmt.Errorf("the lease's sessionproxy: %w", err)}
 	}
@@ -144,7 +148,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief) outcome {
 		defer stop()
 	}
 	res, err := r.Session.Run(sctx, spec)
-	o := outcome{result: res, err: err, finish: fin.result()}
+	o := outcome{result: res, err: err, finish: fin.result(), evidence: rec.IDs()}
 	if ctx.Err() != nil {
 		o.cause = context.Cause(ctx)
 	} else if errors.Is(err, context.DeadlineExceeded) || sctx.Err() != nil {
@@ -195,22 +199,6 @@ func (r *Runtime) openProxy(b *meshapi.Brief, tokens *sessionTokens, grant *gitr
 		servers[name] = harness.ProxyRelay(r.MeshBinary, sock, name)
 	}
 	return servers, func() { p.Close(); os.RemoveAll(sockDir) }, nil
-}
-
-// nodeTools are the node tools the brief's kind names that this node
-// has: push, through the lease's grant. A tool the node does not have
-// yet (run_suite, apply_onto, …: wave 3) is left out and logged.
-func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace string) []mcptool.Tool {
-	var out []mcptool.Tool
-	for _, name := range b.NodeTools {
-		switch name {
-		case PushTool:
-			out = append(out, r.pushTool(b, grant, workspace))
-		default:
-			r.logf("nodev1: lease %s: the kind names node tool %q, which this node does not have", b.LeaseID, name)
-		}
-	}
-	return out
 }
 
 // renew extends the lease every renew_every_s until ctx ends. Mesh
@@ -293,7 +281,7 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) {
 	if result == nil {
 		result, _ = json.Marshal(map[string]string{"text": clip(o.result.Text, 16<<10)})
 	}
-	st, err := r.API.Finish(ctx, id, meshapi.FinishRequest{Result: result, SessionRef: o.result.SessionID})
+	st, err := r.API.Finish(ctx, id, meshapi.FinishRequest{Result: result, SessionRef: o.result.SessionID, Evidence: o.evidence})
 	if err != nil {
 		r.logf("nodev1: lease %s: finish: %v", id, err)
 		return

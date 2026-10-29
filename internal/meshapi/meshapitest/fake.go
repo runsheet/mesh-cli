@@ -1,6 +1,9 @@
 package meshapitest
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -66,8 +69,13 @@ func NewFake(t testing.TB) *Fake {
 	f.mux.HandleFunc("POST /v1/take", f.take)
 	f.mux.HandleFunc("POST /v1/leases/{id}/{route}", f.lease)
 	f.mux.HandleFunc("PUT /v1/blobs/{digest}", func(w http.ResponseWriter, r *http.Request) {
-		f.record(r, "blob", "")
-		w.WriteHeader(http.StatusCreated)
+		body := f.record(r, "blob", "")
+		sum := sha256.Sum256(body)
+		if d := r.PathValue("digest"); d != "sha256:"+hex.EncodeToString(sum[:]) {
+			writeErr(w, http.StatusUnprocessableEntity, "refused", "the bytes are not "+d)
+			return
+		}
+		writeJSON(w, http.StatusCreated, meshapi.BlobPut{Digest: r.PathValue("digest"), Size: int64(len(body))})
 	})
 	return f
 }
@@ -381,9 +389,20 @@ func (f *Fake) lease(w http.ResponseWriter, r *http.Request) {
 	case "evidence":
 		var req meshapi.EvidenceRequest
 		json.Unmarshal(body, &req)
+		// each id is its statement's digest, as Mesh gives it
 		ids := make([]string, len(req.Records))
-		for i := range ids {
-			ids[i] = fmt.Sprintf("ev_%s_%d", id, i)
+		for i, rec := range req.Records {
+			var env struct {
+				Payload string `json:"payload"`
+			}
+			json.Unmarshal(rec.Envelope, &env)
+			payload, err := base64.StdEncoding.DecodeString(env.Payload)
+			if err != nil || len(payload) == 0 {
+				writeErr(w, http.StatusUnprocessableEntity, "refused", fmt.Sprintf("record %d: the envelope carries no payload", i))
+				return
+			}
+			sum := sha256.Sum256(payload)
+			ids[i] = "sha256:" + hex.EncodeToString(sum[:])
 		}
 		writeJSON(w, http.StatusCreated, meshapi.EvidenceResponse{IDs: ids})
 	case "access", "usage":
