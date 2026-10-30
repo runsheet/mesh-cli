@@ -410,6 +410,11 @@ type Session struct {
 	// releases give back the CPUs the session reserved (Sandbox.Reserve),
 	// called by Close.
 	releases []func()
+	// pin names the session's pods and labels them beside SessionLabel
+	// (Pin); agentLimits, set, replace the sandbox's agent Limits
+	// (SetLimits). Both are a v1 node's, per lease (leasepod.go).
+	pin         *podPin
+	agentLimits *Limits
 }
 
 // ShareProxyDir mounts dir, the directory of the session's sessionproxy
@@ -864,7 +869,7 @@ func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 		Mounts:         mounts,
 		Env:            env,
 		Command:        spec.Command,
-		Limits:         cfg.Limits,
+		Limits:         s.limits(),
 		TimeoutSeconds: timeout,
 		Stdin:          spec.Stdin,
 		Stdout:         spec.Stdout,
@@ -882,7 +887,7 @@ func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 	if err != nil {
 		return fmt.Errorf("sandbox: run: %w", err)
 	}
-	return classify(exit, time.Since(start), spec.Timeout, cfg.Limits, tail.String())
+	return classify(exit, time.Since(start), spec.Timeout, s.limits(), tail.String())
 }
 
 // Exec runs a short command — a preflight's step — in the session's pod
@@ -930,7 +935,7 @@ func (s *Session) Exec(ctx context.Context, spec RunSpec) error {
 		Mounts:         mounts,
 		Env:            s.Env(spec.Env),
 		Command:        spec.Command,
-		Limits:         cfg.Limits,
+		Limits:         s.limits(),
 		TimeoutSeconds: runtimeTimeout(spec.Timeout),
 		Stdin:          spec.Stdin,
 		Stdout:         spec.Stdout,
@@ -942,7 +947,7 @@ func (s *Session) Exec(ctx context.Context, spec RunSpec) error {
 	if err != nil {
 		return fmt.Errorf("sandbox: exec: %w", err)
 	}
-	return classify(exit, time.Since(start), spec.Timeout, cfg.Limits, tail.String())
+	return classify(exit, time.Since(start), spec.Timeout, s.limits(), tail.String())
 }
 
 // removeRun removes a cancelled Run's container from the services pod
@@ -1040,7 +1045,7 @@ func (s *Session) StartDetached(ctx context.Context, spec DetachedSpec) (Detache
 		Mounts:         mounts,
 		Env:            s.Env(spec.Env),
 		Command:        spec.Command,
-		Limits:         cfg.Limits,
+		Limits:         s.limits(),
 		TimeoutSeconds: runtimeTimeout(spec.Timeout),
 		StdinFile:      spec.StdinFile,
 		StdoutFile:     spec.StdoutFile,
@@ -1057,7 +1062,7 @@ func (s *Session) StartDetached(ctx context.Context, spec DetachedSpec) (Detache
 // elapsed is how long it ran, timeout the session's own, stderr the
 // tail of what it wrote there (for the pids heuristic).
 func (s *Session) Ended(exit Exit, elapsed, timeout time.Duration, stderr string) error {
-	return classify(exit, elapsed, timeout, s.sb.Config.Limits, stderr)
+	return classify(exit, elapsed, timeout, s.limits(), stderr)
 }
 
 // Detach leaves the session's pods and HOME to outlive this process:
@@ -1143,10 +1148,17 @@ func (s *Session) createPod(ctx context.Context) (Pod, error) {
 	cfg := s.sb.Config
 	s.mu.Lock()
 	name := fmt.Sprintf("%s-%d", s.name, len(s.pods))
+	labels := map[string]string{SessionLabel: s.Label, "mesh.kind": s.Kind}
+	if p := s.pin; p != nil {
+		name = p.podName(len(s.pods))
+		for k, v := range p.labels {
+			labels[k] = v
+		}
+	}
 	s.mu.Unlock()
 	pod, err := s.sb.Runtime.CreatePod(ctx, PodSpec{
 		Name:    name,
-		Labels:  map[string]string{SessionLabel: s.Label, "mesh.kind": s.Kind},
+		Labels:  labels,
 		Image:   cfg.Image,
 		Network: cfg.Network,
 	})
