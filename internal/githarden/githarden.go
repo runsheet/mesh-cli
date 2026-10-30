@@ -67,8 +67,21 @@ func Env(base []string) []string {
 // config cannot be read answers a command that fails to start with
 // why, never one run on it unread.
 func Command(ctx context.Context, dir string, extra []string, gitArgs ...string) *exec.Cmd {
-	flags := Args()
-	drivers, err := driverOverrides(ctx, dir)
+	return command(ctx, dir, nil, extra, gitArgs)
+}
+
+// ForeignCommand is Command in a checkout another user owns: a lease's
+// relay sidecar's read-only mount of the session's checkout, which git
+// would otherwise refuse as of dubious ownership. Git is told that one
+// directory alone is safe (safe.directory, on the command line, where
+// git honours it), and everything else is Command's.
+func ForeignCommand(ctx context.Context, dir string, extra []string, gitArgs ...string) *exec.Cmd {
+	return command(ctx, dir, []string{"-c", "safe.directory=" + dir}, extra, gitArgs)
+}
+
+func command(ctx context.Context, dir string, pre, extra, gitArgs []string) *exec.Cmd {
+	flags := append(Args(), pre...)
+	drivers, err := driverOverrides(ctx, dir, pre...)
 	flags = append(flags, drivers...)
 	cmd := exec.CommandContext(ctx, "git", append(flags, gitArgs...)...)
 	cmd.Dir = dir
@@ -83,8 +96,8 @@ func Command(ctx context.Context, dir string, extra []string, gitArgs ...string)
 // config git reads in dir names: the local and worktree config and
 // whatever they include, as git itself would read it there. A dir
 // outside any repository (a clone's empty target) names none.
-func driverOverrides(ctx context.Context, dir string) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "git", append(Args(), "config", "--name-only", "--list")...)
+func driverOverrides(ctx context.Context, dir string, pre ...string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "git", append(append(Args(), pre...), "config", "--name-only", "--list")...)
 	cmd.Dir = dir
 	cmd.Env = Env(nil)
 	var stderr strings.Builder

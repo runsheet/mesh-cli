@@ -264,3 +264,36 @@ func tamper(t *testing.T, k *dpop.Key, change func(head, claims map[string]any))
 		return forge(h, c, p[strings.LastIndex(p, ".")+1:])
 	}
 }
+
+// TestHandoffRoundTrips: the key a Handoff carries signs as the key it
+// came from (same thumbprint), prints its thumbprint alone, and a scalar
+// that is not the JWK's is refused.
+func TestHandoffRoundTrips(t *testing.T) {
+	k, err := dpop.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := k.Handoff()
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := dpop.KeyFromHandoff(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.Thumbprint() != k.Thumbprint() {
+		t.Fatalf("thumbprint %s, want %s", back.Thumbprint(), k.Thumbprint())
+	}
+	if _, err := back.Proof("GET", "https://example.com/x", "tok"); err != nil {
+		t.Fatal(err)
+	}
+	if s := fmt.Sprintf("%v %+v %#v %s", h, h, h, h); strings.Contains(s, h.D) {
+		t.Fatalf("a Handoff printed its private scalar: %s", s)
+	}
+	other, _ := dpop.NewKey()
+	oh, _ := other.Handoff()
+	oh.JWK = h.JWK
+	if _, err := dpop.KeyFromHandoff(oh); err == nil {
+		t.Fatal("a scalar that is not the JWK's was accepted")
+	}
+}
