@@ -224,32 +224,41 @@ func (r *Runtime) watchPod(ctx context.Context, pod string, cancel context.Cance
 			continue
 		}
 		if ctx.Err() == nil {
-			cancel(fmt.Errorf("%w: its agent %s exited %d", errPodKilled, agent, st.Exit.Code))
+			cancel(&killedError{code: st.Exit.Code, why: fmt.Sprintf("%v: its agent %s exited %d", errPodKilled, agent, st.Exit.Code)})
 		}
 		return
 	}
 }
 
-// podKilled is why the lease ended pod_killed, when it did: its pod's
-// agent killed under it, or its session ended by SIGTERM or SIGKILL
-// with nothing of the actor's stopping it.
-func podKilled(o outcome) (string, bool) {
+// podKilled is why the lease ended pod_killed, when it did, and the exit
+// code it was killed with (0 when none is known): its pod's agent or a
+// run_suite step killed under it, or its session ended by SIGTERM or
+// SIGKILL with nothing of the actor's stopping it.
+func podKilled(o outcome) (string, int, bool) {
+	var ke *killedError
+	if errors.As(o.cause, &ke) {
+		return ke.Error(), ke.code, true
+	}
 	if errors.Is(o.cause, errPodKilled) {
-		return o.cause.Error(), true
+		return o.cause.Error(), 0, true
 	}
 	if o.cause != nil || o.nodeEnding {
-		return "", false
+		return "", 0, false
 	}
 	// a pod session's agent killed by its sandbox's limit (the OOM
 	// killer, the pids cap) is the node's sizing, never the work's
 	var le *sandbox.LimitError
 	if errors.As(o.err, &le) {
-		return fmt.Sprintf("the session's pod was killed by its %s limit (%s): %v", le.Limit, le.Value, o.err), true
+		code, ok := actor.Killed(o.err)
+		if !ok && le.Limit != "timeout" {
+			code = 137
+		}
+		return fmt.Sprintf("the session's pod was killed by its %s limit (%s): %v", le.Limit, le.Value, o.err), code, true
 	}
 	if code, ok := actor.Killed(o.err); ok {
-		return fmt.Sprintf("the session was killed (exit %d), not by the node: %v", code, o.err), true
+		return fmt.Sprintf("the session was killed (exit %d), not by the node: %v", code, o.err), code, true
 	}
-	return "", false
+	return "", 0, false
 }
 
 // releaseLeftovers finishes what a node that stopped left behind: each

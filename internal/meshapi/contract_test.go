@@ -193,6 +193,16 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			decode(t, f.Request, &req)
 			return c.HandBack(context.Background(), idOf(f.Path, 3), req)
 		},
+		"lease-hand-back-credential-timeout": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.HandBackRequest
+			decode(t, f.Request, &req)
+			return c.HandBack(context.Background(), idOf(f.Path, 3), req)
+		},
+		"lease-hand-back-tool-unavailable": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.HandBackRequest
+			decode(t, f.Request, &req)
+			return c.HandBack(context.Background(), idOf(f.Path, 3), req)
+		},
 		"lease-hand-back": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
 			var req meshapi.HandBackRequest
 			decode(t, f.Request, &req)
