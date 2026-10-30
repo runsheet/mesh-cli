@@ -26,6 +26,18 @@ func leaseGit(ctx context.Context, dir string, args ...string) *exec.Cmd {
 	return githarden.Command(ctx, dir, nil, args...)
 }
 
+// leaseGitRun runs one leaseGit command in dir and answers its output,
+// or an error with its last lines: the git checkout and resumePushed run.
+func leaseGitRun(ctx context.Context) func(dir string, args ...string) (string, error) {
+	return func(dir string, args ...string) (string, error) {
+		out, err := leaseGit(ctx, dir, args...).CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("git %s: %v: %s", args[0], err, strings.TrimSpace(lastLines(string(out), 5)))
+		}
+		return strings.TrimSpace(string(out)), nil
+	}
+}
+
 // policyOf is the relay policy of the brief's git: its vendor and base,
 // its repository, read or write, and the refs a push may touch, each
 // fast-forward-only unless the brief's rule says false. Only a write
@@ -83,13 +95,7 @@ type resumePoint struct {
 // depends on the mirror; a mirror that cannot be synced is skipped and
 // logged.
 func checkout(ctx context.Context, grant *gitrelay.Grant, b *meshapi.Brief, workspace string, mirrors *resources.Mirrors, logf func(string, ...any)) (*resumePoint, error) {
-	git := func(dir string, args ...string) (string, error) {
-		out, err := leaseGit(ctx, dir, args...).CombinedOutput()
-		if err != nil {
-			return "", fmt.Errorf("git %s: %v: %s", args[0], err, strings.TrimSpace(lastLines(string(out), 5)))
-		}
-		return strings.TrimSpace(string(out)), nil
-	}
+	git := leaseGitRun(ctx)
 	origin := grant.Base() + b.Git.Repo + ".git"
 	clone := []string{"clone", "-q"}
 	if mirrors != nil {
