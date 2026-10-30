@@ -179,11 +179,18 @@ type Proxy struct {
 	// the product's own words, not the session's transcript. It must not
 	// block.
 	Observe func(server string, request, response []byte)
+	// Tools, when set, are the only tools of the Product upstreams the
+	// session is served, each under its description here (tools.go): a
+	// tools/list answers only these, a tools/call of any other is
+	// refused. Nil serves every tool the product has.
+	Tools ToolFilter
 
-	mu        sync.Mutex
-	upstreams map[string]Upstream
-	secrets   []string
-	children  map[string]*child
+	mu sync.Mutex
+	// servedTools are the tools each filtered server presented.
+	servedTools map[string]map[string]bool
+	upstreams   map[string]Upstream
+	secrets     []string
+	children    map[string]*child
 	// errs is each server's first error, as the proxy answered it.
 	errs map[string]string
 
@@ -429,6 +436,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		p.serveInProcess(w, req, name, ip, body)
 		return
 	}
+	list := false
+	if p.filtered(u) && req.Method == http.MethodPost {
+		var handled bool
+		if handled, list = p.screen(w, name, body); handled {
+			return
+		}
+	}
 	resp, err := p.forward(req, u, body, false)
 	if p.proofRefused(w, name, resp, err) {
 		return
@@ -454,6 +468,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			// a GET's 405 is how a server says it streams nothing
 			p.noteError(name, fmt.Sprintf("sessionproxy: %s: %s %s answered %d", name, req.Method, u.endpoint(), resp.StatusCode))
 		}
+	}
+	if list {
+		p.replyList(w, resp, name, body)
+		return
 	}
 	p.reply(w, resp, name, body)
 }
