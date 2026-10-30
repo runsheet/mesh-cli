@@ -48,8 +48,8 @@ func (r *Runtime) hostSuites() bool {
 // whatever an earlier one did.
 func (r *Runtime) podSuites(pod string, limits sandbox.Limits) nodetools.SuiteRunner {
 	var n atomic.Int64
-	return func(ctx context.Context, workspace string, steps []validate.Step) ([]validate.StepResult, error) {
-		run := podStep{rt: r.Sandbox, pod: pod, image: r.PodImage, dir: workspace, limits: limits, n: &n}
+	return func(ctx context.Context, workspace string, steps []validate.Step, env []string) ([]validate.StepResult, error) {
+		run := podStep{rt: r.Sandbox, pod: pod, image: r.PodImage, dir: workspace, limits: limits, n: &n, env: env}
 		return validate.Run(ctx, steps, run, validate.Options{Dir: workspace, ContinueOnFailure: true})
 	}
 }
@@ -66,6 +66,9 @@ type podStep struct {
 	dir    string
 	limits sandbox.Limits
 	n      *atomic.Int64
+	// env is the run's selection (nodetools.SelectionEnv), added to
+	// suiteEnv.
+	env []string
 }
 
 // Run implements validate.Runner: a step past its timeout is exit 124,
@@ -81,7 +84,7 @@ func (s podStep) Run(ctx context.Context, cmd string, timeout time.Duration, std
 		Image:          s.image,
 		Workdir:        s.dir,
 		Mounts:         []sandbox.Mount{{Source: s.dir, Target: s.dir}},
-		Env:            append([]string(nil), suiteEnv...),
+		Env:            append(append([]string(nil), suiteEnv...), s.env...),
 		Command:        []string{"sh", "-c", cmd},
 		Limits:         s.limits,
 		TimeoutSeconds: int(timeout/time.Second) + 30,

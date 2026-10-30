@@ -893,8 +893,8 @@ func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 // Exec runs a short command — a preflight's step — in the session's pod
 // beside where its agent will run: the pod Start made with its services,
 // else one made now and kept for the next Run or StartDetached, with the
-// same mounts, environment (Session.Env of spec.Env) and limits as the
-// agent, in a container of its own (ExecName). The pod is never removed
+// same mounts, environment (Session.Env of spec.Env, then spec.Vars) and
+// limits as the agent, in a container of its own (ExecName). The pod is never removed
 // here. A cancelled ctx returns ctx.Err(); a kill by a limit a
 // *LimitError; any other non-zero exit an *ExitError.
 func (s *Session) Exec(ctx context.Context, spec RunSpec) error {
@@ -933,7 +933,7 @@ func (s *Session) Exec(ctx context.Context, spec RunSpec) error {
 		Image:          cfg.Image,
 		Workdir:        spec.Workspace,
 		Mounts:         mounts,
-		Env:            s.Env(spec.Env),
+		Env:            SetEnv(s.Env(spec.Env), spec.Vars),
 		Command:        spec.Command,
 		Limits:         s.limits(),
 		TimeoutSeconds: runtimeTimeout(spec.Timeout),

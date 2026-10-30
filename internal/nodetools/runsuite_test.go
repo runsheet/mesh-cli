@@ -141,6 +141,9 @@ func TestRunSuiteRecordsItsRun(t *testing.T) {
 		}
 		verifyNodeSigned(t, post, signer.NodeKey)
 	}
+	if !rec.Recorded(RunSuiteTool) || rec.Recorded(PushTool) {
+		t.Fatal("the recorder does not say which tools it recorded")
+	}
 	if got := rec.IDs(); len(got) != 2 {
 		t.Fatalf("the recorder keeps %v", got)
 	}
@@ -208,7 +211,7 @@ func TestRunSuiteRunsThroughItsRunner(t *testing.T) {
 	m := &fakeMesh{}
 	rec, _ := recorder(t, m, RunSuiteTool)
 	var ran []string
-	run := func(_ context.Context, ws string, steps []validate.Step) ([]validate.StepResult, error) {
+	run := func(_ context.Context, ws string, steps []validate.Step, _ []string) ([]validate.StepResult, error) {
 		var out []validate.StepResult
 		for _, st := range steps {
 			ran = append(ran, ws+": "+st.Command)
@@ -234,11 +237,104 @@ func TestHostSuitesSeeNoModelKey(t *testing.T) {
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-the-nodes-own-token")
 	t.Setenv("MESH_TEST_KEPT", "kept")
 	steps := []validate.Step{{Name: "env", Command: `test -z "$ANTHROPIC_API_KEY$CLAUDE_CODE_OAUTH_TOKEN" && test "$MESH_TEST_KEPT" = kept`}}
-	res, err := HostSuites(context.Background(), t.TempDir(), steps)
+	res, err := HostSuites(context.Background(), t.TempDir(), steps, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(res) != 1 || res[0].ExitCode != 0 {
 		t.Fatalf("the step saw a model key, or lost the node's other variables: %+v", res)
+	}
+}
+
+// run_suite {suite, targets?, tests?} exports the selection to the
+// suite's command as MESH_SUITE_TARGETS and MESH_SUITE_TESTS, space
+// separated and unset when the call named none, and its signed record
+// carries the selection exactly as named, the input digest covering it;
+// a whole run's record has no selection key at all (projectmesh-io/api
+// ADR 001 amendment, evidence waivers).
+func TestRunSuiteRunsASelection(t *testing.T) {
+	t.Setenv(SuiteTargetsEnv, "the-node-s-own")
+	dir := t.TempDir()
+	gitIn(t, dir, "init", "-q")
+	os.MkdirAll(filepath.Join(dir, ".runsheet"), 0o755)
+	os.WriteFile(filepath.Join(dir, ".runsheet", "validate.yml"), []byte(`suites:
+  - name: unit
+    kind: unit
+    command: 'echo "${MESH_SUITE_TARGETS-unset}|${MESH_SUITE_TESTS-unset}" >> seen.txt'
+  - name: lint
+    kind: lint
+    command: "true"
+`), 0o644)
+	gitIn(t, dir, "add", "-A")
+	gitIn(t, dir, "commit", "-qm", "base")
+	m := &fakeMesh{}
+	rec, _ := recorder(t, m, RunSuiteTool)
+	tool := (&RunSuite{Workspace: dir, Recorder: rec, OnHost: true}).Tool()
+	cases := []struct {
+		args map[string]any
+		seen string
+		want *Selection
+	}{
+		{args: map[string]any{"suite": "unit"}, seen: "unset|unset"},
+		{args: map[string]any{"suite": "unit", "tests": []any{"TestX"}}, seen: "unset|TestX", want: &Selection{Tests: []string{"TestX"}}},
+		{args: map[string]any{"suite": "unit", "targets": []any{"./a/...", " ./b "}, "tests": []any{"TestX", "TestY"}},
+			seen: "./a/... ./b|TestX TestY", want: &Selection{Targets: []string{"./a/...", "./b"}, Tests: []string{"TestX", "TestY"}}},
+		{args: map[string]any{"suite": "unit", "targets": []any{"./a/..."}, "tests": []any{}}, seen: "./a/...|unset", want: &Selection{Targets: []string{"./a/..."}}},
+	}
+	inputs := map[string]bool{}
+	for i, c := range cases {
+		text, err := tool.Call(context.Background(), c.args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen, _ := os.ReadFile(filepath.Join(dir, "seen.txt"))
+		lines := strings.Split(strings.TrimSpace(string(seen)), "\n")
+		if len(lines) != i+1 || lines[i] != c.seen {
+			t.Fatalf("%v: the suite's command saw %q, want %q", c.args, lines, c.seen)
+		}
+		st, payload := statementOf(t, m.records[len(m.records)-1])
+		if !reflect.DeepEqual(st.Predicate.Selection, c.want) {
+			t.Fatalf("%v: the record's selection is %+v, want %+v (%s)", c.args, st.Predicate.Selection, c.want, text)
+		}
+		var raw struct {
+			Predicate map[string]json.RawMessage `json:"predicate"`
+		}
+		json.Unmarshal(payload, &raw)
+		if _, has := raw.Predicate["selection"]; has != (c.want != nil) {
+			t.Fatalf("%v: the predicate's selection key %s", c.args, raw.Predicate["selection"])
+		}
+		if c.want != nil {
+			var sel map[string]json.RawMessage
+			json.Unmarshal(raw.Predicate["selection"], &sel)
+			if _, has := sel["targets"]; has != (len(c.want.Targets) > 0) {
+				t.Fatalf("an empty targets list was kept: %s", raw.Predicate["selection"])
+			}
+			if !strings.Contains(text, `"selection"`) {
+				t.Fatalf("the answer does not name the selection: %s", text)
+			}
+		}
+		if inputs[st.Predicate.InputDigest] {
+			t.Fatalf("%v: two selections of one suite share an input digest", c.args)
+		}
+		inputs[st.Predicate.InputDigest] = true
+	}
+	// a name with whitespace in it cannot be told apart in its variable
+	for _, bad := range []map[string]any{
+		{"suite": "unit", "tests": []any{"TestX TestY"}},
+		{"suite": "unit", "targets": "./..."},
+		{"suite": "unit", "tests": []any{1}},
+	} {
+		if _, err := tool.Call(context.Background(), bad); err == nil {
+			t.Fatalf("%v ran", bad)
+		}
+	}
+}
+
+func TestSelectionEnv(t *testing.T) {
+	if env := SelectionEnv(nil); env != nil {
+		t.Fatalf("no selection exports %v", env)
+	}
+	if got := SelectionEnv(&Selection{Tests: []string{"TestA", "TestB"}}); !reflect.DeepEqual(got, []string{"MESH_SUITE_TESTS=TestA TestB"}) {
+		t.Fatalf("got %v", got)
 	}
 }

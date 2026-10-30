@@ -97,8 +97,8 @@ func watchSuites(run nodetools.SuiteRunner, end context.CancelCauseFunc) nodetoo
 	if run == nil {
 		return nil
 	}
-	return func(ctx context.Context, workspace string, steps []validate.Step) ([]validate.StepResult, error) {
-		res, err := run(ctx, workspace, steps)
+	return func(ctx context.Context, workspace string, steps []validate.Step, env []string) ([]validate.StepResult, error) {
+		res, err := run(ctx, workspace, steps, env)
 		if ctx.Err() != nil {
 			return res, err
 		}

@@ -167,18 +167,23 @@ type Brief struct {
 	// SessionRef the session its last lease parked or ended with: a node
 	// that holds that session resumes it and starts with the turn
 	// (projectmesh-io/api ADR 001 amendment "threads").
-	LastTurn         *Turn             `json:"last_turn,omitempty"`
-	SessionRef       string            `json:"session_ref,omitempty"`
-	Servers          []Server          `json:"servers"`
-	NodeTools        []string          `json:"node_tools"`
-	EvidenceRequired []string          `json:"evidence_required"`
-	Code             *Code             `json:"code,omitempty"`
-	Git              *Git              `json:"git,omitempty"`
-	Access           *Access           `json:"access,omitempty"`
-	Resources        Resources         `json:"resources"`
-	Pods             []json.RawMessage `json:"pods,omitempty"`
-	Thread           *Thread           `json:"thread,omitempty"`
-	CredentialRef    string            `json:"credential_ref,omitempty"`
+	LastTurn         *Turn    `json:"last_turn,omitempty"`
+	SessionRef       string   `json:"session_ref,omitempty"`
+	Servers          []Server `json:"servers"`
+	NodeTools        []string `json:"node_tools"`
+	EvidenceRequired []string `json:"evidence_required"`
+	// WaivedBy names, per required tool, the finish result's top-level
+	// fields that waive its record when present and truthy, as the
+	// catalogue wrote it (projectmesh-io/api ADR 001 amendment, evidence
+	// waivers): the stop gate does not ask for a tool the finish waives.
+	WaivedBy      map[string][]string `json:"waived_by,omitempty"`
+	Code          *Code               `json:"code,omitempty"`
+	Git           *Git                `json:"git,omitempty"`
+	Access        *Access             `json:"access,omitempty"`
+	Resources     Resources           `json:"resources"`
+	Pods          []json.RawMessage   `json:"pods,omitempty"`
+	Thread        *Thread             `json:"thread,omitempty"`
+	CredentialRef string              `json:"credential_ref,omitempty"`
 	// Pushed are the refs the job's earlier leases pushed, ok, the most
 	// recent last; a retried lease's checkout starts from the last.
 	Pushed []BriefPushed `json:"pushed,omitempty"`
