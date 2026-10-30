@@ -83,6 +83,11 @@ type Model struct {
 	Credential func(ctx context.Context, provider string, fresh bool) (ModelCredential, error)
 	// Log hears every call once it ends; it must not block.
 	Log func(ModelCall)
+	// Paths, when set, are the only paths a request may name, per
+	// provider: the node's model forwarder for a lease's relay sidecar
+	// (ForwarderPaths), the one place the node still reads HTTP a pod
+	// sent it. nil allows any path, as a host session's relay does.
+	Paths map[string][]string
 	// Transport sends each request; http.DefaultTransport when nil. A
 	// proxy follows no redirect, so it is a RoundTripper.
 	Transport http.RoundTripper
@@ -151,6 +156,10 @@ func (p *Proxy) serveModel(w http.ResponseWriter, req *http.Request) {
 	}
 	if dotSegment(path) {
 		refuse(http.StatusBadRequest, "the path is not a model API path")
+		return
+	}
+	if !m.pathAllowed(provider, "/"+path) {
+		refuse(http.StatusForbidden, fmt.Sprintf("%s %s is not a model API path the node forwards", req.Method, "/"+path))
 		return
 	}
 	var held []byte
@@ -307,4 +316,34 @@ func (p *Proxy) ListenModel() (base string, err error) {
 		}
 	}()
 	return "http://" + ln.Addr().String() + capability, nil
+}
+
+// ForwarderPaths are the paths the node's model forwarder sends on, per
+// provider (projectmesh-io/api ADR 001 amendment "relay sidecar"): a
+// conversation, its token count and the model list, for Anthropic and
+// OpenAI. A path ending "/*" is that path and one segment under it.
+var ForwarderPaths = map[string][]string{
+	"anthropic": {"/v1/messages", "/v1/messages/count_tokens", "/v1/models", "/v1/models/*"},
+	"openai":    {"/v1/responses", "/v1/chat/completions", "/v1/models", "/v1/models/*"},
+}
+
+// pathAllowed says whether path (escaped, leading slash, no query) is
+// one m.Paths names for provider; with no Paths, every path is.
+func (m *Model) pathAllowed(provider, path string) bool {
+	if m.Paths == nil {
+		return true
+	}
+	for _, p := range m.Paths[provider] {
+		if prefix, ok := strings.CutSuffix(p, "/*"); ok {
+			rest, under := strings.CutPrefix(path, prefix+"/")
+			if under && rest != "" && !strings.Contains(rest, "/") {
+				return true
+			}
+			continue
+		}
+		if path == p {
+			return true
+		}
+	}
+	return false
 }

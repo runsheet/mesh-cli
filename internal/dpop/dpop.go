@@ -2,9 +2,11 @@
 // P-256 key, held only in memory, that signs one RFC 9449 DPoP proof per
 // request to /mcp, and the RFC 7638 thumbprint its token is bound to.
 //
-// The key never leaves the process: there is no file, no export of the
-// private scalar, and every way the fmt, encoding/json and log/slog
-// packages have of printing a Key prints its thumbprint alone.
+// The key never leaves the process but one way: Handoff, the lease's key
+// written into a sandboxed lease's relay sidecar's credential file
+// (handoff.go). There is no other export of the private scalar, and
+// every way the fmt, encoding/json and log/slog packages have of
+// printing a Key prints its thumbprint alone.
 package dpop
 
 import (
