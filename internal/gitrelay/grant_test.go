@@ -36,7 +36,7 @@ type minter struct {
 	ttl time.Duration
 }
 
-func (m *minter) mint(context.Context) (Token, error) {
+func (m *minter) mint(context.Context, string, Access) (Token, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.n++

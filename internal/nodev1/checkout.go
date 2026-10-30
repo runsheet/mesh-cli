@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strings"
 
 	"projectmesh.io/mesh-cli/internal/githarden"
@@ -39,12 +40,15 @@ func leaseGitRun(ctx context.Context) func(dir string, args ...string) (string, 
 }
 
 // policyOf is the relay policy of the brief's git: its vendor and base,
-// its repository, read or write, and the refs a push may touch, each
-// fast-forward-only unless the brief's rule says false. Only a write
-// policy names push rules, and only a write policy has its relay mint a
-// write token (MintSource with the policy's access).
+// its repository, read or write, the refs a push may touch, each
+// fast-forward-only unless the brief's rule says false, and its
+// read_repos, which the relay serves read-only on read tokens of their
+// own. Only a write policy names push rules, and only a write policy
+// has its relay mint a write token, and only for its own repository
+// (MintSource with the policy's access).
 func policyOf(g *meshapi.Git) gitrelay.Policy {
-	p := gitrelay.Policy{Repo: g.Repo, Access: gitrelay.Read, Vendor: g.Vendor, Base: baseOf(g)}
+	p := gitrelay.Policy{Repo: g.Repo, Access: gitrelay.Read, Vendor: g.Vendor, Base: baseOf(g),
+		ReadRepos: slices.Clone(g.ReadRepos)}
 	if g.Access == string(gitrelay.Write) {
 		p.Access = gitrelay.Write
 		for _, r := range g.Push {
@@ -60,7 +64,15 @@ func policyOf(g *meshapi.Git) gitrelay.Policy {
 // with the job's git as Mesh answers it — (none for GitHub at its own
 // origin), the repository, and the policy's access.
 func sourceRequest(g *meshapi.Git, p gitrelay.Policy) SourceRequest {
-	return SourceRequest{Vendor: g.Vendor, BaseURL: g.BaseURL, Repository: g.Repo, Access: string(p.Access)}
+	return sourceRequestFor(g, g.Repo, p.Access)
+}
+
+// sourceRequestFor is the mint of a token for repo at access on the
+// brief's git's vendor and base: the relay's Mint, for the job's own
+// repository or one of its read_repos (always at read, which Latchkey
+// allows for a read repo and nothing more).
+func sourceRequestFor(g *meshapi.Git, repo string, access gitrelay.Access) SourceRequest {
+	return SourceRequest{Vendor: g.Vendor, BaseURL: g.BaseURL, Repository: repo, Access: string(access)}
 }
 
 // baseOf is the vendor origin the brief's git names: its base_url, else

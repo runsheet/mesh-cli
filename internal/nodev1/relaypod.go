@@ -94,9 +94,11 @@ type relaySidecar struct {
 	ownSock string
 
 	// mirrors are the node's mirrors this lease's sidecar may read
-	// (relaymirrors.go), and mirror the one of its repository.
-	mirrors []string
-	mirror  string
+	// (relaymirrors.go), mirror the one of its repository and
+	// readMirrors its read repos', by repository.
+	mirrors     []string
+	mirror      string
+	readMirrors map[string]string
 
 	mu     sync.Mutex
 	minted []gitrelay.Token
@@ -213,7 +215,7 @@ func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe 
 	}
 	// the node's mirrors the sidecar may read, before its credentials
 	// name the repository's (relaymirrors.go)
-	rs.mirror, rs.mirrors = r.leaseMirrors(b)
+	rs.mirror, rs.readMirrors, rs.mirrors = r.leaseMirrors(b)
 	creds, err := rs.credentials(ctx, sl)
 	if err != nil {
 		return nil, err
@@ -309,19 +311,22 @@ func (rs *relaySidecar) credentials(ctx context.Context, sl *slots) (relaysideca
 	if b.Git != nil && b.Git.Repo != "" {
 		policy := policyOf(b.Git)
 		rs.gitReq = sourceRequest(b.Git, policy)
-		t, err := rs.mintGit(ctx)
+		t, err := rs.mintGit(ctx, rs.gitReq)
 		if err != nil {
 			return c, credentialFailed(fmt.Errorf("the relay sidecar's git token: %w", err))
 		}
-		c.Git = &relaysidecar.Git{Policy: policy, Upstream: rs.r.GitUpstream, Token: t, Checkout: sandbox.RelayCheckout, Mirror: rs.mirror}
+		// a read repo's token is minted when the sidecar first fetches
+		// it (renew)
+		c.Git = &relaysidecar.Git{Policy: policy, Upstream: rs.r.GitUpstream, Token: t, Checkout: sandbox.RelayCheckout,
+			Mirror: rs.mirror, ReadMirrors: rs.readMirrors}
 	}
 	return c, nil
 }
 
 // mintGit mints a git token for the sidecar on the lease's session, and
 // keeps it to revoke when the lease ends.
-func (rs *relaySidecar) mintGit(ctx context.Context) (relaysidecar.Token, error) {
-	t, err := rs.tokens.MintSource(ctx, rs.gitReq)
+func (rs *relaySidecar) mintGit(ctx context.Context, req SourceRequest) (relaysidecar.Token, error) {
+	t, err := rs.tokens.MintSource(ctx, req)
 	if err != nil {
 		return relaysidecar.Token{}, err
 	}
@@ -332,7 +337,10 @@ func (rs *relaySidecar) mintGit(ctx context.Context) (relaysidecar.Token, error)
 }
 
 // renew is the sidecar's renewal: the lease's session token, and a git
-// token when it asks; nothing once the lease has ended.
+// token when it asks — the job's own repository's at the brief's access,
+// or, when it names one of the brief's read_repos, a read-only token for
+// that repository alone; a repository the brief does not name is
+// refused. Nothing once the lease has ended.
 func (rs *relaySidecar) renew(ctx context.Context, req relaysidecar.RenewRequest) (relaysidecar.Renewal, error) {
 	rs.mu.Lock()
 	closed := rs.closed
@@ -349,13 +357,32 @@ func (rs *relaySidecar) renew(ctx context.Context, req relaysidecar.RenewRequest
 		if rs.gitReq.Repository == "" {
 			return relaysidecar.Renewal{}, errors.New("the lease has no git")
 		}
-		t, err := rs.mintGit(ctx)
+		mint, err := rs.gitRequestFor(req.Repo)
+		if err != nil {
+			return relaysidecar.Renewal{}, err
+		}
+		t, err := rs.mintGit(ctx, mint)
 		if err != nil {
 			return relaysidecar.Renewal{}, err
 		}
 		out.Git = &t
 	}
 	return out, nil
+}
+
+// gitRequestFor is the mint a renewal of repo's git token asks for:
+// the job's own when repo is "" or names it, a read token for one of
+// the brief's read_repos, as the brief names it, and nothing else.
+func (rs *relaySidecar) gitRequestFor(repo string) (SourceRequest, error) {
+	if repo == "" || strings.EqualFold(repo, rs.gitReq.Repository) {
+		return rs.gitReq, nil
+	}
+	for _, r := range rs.b.Git.ReadRepos {
+		if strings.EqualFold(repo, r) {
+			return sourceRequestFor(rs.b.Git, r, gitrelay.Read), nil
+		}
+	}
+	return SourceRequest{}, fmt.Errorf("the brief names no read repo %s", repo)
 }
 
 // fixedUpstreams are the hosts the sidecar reaches itself: Latchkey,

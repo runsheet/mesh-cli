@@ -60,7 +60,7 @@ func relayFor(t *testing.T, p Policy) (*Relay, *fakeGitHub, *[]Event) {
 	r := &Relay{
 		Policy:   p,
 		Upstream: srv.URL,
-		Mint: func(context.Context) (Token, error) {
+		Mint: func(context.Context, string, Access) (Token, error) {
 			mints++
 			return Token{Value: fmt.Sprintf("tok-%d", mints), ExpiresAt: time.Now().Add(time.Hour)}, nil
 		},
@@ -190,7 +190,7 @@ func TestRelayCachesTheTokenUntilNearExpiry(t *testing.T) {
 		Policy:   Policy{Repo: "acme/app", Access: Read},
 		Upstream: srv.URL,
 		Now:      func() time.Time { return now },
-		Mint: func(context.Context) (Token, error) {
+		Mint: func(context.Context, string, Access) (Token, error) {
 			mints++
 			return Token{Value: fmt.Sprintf("tok-%d", mints), ExpiresAt: now.Add(time.Hour)}, nil
 		},
@@ -213,7 +213,7 @@ func TestRelayNeverEchoesTheToken(t *testing.T) {
 	r := &Relay{
 		Policy:   Policy{Repo: "acme/app", Access: Read},
 		Upstream: "http://127.0.0.1:1",
-		Mint: func(context.Context) (Token, error) {
+		Mint: func(context.Context, string, Access) (Token, error) {
 			return Token{Value: "s3cret", ExpiresAt: time.Now().Add(time.Hour)}, nil
 		},
 	}

@@ -63,6 +63,10 @@ const (
 // session token always, the git token when Git is set.
 type RenewRequest struct {
 	Git bool `json:"git,omitempty"`
+	// Repo, with Git, is the read repo (one of the brief's read_repos)
+	// whose read-only token is wanted; "" for the job's own repository.
+	// The node refuses a repository the brief does not name.
+	Repo string `json:"repo,omitempty"`
 }
 
 // Renewal is the node's answer: lease-scoped tokens alone.

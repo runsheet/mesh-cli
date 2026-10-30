@@ -15,20 +15,21 @@ import (
 // read-only, each at its own path: only this lease's tenant's mirror of
 // its repository and of the brief's read_repos, never another
 // tenant's, and only those the node already holds. The sidecar answers
-// a fetch from its repository's mirror when the mirror holds what is
-// wanted and goes upstream through the lease's tunnel otherwise
-// (gitrelay.Relay.Mirror). The node syncs a mirror only for its own
+// a fetch from its repository's mirror, and a read repo's from that
+// repo's, when the mirror holds what is wanted and goes upstream through
+// the lease's tunnel otherwise (gitrelay.Relay.Mirror, ReadMirrors). The node syncs a mirror only for its own
 // checkout, through the lease's grant; it never runs git on a request
 // that came from the pod.
 
 // leaseMirrors are b's mirrors a relay sidecar may read: the
-// repository's (mirror, "" when the node holds none) and with it the
-// read_repos' the node holds (all). Each is opened to the sidecar's own
-// user, which reads what the node's wrote; the mirror root above them
-// stays the node's alone.
-func (r *Runtime) leaseMirrors(b *meshapi.Brief) (mirror string, all []string) {
+// repository's (mirror, "" when the node holds none), the read_repos'
+// the node holds, by repository (read), and all of them (all), each
+// mounted in the sidecar at its own host path. Each is opened to the
+// sidecar's own user, which reads what the node's wrote; the mirror
+// root above them stays the node's alone.
+func (r *Runtime) leaseMirrors(b *meshapi.Brief) (mirror string, read map[string]string, all []string) {
 	if r.mirrors == nil || b.Git == nil || b.Git.Repo == "" {
-		return "", nil
+		return "", nil, nil
 	}
 	pol := policyOf(b.Git)
 	for i, repo := range append([]string{b.Git.Repo}, b.Git.ReadRepos...) {
@@ -45,10 +46,15 @@ func (r *Runtime) leaseMirrors(b *meshapi.Brief) (mirror string, all []string) {
 		}
 		if i == 0 {
 			mirror = dir
+		} else {
+			if read == nil {
+				read = map[string]string{}
+			}
+			read[repo] = dir
 		}
 		all = append(all, dir)
 	}
-	return mirror, all
+	return mirror, read, all
 }
 
 // readableToOthers lets any user read dir's tree: the relay sidecar's

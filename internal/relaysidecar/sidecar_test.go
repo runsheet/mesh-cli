@@ -71,6 +71,7 @@ type rig struct {
 	access   []meshapi.AccessRecord
 	security chan meshapi.SecurityReport
 	renewals int
+	renewed  []RenewRequest
 	auth     []string // the product's Authorization headers
 }
 
@@ -111,10 +112,14 @@ func newRig(t *testing.T, creds Credentials, upstreams map[string]http.Handler) 
 		Renew: func(_ context.Context, req RenewRequest) (Renewal, error) {
 			g.mu.Lock()
 			g.renewals++
+			g.renewed = append(g.renewed, req)
 			g.mu.Unlock()
 			out := Renewal{Session: Token{Value: "renewed-session", ExpiresAt: time.Now().Add(10 * time.Minute)}}
 			if req.Git {
 				out.Git = &Token{Value: "renewed-git", ExpiresAt: time.Now().Add(time.Hour)}
+				if req.Repo != "" {
+					out.Git.Value = "read-" + req.Repo
+				}
 			}
 			return out, nil
 		},
@@ -347,5 +352,74 @@ func TestSidecarPassesItsOwnRefusalsToTheNode(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("the node heard no report")
+	}
+}
+
+// A read repo's fetch goes upstream through the tunnel on a read token
+// the node mints for that repository when the sidecar first asks
+// (RenewRequest.Repo), cached for the next; the held token of the job's
+// own repository is untouched, and a push to the read repo is refused
+// without asking the node for anything.
+func TestSidecarFetchesAReadRepoOnATokenTheNodeMints(t *testing.T) {
+	var mu sync.Mutex
+	var seen []string
+	vendor := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, pass, _ := r.BasicAuth()
+		mu.Lock()
+		seen = append(seen, r.URL.Path+" "+pass)
+		mu.Unlock()
+		_, _ = io.WriteString(w, "refs")
+	})
+	c := testCreds(t)
+	c.Git.Upstream = "https://git.example.com"
+	c.Git.Policy.ReadRepos = []string{"acme/lib"}
+	g := newRig(t, c, map[string]http.Handler{"git.example.com:443": vendor})
+	get := func(path string) int {
+		t.Helper()
+		resp, err := http.Get(g.base + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	for range 2 {
+		if code := get("/git/acme/lib.git/info/refs?service=git-upload-pack"); code != 200 {
+			t.Fatalf("the read repo's fetch answered %d", code)
+		}
+	}
+	if code := get("/git/acme/app.git/info/refs?service=git-upload-pack"); code != 200 {
+		t.Fatalf("the own repository's fetch answered %d", code)
+	}
+	if code := get("/git/acme/lib.git/info/refs?service=git-receive-pack"); code != http.StatusForbidden {
+		t.Fatalf("a push to the read repo answered %d", code)
+	}
+	mu.Lock()
+	want := []string{"/acme/lib.git/info/refs read-acme/lib", "/acme/lib.git/info/refs read-acme/lib", "/acme/app.git/info/refs " + gitSecret}
+	if strings.Join(seen, "|") != strings.Join(want, "|") {
+		t.Fatalf("the vendor saw %q, want %q", seen, want)
+	}
+	mu.Unlock()
+	g.mu.Lock()
+	renewed := append([]RenewRequest(nil), g.renewed...)
+	g.mu.Unlock()
+	if len(renewed) != 1 || !renewed[0].Git || renewed[0].Repo != "acme/lib" {
+		t.Fatalf("renewals %+v, want one for acme/lib", renewed)
+	}
+	var lib int
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		lib = 0
+		for _, rec := range g.records() {
+			if rec.Kind == "git" && rec.Repo == "acme/lib" {
+				lib++
+			}
+		}
+		if lib >= 3 || time.Now().After(deadline) {
+			break
+		}
+	}
+	if lib != 3 {
+		t.Fatalf("%d access records name acme/lib, want 3", lib)
 	}
 }

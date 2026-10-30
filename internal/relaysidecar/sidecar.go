@@ -151,6 +151,7 @@ func New(creds Credentials, nodeSocket string) (*Sidecar, error) {
 			Mint:          s.gitToken,
 			IsAncestor:    checkoutAncestry(g.Checkout),
 			Mirror:        g.Mirror,
+			ReadMirrors:   g.ReadMirrors,
 			Audit:         s.gitEvent,
 		}
 		s.proxy.Git = s.relay
@@ -273,9 +274,20 @@ func (s *Sidecar) sessionToken(ctx context.Context) (string, error) {
 	return ren.Session.Value, nil
 }
 
-// gitToken is the relay's Mint: the held git token while it lives, else
-// one the node mints again.
-func (s *Sidecar) gitToken(ctx context.Context) (gitrelay.Token, error) {
+// gitToken is the relay's Mint: for the job's repository the held git
+// token while it lives, else one the node mints again; for a read repo
+// a read-only token the node mints for it, which the relay caches.
+func (s *Sidecar) gitToken(ctx context.Context, repo string, _ gitrelay.Access) (gitrelay.Token, error) {
+	if !strings.EqualFold(repo, s.creds.Git.Policy.Repo) {
+		ren, err := s.renew(ctx, RenewRequest{Git: true, Repo: repo})
+		if err != nil {
+			return gitrelay.Token{}, err
+		}
+		if ren.Git == nil || ren.Git.Value == "" {
+			return gitrelay.Token{}, errors.New("the node renewed no git token for " + repo)
+		}
+		return gitrelay.Token{Value: ren.Git.Value, ExpiresAt: ren.Git.ExpiresAt}, nil
+	}
 	s.mu.Lock()
 	tok := s.git
 	s.mu.Unlock()
@@ -317,7 +329,8 @@ func (s *Sidecar) renew(ctx context.Context, req RenewRequest) (Renewal, error) 
 	}
 	s.mu.Lock()
 	s.session = out.Session
-	if out.Git != nil && out.Git.Value != "" {
+	// a read repo's token is the relay's to cache, never the held one
+	if out.Git != nil && out.Git.Value != "" && req.Repo == "" {
 		s.git = *out.Git
 	}
 	s.mu.Unlock()

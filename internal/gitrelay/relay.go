@@ -9,6 +9,17 @@
 // — <repo> as the job's vendor names it: owner/name, a GitLab
 // group/subgroup/project, an Azure DevOps org/project/repo — and streams
 // both ways: a pack is never buffered.
+//
+// A job reaches its own repository (Policy.Repo) at its policy's access,
+// and fetches each of its brief's read_repos (Policy.ReadRepos) read-only:
+// a read repo's info/refs and git-upload-pack are relayed on a read token
+// minted for that repository alone (Mint with it and Read), cached per
+// repository until near its expiry and revoked with the lease's own; a
+// push to one is refused, audited and never forwarded, and no write token
+// is ever minted for it. Read repos match in any case, as the own one
+// does; any other repository is refused. A relay sidecar answers a read
+// repo's fetch from the node's mirror of it (ReadMirrors) when the mirror
+// holds every want.
 package gitrelay
 
 import (
@@ -56,6 +67,26 @@ type Policy struct {
 	// Base is the vendor's git origin for this job — a self-hosted
 	// GitLab's, say — when it is not the vendor's own (Vendor.Origin).
 	Base string
+	// ReadRepos are the brief's read_repos: other repositories of the
+	// same vendor and base the job may fetch and never push, each on a
+	// read token minted for it alone.
+	ReadRepos []string
+}
+
+// target is the repository a request names as the policy has it, and
+// the access the job has to it; ok is false for one the job may not
+// reach. The job's own repository wins over a read repo of the same
+// name.
+func (p Policy) target(repo string) (name string, access Access, ok bool) {
+	if strings.EqualFold(repo, p.Repo) {
+		return p.Repo, p.Access, true
+	}
+	for _, r := range p.ReadRepos {
+		if strings.EqualFold(repo, r) {
+			return r, Read, true
+		}
+	}
+	return "", "", false
 }
 
 // RefRule is one ref a push may touch: an exact ref, or a prefix ending
@@ -112,9 +143,11 @@ type PushedRef struct {
 type Relay struct {
 	// Policy is the job's git policy.
 	Policy Policy
-	// Mint returns a fresh token for the job; the relay caches it until
-	// RefreshBefore of its expiry.
-	Mint func(ctx context.Context) (Token, error)
+	// Mint returns a fresh token for repo (Policy.Repo or one of
+	// Policy.ReadRepos, as the policy names it) at access: the policy's
+	// for its own repository, Read for a read repo. The relay caches each
+	// repository's until RefreshBefore of its expiry.
+	Mint func(ctx context.Context, repo string, access Access) (Token, error)
 	// Upstream is the vendor's git origin; the Vendor's own when empty.
 	Upstream string
 	// Vendor is the adapter that puts the token on the request going
@@ -139,9 +172,12 @@ type Relay struct {
 	// anything else goes upstream (mirror.go). A relay sidecar's, the
 	// node's mirror mounted read-only.
 	Mirror string
+	// ReadMirrors are bare mirrors of read repos, by the repository as
+	// Policy.ReadRepos names it, served as Mirror is.
+	ReadMirrors map[string]string
 
-	mu    sync.Mutex
-	token Token
+	mu     sync.Mutex
+	tokens map[string]Token
 }
 
 // forwarded are the only client headers sent upstream: what git's smart
@@ -163,14 +199,15 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		r.audit(ev)
 		http.Error(w, "gitrelay: "+reason, http.StatusForbidden)
 	}
-	if !strings.EqualFold(repo, r.Policy.Repo) {
+	target, access, ok := r.Policy.target(repo)
+	if !ok {
 		refuse(fmt.Sprintf("repository %s is not this job's (%s)", repo, r.Policy.Repo))
 		return
 	}
 	switch service {
 	case "upload-pack":
 	case "receive-pack":
-		if r.Policy.Access != Write {
+		if access != Write {
 			refuse("this job may only read " + repo)
 			return
 		}
@@ -201,22 +238,22 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 		body = replay
 	}
-	if service == "upload-pack" && req.Method == http.MethodPost && r.Mirror != "" {
-		served, rest := r.fromMirror(w, req, body, &ev)
+	if mirror := r.mirrorOf(target); service == "upload-pack" && req.Method == http.MethodPost && mirror != "" {
+		served, rest := r.fromMirror(w, req, mirror, body, &ev)
 		if served {
 			return
 		}
 		body = rest
 	}
 
-	tok, err := r.tokenFor(req.Context())
+	tok, err := r.tokenFor(req.Context(), target, access)
 	if err != nil {
 		ev.Outcome, ev.Reason = "failed", "token: "+err.Error()
 		r.audit(ev)
 		http.Error(w, "gitrelay: no token for "+repo+": "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	repoPath, err := vendor.RepoPath(r.Policy.Repo)
+	repoPath, err := vendor.RepoPath(target)
 	if err != nil {
 		ev.Outcome, ev.Reason = "failed", err.Error()
 		r.audit(ev)
@@ -393,28 +430,49 @@ func readCommands(body io.Reader, encoding string) ([]command, io.Reader, error)
 	return cmds, io.MultiReader(&head, br), nil
 }
 
-func (r *Relay) tokenFor(ctx context.Context) (string, error) {
+// tokenFor is repo's token at access, minted when none is cached or
+// the cached one is near its end. Tokens are cached per repository.
+func (r *Relay) tokenFor(ctx context.Context, repo string, access Access) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	before := r.RefreshBefore
 	if before == 0 {
 		before = 10 * time.Minute
 	}
-	if r.token.Value != "" && r.now().Add(before).Before(r.token.ExpiresAt) {
-		return r.token.Value, nil
+	key := strings.ToLower(repo)
+	if t := r.tokens[key]; t.Value != "" && r.now().Add(before).Before(t.ExpiresAt) {
+		return t.Value, nil
 	}
 	if r.Mint == nil {
 		return "", errors.New("no token source")
 	}
-	t, err := r.Mint(ctx)
+	t, err := r.Mint(ctx, repo, access)
 	if err != nil {
 		return "", err
 	}
 	if t.Value == "" {
 		return "", errors.New("the token source answered no token")
 	}
-	r.token = t
+	if r.tokens == nil {
+		r.tokens = map[string]Token{}
+	}
+	r.tokens[key] = t
 	return t.Value, nil
+}
+
+// mirrorOf is the mirror a fetch of repo (as the policy names it) may
+// be answered from: Mirror for the job's own, its ReadMirrors entry for
+// a read repo, "" for none.
+func (r *Relay) mirrorOf(repo string) string {
+	if strings.EqualFold(repo, r.Policy.Repo) {
+		return r.Mirror
+	}
+	for name, dir := range r.ReadMirrors {
+		if strings.EqualFold(name, repo) {
+			return dir
+		}
+	}
+	return ""
 }
 
 func (r *Relay) upstream() string {
