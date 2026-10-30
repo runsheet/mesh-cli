@@ -23,7 +23,8 @@ import (
 //     client that ignores the proxy finds no route at all;
 //   - mcp: the product MCP route, served only for a product the egress
 //     (or the brief's access) names;
-//   - model: the /model/ route, refused when false.
+//   - model: read, never enforced here: the harness's own /model/ route
+//     stays open whatever it says, since every job runs a harness.
 //
 // `{}` is nothing beyond the git route and the product MCP the brief's
 // access names. A session on the host (an unsandboxed node) is given the

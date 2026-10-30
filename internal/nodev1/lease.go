@@ -452,7 +452,11 @@ func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief, tokens *sessi
 	// the kind's egress: the relay is the session's only exit (egress.go)
 	tunnel := r.egressTunnel(b)
 	if tunnel != nil {
-		p.Egress, p.NoModel = tunnel, !b.Egress.Model
+		// the harness always reaches the lease's model through the relay:
+		// every job is harnessed, so egress.model never closes the route
+		// the session's own harness runs on (a model provider's host is
+		// reached directly only when egress.hosts names it)
+		p.Egress = tunnel
 		r.logf("nodev1: lease %s: egress %s", b.LeaseID, egressLine(b.Egress))
 	}
 	closeAll := func() {
