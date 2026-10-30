@@ -16,6 +16,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/scheduler"
+	"projectmesh.io/mesh-cli/internal/secreport"
 )
 
 // The job actor (ADR-044, Mesh v1 PR 3.2; `mesh node run --actors`):
@@ -65,6 +66,10 @@ func (r *Runtime) runActor(ctx context.Context, tk *meshapi.Take, room *schedule
 		return
 	}
 	a.Logf = r.Logf
+	// what the lease's relay sees is flushed to Mesh after the release,
+	// once the relay has closed (security.go)
+	var sec *secreport.Reporter
+	defer func() { r.closeSecurity(sec) }()
 	// releasing is the only exit: it runs last, whatever came before
 	defer a.Release()
 	if room != nil {
@@ -77,6 +82,7 @@ func (r *Runtime) runActor(ctx context.Context, tk *meshapi.Take, room *schedule
 	r.mu.Lock()
 	r.leases.Put(id, &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: turnToolFor(b), jobID: b.JobID, actor: a})
 	r.mu.Unlock()
+	sec = r.openSecurity(id)
 	defer func() {
 		r.mu.Lock()
 		r.leases.Delete(id)
@@ -125,6 +131,7 @@ func (r *Runtime) runActor(ctx context.Context, tk *meshapi.Take, room *schedule
 	// revoked (the spec's first layer of tokens ending with the lease)
 	a.ReleaseNow(holdProxy, holdGrant)
 	out.access = r.takeAccess(id)
+	reportSandbox(sec, out.err)
 	if err := a.Enter(actor.Reporting); err != nil {
 		r.logf("nodev1: lease %s: %v", id, err)
 	}

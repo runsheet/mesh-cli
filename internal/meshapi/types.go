@@ -481,6 +481,53 @@ type AccessRecord struct {
 	At      time.Time   `json:"at"`
 }
 
+// SecurityRequest is what a lease's relay saw, for Tripline: POST
+// /v1/leases/{id}/security (projectmesh-io/api ADR 001 amendment,
+// security events).
+type SecurityRequest struct {
+	Reports []SecurityReport `json:"reports"`
+}
+
+// SecurityReport is one thing a lease's relay saw, content-free: never a
+// URL, path, header, body, match or token.
+type SecurityReport struct {
+	// Type is egress, dlp, fingerprint or sandbox (Report*).
+	Type string `json:"type"`
+	// Host is the destination's bare hostname or IP address; an egress
+	// report names one.
+	Host  string `json:"host,omitempty"`
+	Bytes int64  `json:"bytes,omitempty"`
+	// Verdict is allow, deny or redact (Verdict*).
+	Verdict string `json:"verdict"`
+	// Rule names the rule that gave the verdict: at most 64 of
+	// [a-z0-9_.:/-].
+	Rule string     `json:"rule,omitempty"`
+	At   *time.Time `json:"at,omitempty"`
+}
+
+// A SecurityReport's types and verdicts.
+const (
+	ReportEgress      = "egress"
+	ReportDLP         = "dlp"
+	ReportFingerprint = "fingerprint"
+	ReportSandbox     = "sandbox"
+	VerdictAllow      = "allow"
+	VerdictDeny       = "deny"
+	VerdictRedact     = "redact"
+)
+
+// MaxSecurityReports bounds one post.
+const MaxSecurityReports = 100
+
+// SecurityAccepted is Mesh's answer: how many it took, and whether it
+// forwards them (false while Tripline is not configured).
+type SecurityAccepted struct {
+	JobID     string `json:"job_id"`
+	LeaseID   string `json:"lease_id"`
+	Accepted  int    `json:"accepted"`
+	Forwarded bool   `json:"forwarded"`
+}
+
 // PushedRef is one ref a push updated and the commit it names now.
 type PushedRef struct {
 	Ref string `json:"ref"`

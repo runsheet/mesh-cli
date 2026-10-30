@@ -29,6 +29,9 @@ type Fake struct {
 	// Session answers POST /v1/leases/{id}/session; the lease-session
 	// fixture's answer when nil.
 	Session func(leaseID, jkt string) (*meshapi.SessionCredential, int)
+	// Security, set, answers a lease's security reports with a status
+	// (202, 422, 503…); 202 when nil.
+	Security func(leaseID string, reports []meshapi.SecurityReport) int
 
 	fx      map[string]Fixture
 	mu      sync.Mutex
@@ -56,7 +59,7 @@ type fakeLease struct {
 
 // Call is one request the fake answered.
 type Call struct {
-	Route   string // register, connect, heartbeat, take, renew, session, evidence, access, usage, progress, finish, fail, hand-back, blob
+	Route   string // register, connect, heartbeat, take, renew, session, evidence, access, usage, progress, security, finish, fail, hand-back, blob
 	LeaseID string
 	Auth    string
 	Body    json.RawMessage
@@ -389,6 +392,21 @@ func (f *Fake) lease(w http.ResponseWriter, r *http.Request) {
 	l := f.leases[id]
 	live := l != nil && l.ended == ""
 	f.mu.Unlock()
+	if route == "security" && l != nil {
+		// a lease may report while live or after it ended, as Mesh takes it
+		var req meshapi.SecurityRequest
+		json.Unmarshal(body, &req)
+		status := http.StatusAccepted
+		if f.Security != nil {
+			status = f.Security(id, req.Reports)
+		}
+		if status != http.StatusAccepted {
+			writeErr(w, status, "refused", "the fake refused the reports")
+			return
+		}
+		writeJSON(w, status, meshapi.SecurityAccepted{JobID: l.brief.JobID, LeaseID: id, Accepted: len(req.Reports)})
+		return
+	}
 	if !live {
 		writeErr(w, http.StatusConflict, "lease_not_live", "lease "+id+" is not live")
 		return

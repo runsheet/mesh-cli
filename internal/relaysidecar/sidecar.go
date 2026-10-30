@@ -17,8 +17,10 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/dpop"
+	"projectmesh.io/mesh-cli/internal/egress"
 	"projectmesh.io/mesh-cli/internal/gitrelay"
 	"projectmesh.io/mesh-cli/internal/meshapi"
+	"projectmesh.io/mesh-cli/internal/secreport"
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
 )
 
@@ -50,6 +52,7 @@ type Sidecar struct {
 	proxy    *sessionproxy.Proxy
 	relay    *gitrelay.Relay
 	access   chan meshapi.AccessRecord
+	security chan meshapi.SecurityReport
 	done     chan struct{}
 
 	mu      sync.Mutex
@@ -78,7 +81,7 @@ func New(creds Credentials, nodeSocket string) (*Sidecar, error) {
 		return nil, err
 	}
 	s := &Sidecar{creds: creds, key: key, session: creds.Session, dialer: &Dialer{Socket: nodeSocket},
-		access: make(chan meshapi.AccessRecord, 1024), done: make(chan struct{})}
+		access: make(chan meshapi.AccessRecord, 1024), security: make(chan meshapi.SecurityReport, 256), done: make(chan struct{})}
 	if creds.Git != nil {
 		s.git = creds.Git.Token
 	}
@@ -107,6 +110,9 @@ func New(creds Credentials, nodeSocket string) (*Sidecar, error) {
 	s.proxy = sessionproxy.New(ups)
 	s.proxy.HTTP = s.upstream
 	s.proxy.Logf = s.logf
+	// an egress request the sidecar refuses itself (plain HTTP, which
+	// never reaches the node's tunnel) is passed to the node to report
+	s.proxy.EgressRefused = s.egressRefused
 	if creds.Tools != nil {
 		s.proxy.Tools = sessionproxy.ToolFilter(creds.Tools)
 	}
@@ -141,6 +147,7 @@ func New(creds Credentials, nodeSocket string) (*Sidecar, error) {
 		s.proxy.Git = s.relay
 	}
 	go s.postAccess()
+	go s.postSecurity()
 	return s, nil
 }
 
@@ -371,8 +378,77 @@ func (s *Sidecar) postAccess() {
 	}
 }
 
-// Flush sends every queued AccessRecord now.
+// egressRefused queues the report of an egress request the sidecar
+// refused itself, by host and rule alone.
+func (s *Sidecar) egressRefused(c egress.Call) {
+	rep, ok := secreport.Egress(c, time.Now())
+	if !ok {
+		return
+	}
+	select {
+	case s.security <- rep:
+	default:
+		s.logf("relaysidecar: a security report was dropped: the node is not taking them")
+	}
+}
+
+// postSecurity sends the queued security reports to the node in
+// batches, as postAccess does AccessRecords.
+func (s *Sidecar) postSecurity() {
+	for {
+		var batch []meshapi.SecurityReport
+		select {
+		case rep := <-s.security:
+			batch = append(batch, rep)
+		case <-s.done:
+			return
+		}
+	drain:
+		for len(batch) < accessMax {
+			select {
+			case rep := <-s.security:
+				batch = append(batch, rep)
+			default:
+				break drain
+			}
+		}
+		s.send(SecurityPath, batch, len(batch), "security reports")
+	}
+}
+
+// send posts v, n records of what, to the node at path.
+func (s *Sidecar) send(path string, v any, n int, what string) {
+	b, _ := json.Marshal(v)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://node"+path, bytes.NewReader(b))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.node.Do(req)
+	if err != nil {
+		s.logf("relaysidecar: %d %s did not reach the node: %v", n, what, err)
+		return
+	}
+	resp.Body.Close()
+}
+
+// Flush sends every queued AccessRecord and security report now.
 func (s *Sidecar) Flush() {
+	var reps []meshapi.SecurityReport
+	for {
+		select {
+		case rep := <-s.security:
+			reps = append(reps, rep)
+			continue
+		default:
+		}
+		break
+	}
+	if len(reps) > 0 {
+		s.send(SecurityPath, reps, len(reps), "security reports")
+	}
 	var batch []meshapi.AccessRecord
 	for {
 		select {
@@ -389,20 +465,7 @@ func (s *Sidecar) Flush() {
 }
 
 func (s *Sidecar) sendAccess(batch []meshapi.AccessRecord) {
-	b, _ := json.Marshal(batch)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://node"+AccessPath, bytes.NewReader(b))
-	if err != nil {
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.node.Do(req)
-	if err != nil {
-		s.logf("relaysidecar: %d AccessRecords did not reach the node: %v", len(batch), err)
-		return
-	}
-	resp.Body.Close()
+	s.send(AccessPath, batch, len(batch), "AccessRecords")
 }
 
 // Serve serves the session's routes on ln (the pod's loopback) until

@@ -1,0 +1,22 @@
+{
+  "name": "lease-security-off",
+  "method": "POST",
+  "path": "/v1/leases/08e5fddc-674e-5461-8b8c-49c32eae51d8/security",
+  "caller": "node",
+  "request": {
+    "reports": [
+      {
+        "rule": "seccomp",
+        "type": "sandbox",
+        "verdict": "deny"
+      }
+    ]
+  },
+  "status": 202,
+  "response": {
+    "accepted": 1,
+    "forwarded": false,
+    "job_id": "598363cf-16e3-58ff-b3bd-e2df389b3c89",
+    "lease_id": "08e5fddc-674e-5461-8b8c-49c32eae51d8"
+  }
+}

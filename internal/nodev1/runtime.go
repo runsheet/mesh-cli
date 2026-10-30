@@ -31,6 +31,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/resources"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/scheduler"
+	"projectmesh.io/mesh-cli/internal/secreport"
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
 	"projectmesh.io/mesh-cli/internal/sigstore"
 	"projectmesh.io/mesh-cli/internal/supervisor"
@@ -77,6 +78,9 @@ type Runtime struct {
 	// reaches by provider (anthropic, openai) — a test's fake model; else
 	// $MESH_MODEL_UPSTREAM_<PROVIDER>, else each provider's API.
 	ModelUpstreams map[string]string
+	// SecurityEvery is how often a lease's security reports are sent;
+	// secreport.DefaultEvery when zero (security.go).
+	SecurityEvery time.Duration
 	// EgressDial, when set, is how a lease's egress tunnel reaches an
 	// allowed host — a test's fake host; else the host's public address.
 	EgressDial func(ctx context.Context, network, addr string) (net.Conn, error)
@@ -207,6 +211,10 @@ type running struct {
 	// access are the relay's AccessRecords of the lease, posted to Mesh
 	// when it ends.
 	access []meshapi.AccessRecord
+	// security reports what the lease's relay saw (security.go). Each
+	// relay hook holds it from its making, so a relay closing after the
+	// record has gone still reports, until the release's flush.
+	security *secreport.Reporter
 }
 
 // touch is the lease's session showing progress: its progress_at in the

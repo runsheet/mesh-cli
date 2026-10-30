@@ -82,6 +82,8 @@ type leasePod struct {
 	// exit of a pod whose kind declares its egress (egress.go); nil
 	// otherwise.
 	proxyEnv []string
+	// denied hears a step the pod's limit killed, to report (security.go).
+	denied func(error)
 }
 
 // openLeasePod opens the lease's sandbox session, pinned to its pod name
@@ -109,7 +111,8 @@ func (r *Runtime) openLeasePod(ctx context.Context, b *meshapi.Brief, workspace 
 	if err != nil {
 		return nil, err
 	}
-	p := &leasePod{sess: sess, name: PodName(b.LeaseID), gitPort: cmp.Or(r.gitBridgePort, podGitPort)}
+	p := &leasePod{sess: sess, name: PodName(b.LeaseID), gitPort: cmp.Or(r.gitBridgePort, podGitPort),
+		denied: r.sandboxReporter(b.LeaseID)}
 	if b.Egress != nil || r.sidecarMode() {
 		p.proxyEnv = proxyEnv(p.bridgeBase())
 	}
@@ -396,6 +399,9 @@ func (s podSteps) Run(ctx context.Context, cmd string, timeout time.Duration, st
 		return ee.Code, nil
 	case errors.As(err, &le):
 		fmt.Fprintf(stderr, "\nsandbox: %v\n", le)
+		if s.p.denied != nil {
+			s.p.denied(err)
+		}
 		if le.Limit == "timeout" {
 			return 124, nil
 		}

@@ -189,6 +189,10 @@ type Proxy struct {
 	// routes: a CONNECT it allows is tunnelled (internal/egress). Nil
 	// refuses every egress request.
 	Egress *egress.Tunnel
+	// EgressRefused, set, hears each egress request refused for want of
+	// any egress (Egress nil), by host and port alone, rule
+	// egress.RuleNone: the tunnel audits its own. It must not block.
+	EgressRefused func(egress.Call)
 	// NoModel refuses the /model/ route whatever Model holds: a kind
 	// whose egress reaches no model.
 	NoModel bool
@@ -398,6 +402,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if egress.IsEgress(req) {
 		if p.Egress == nil {
 			p.logf("sessionproxy: egress to %s refused: the session has no egress", req.Host)
+			if p.EgressRefused != nil {
+				p.EgressRefused(egressCall(req))
+			}
 			egress.Refuse(w, "no_egress", "this session reaches nothing beyond its relay")
 			return
 		}
@@ -713,4 +720,18 @@ func challenges(v string) []challenge {
 			out[len(out)-1].params[strings.ToLower(t)] = val
 		}
 	}
+}
+
+// egressCall is an egress request refused for want of any egress: its
+// host and port alone.
+func egressCall(req *http.Request) egress.Call {
+	host := req.Host
+	if req.Method != http.MethodConnect && req.URL != nil && req.URL.IsAbs() {
+		host = req.URL.Host
+	}
+	c := egress.Call{Host: host, Rule: egress.RuleNone, Refused: "the session has no egress"}
+	if h, p, err := net.SplitHostPort(host); err == nil {
+		c.Host, c.Port = h, p
+	}
+	return c
 }

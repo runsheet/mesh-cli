@@ -3,6 +3,7 @@ package meshapi_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -169,6 +170,28 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			var req meshapi.FinishRequest
 			decode(t, f.Request, &req)
 			return c.Finish(context.Background(), idOf(f.Path, 3), req)
+		},
+		// a relay's security reports (api ADR 001 amendment, security
+		// events): forwarded, or accepted and dropped with Tripline off
+		"lease-security": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.SecurityRequest
+			decode(t, f.Request, &req)
+			return c.Security(context.Background(), idOf(f.Path, 3), req.Reports)
+		},
+		"lease-security-off": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.SecurityRequest
+			decode(t, f.Request, &req)
+			return c.Security(context.Background(), idOf(f.Path, 3), req.Reports)
+		},
+		"lease-security-refused": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.SecurityRequest
+			decode(t, f.Request, &req)
+			_, err := c.Security(context.Background(), idOf(f.Path, 3), req.Reports)
+			var e *meshapi.Error
+			if !errors.As(err, &e) || e.Status != 422 || e.Code != "refused" {
+				t.Errorf("lease-security-refused: %v", err)
+			}
+			return nil, nil
 		},
 		"lease-fail": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
 			var req meshapi.FailRequest
