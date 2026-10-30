@@ -36,6 +36,8 @@ const Port = "443"
 // any case), on Port alone. The zero Policy allows nothing.
 type Policy struct {
 	hosts map[string]bool
+	// fixed are the hosts that are fixed upstreams, not the kind's.
+	fixed map[string]bool
 	// ports are the other ports a fixed upstream named as host:port may
 	// be reached on (a self-hosted Latchkey or vendor on a port of its
 	// own); never a kind's host.
@@ -50,10 +52,13 @@ type Policy struct {
 // address alone as every host is: a lease whose kind declares no egress
 // keeps the internet by HTTPS it had, now only through its tunnel.
 func (p *Policy) Open() *Policy {
-	cp := &Policy{hosts: map[string]bool{}, ports: map[string]map[string]bool{}, open: true}
+	cp := &Policy{hosts: map[string]bool{}, fixed: map[string]bool{}, ports: map[string]map[string]bool{}, open: true}
 	if p != nil {
 		for h := range p.hosts {
 			cp.hosts[h] = true
+		}
+		for h := range p.fixed {
+			cp.fixed[h] = true
 		}
 		for h, ports := range p.ports {
 			cp.ports[h] = ports
@@ -69,7 +74,7 @@ func (p *Policy) Open() *Policy {
 // host, the git and model vendors), which no narrowing removes. Hosts
 // are compared lower-cased without a trailing dot.
 func NewPolicy(kind []string, tenant []string, fixed []string) *Policy {
-	p := &Policy{hosts: map[string]bool{}}
+	p := &Policy{hosts: map[string]bool{}, fixed: map[string]bool{}}
 	var allowed map[string]bool
 	if tenant != nil {
 		allowed = map[string]bool{}
@@ -99,9 +104,42 @@ func NewPolicy(kind []string, tenant []string, fixed []string) *Policy {
 		}
 		if h = norm(h); h != "" {
 			p.hosts[h] = true
+			p.fixed[h] = true
 		}
 	}
 	return p
+}
+
+// The rules a tunnel's request is allowed or refused by, as its Call
+// names them: content-free names Mesh forwards to Tripline (projectmesh-io/api
+// ADR 001 amendment, security events).
+const (
+	RuleHosts    = "egress.hosts"    // the kind's egress hosts
+	RuleFixed    = "egress.fixed"    // a fixed upstream of the relay's own
+	RuleOpen     = "egress.open"     // a kind with no egress: any host by HTTPS
+	RulePort     = "egress.port"     // only port 443
+	RuleHTTPS    = "egress.https"    // only HTTPS by CONNECT
+	RuleSNI      = "egress.sni"      // the TLS server name is the host asked
+	RuleHello    = "egress.hello"    // no TLS ClientHello came
+	RuleDial     = "egress.dial"     // the host could not be reached on a public address
+	RuleInternal = "egress.internal" // the relay could not open a tunnel
+	RuleNone     = "egress.none"     // the session has no egress at all
+)
+
+// rule is the rule that allows host:port, which Allow has allowed.
+func (p *Policy) rule(host, port string) string {
+	h := norm(host)
+	switch {
+	case p == nil:
+		return RuleHosts
+	case port != Port && p.ports[h][port], p.fixed[h]:
+		return RuleFixed
+	case p.hosts[h]:
+		return RuleHosts
+	case p.open:
+		return RuleOpen
+	}
+	return RuleHosts
 }
 
 func norm(h string) string { return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(h)), ".") }
@@ -143,6 +181,9 @@ type Tunnel struct {
 	// or not: the host and port asked, whether it was allowed and why
 	// not. It must not block.
 	Audit func(Call)
+	// Done hears each allowed tunnel once it has closed, with the bytes
+	// it carried both ways. It must not block.
+	Done func(Call)
 	// Logf takes the tunnel's lines; nothing is logged when nil.
 	Logf func(format string, args ...any)
 	// HelloTimeout bounds the wait for the ClientHello after the tunnel
@@ -163,6 +204,10 @@ type Call struct {
 	Allowed bool
 	// Refused is why it was refused, "" when it was allowed.
 	Refused string
+	// Rule names the rule that allowed or refused it (Rule*).
+	Rule string
+	// Bytes are what an allowed tunnel carried both ways, in Done.
+	Bytes int64
 }
 
 // RefusedHeader names the relay's refusal of an egress request.
@@ -189,24 +234,31 @@ func (t *Tunnel) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		host, port = h, pt
 	}
 	call := Call{Host: host, Port: port}
-	refused := func(why string) {
-		call.Refused = why
+	if req.Method != http.MethodConnect && req.URL != nil && req.URL.IsAbs() {
+		call.Host, call.Port = req.URL.Hostname(), req.URL.Port()
+	}
+	refused := func(rule, why string) {
+		call.Refused, call.Rule = why, rule
 		t.audit(call)
 		t.logf("egress: %s refused: %s", req.Host, why)
 	}
 	if req.Method != http.MethodConnect {
-		refused("only HTTPS, by CONNECT to port 443, leaves the relay")
+		refused(RuleHTTPS, "only HTTPS, by CONNECT to port 443, leaves the relay")
 		Refuse(w, "not_https", call.Refused)
 		return
 	}
 	if ok, code, why := t.Policy.Allow(host, port); !ok {
-		refused(why)
+		rule := RuleHosts
+		if code == "port" {
+			rule = RulePort
+		}
+		refused(rule, why)
 		Refuse(w, code, why)
 		return
 	}
 	hj, ok := w.(http.Hijacker)
 	if !ok {
-		refused("the relay cannot open a tunnel here")
+		refused(RuleInternal, "the relay cannot open a tunnel here")
 		Refuse(w, "internal", call.Refused)
 		return
 	}
@@ -229,11 +281,11 @@ func (t *Tunnel) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	sni, hello, err := readClientHello(brw.Reader)
 	_ = conn.SetReadDeadline(time.Time{})
 	if err != nil {
-		refused("no TLS ClientHello: " + err.Error())
+		refused(RuleHello, "no TLS ClientHello: "+err.Error())
 		return
 	}
 	if norm(sni) != norm(host) {
-		refused(fmt.Sprintf("the TLS server name %q is not the host asked for", sni))
+		refused(RuleSNI, fmt.Sprintf("the TLS server name %q is not the host asked for", sni))
 		return
 	}
 	dial := t.Dial
@@ -244,16 +296,22 @@ func (t *Tunnel) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	up, err := dial(ctx, "tcp", net.JoinHostPort(host, port))
 	cancel()
 	if err != nil {
-		refused("dial: " + err.Error())
+		refused(RuleDial, "dial: "+err.Error())
 		return
 	}
 	defer up.Close()
-	call.Allowed = true
+	call.Allowed, call.Rule = true, t.Policy.rule(host, port)
 	t.audit(call)
-	if _, err := up.Write(hello); err != nil {
-		return
+	n, err := up.Write(hello)
+	if err == nil {
+		sent, got := pipe(conn, brw.Reader, up)
+		n += int(sent)
+		call.Bytes = got
 	}
-	pipe(conn, brw.Reader, up)
+	call.Bytes += int64(n)
+	if t.Done != nil {
+		t.Done(call)
+	}
 }
 
 func (t *Tunnel) audit(c Call) {
@@ -332,21 +390,23 @@ func (t *Tunnel) Close() error {
 }
 
 // pipe copies client (read through r, which holds what the hijack
-// buffered) to up and up to client until either side ends.
-func pipe(client net.Conn, r io.Reader, up net.Conn) {
+// buffered) to up and up to client until either side ends, and answers
+// the bytes each way.
+func pipe(client net.Conn, r io.Reader, up net.Conn) (sent, got int64) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(up, r)
+		sent, _ = io.Copy(up, r)
 		closeWrite(up)
 	}()
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(client, up)
+		got, _ = io.Copy(client, up)
 		closeWrite(client)
 	}()
 	wg.Wait()
+	return sent, got
 }
 
 func closeWrite(c net.Conn) {

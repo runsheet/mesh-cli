@@ -41,17 +41,14 @@ func (r *Runtime) egressTunnel(b *meshapi.Brief) *egress.Tunnel {
 	if b.Egress == nil {
 		return nil
 	}
+	// each request is reported (security.go)
+	report := r.egressReporter(b.LeaseID)
 	return &egress.Tunnel{
 		Policy: egress.NewPolicy(b.Egress.Hosts, tenantHosts(b), nil),
 		Dial:   r.EgressDial,
 		Logf:   r.logf,
-		Audit: func(c egress.Call) {
-			if c.Allowed {
-				r.logf("nodev1: lease %s: egress to %s:%s", b.LeaseID, c.Host, c.Port)
-				return
-			}
-			r.logf("nodev1: lease %s: egress to %s:%s refused: %s", b.LeaseID, c.Host, c.Port, c.Refused)
-		},
+		Audit:  r.tunnelAudit(b.LeaseID, "egress", report),
+		Done:   report,
 	}
 }
 

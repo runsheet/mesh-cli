@@ -178,18 +178,26 @@ func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe 
 		// now only through the tunnel
 		policy = policy.Open()
 	}
+	// every request of the sidecar's tunnel is reported, as the
+	// in-process relay's (security.go)
+	report := r.egressReporter(b.LeaseID)
+	audit := r.tunnelAudit(b.LeaseID, "the relay sidecar's tunnel", report)
 	rs.tunnel = &egress.Tunnel{
 		Policy: policy, Dial: r.EgressDial, Logf: r.logf,
 		Audit: func(c egress.Call) {
 			if !c.Allowed {
-				r.logf("nodev1: lease %s: the relay sidecar's tunnel to %s:%s refused: %s", b.LeaseID, c.Host, c.Port, c.Refused)
+				audit(c)
 			}
 		},
+		Done: report,
 	}
 	rs.node = &relaysidecar.Node{
 		Tunnel: rs.tunnel, Proxy: np, Renew: rs.renew, Logf: r.logf,
 		Access:  func(rec meshapi.AccessRecord) { r.keepAccess(b.LeaseID, rec) },
 		Observe: observe,
+		// what the sidecar itself refused, which the node posts: the
+		// sidecar holds no machine token
+		Security: r.securityReporter(b.LeaseID),
 	}
 	if gate != nil {
 		rs.node.Stop = gate.handler()
