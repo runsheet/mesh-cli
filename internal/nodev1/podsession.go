@@ -78,6 +78,10 @@ type leasePod struct {
 	shim string
 	// gitPort is the bridge's port in the pod (podGitPort).
 	gitPort int
+	// proxyEnv points the pod's agent and steps at the relay, the only
+	// exit of a pod whose kind declares its egress (egress.go); nil
+	// otherwise.
+	proxyEnv []string
 }
 
 // openLeasePod opens the lease's sandbox session, pinned to its pod name
@@ -87,6 +91,10 @@ type leasePod struct {
 func (r *Runtime) openLeasePod(ctx context.Context, b *meshapi.Brief, workspace string, a *actor.Actor, keep func(string, func() error)) (*leasePod, error) {
 	sb := r.Pods.WithReserve(nil) // the scheduler holds the lease's CPUs
 	sb.TempDir = r.leaseDir(b.LeaseID)
+	if b.Egress != nil {
+		// the relay is the pod's only exit: no port out, no DNS
+		sb.Config.Network = sb.Config.Network.RelayOnly()
+	}
 	if err := os.MkdirAll(sb.TempDir, 0o700); err != nil {
 		return nil, err
 	}
@@ -96,6 +104,9 @@ func (r *Runtime) openLeasePod(ctx context.Context, b *meshapi.Brief, workspace 
 		return nil, err
 	}
 	p := &leasePod{sess: sess, name: PodName(b.LeaseID), gitPort: cmp.Or(r.gitBridgePort, podGitPort)}
+	if b.Egress != nil {
+		p.proxyEnv = proxyEnv(p.bridgeBase())
+	}
 	sess.Pin(p.name, map[string]string{PodLeaseLabel: b.LeaseID, PodJobLabel: b.JobID, PodNodeLabel: r.NodeID()})
 	sess.SetLimits(limitsOf(b.Resources))
 	closeSess := func() error {
@@ -238,7 +249,7 @@ func (p *leasePod) podServers(servers map[string]any, sockDir string) (map[strin
 // (sessionAccount.podEnv).
 func (p *leasePod) run(workspace, gitBase, sock string, model bool) (PodRun, error) {
 	var bridge string
-	if gitBase != "" || model {
+	if gitBase != "" || model || p.proxyEnv != nil {
 		path, err := p.sess.WriteFile(gitBridgeName, gitBridgeScript())
 		if err != nil {
 			return nil, fmt.Errorf("the pod's git bridge: %w", err)
@@ -261,6 +272,7 @@ func (p *leasePod) run(workspace, gitBase, sock string, model bool) (PodRun, err
 			if gitBase != "" {
 				vars = append(vars, bridgeGitConfig(gitBase, p.gitPort)...)
 			}
+			vars = append(vars, p.proxyEnv...)
 		}
 		return p.sess.RunAgent(ctx, sandbox.RunSpec{Workspace: workspace, Env: jobEnv, Vars: vars, Command: cmd, Stdin: stdin, Stdout: stdout, Stderr: stderr})
 	}, nil
@@ -357,7 +369,7 @@ type podSteps struct {
 }
 
 func (s podSteps) Run(ctx context.Context, cmd string, timeout time.Duration, stdout, stderr io.Writer) (int, error) {
-	err := s.p.sess.Exec(ctx, sandbox.RunSpec{Workspace: s.dir, Command: []string{"sh", "-c", cmd}, Timeout: timeout, Stdout: stdout, Stderr: stderr, Vars: []string{"GIT_TERMINAL_PROMPT=0"}})
+	err := s.p.sess.Exec(ctx, sandbox.RunSpec{Workspace: s.dir, Command: []string{"sh", "-c", cmd}, Timeout: timeout, Stdout: stdout, Stderr: stderr, Vars: append([]string{"GIT_TERMINAL_PROMPT=0"}, s.p.proxyEnv...)})
 	var ee *sandbox.ExitError
 	var le *sandbox.LimitError
 	switch {
