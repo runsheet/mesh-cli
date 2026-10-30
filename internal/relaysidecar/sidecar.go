@@ -150,6 +150,7 @@ func New(creds Credentials, nodeSocket string) (*Sidecar, error) {
 			RefreshBefore: gitRefreshBefore,
 			Mint:          s.gitToken,
 			IsAncestor:    checkoutAncestry(g.Checkout),
+			Mirror:        g.Mirror,
 			Audit:         s.gitEvent,
 		}
 		s.proxy.Git = s.relay
