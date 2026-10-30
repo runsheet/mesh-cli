@@ -281,11 +281,7 @@ func TestTheGitBridge(t *testing.T) {
 	if err != nil {
 		t.Skip("no node on this machine")
 	}
-	dir, err := os.MkdirTemp("", "gb")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(dir)
+	dir := shortDir(t)
 	sock := filepath.Join(dir, "s")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
