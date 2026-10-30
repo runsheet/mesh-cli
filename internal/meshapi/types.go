@@ -198,6 +198,17 @@ type Brief struct {
 	// same as empty.
 	Tools  *BriefTools `json:"tools,omitempty"`
 	Egress *Egress     `json:"egress,omitempty"`
+	// Registry is the artifact registry the kind's sessions reach
+	// through the relay, which serves it on the session's loopback as
+	// MESH_REGISTRY (projectmesh-io/api ADR 001 amendment, registry
+	// through the relay); nil when the kind names none.
+	Registry *Registry `json:"registry,omitempty"`
+}
+
+// Registry is a brief's artifact registry: its https origin, serving the
+// OCI Distribution API at /v2/ and binaries at /artifacts/.
+type Registry struct {
+	BaseURL string `json:"base_url"`
 }
 
 // BriefTools are the tools a kind's session is served: the required

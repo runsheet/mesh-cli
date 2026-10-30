@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -107,6 +108,9 @@ type rig struct {
 	productURL string
 	rt         *Runtime
 	work       string
+	// sidecarRoots, set, are the roots a relay sidecar the rig starts
+	// trusts its upstreams by (sidecarRig).
+	sidecarRoots *x509.CertPool
 }
 
 func newRig(t *testing.T, sess Session) *rig {

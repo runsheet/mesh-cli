@@ -260,6 +260,11 @@ func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe 
 func (rs *relaySidecar) credentials(ctx context.Context, sl *slots) (relaysidecar.Credentials, error) {
 	b, tokens := rs.b, rs.tokens
 	c := relaysidecar.Credentials{Lease: b.LeaseID, API: apiRules(b), Tools: sl.filter()}
+	if b.Registry != nil {
+		// the kind's registry, which the sidecar serves on the pod's
+		// loopback (registry.go)
+		c.Registry = b.Registry.BaseURL
+	}
 	if tokens == nil {
 		return c, errors.New("the lease has no Latchkey session for its relay sidecar")
 	}
@@ -369,6 +374,9 @@ func (rs *relaySidecar) fixedUpstreams() ([]string, error) {
 				return nil, err
 			}
 		}
+	}
+	if h := registryHost(b); h != "" {
+		out = append(out, h)
 	}
 	if b.Git != nil && b.Git.Repo != "" {
 		policy := policyOf(b.Git)

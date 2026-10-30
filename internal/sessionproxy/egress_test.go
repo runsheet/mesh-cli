@@ -89,3 +89,32 @@ func TestProxyHearsEgressRefusedForWantOfEgress(t *testing.T) {
 		t.Fatalf("heard %+v", heard)
 	}
 }
+
+// The registry routes go to the lease's registry, and with none are
+// answered 404, never relayed elsewhere.
+func TestProxyServesTheRegistryRoutes(t *testing.T) {
+	p := New(nil)
+	c, _ := listen(t, p)
+	for _, path := range []string{"/v2/", "/artifacts/acme/web/cli/1/cli"} {
+		resp, err := c.Get("http://relay" + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s with no registry answered %d", path, resp.StatusCode)
+		}
+	}
+	var heard []string
+	p.Registry = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { heard = append(heard, r.URL.Path) })
+	for _, path := range []string{"/v2/", "/v2/acme/web/app/manifests/x", "/artifacts/acme/web/cli/1/cli"} {
+		resp, err := c.Get("http://relay" + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	if len(heard) != 3 {
+		t.Fatalf("the registry heard %v", heard)
+	}
+}

@@ -93,6 +93,17 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			// only the stop rules and the transcript are held to the fixture
 			return nil, err
 		},
+		"take-registry": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.TakeRequest
+			decode(t, f.Request, &req)
+			tk, err := c.Take(context.Background(), req)
+			// the kind's registry (api ADR 001 amendment, registry
+			// through the relay): only it is held to the fixture
+			if err == nil && (tk.Brief == nil || tk.Brief.Registry == nil || tk.Brief.Registry.BaseURL != "https://registry.example") {
+				t.Errorf("take-registry: the brief's registry %+v", tk.Brief)
+			}
+			return nil, err
+		},
 		"take-waiting": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
 			var req meshapi.TakeRequest
 			decode(t, f.Request, &req)

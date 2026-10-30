@@ -81,6 +81,9 @@ type Runtime struct {
 	// SecurityEvery is how often a lease's security reports are sent;
 	// secreport.DefaultEvery when zero (security.go).
 	SecurityEvery time.Duration
+	// RegistryHTTP, when set, is how the in-process relay reaches a
+	// lease's registry — a test's fake registry; else a plain client.
+	RegistryHTTP *http.Client
 	// EgressDial, when set, is how a lease's egress tunnel reaches an
 	// allowed host — a test's fake host; else the host's public address.
 	EgressDial func(ctx context.Context, network, addr string) (net.Conn, error)
