@@ -154,7 +154,8 @@ func TestRelaySidecarE2E(t *testing.T) {
 	script.WriteString(probe("direct", "curl -sS --max-time 10 --noproxy '*' https://example.com"))
 	script.WriteString(probe("allowed", "curl -fsS --max-time 30 -x "+proxy+" https://example.com"))
 	script.WriteString(probe("denied", "curl -fsS --max-time 30 -x "+proxy+" https://example.org"))
-	script.WriteString(probe("sidecarproc", "grep -qs relay-sidecar /proc/[0-9]*/cmdline"))
+	// [r]: the pattern must not match the probe's own sh and grep
+	script.WriteString(probe("sidecarproc", "grep -qs relay-sideca[r] /proc/[0-9]*/cmdline"))
 	script.WriteString(probe("environ", "grep -qs "+secret+" /proc/[0-9]*/environ"))
 	script.WriteString(probe("ownenv", "env | grep -q "+secret))
 	script.WriteString(probe("tmpfsmount", "grep -q "+RelayCredentialsDir+" /proc/self/mountinfo"))
