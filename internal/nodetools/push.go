@@ -39,8 +39,25 @@ type Grant interface {
 	Base() string
 }
 
+// PushOutcome is a push a lease's relay sidecar made for the push tool:
+// Pushed, or Refused in the relay's own words, or Failed with git's.
+type PushOutcome struct {
+	Pushed  bool
+	Refused string
+	Failed  string
+}
+
+// Pusher pushes sha to ref through the lease's relay sidecar
+// (projectmesh-io/api ADR 001 amendment "relay sidecar"): the one place
+// every push is checked, so the tool holds no git token and checks no
+// push rule itself. An error is the sidecar not answering.
+type Pusher func(ctx context.Context, ref, sha string) (PushOutcome, error)
+
 // Push is one lease's push tool.
 type Push struct {
+	// Pusher, when set, pushes in place of git through Grant: a
+	// sandboxed lease whose relay is a sidecar in its pod.
+	Pusher    Pusher
 	Grant     Grant
 	Repo      string
 	Workspace string
@@ -71,7 +88,7 @@ func (p *Push) Tool() mcptool.Tool {
 }
 
 func (p *Push) call(ctx context.Context, args map[string]any) (string, error) {
-	if p.Grant == nil || p.Repo == "" {
+	if (p.Grant == nil && p.Pusher == nil) || p.Repo == "" {
 		return "", errors.New("this job has no repository to push to")
 	}
 	ref, _ := args["ref"].(string)
@@ -109,20 +126,34 @@ func (p *Push) call(ctx context.Context, args map[string]any) (string, error) {
 		}
 	}
 	start := time.Now()
-	target := p.Grant.Base() + p.Repo + ".git"
-	out, pushErr := git(ctx, p.Workspace, "push", "--porcelain", "--no-verify", target, sha+":"+ref)
+	var refused error
+	if p.Pusher != nil {
+		res, err := p.Pusher(ctx, ref, sha)
+		switch {
+		case err != nil:
+			refused = fmt.Errorf("pushing %s to %s: %v", short(sha), ref, err)
+		case res.Refused != "":
+			refused = fmt.Errorf("the relay refused the push to %s: %s", ref, res.Refused)
+		case !res.Pushed:
+			refused = fmt.Errorf("pushing %s to %s: %s", short(sha), ref, res.Failed)
+		}
+	} else {
+		target := p.Grant.Base() + p.Repo + ".git"
+		out, pushErr := git(ctx, p.Workspace, "push", "--porcelain", "--no-verify", target, sha+":"+ref)
+		if pushErr != nil {
+			if why := p.Refusal(start); why != "" {
+				refused = fmt.Errorf("the relay refused the push to %s: %s", ref, why)
+			} else {
+				refused = fmt.Errorf("pushing %s to %s: %s", short(sha), ref, strings.ReplaceAll(lastLines(out, 5), target, "<relay>"))
+			}
+		}
+	}
 	ended := time.Now()
 
 	rec := Record{Tool: PushTool, StartedAt: start, EndedAt: ended,
 		InputDigest: InputDigest(map[string]string{"repo": p.Repo, "ref": ref, "sha": sha, "tree": tree})}
-	var refused error
-	if pushErr != nil {
+	if refused != nil {
 		rec.Exit = 1
-		if why := p.Refusal(start); why != "" {
-			refused = fmt.Errorf("the relay refused the push to %s: %s", ref, why)
-		} else {
-			refused = fmt.Errorf("pushing %s to %s: %s", short(sha), ref, strings.ReplaceAll(lastLines(out, 5), target, "<relay>"))
-		}
 		rec.Summary = refused.Error()
 	} else {
 		rec.Summary = fmt.Sprintf("pushed %s (tree %s) to %s of %s", sha, tree, ref, p.Repo)

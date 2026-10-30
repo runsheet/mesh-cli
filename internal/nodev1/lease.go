@@ -21,6 +21,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/mcptool"
 	"projectmesh.io/mesh-cli/internal/meshapi"
+	"projectmesh.io/mesh-cli/internal/nodetools"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/scheduler"
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
@@ -198,7 +199,9 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	}
 
 	var tokens *sessionTokens
-	if len(b.Servers) > 0 || b.Git != nil || len(apiRules(b)) > 0 || b.CredentialRef != "" {
+	// a relay sidecar holds the lease's session key and token whatever the
+	// brief names (relaypod.go)
+	if len(b.Servers) > 0 || b.Git != nil || len(apiRules(b)) > 0 || b.CredentialRef != "" || r.sidecarMode() {
 		var err error
 		if tokens, err = openSession(ctx, r.API, b.LeaseID, r.LatchkeyHTTP); err != nil {
 			return outcome{err: credentialFailed(err), cause: context.Cause(ctx)}
@@ -214,6 +217,11 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	var resumed *resumePoint
 	if b.Git != nil && b.Git.Repo != "" {
 		policy := policyOf(b.Git)
+		if r.sidecarMode() {
+			// every push goes through the relay sidecar: the node's own
+			// grant, for the checkout and apply_onto, only reads
+			policy.Access, policy.Push = gitrelay.Read, nil
+		}
 		// a checkout that failed because its git token was not minted is
 		// credential_timeout, not the checkout's own failure
 		var mintMu sync.Mutex
@@ -274,6 +282,14 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 			return outcome{err: fmt.Errorf("the lease's pod: %w", err), cause: context.Cause(ctx)}
 		}
 	}
+	// the lease's relay as a sidecar in its pod (relaypod.go)
+	var rs *relaySidecar
+	if r.sidecarMode() && lp != nil {
+		if rs, err = r.prepareRelaySidecar(ctx, b, lp, tokens); err != nil {
+			return outcome{err: fmt.Errorf("the lease's relay sidecar: %w", err), cause: context.Cause(ctx)}
+		}
+		keep("the relay sidecar", rs.close)
+	}
 
 	ladder := escalate.New(b.Harness.Model)
 	fin := &finishCapture{tool: b.FinishTool, learningsTool: b.LearningsTool, onFinish: mb.Finish}
@@ -293,26 +309,64 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	ctx, endLease := context.WithCancelCause(ctx)
 	defer endLease(nil)
 	suites = watchSuites(suites, endLease)
-	tools, rec := r.nodeTools(b, grant, workspace, tokens, ladder, mb, suites)
+	var pusher nodetools.Pusher
+	if rs != nil {
+		pusher = rs.pusher()
+	}
+	tools, rec := r.nodeTools(b, grant, workspace, tokens, ladder, mb, suites, pusher)
 	hb := &sessionHandBack{}
 	tools = sl.nodeTools(append(tools, r.endTools(b, fin, hb, mb)...))
-	servers, sock, closeProxy, err := r.openProxy(ctx, b, tokens, grant, tools, fin.observe, account, sl)
-	if err != nil {
-		return outcome{err: fmt.Errorf("the lease's sessionproxy: %w", err), cause: context.Cause(ctx)}
-	}
-	keep(holdProxy, func() error { closeProxy(); return nil })
-	gate := r.openStopGate(b, sock, fin, hb)
-	if gate != nil {
-		keep("the stop gate", func() error { gate.close(); return nil })
+	var (
+		servers map[string]any
+		sock    string
+		gate    *stopGate
+	)
+	if rs != nil {
+		gate = r.openStopGate(b, filepath.Join(rs.dir, relayNodeSocket), fin, hb)
+		if gate != nil {
+			keep("the stop gate", func() error { gate.close(); return nil })
+		}
+		if servers, err = rs.open(ctx, tools, fin.observe, gate, account, sl, workspace); err != nil {
+			return outcome{err: fmt.Errorf("the lease's relay sidecar: %w", err), cause: context.Cause(ctx)}
+		}
+		// the node's own product proxy, for the finish's learnings
+		sock = rs.ownSock
+	} else {
+		var closeProxy func()
+		servers, sock, closeProxy, err = r.openProxy(ctx, b, tokens, grant, tools, fin.observe, account, sl)
+		if err != nil {
+			return outcome{err: fmt.Errorf("the lease's sessionproxy: %w", err), cause: context.Cause(ctx)}
+		}
+		keep(holdProxy, func() error { closeProxy(); return nil })
+		gate = r.openStopGate(b, sock, fin, hb)
+		if gate != nil {
+			keep("the stop gate", func() error { gate.close(); return nil })
+		}
 	}
 	env := []string{"GIT_TERMINAL_PROMPT=0"}
-	if len(apiRules(b)) > 0 {
+	if len(apiRules(b)) > 0 && rs == nil {
 		env = append(env, RelaySocketEnv+"="+sock)
 	}
 	prompt := promptWithRelay(b, sock, resumed)
 	settings := gate.sessionSettings(r.MeshBinary)
 	var inPod PodRun
-	if lp != nil {
+	if rs != nil {
+		// the relay is the sidecar on the pod's loopback: the Stop hook,
+		// the servers, git, the model and the vendor API are all there
+		prompt = relayPrompt(b, leasePrompt(b, resumed))
+		if settings, err = lp.stopSettingsSidecar(gate); err != nil {
+			return outcome{err: err, cause: context.Cause(ctx)}
+		}
+		gitBase := ""
+		if grant != nil {
+			gitBase = grant.Base()
+		}
+		inPod = lp.runSidecar(workspace, gitBase)
+		if line := sandbox.ServicesLine(lp.statuses); line != "" {
+			prompt += "\n" + line + "\n"
+		}
+		pod = lp.name
+	} else if lp != nil {
 		// the pod has no mesh binary: its Stop hook is the node image's
 		// node on a shim in the HOME, on the gate's socket, which is in
 		// the mounted socket directory at its own path

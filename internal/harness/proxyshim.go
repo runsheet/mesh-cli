@@ -189,7 +189,12 @@ func ProxyShimScript() []byte {
 	return []byte(`// mesh: the sessionproxy shim; written per session.
 "use strict";
 const http = require("http");
-const socketPath = process.argv[2];
+const target = process.argv[2];
+// a unix socket's path, or the relay sidecar's loopback root
+// (http://127.0.0.1:<port>) in a pod whose relay is a sidecar
+const conn = target.startsWith("http://")
+  ? (() => { const u = new URL(target); return { host: u.hostname, port: Number(u.port) }; })()
+  : { socketPath: target };
 const serverName = process.argv[3];
 let sessionId = "";
 
@@ -206,7 +211,7 @@ function post(msg) {
     };
     if (sessionId) headers["Mcp-Session-Id"] = sessionId;
     const req = http.request(
-      { socketPath, path: "/mcp/" + serverName, method: "POST", headers },
+      { ...conn, path: "/mcp/" + serverName, method: "POST", headers },
       (res) => {
         const chunks = [];
         res.on("data", (c) => chunks.push(c));

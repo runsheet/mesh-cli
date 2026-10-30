@@ -211,6 +211,33 @@ func (a *sessionAccount) serve(p *sessionproxy.Proxy, upstreams map[string]strin
 	if !a.relays() {
 		return nil
 	}
+	p.Model = a.model(a.upstreamsWith(upstreams), logf, lease)
+	base, err := p.ListenModel()
+	if err != nil {
+		return fmt.Errorf("the lease's model relay: %w", err)
+	}
+	a.base = base
+	return nil
+}
+
+// forward has p, the node's side of a lease's socket to its relay
+// sidecar, carry the account's model calls on the forwarder's paths
+// alone (sessionproxy.ForwarderPaths): the one place the node reads HTTP
+// a pod sent, since no lease-scoped model token exists to hand the
+// sidecar. base is where the session reaches it: the sidecar's loopback.
+func (a *sessionAccount) forward(p *sessionproxy.Proxy, upstreams map[string]string, logf func(string, ...any), lease, base string) {
+	if !a.relays() {
+		return
+	}
+	m := a.model(a.upstreamsWith(upstreams), logf, lease)
+	m.Paths = sessionproxy.ForwarderPaths
+	p.Model = m
+	a.base = base
+}
+
+// upstreamsWith are each provider's origin: sessionproxy's defaults, the
+// node's own base for its own key, then upstreams.
+func (a *sessionAccount) upstreamsWith(upstreams map[string]string) map[string]string {
 	ups := map[string]string{}
 	for k, v := range sessionproxy.DefaultModelUpstreams {
 		ups[k] = v
@@ -221,7 +248,13 @@ func (a *sessionAccount) serve(p *sessionproxy.Proxy, upstreams map[string]strin
 	for k, v := range upstreams {
 		ups[k] = v
 	}
-	p.Model = &sessionproxy.Model{
+	return ups
+}
+
+// model is the account's model route to ups, logging each call against
+// the lease.
+func (a *sessionAccount) model(ups map[string]string, logf func(string, ...any), lease string) *sessionproxy.Model {
+	return &sessionproxy.Model{
 		Upstreams:  ups,
 		Credential: a.credential,
 		Log: func(c sessionproxy.ModelCall) {
@@ -235,12 +268,6 @@ func (a *sessionAccount) serve(p *sessionproxy.Proxy, upstreams map[string]strin
 			logf("%s", line)
 		},
 	}
-	base, err := p.ListenModel()
-	if err != nil {
-		return fmt.Errorf("the lease's model relay: %w", err)
-	}
-	a.base = base
-	return nil
 }
 
 // apply puts the account into the session's spec. None of the node's

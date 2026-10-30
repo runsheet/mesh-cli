@@ -258,3 +258,15 @@ func scrub(s string, secrets ...string) string {
 	}
 	return s
 }
+
+// current is a live session token and when it ends: Token's, for the
+// lease's relay sidecar, which holds it until near that end.
+func (s *sessionTokens) current(ctx context.Context) (string, time.Time, error) {
+	tok, err := s.Token(ctx)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return tok, s.expires, nil
+}

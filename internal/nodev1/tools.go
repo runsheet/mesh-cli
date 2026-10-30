@@ -23,7 +23,10 @@ import (
 // suites, set, runs run_suite's steps in the lease's pod; nil runs them
 // on the host only on a node explicitly unsandboxed (hostSuites), and
 // otherwise work hands the lease back tool_unavailable (podsuites.go).
-func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace string, tokens *sessionTokens, ladder *escalate.Ladder, mb *Mailbox, suites nodetools.SuiteRunner) ([]mcptool.Tool, *nodetools.Recorder) {
+//
+// pusher, set, is how push pushes: through the lease's relay sidecar
+// (relaypod.go), never the node's own grant.
+func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace string, tokens *sessionTokens, ladder *escalate.Ladder, mb *Mailbox, suites nodetools.SuiteRunner, pusher nodetools.Pusher) ([]mcptool.Tool, *nodetools.Recorder) {
 	if len(b.NodeTools) == 0 {
 		return nil, nil
 	}
@@ -48,7 +51,7 @@ func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace s
 	for _, name := range b.NodeTools {
 		switch name {
 		case nodetools.PushTool:
-			p := &nodetools.Push{Grant: g, Repo: repo, Workspace: workspace, Recorder: rec,
+			p := &nodetools.Push{Grant: g, Pusher: pusher, Repo: repo, Workspace: workspace, Recorder: rec,
 				Refusal: func(since time.Time) string { return r.refusalSince(b.LeaseID, since) }}
 			out = append(out, p.Tool())
 		case nodetools.RunSuiteTool:

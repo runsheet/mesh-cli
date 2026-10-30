@@ -117,15 +117,21 @@ func (g *stopGate) open(dir string) error {
 	if err != nil {
 		return fmt.Errorf("the stop gate's socket: %w", err)
 	}
+	g.srv = &http.Server{Handler: g.handler(), ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = g.srv.Serve(ln) }()
+	return nil
+}
+
+// handler answers POST /stop: the gate's own socket's, and the lease's
+// socket's when the relay is a sidecar that forwards the hook to it.
+func (g *stopGate) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /stop", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 64<<10))
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(g.decide())
 	})
-	g.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	go func() { _ = g.srv.Serve(ln) }()
-	return nil
+	return mux
 }
 
 // close stops serving and removes the socket.

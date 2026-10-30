@@ -68,6 +68,15 @@ type Credentials struct {
 	Servers []Server `json:"servers,omitempty"`
 	// Git is the job's git, nil when it has none.
 	Git *Git `json:"git,omitempty"`
+	// Tools are the kind's product tool slots (sessionproxy.ToolFilter):
+	// the product tools the session is served, each to its description;
+	// nil serves the product's tools as they are.
+	Tools map[string]string `json:"tools,omitempty"`
+	// Watch are the product tools whose calls the node must hear — the
+	// kind's finish and learnings tools — by their bare names: the
+	// sidecar sends each such call and its answer to the node
+	// (ObservePath), which reads the finish from the product's own words.
+	Watch []string `json:"watch,omitempty"`
 }
 
 // Server is a product MCP server: its name at /mcp/<name> and its URL.
