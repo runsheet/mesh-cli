@@ -423,3 +423,51 @@ func TestSidecarFetchesAReadRepoOnATokenTheNodeMints(t *testing.T) {
 		t.Fatalf("%d access records name acme/lib, want 3", lib)
 	}
 }
+
+// A filled tool slot (ADR 001 amendment, slot bindings) is served at
+// /mcp/<slot> through the node's tunnel to Latchkey's proxy for its
+// binding, on the lease's DPoP session token, held to its one tool under
+// the kind's description; a slot needs a Latchkey origin.
+func TestSidecarServesAFilledSlotThroughLatchkey(t *testing.T) {
+	var mu sync.Mutex
+	var seen []string
+	latchkey := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.URL.Path+" "+r.Header.Get("Authorization"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		b, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(b), "tools/list") {
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"web_search","description":"vendor words"},{"name":"other","description":"x"}]}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"found"}]}}`)
+	})
+	c := testCreds(t)
+	c.Slots = []Slot{{Name: "web_search", Description: "Search the web.", Binding: "bind-1"}}
+	c.API, c.Latchkey = nil, ""
+	if err := c.Validate(); err == nil {
+		t.Fatal("slots without a Latchkey origin were accepted")
+	}
+	c.Latchkey = "https://latchkey.example.com"
+	g := newRig(t, c, map[string]http.Handler{"latchkey.example.com:443": latchkey})
+
+	code, body := g.post("/mcp/web_search", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	if code != 200 || !strings.Contains(body, `"Search the web."`) || strings.Contains(body, "other") || strings.Contains(body, "vendor words") {
+		t.Fatalf("the slot's list answered %d %s", code, body)
+	}
+	code, body = g.post("/mcp/web_search", `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"web_search","arguments":{}}}`)
+	if code != 200 || !strings.Contains(body, "found") {
+		t.Fatalf("the slot's call answered %d %s", code, body)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 2 {
+		t.Fatalf("Latchkey saw %q", seen)
+	}
+	for _, s := range seen {
+		if s != "/v1/connections/for-job/bind-1/mcp DPoP "+sessionSecret {
+			t.Errorf("Latchkey saw %q, want the binding's route on the session token", s)
+		}
+	}
+}

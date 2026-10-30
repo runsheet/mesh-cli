@@ -279,3 +279,31 @@ func TestASidecarSessionsStopHookReachesTheGate(t *testing.T) {
 		t.Fatalf("the Stop hook through the sidecar answered %q, want a refusal", answer)
 	}
 }
+
+// A sidecar lease's filled tool slots (ADR 001 amendment, slot bindings)
+// go into the sidecar's credentials as names, descriptions and binding
+// refs with Latchkey's origin, never a connection's credential; an
+// unfilled optional slot is not handed over.
+func TestASidecarIsHandedItsFilledSlots(t *testing.T) {
+	g, sb, installed := sidecarRig(t)
+	sb.Agent = hostAgent(t, filepath.Join(t.TempDir(), "claude"), "")
+	g.offer(t, func(b *meshapi.Brief) {
+		b.FinishTool, b.FinishSchema = "", nil
+		b.Tools = &meshapi.BriefTools{Optional: []meshapi.SlotTool{
+			{Name: "web_search", From: meshapi.ToolFromConnection, Description: "Search the web.", Binding: "bind-1"},
+			{Name: "library_docs", From: meshapi.ToolFromConnection, Description: "Read docs."},
+		}}
+	})
+	run(t, g, context.Background())
+	if len(*installed) == 0 {
+		t.Fatal("the sidecar was handed nothing")
+	}
+	var c relaysidecar.Credentials
+	if err := json.Unmarshal((*installed)[0], &c); err != nil {
+		t.Fatal(err)
+	}
+	want := []relaysidecar.Slot{{Name: "web_search", Description: "Search the web.", Binding: "bind-1"}}
+	if !slices.Equal(c.Slots, want) || c.Latchkey == "" {
+		t.Fatalf("the sidecar's slots %+v (latchkey %q), want %+v", c.Slots, c.Latchkey, want)
+	}
+}
