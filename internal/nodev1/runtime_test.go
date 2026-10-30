@@ -326,8 +326,9 @@ func getViaSocket(sock, path string) int {
 	return resp.StatusCode
 }
 
-// Mesh refusing the lease's session hands the job back: the node cannot
-// run it without its key to Latchkey.
+// Mesh refusing the lease's session hands the job back
+// credential_timeout (mesh-specs gap 14): the node cannot run it without
+// its key to Latchkey.
 func TestASessionMeshRefusesHandsBack(t *testing.T) {
 	g := newRig(t, &stubSession{})
 	g.fake.Session = func(string, string) (*meshapi.SessionCredential, int) { return nil, http.StatusServiceUnavailable }
@@ -335,7 +336,7 @@ func TestASessionMeshRefusesHandsBack(t *testing.T) {
 	run(t, g, context.Background())
 	var hb meshapi.HandBackRequest
 	json.Unmarshal(g.fake.Calls("hand-back")[0].Body, &hb)
-	if g.fake.Ended(g.fake.LeaseOf(job)) != "hand-back" || hb.Cause != meshapi.CauseCannotRun || !strings.Contains(hb.Reason, "session") {
+	if g.fake.Ended(g.fake.LeaseOf(job)) != "hand-back" || hb.Cause != meshapi.CauseCredentialTimeout || !strings.Contains(hb.Reason, "session") {
 		t.Fatalf("%+v", hb)
 	}
 }

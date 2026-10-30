@@ -226,7 +226,7 @@ func TestAPodSessionKilledIsPodKilled(t *testing.T) {
 			job := g.offer(t, nil)
 			run(t, g, context.Background())
 			hb := onlyHandBack(t, g, job)
-			if hb.Cause != meshapi.CausePodKilled {
+			if hb.Cause != meshapi.CausePodKilled || hb.ExitCode != 137 {
 				t.Fatalf("hand-back %+v", hb)
 			}
 			assertReleased(t, g, job)

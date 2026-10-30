@@ -41,7 +41,9 @@ type fakeLatchkey struct {
 	model       modelCredential
 	refuseModel string
 	modelReads  int
-	n           int
+	// refuseSource, when set, is why the source mint refuses
+	refuseSource string
+	n            int
 }
 
 // fakeModelSecret is the fake account's secret.
@@ -152,6 +154,13 @@ func (l *fakeLatchkey) source(w http.ResponseWriter, r *http.Request) {
 		Token      string `json:"token"`
 	}
 	json.NewDecoder(r.Body).Decode(&body)
+	l.mu.Lock()
+	refuse := l.refuseSource
+	l.mu.Unlock()
+	if r.Method == http.MethodPost && refuse != "" {
+		l.fail(w, http.StatusServiceUnavailable, refuse)
+		return
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if r.Method == http.MethodPost {
