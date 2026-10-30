@@ -102,6 +102,10 @@ type Git struct {
 	// Checkout is the lease's checkout as the sidecar has it mounted
 	// (read-only), where a push's fast-forward is proved.
 	Checkout string `json:"checkout,omitempty"`
+	// Mirror is the node's mirror of the repository as the sidecar has
+	// it mounted (read-only), "" for none: a fetch it can answer is
+	// answered from it, anything else goes upstream (gitrelay.Relay.Mirror).
+	Mirror string `json:"mirror,omitempty"`
 }
 
 // Token is a credential and when it ends.

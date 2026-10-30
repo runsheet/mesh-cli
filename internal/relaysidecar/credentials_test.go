@@ -162,3 +162,20 @@ func TestCredentialsRegistryIsAnHTTPSOrigin(t *testing.T) {
 		}
 	}
 }
+
+// The sidecar's relay fetches from the mirror its credentials name, and
+// from none when they name none.
+func TestSidecarsRelayReadsTheNamedMirror(t *testing.T) {
+	for _, mirror := range []string{"", "/srv/mesh/mirrors/acme/github/github.com/acme/app.git"} {
+		c := testCreds(t)
+		c.Git.Mirror = mirror
+		s, err := New(c, filepath.Join(t.TempDir(), "n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.relay == nil || s.relay.Mirror != mirror {
+			t.Fatalf("mirror %q: the relay reads %+v", mirror, s.relay)
+		}
+		s.Close()
+	}
+}
