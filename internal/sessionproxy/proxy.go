@@ -23,6 +23,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/egress"
 	"projectmesh.io/mesh-cli/internal/mcprelay"
+	"projectmesh.io/mesh-cli/internal/registryrelay"
 	"projectmesh.io/mesh-cli/internal/tools"
 )
 
@@ -196,6 +197,10 @@ type Proxy struct {
 	// NoModel refuses the /model/ route whatever Model holds: a kind
 	// whose egress reaches no model.
 	NoModel bool
+	// Registry, when set, serves the lease's artifact registry at /v2/
+	// and /artifacts/ (internal/registryrelay), the session's
+	// MESH_REGISTRY. Nil answers those routes 404.
+	Registry http.Handler
 
 	mu sync.Mutex
 	// servedTools are the tools each filtered server presented.
@@ -409,6 +414,14 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		p.Egress.ServeHTTP(w, req)
+		return
+	}
+	if registryrelay.Serves(req.URL.Path) {
+		if p.Registry == nil {
+			http.Error(w, "sessionproxy: this session has no registry", http.StatusNotFound)
+			return
+		}
+		p.Registry.ServeHTTP(w, req)
 		return
 	}
 	if strings.HasPrefix(req.URL.Path, GitPrefix) {

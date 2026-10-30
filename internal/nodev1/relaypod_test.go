@@ -71,6 +71,7 @@ func sidecarRig(t *testing.T) (*rig, *sandbox.Fake, *[][]byte) {
 				Listen:         "127.0.0.1:" + strconv.Itoa(g.rt.gitBridgePort),
 				Logf:           t.Logf,
 				Ready:          func(string) { close(ready) },
+				RootCAs:        g.sidecarRoots,
 			})
 			if err != nil {
 				t.Logf("the relay sidecar: %v", err)

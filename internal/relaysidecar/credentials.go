@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,6 +78,10 @@ type Credentials struct {
 	// sidecar sends each such call and its answer to the node
 	// (ObservePath), which reads the finish from the product's own words.
 	Watch []string `json:"watch,omitempty"`
+	// Registry is the brief's artifact registry, its https origin, which
+	// the sidecar serves on the pod's loopback at /v2/ and /artifacts/
+	// (internal/registryrelay); "" when the kind names none.
+	Registry string `json:"registry,omitempty"`
 }
 
 // Server is a product MCP server: its name at /mcp/<name> and its URL.
@@ -146,6 +151,11 @@ func (c Credentials) Validate() error {
 	}
 	if c.Git != nil && c.Git.Policy.Repo == "" {
 		return errors.New("relaysidecar: git without a repository")
+	}
+	if c.Registry != "" {
+		if u, err := url.Parse(c.Registry); err != nil || u.Scheme != "https" || u.Host == "" {
+			return fmt.Errorf("relaysidecar: the registry %q is not an https origin", c.Registry)
+		}
 	}
 	return nil
 }
