@@ -322,7 +322,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		gate    *stopGate
 	)
 	if rs != nil {
-		gate = r.openStopGate(b, filepath.Join(rs.dir, relayNodeSocket), fin, hb)
+		gate = r.openStopGate(b, filepath.Join(rs.dir, relayNodeSocket), fin, hb, rec)
 		if gate != nil {
 			keep("the stop gate", func() error { gate.close(); return nil })
 		}
@@ -338,7 +338,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 			return outcome{err: fmt.Errorf("the lease's sessionproxy: %w", err), cause: context.Cause(ctx)}
 		}
 		keep(holdProxy, func() error { closeProxy(); return nil })
-		gate = r.openStopGate(b, sock, fin, hb)
+		gate = r.openStopGate(b, sock, fin, hb, rec)
 		if gate != nil {
 			keep("the stop gate", func() error { gate.close(); return nil })
 		}

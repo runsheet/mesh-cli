@@ -22,8 +22,9 @@ type Recorder struct {
 	Signer *Signer
 	Mesh   Poster
 
-	mu  sync.Mutex
-	ids []string
+	mu    sync.Mutex
+	ids   []string
+	tools map[string]bool
 }
 
 // Record signs and posts r, its output (when any) uploaded first as the
@@ -62,8 +63,23 @@ func (rc *Recorder) Record(ctx context.Context, r Record, output []byte) (string
 	}
 	rc.mu.Lock()
 	rc.ids = append(rc.ids, id)
+	if rc.tools == nil {
+		rc.tools = map[string]bool{}
+	}
+	rc.tools[r.Tool] = true
 	rc.mu.Unlock()
 	return id, nil
+}
+
+// Recorded says whether a record of tool has been posted for the lease:
+// what Mesh's finish guard counts toward the kind's evidence_required.
+func (rc *Recorder) Recorded(tool string) bool {
+	if rc == nil {
+		return false
+	}
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	return rc.tools[tool]
 }
 
 // IDs are the evidence ids of every record posted, in order.
