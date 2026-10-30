@@ -137,6 +137,13 @@ func (s *Signer) certificate(ctx context.Context, idToken string, key *ecdsa.Pri
 		} `json:"signedCertificateDetachedSct"`
 	}
 	if err := s.post(ctx, strings.TrimRight(s.FulcioURL, "/")+"/api/v2/signingCert", req, &out); err != nil {
+		var he *HTTPError
+		if errors.As(err, &he) && he.Status/100 == 4 {
+			// Fulcio's answer only says "There was an error processing
+			// the identity token": name what the token claims, so a
+			// wrong audience or issuer is plain from the node's side
+			return nil, fmt.Errorf("sigstore: fulcio: %w (the identity token's %s)", err, tokenNames(idToken))
+		}
 		return nil, fmt.Errorf("sigstore: fulcio: %w", err)
 	}
 	var certs []string
@@ -178,6 +185,27 @@ func (s *Signer) logEnvelope(ctx context.Context, envelope []byte, leaf string) 
 	return string(out), nil
 }
 
+// HTTPError is Fulcio's or Rekor's answer when it is not a 2xx: its
+// status and body.
+type HTTPError struct {
+	Status int
+	Text   string // the status line's text, e.g. "400 Bad Request"
+	Body   string
+}
+
+func (e *HTTPError) Error() string { return strings.TrimSpace(e.Text + ": " + e.Body) }
+
+// Permanent is whether the answer is a refusal that asking again will
+// not change: a 4xx other than 408 (timeout) and 429 (too many).
+func (e *HTTPError) Permanent() bool {
+	return e.Status/100 == 4 && e.Status != http.StatusRequestTimeout && e.Status != http.StatusTooManyRequests
+}
+
+// post sends one request on a connection of its own (Close): a signing
+// is rare, and a pooled connection kept between tries is closed by
+// Fulcio after its idle-connection-timeout (30 s by default) — a try
+// that reuses it as the server closes it fails with a bare EOF, since a
+// POST is not replayed.
 func (s *Signer) post(ctx context.Context, url string, in, out any) error {
 	body, err := json.Marshal(in)
 	if err != nil {
@@ -189,6 +217,7 @@ func (s *Signer) post(ctx context.Context, url string, in, out any) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	req.Close = true
 	c := s.HTTP
 	if c == nil {
 		c = &http.Client{Timeout: 30 * time.Second}
@@ -200,9 +229,30 @@ func (s *Signer) post(ctx context.Context, url string, in, out any) error {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(raw)))
+		return &HTTPError{Status: resp.StatusCode, Text: resp.Status, Body: strings.TrimSpace(string(raw))}
 	}
 	return json.Unmarshal(raw, out)
+}
+
+// tokenNames is what a JWT says of itself that Fulcio checks — its aud
+// and iss, unverified — for an error; never the token.
+func tokenNames(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return "is not a JWT"
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "claims are not base64url"
+	}
+	var c struct {
+		Aud any    `json:"aud"`
+		Iss string `json:"iss"`
+	}
+	if json.Unmarshal(raw, &c) != nil {
+		return "claims are not JSON"
+	}
+	return fmt.Sprintf("aud is %v, iss %q", c.Aud, c.Iss)
 }
 
 // subjectOf is a JWT's sub claim, unverified: Fulcio verifies the token.

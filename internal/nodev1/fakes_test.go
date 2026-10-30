@@ -1,6 +1,7 @@
 package nodev1
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -44,6 +45,8 @@ type fakeLatchkey struct {
 	modelReads  int
 	// refuseSource, when set, is why the source mint refuses
 	refuseSource string
+	// signingMints counts the sigstore-audience ID tokens minted
+	signingMints int
 	n            int
 }
 
@@ -93,8 +96,19 @@ func (l *fakeLatchkey) sessionToken(w http.ResponseWriter, r *http.Request) {
 	sid, ok := l.creds[cred]
 	jkt := l.jkt[sid]
 	l.mu.Unlock()
-	if !ok || r.URL.Query().Get("session") != sid || r.URL.Query().Get("audience") != MeshSessionAudience {
+	aud := r.URL.Query().Get("audience")
+	if !ok || r.URL.Query().Get("session") != sid || (aud != MeshSessionAudience && aud != SigstoreAudience) {
 		l.fail(w, http.StatusUnauthorized, "request token not valid for this session")
+		return
+	}
+	if aud == SigstoreAudience {
+		// Fulcio's ID token: never DPoP-bound, a proof not read (Latchkey
+		// ADR 017 decision 3), answered without token_type
+		claims, _ := json.Marshal(map[string]any{"sub": "mesh:acme/conform:job:" + sid + ":lease:1", "aud": SigstoreAudience, "iss": l.srv.URL})
+		l.mu.Lock()
+		l.signingMints++
+		l.mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]any{"value": "eyJhbGciOiJSUzI1NiJ9." + base64.RawURLEncoding.EncodeToString(claims) + ".c2ln", "expires_in": 600})
 		return
 	}
 	if err := l.v.Verify(r.Header.Get("DPoP"), dpoptest.Request{Method: r.Method, URL: l.srv.URL + r.URL.Path, JKT: jkt}); err != nil {

@@ -33,6 +33,13 @@ import (
 // MeshSessionAudience is the audience a lease's session tokens carry.
 const MeshSessionAudience = "mesh-session"
 
+// SigstoreAudience is the audience of the lease's signing token: the ID
+// token Fulcio takes (Latchkey ADR 017 decision 3 and its amendment of
+// 2026-10-30), its client id `sigstore`. Latchkey never mints it
+// DPoP-bound, since Fulcio cannot check a proof. A mesh-session token is
+// refused by Fulcio ("expected audience sigstore").
+const SigstoreAudience = "sigstore"
+
 // sourcePath is Latchkey's for-job source-token route.
 const sourcePath = "/v1/credentials/for-job/source"
 
@@ -50,6 +57,10 @@ type sessionTokens struct {
 	mu      sync.Mutex
 	token   string
 	expires time.Time
+	// signing is the lease's sigstore-audience ID token of the moment
+	// (SigningToken) and when it ends
+	signing        string
+	signingExpires time.Time
 }
 
 // openSession makes the lease's key and has Mesh open its session.
@@ -119,6 +130,51 @@ func (s *sessionTokens) Token(ctx context.Context) (string, error) {
 	}
 	s.token, s.expires = out.Value, time.Now().Add(time.Duration(out.ExpiresIn)*time.Second)
 	return s.token, nil
+}
+
+// SigningToken answers a live ID token of the lease's session for
+// Fulcio: minted at the request URL for audience `sigstore` on the
+// request credential, unbound (Latchkey ADR 017 decision 3), and kept
+// until a minute before it ends. Its subject is the session's, so the
+// certificate Fulcio issues names the job and lease. It is held here
+// alone, like the session token, and never reaches the pod.
+func (s *sessionTokens) SigningToken(ctx context.Context) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.signing != "" && time.Now().Add(tokenRefreshBefore).Before(s.signingExpires) {
+		return s.signing, nil
+	}
+	u, err := url.Parse(s.cred.RequestURL)
+	if err != nil {
+		return "", err
+	}
+	q := u.Query()
+	q.Set("audience", SigstoreAudience)
+	u.RawQuery = q.Encode()
+	// the proof send adds is not read for an unbound audience
+	raw, status, err := s.send(ctx, http.MethodGet, u.String(), "Bearer "+s.cred.RequestToken, "", nil)
+	if err != nil {
+		return "", err
+	}
+	if status/100 != 2 {
+		return "", fmt.Errorf("%s: the signing token (audience %s) was refused: %d %s", s, SigstoreAudience, status, latchkeyMessage(raw))
+	}
+	var out struct {
+		Value     string `json:"value"`
+		ExpiresIn int    `json:"expires_in"`
+		TokenType string `json:"token_type"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return "", fmt.Errorf("%s: signing token: %w", s, err)
+	}
+	if out.Value == "" {
+		return "", fmt.Errorf("%s: Latchkey answered no signing token", s)
+	}
+	if strings.EqualFold(out.TokenType, "DPoP") {
+		return "", fmt.Errorf("%s: Latchkey answered a DPoP-bound signing token, which Fulcio cannot take", s)
+	}
+	s.signing, s.signingExpires = out.Value, time.Now().Add(time.Duration(out.ExpiresIn)*time.Second)
+	return s.signing, nil
 }
 
 // SourceRequest is Latchkey's for-job source mint (L3): the repository

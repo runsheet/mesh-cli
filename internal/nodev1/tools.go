@@ -14,9 +14,10 @@ import (
 // "Evidence signing"): run_suite, apply_onto and push, each recording
 // its signed ToolRecord through the lease's recorder, which keeps the
 // evidence ids for the finish. Each is signed keylessly as the lease's
-// session — tokens, held here alone, give Fulcio the mesh-session
-// token — or, when the node has no Fulcio and Rekor or cannot reach
-// them, by the node's own key. escalate, and a red run_suite or a
+// session — tokens, held here alone, give Fulcio the session's ID token
+// for audience `sigstore` (SigningToken), never the mesh-session token,
+// which Fulcio refuses — or, when the node has no Fulcio and Rekor or
+// cannot reach them, by the node's own key. escalate, and a red run_suite or a
 // conflicted apply_onto, move the session up the lease's ladder through
 // its mailbox (PR 2.11). A tool the node does not have never reaches
 // here: work hands the lease back tool_unavailable first (causes.go).
@@ -32,7 +33,7 @@ func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace s
 	}
 	signer := &nodetools.Signer{Sigstore: r.Sigstore, NodeKey: r.SigningKey}
 	if tokens != nil {
-		signer.Token = tokens.Token
+		signer.Token = tokens.SigningToken
 	}
 	rec := &nodetools.Recorder{
 		Lease: nodetools.Lease{JobID: b.JobID, LeaseID: b.LeaseID, LeaseN: b.LeaseN, Product: b.Product, Tenant: b.Tenant,
