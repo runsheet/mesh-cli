@@ -2,9 +2,12 @@ package relaysidecar
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -37,6 +40,9 @@ type Options struct {
 	Logf func(format string, args ...any)
 	// Ready, when set, hears the address served once it serves.
 	Ready func(addr string)
+	// RootCAs, when set, are the roots the sidecar's upstreams are
+	// trusted by: a test's own. Nil trusts the system's.
+	RootCAs *x509.CertPool
 }
 
 // Run waits for the credentials, then serves until ctx ends.
@@ -57,6 +63,11 @@ func Run(ctx context.Context, o Options) error {
 		return err
 	}
 	s.Logf = o.Logf
+	if o.RootCAs != nil {
+		if tr, ok := s.upstream.Transport.(*http.Transport); ok {
+			tr.TLSClientConfig = &tls.Config{RootCAs: o.RootCAs}
+		}
+	}
 	defer s.Close()
 	ln, err := net.Listen("tcp", o.Listen)
 	if err != nil {

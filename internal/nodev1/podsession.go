@@ -84,6 +84,9 @@ type leasePod struct {
 	proxyEnv []string
 	// denied hears a step the pod's limit killed, to report (security.go).
 	denied func(error)
+	// registryEnv names the relay's registry, MESH_REGISTRY, when the
+	// brief names one (registry.go).
+	registryEnv []string
 }
 
 // openLeasePod opens the lease's sandbox session, pinned to its pod name
@@ -116,6 +119,7 @@ func (r *Runtime) openLeasePod(ctx context.Context, b *meshapi.Brief, workspace 
 	if b.Egress != nil || r.sidecarMode() {
 		p.proxyEnv = proxyEnv(p.bridgeBase())
 	}
+	p.registryEnv = registryEnv(b, p.gitPort)
 	sess.Pin(p.name, map[string]string{PodLeaseLabel: b.LeaseID, PodJobLabel: b.JobID, PodNodeLabel: r.NodeID()})
 	sess.SetLimits(limitsOf(b.Resources))
 	closeSess := func() error {
@@ -262,7 +266,7 @@ func (p *leasePod) podServers(servers map[string]any, sockDir string) (map[strin
 // (sessionAccount.podEnv).
 func (p *leasePod) run(workspace, gitBase, sock string, model bool) (PodRun, error) {
 	var bridge string
-	if gitBase != "" || model || p.proxyEnv != nil {
+	if gitBase != "" || model || p.proxyEnv != nil || p.registryEnv != nil {
 		path, err := p.sess.WriteFile(gitBridgeName, gitBridgeScript())
 		if err != nil {
 			return nil, fmt.Errorf("the pod's git bridge: %w", err)
@@ -286,6 +290,7 @@ func (p *leasePod) run(workspace, gitBase, sock string, model bool) (PodRun, err
 				vars = append(vars, bridgeGitConfig(gitBase, p.gitPort)...)
 			}
 			vars = append(vars, p.proxyEnv...)
+			vars = append(vars, p.registryEnv...)
 		}
 		return p.sess.RunAgent(ctx, sandbox.RunSpec{Workspace: workspace, Env: jobEnv, Vars: vars, Command: cmd, Stdin: stdin, Stdout: stdout, Stderr: stderr})
 	}, nil
@@ -389,7 +394,7 @@ type podSteps struct {
 }
 
 func (s podSteps) Run(ctx context.Context, cmd string, timeout time.Duration, stdout, stderr io.Writer) (int, error) {
-	err := s.p.sess.Exec(ctx, sandbox.RunSpec{Workspace: s.dir, Command: []string{"sh", "-c", cmd}, Timeout: timeout, Stdout: stdout, Stderr: stderr, Vars: append(append([]string{"GIT_TERMINAL_PROMPT=0"}, s.p.proxyEnv...), s.env...)})
+	err := s.p.sess.Exec(ctx, sandbox.RunSpec{Workspace: s.dir, Command: []string{"sh", "-c", cmd}, Timeout: timeout, Stdout: stdout, Stderr: stderr, Vars: append(append(append([]string{"GIT_TERMINAL_PROMPT=0"}, s.p.proxyEnv...), s.p.registryEnv...), s.env...)})
 	var ee *sandbox.ExitError
 	var le *sandbox.LimitError
 	switch {
@@ -479,6 +484,7 @@ func (p *leasePod) runSidecar(workspace, gitBase string) PodRun {
 			vars = append(vars, bridgeGitConfig(gitBase, p.gitPort)...)
 		}
 		vars = append(vars, p.proxyEnv...)
+		vars = append(vars, p.registryEnv...)
 		vars = append(vars, RelayURLEnv+"="+p.bridgeBase())
 		return p.sess.RunAgent(ctx, sandbox.RunSpec{Workspace: workspace, Env: jobEnv, Vars: vars, Command: argv, Stdin: stdin, Stdout: stdout, Stderr: stderr})
 	}

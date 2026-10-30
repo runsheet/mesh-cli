@@ -20,6 +20,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/egress"
 	"projectmesh.io/mesh-cli/internal/gitrelay"
 	"projectmesh.io/mesh-cli/internal/meshapi"
+	"projectmesh.io/mesh-cli/internal/registryrelay"
 	"projectmesh.io/mesh-cli/internal/secreport"
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
 )
@@ -51,6 +52,7 @@ type Sidecar struct {
 	dialer   *Dialer
 	proxy    *sessionproxy.Proxy
 	relay    *gitrelay.Relay
+	registry *registryrelay.Relay
 	access   chan meshapi.AccessRecord
 	security chan meshapi.SecurityReport
 	done     chan struct{}
@@ -127,6 +129,12 @@ func New(creds Credentials, nodeSocket string) (*Sidecar, error) {
 				s.record(meshapi.AccessRecord{Kind: "api", Vendor: c.Vendor, Method: c.Method, Path: c.Path, Outcome: c.Outcome, Reason: c.Reason, Bytes: c.Bytes, At: c.At.UTC()})
 			},
 		}
+	}
+	if creds.Registry != "" {
+		// the lease's registry, reached through the node's tunnel on the
+		// lease's session token
+		s.registry = &registryrelay.Relay{Upstream: creds.Registry, HTTP: s.upstream, Token: s.sessionToken, Key: key, Logf: s.logf}
+		s.proxy.Registry = s.registry
 	}
 	if g := creds.Git; g != nil {
 		vendor, err := gitrelay.VendorNamed(g.Policy.Vendor)

@@ -147,3 +147,18 @@ func TestCredentialsNeverPrintASecret(t *testing.T) {
 		}
 	}
 }
+
+// A registry the sidecar is handed is an https origin, or the
+// credentials are refused.
+func TestCredentialsRegistryIsAnHTTPSOrigin(t *testing.T) {
+	for _, tc := range []struct {
+		registry string
+		ok       bool
+	}{{"", true}, {"https://api.runsheet.dev", true}, {"http://api.runsheet.dev", false}, {"api.runsheet.dev", false}} {
+		c := testCreds(t)
+		c.Registry = tc.registry
+		if err := c.Validate(); (err == nil) != tc.ok {
+			t.Errorf("registry %q: %v", tc.registry, err)
+		}
+	}
+}
