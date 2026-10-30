@@ -134,6 +134,11 @@ type Relay struct {
 	RefreshBefore time.Duration
 	// Now is the clock; time.Now when nil.
 	Now func() time.Time
+	// Mirror, set, is a bare mirror of Policy.Repo this relay may read:
+	// a fetch whose every want it holds is answered from it, and
+	// anything else goes upstream (mirror.go). A relay sidecar's, the
+	// node's mirror mounted read-only.
+	Mirror string
 
 	mu    sync.Mutex
 	token Token
@@ -195,6 +200,13 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 		body = replay
+	}
+	if service == "upload-pack" && req.Method == http.MethodPost && r.Mirror != "" {
+		served, rest := r.fromMirror(w, req, body, &ev)
+		if served {
+			return
+		}
+		body = rest
 	}
 
 	tok, err := r.tokenFor(req.Context())

@@ -93,6 +93,11 @@ type relaySidecar struct {
 	ownDir  string
 	ownSock string
 
+	// mirrors are the node's mirrors this lease's sidecar may read
+	// (relaymirrors.go), and mirror the one of its repository.
+	mirrors []string
+	mirror  string
+
 	mu     sync.Mutex
 	minted []gitrelay.Token
 	closed bool
@@ -206,6 +211,9 @@ func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe 
 	if err := rs.node.Listen(nodeSock); err != nil {
 		return nil, err
 	}
+	// the node's mirrors the sidecar may read, before its credentials
+	// name the repository's (relaymirrors.go)
+	rs.mirror, rs.mirrors = r.leaseMirrors(b)
 	creds, err := rs.credentials(ctx, sl)
 	if err != nil {
 		return nil, err
@@ -225,7 +233,7 @@ func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe 
 		return nil, err
 	}
 	spec := sandbox.RelaySpec{
-		Binary: bin, SocketDir: rs.dir, Checkout: workspace,
+		Binary: bin, SocketDir: rs.dir, Checkout: workspace, Mirrors: rs.mirrors,
 		Args: []string{relaysidecar.Command,
 			"--credentials-dir", sandbox.RelayCredentialsDir,
 			"--node", sandbox.RelaySocketDir + "/" + relayNodeSocket,
@@ -305,7 +313,7 @@ func (rs *relaySidecar) credentials(ctx context.Context, sl *slots) (relaysideca
 		if err != nil {
 			return c, credentialFailed(fmt.Errorf("the relay sidecar's git token: %w", err))
 		}
-		c.Git = &relaysidecar.Git{Policy: policy, Upstream: rs.r.GitUpstream, Token: t, Checkout: sandbox.RelayCheckout}
+		c.Git = &relaysidecar.Git{Policy: policy, Upstream: rs.r.GitUpstream, Token: t, Checkout: sandbox.RelayCheckout, Mirror: rs.mirror}
 	}
 	return c, nil
 }
