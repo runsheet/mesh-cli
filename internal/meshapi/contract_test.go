@@ -104,6 +104,27 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			}
 			return nil, err
 		},
+		"take-slots": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.TakeRequest
+			decode(t, f.Request, &req)
+			tk, err := c.Take(context.Background(), req)
+			// a filled connection slot names its binding (api ADR 001
+			// amendment, slot bindings): only it is held to the fixture
+			if err == nil {
+				var got string
+				if tk.Brief != nil && tk.Brief.Tools != nil {
+					for _, tl := range tk.Brief.Tools.Required {
+						if tl.Name == "web_search" && tl.From == meshapi.ToolFromConnection {
+							got = tl.Binding
+						}
+					}
+				}
+				if got != "5e1a7c2d-9b4f-4e3a-8c6d-0f1e2d3c4b5a" {
+					t.Errorf("take-slots: the web_search slot's binding %q", got)
+				}
+			}
+			return nil, err
+		},
 		"take-waiting": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
 			var req meshapi.TakeRequest
 			decode(t, f.Request, &req)

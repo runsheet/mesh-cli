@@ -260,6 +260,10 @@ func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe 
 	for _, s := range creds.Servers {
 		servers[s.Name] = harness.ProxyRelay(r.MeshBinary, rs.base(), s.Name)
 	}
+	// the kind's filled tool slots, each a server of the sidecar's
+	for _, s := range creds.Slots {
+		servers[s.Name] = harness.ProxyRelay(r.MeshBinary, rs.base(), s.Name)
+	}
 	if len(tools) > 0 {
 		servers[NodeToolsServer] = harness.ProxyRelay(r.MeshBinary, rs.base(), NodeToolsServer)
 	}
@@ -269,7 +273,7 @@ func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe 
 // credentials are what the sidecar holds: the lease's alone.
 func (rs *relaySidecar) credentials(ctx context.Context, sl *slots) (relaysidecar.Credentials, error) {
 	b, tokens := rs.b, rs.tokens
-	c := relaysidecar.Credentials{Lease: b.LeaseID, API: apiRules(b), Tools: sl.filter()}
+	c := relaysidecar.Credentials{Lease: b.LeaseID, API: apiRules(b), Tools: sl.filter(), Slots: sl.sidecarSlots()}
 	if b.Registry != nil {
 		// the kind's registry, which the sidecar serves on the pod's
 		// loopback (registry.go)
@@ -288,7 +292,7 @@ func (rs *relaySidecar) credentials(ctx context.Context, sl *slots) (relaysideca
 		return c, credentialFailed(err)
 	}
 	c.Session = relaysidecar.Token{Value: tok, ExpiresAt: exp}
-	if len(c.API) > 0 {
+	if len(c.API) > 0 || len(c.Slots) > 0 {
 		if c.Latchkey, err = tokens.issuer(); err != nil {
 			return c, err
 		}

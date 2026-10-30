@@ -127,3 +127,59 @@ func TestProductToolsUnfilteredWithoutAFilter(t *testing.T) {
 		t.Errorf("called %v, want %v", *called, want)
 	}
 }
+
+// A slot's server (ADR 001 amendment, slot bindings) is held to its one
+// tool under the kind's description, whatever the connection behind
+// Latchkey lists, and it goes on the session token as a product's
+// server does; the product's own tool filter does not reach it.
+func TestASlotIsServedUnderTheKindsNameAndDescription(t *testing.T) {
+	var auth []string
+	vendor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = append(auth, r.Header.Get("Authorization"))
+		b, _ := io.ReadAll(r.Body)
+		var m rpc
+		_ = json.Unmarshal(b, &m)
+		w.Header().Set("Content-Type", "application/json")
+		switch m.Method {
+		case "tools/list":
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[`+
+				`{"name":"web_search","description":"the vendor's own words","inputSchema":{"type":"object"}},`+
+				`{"name":"extra","description":"never bound","inputSchema":{"type":"object"}}]}}`)
+		default:
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"found"}]}}`)
+		}
+	}))
+	t.Cleanup(vendor.Close)
+	product, _ := productTools(t, false)
+	bearer := func(context.Context) (string, error) { return "session-tok", nil }
+	p := New(map[string]Upstream{
+		"conform":    Product{URL: product.URL, Bearer: bearer},
+		"web_search": Slot{URL: vendor.URL, Bearer: bearer, Tool: "web_search", Description: "Search the web."},
+	})
+	p.Tools = ToolFilter{"brief": "Call first."}
+	c, _ := listen(t, p)
+
+	_, body := post(t, c, "web_search", nil, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	if got, want := listedTools(t, body), map[string]string{"web_search": "Search the web."}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the slot's tools/list = %v, want %v", got, want)
+	}
+	_, body = post(t, c, "web_search", nil, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"extra"}}`)
+	if !strings.Contains(body, "not served to this session") {
+		t.Errorf("another tool of the slot's server answered %s", body)
+	}
+	_, body = post(t, c, "web_search", nil, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"web_search","arguments":{"q":"x"}}}`)
+	if !strings.Contains(body, "found") {
+		t.Errorf("the slot's call answered %s", body)
+	}
+	if got, want := p.ServedTools(), map[string][]string{"web_search": {"web_search"}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("ServedTools = %v, want %v", got, want)
+	}
+	for _, a := range auth {
+		if a != "Bearer session-tok" {
+			t.Errorf("the slot's upstream was reached on %q", a)
+		}
+	}
+	if len(auth) != 2 {
+		t.Errorf("the slot's upstream saw %d requests, want 2 (the refused call never left)", len(auth))
+	}
+}

@@ -16,8 +16,9 @@
 //     account key, the machine credential, the request credential that
 //     mints session tokens and evidence signing stay on the node.
 //   - Sidecar: the routes the session uses, on the pod's loopback: /git/,
-//     /mcp/<server>, /latchkey/<vendor>/, /model/<provider>/ and a
-//     CONNECT egress proxy. Every upstream connection it opens goes
+//     /mcp/<server> (the product's servers and the kind's filled tool
+//     slots, each through Latchkey), /latchkey/<vendor>/,
+//     /model/<provider>/ and a CONNECT egress proxy. Every upstream connection it opens goes
 //     through the node's tunnel (Dialer).
 //   - Node: what the node serves on the lease's one socket: the tunnel
 //     (CONNECT to an allowed host, TLS end to end, no HTTP read past the
@@ -82,6 +83,21 @@ type Credentials struct {
 	// the sidecar serves on the pod's loopback at /v2/ and /artifacts/
 	// (internal/registryrelay); "" when the kind names none.
 	Registry string `json:"registry,omitempty"`
+	// Slots are the kind's connection slots a binding fills
+	// (projectmesh-io/api ADR 001 amendment, slot bindings), each served
+	// at /mcp/<name> through Latchkey's proxy for its binding on the
+	// session token: a name, a description and a ref, never a
+	// connection's credential.
+	Slots []Slot `json:"slots,omitempty"`
+}
+
+// Slot is one filled connection slot: the name its server and tool are
+// served under, the kind's description, and the binding Latchkey's
+// proxy is reached by.
+type Slot struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Binding     string `json:"binding"`
 }
 
 // Server is a product MCP server: its name at /mcp/<name> and its URL.
@@ -158,6 +174,14 @@ func (c Credentials) Validate() error {
 	}
 	if len(c.API) > 0 && c.Latchkey == "" {
 		return errors.New("relaysidecar: vendor API rules without a Latchkey origin")
+	}
+	if len(c.Slots) > 0 && c.Latchkey == "" {
+		return errors.New("relaysidecar: tool slots without a Latchkey origin")
+	}
+	for _, sl := range c.Slots {
+		if sl.Name == "" || sl.Binding == "" {
+			return fmt.Errorf("relaysidecar: a slot without a name or binding: %q", sl.Name)
+		}
 	}
 	if c.Git != nil && c.Git.Policy.Repo == "" {
 		return errors.New("relaysidecar: git without a repository")

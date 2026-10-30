@@ -206,7 +206,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	var tokens *sessionTokens
 	// a relay sidecar holds the lease's session key and token whatever the
 	// brief names (relaypod.go)
-	if len(b.Servers) > 0 || b.Git != nil || len(apiRules(b)) > 0 || b.CredentialRef != "" || b.Registry != nil || r.sidecarMode() {
+	if len(b.Servers) > 0 || b.Git != nil || len(apiRules(b)) > 0 || b.CredentialRef != "" || b.Registry != nil || sl.hasConnections() || r.sidecarMode() {
 		var err error
 		if tokens, err = openSession(ctx, r.API, b.LeaseID, r.LatchkeyHTTP); err != nil {
 			return outcome{err: credentialFailed(err), cause: context.Cause(ctx)}
@@ -496,6 +496,20 @@ func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief, tokens *sessi
 	}
 	if len(tools) > 0 {
 		ups[NodeToolsServer] = sessionproxy.InProcess{Handler: &mcptool.Handler{Name: NodeToolsServer, Tools: tools}}
+	}
+	// the kind's filled tool slots, each through Latchkey's proxy for its
+	// binding (slots.go)
+	if sl.hasConnections() {
+		if tokens == nil {
+			return nil, "", nil, errors.New("the lease's tool slots need its Latchkey session")
+		}
+		iss, err := tokens.issuer()
+		if err != nil {
+			return nil, "", nil, err
+		}
+		for name, u := range sl.connectionUpstreams(iss, tokens.Token, tokens.Key()) {
+			ups[name] = u
+		}
 	}
 	sockDir, err := r.leaseSocketDir(b.LeaseID)
 	if err != nil {

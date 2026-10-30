@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -165,5 +168,109 @@ func TestARequiredConnectionSlotHandsBackToolUnavailable(t *testing.T) {
 	json.Unmarshal(g.fake.Calls("hand-back")[0].Body, &hb)
 	if hb.Cause != meshapi.CauseToolUnavailable || !strings.Contains(hb.Reason, "web_search") {
 		t.Fatalf("hand-back %+v", hb)
+	}
+}
+
+// slot is Latchkey's proxy for a binding (ADR 001 amendment, slot
+// bindings), as a vendor would answer through it: on the lease's session
+// token and a proof for this URL, tools/list answers the slot's one tool
+// under the slot's name in the vendor's own words, and a call answers
+// which binding served it.
+func (l *fakeLatchkey) slot(w http.ResponseWriter, r *http.Request) {
+	if _, err := l.checkToken(r, l.srv.URL+r.URL.Path); err != nil {
+		l.fail(w, http.StatusUnauthorized, "slot: "+err.Error())
+		return
+	}
+	b, _ := io.ReadAll(r.Body)
+	var m struct {
+		ID     json.RawMessage `json:"id"`
+		Method string          `json:"method"`
+		Params struct {
+			Name string `json:"name"`
+		} `json:"params"`
+	}
+	_ = json.Unmarshal(b, &m)
+	binding := r.PathValue("binding")
+	l.mu.Lock()
+	l.slots = append(l.slots, strings.TrimSpace(binding+" "+m.Method+" "+m.Params.Name))
+	l.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	switch m.Method {
+	case "tools/list":
+		fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"web_search","description":"vendor words","inputSchema":{"type":"object"}}]}}`, m.ID)
+	case "tools/call":
+		fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"served by %s"}]}}`, m.ID, binding)
+	default:
+		fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{}}`, m.ID)
+	}
+}
+
+func (l *fakeLatchkey) slotCalls() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.slots...)
+}
+
+// A connection slot a binding fills is served as a server of its own,
+// named the slot, through Latchkey's proxy for its binding on the
+// lease's session token, under the kind's description; the usage names
+// it with its slot and binding. An optional slot with no binding is not
+// served.
+func TestAFilledSlotIsServedThroughLatchkey(t *testing.T) {
+	sess := &slotSession{calls: [][2]string{{"web_search", "web_search"}}}
+	g := newRig(t, sess)
+	job := g.offer(t, func(b *meshapi.Brief) {
+		b.Tools = conformTools()
+		b.Tools.Optional[0].Binding = "bind-1"
+		b.Tools.Optional = append(b.Tools.Optional, meshapi.SlotTool{Name: "library_docs", From: meshapi.ToolFromConnection, Description: "Read docs."})
+		b.NodeTools = []string{"result", "hand_back", "progress"}
+	})
+	run(t, g, context.Background())
+
+	if got, want := sess.listed["web_search"], map[string]string{"web_search": "Search the web."}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the slot's server listed %v, want %v (all: %v)", got, want, sess.listed)
+	}
+	if _, ok := sess.listed["library_docs"]; ok {
+		t.Fatal("an unfilled optional slot was served")
+	}
+	if len(sess.answers) != 1 || sess.answers[0] != "served by bind-1" {
+		t.Fatalf("the slot's call answered %q", sess.answers)
+	}
+	if got := g.latchkey.slotCalls(); !slices.Contains(got, "bind-1 tools/call web_search") {
+		t.Fatalf("Latchkey's slot proxy saw %v", got)
+	}
+	usages := g.fake.Calls("usage")
+	if len(usages) == 0 {
+		t.Fatalf("no usage for job %s", job)
+	}
+	var u meshapi.UsageRequest
+	json.Unmarshal(usages[len(usages)-1].Body, &u)
+	var found bool
+	for _, tc := range u.Tools {
+		if tc.Tool == "mcp__web_search__web_search" {
+			found = tc.Slot == "web_search" && tc.Binding == "bind-1"
+		}
+	}
+	if !found {
+		t.Fatalf("usage tools %+v name no web_search slot with its binding", u.Tools)
+	}
+}
+
+// A required connection slot a binding fills is served, and the lease
+// is not handed back.
+func TestAFilledRequiredSlotIsServed(t *testing.T) {
+	sess := &slotSession{}
+	g := newRig(t, sess)
+	job := g.offer(t, func(b *meshapi.Brief) {
+		b.Tools = conformTools()
+		b.Tools.Optional = nil
+		b.Tools.Required = append(b.Tools.Required, meshapi.SlotTool{Name: "web_search", From: meshapi.ToolFromConnection, Description: "Search.", Binding: "bind-2"})
+	})
+	run(t, g, context.Background())
+	if got := sess.listed["web_search"]; got["web_search"] != "Search." {
+		t.Fatalf("the required slot listed %v", sess.listed)
+	}
+	if g.fake.Ended(g.fake.LeaseOf(job)) == "hand-back" {
+		t.Fatal("a filled required slot was handed back")
 	}
 }

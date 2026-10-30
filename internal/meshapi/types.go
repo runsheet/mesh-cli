@@ -231,6 +231,12 @@ type SlotTool struct {
 	Name        string `json:"name"`
 	From        string `json:"from"`
 	Description string `json:"description"`
+	// Binding is a connection slot's binding, as the take resolved it
+	// from the tenant's bindings at Latchkey: the opaque ref the relay
+	// reaches Latchkey's proxy for the slot's connection by. "" for a
+	// product or mesh tool, and for a connection slot nothing fills
+	// (projectmesh-io/api ADR 001 amendment, slot bindings).
+	Binding string `json:"binding,omitempty"`
 }
 
 // Egress is where a kind's session may reach beyond the relay's git

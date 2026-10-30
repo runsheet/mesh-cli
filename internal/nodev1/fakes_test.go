@@ -35,6 +35,7 @@ type fakeLatchkey struct {
 	revoked  []string
 	failures []string
 	api      []string // each proxied call: METHOD vendor/path
+	slots    []string // each slot call: binding method [tool]
 	mints    []SourceRequest
 	// model is the for-job model credential the fake answers; refuseModel,
 	// when set, is why it refuses instead; modelReads counts the reads
@@ -58,6 +59,7 @@ func newFakeLatchkey(t *testing.T) *fakeLatchkey {
 	mux.HandleFunc("POST /v1/credentials/for-job/source", l.source)
 	mux.HandleFunc("DELETE /v1/credentials/for-job/source", l.source)
 	mux.HandleFunc("/github/{path...}", l.proxy)
+	mux.HandleFunc("/v1/connections/for-job/{binding}/mcp", l.slot)
 	l.srv = httptest.NewServer(mux)
 	t.Cleanup(l.srv.Close)
 	return l
