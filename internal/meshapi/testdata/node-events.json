@@ -1,17 +1,18 @@
 {
   "name": "node-events",
   "method": "GET",
-  "path": "/v1/nodes/nod_01JD6Y0M2T8E/events",
+  "path": "/v1/nodes/7f41f005-46b5-5c7d-8af5-9ec6c44c99f9/events",
+  "caller": "node",
   "status": 200,
   "response": {
     "events": [
       {
-        "event": "cancel",
         "data": {
           "cause": "cancelled",
-          "job_id": "job_01JD7K2Q9N3V",
-          "lease_id": "lse_01JD7K2Q9N3V"
-        }
+          "job_id": "415c80ed-9831-5894-92a6-ea19e33ed26d",
+          "lease_id": "7a647da2-34b6-5921-8e57-d7471f9b2ee7"
+        },
+        "event": "cancel"
       }
     ]
   }

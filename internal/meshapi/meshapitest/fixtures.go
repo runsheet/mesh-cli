@@ -23,13 +23,17 @@ import (
 
 // Fixture is one exchange of the contract.
 type Fixture struct {
-	Name            string            `json:"name"`
-	Method          string            `json:"method"`
-	Path            string            `json:"path"`
-	Request         json.RawMessage   `json:"request"`
-	Status          int               `json:"status"`
-	Response        json.RawMessage   `json:"response"`
-	ResponseHeaders map[string]string `json:"response_headers,omitempty"`
+	Name   string `json:"name"`
+	Method string `json:"method"`
+	Path   string `json:"path"`
+	// Caller is who asks: product, node, session, latchkey or none.
+	Caller   string          `json:"caller,omitempty"`
+	Request  json.RawMessage `json:"request"`
+	Status   int             `json:"status"`
+	Response json.RawMessage `json:"response"`
+	// ResponseHeaders are the Mesh-* headers answered (a take's
+	// Mesh-Waiting), under the key contracts/v1 writes them: headers.
+	ResponseHeaders map[string]string `json:"headers,omitempty"`
 }
 
 // HasRequest says whether the fixture names a request body.
