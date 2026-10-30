@@ -187,6 +187,43 @@ type Brief struct {
 	// session's redacted transcript (stoprules.go).
 	StopRules  []StopRule  `json:"stop_rules,omitempty"`
 	Transcript *Transcript `json:"transcript,omitempty"`
+	// Tools are the kind's tool slots and Egress where its session may
+	// reach (projectmesh-io/api ADR 001 amendment, tool slots and
+	// egress); each nil when the kind declares none, which is not the
+	// same as empty.
+	Tools  *BriefTools `json:"tools,omitempty"`
+	Egress *Egress     `json:"egress,omitempty"`
+}
+
+// BriefTools are the tools a kind's session is served: the required
+// ones always, the optional ones when the tenant has filled the slot.
+type BriefTools struct {
+	Required []SlotTool `json:"required"`
+	Optional []SlotTool `json:"optional"`
+}
+
+// Where a slot's tool comes from.
+const (
+	ToolFromProduct    = "product"    // the product's MCP server
+	ToolFromMesh       = "mesh"       // a node tool, also in node_tools
+	ToolFromConnection = "connection" // a slot an org or project fills
+)
+
+// SlotTool is one tool as the session sees it: its name and
+// description, whatever serves it.
+type SlotTool struct {
+	Name        string `json:"name"`
+	From        string `json:"from"`
+	Description string `json:"description"`
+}
+
+// Egress is where a kind's session may reach beyond the relay's git
+// route: Hosts by HTTPS (host and SNI, port 443, exact), the products
+// whose MCP servers it reaches, and whether it calls a model.
+type Egress struct {
+	Hosts []string `json:"hosts"`
+	MCP   []string `json:"mcp"`
+	Model bool     `json:"model"`
 }
 
 // Subject is what a job is about, in the product's own terms.

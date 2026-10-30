@@ -59,8 +59,20 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			if err == nil && (tk.Brief == nil || len(tk.Brief.Pushed) != 1 || tk.Brief.Pushed[0].LeaseN != 1 || tk.Brief.Pushed[0].SHA == "") {
 				t.Errorf("take-pushed: the brief's pushed %+v", tk.Brief)
 			}
+			// the kind's tool slots and egress (api ADR 001 amendment)
+			if err == nil {
+				b := tk.Brief
+				if b.Tools == nil || len(b.Tools.Required) != 6 || b.Tools.Optional == nil || b.Tools.Required[0].Name != "brief" ||
+					b.Tools.Required[0].From != meshapi.ToolFromProduct || b.Tools.Required[0].Description == "" || b.Tools.Required[3].From != meshapi.ToolFromMesh {
+					t.Errorf("take-pushed: the brief's tools %+v", b.Tools)
+				}
+				if b.Egress == nil || b.Egress.Hosts == nil || len(b.Egress.Hosts) != 0 || len(b.Egress.MCP) != 1 || !b.Egress.Model {
+					t.Errorf("take-pushed: the brief's egress %+v", b.Egress)
+				}
+			}
 			// the brief carries fields this node does not read (finish,
-			// a server's audience): only its pushed is held to the fixture
+			// a server's audience): only its pushed, tools and egress are
+			// held to the fixture
 			return nil, err
 		},
 		"take-stop-rules": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {

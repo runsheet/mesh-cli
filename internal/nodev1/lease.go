@@ -173,6 +173,12 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	if name := unservedTool(b); name != "" {
 		return outcome{err: &toolUnavailableError{tool: name, why: "this node does not have the node tool"}}
 	}
+	// the kind's tool slots: a required one the node cannot fill is
+	// handed back tool_unavailable here too (slots.go)
+	sl, slotErr := slotsOf(b)
+	if slotErr != nil {
+		return outcome{err: slotErr}
+	}
 	dir := filepath.Join(r.WorkRoot, "leases", b.LeaseID)
 	workspace := filepath.Join(dir, "work")
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
@@ -289,8 +295,8 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	suites = watchSuites(suites, endLease)
 	tools, rec := r.nodeTools(b, grant, workspace, tokens, ladder, mb, suites)
 	hb := &sessionHandBack{}
-	tools = append(tools, r.endTools(b, fin, hb, mb)...)
-	servers, sock, closeProxy, err := r.openProxy(ctx, b, tokens, grant, tools, fin.observe, account)
+	tools = sl.nodeTools(append(tools, r.endTools(b, fin, hb, mb)...))
+	servers, sock, closeProxy, err := r.openProxy(ctx, b, tokens, grant, tools, fin.observe, account, sl)
 	if err != nil {
 		return outcome{err: fmt.Errorf("the lease's sessionproxy: %w", err), cause: context.Cause(ctx)}
 	}
@@ -378,6 +384,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	res, err := r.Session.Run(sctx, spec)
 	o := outcome{result: res, err: err, finish: fin.result(), handBack: hb.asked(), escalations: taken(ladder.Steps()), evidence: rec.IDs(),
 		account: account, harness: b.Harness.Name, model: ladder.Model(), parked: res.Parked, counts: watch.close()}
+	o.counts.Tools = sl.usage(o.counts.Tools)
 	if ctx.Err() != nil {
 		o.cause = context.Cause(ctx)
 	} else if rs := stoppedBy(sctx); rs != nil {
@@ -404,11 +411,12 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 // Each product server is reached on the lease's mesh-session token with
 // a DPoP proof signed for the server's own URL; the node's own tools,
 // when the kind names any, are served in process at NodeToolsServer; the
-// grant, when there is one, serves the proxy's /git/ route; and when the
+// grant, when there is one, serves the proxy's /git/ route; with sl, the
+// product servers serve only the kind's tools (slots.go); and when the
 // brief's access names vendor APIs, the proxy's /latchkey/<vendor>/
 // route reaches Latchkey's proxy on the session token (wave 2.7). It
 // answers only once the socket does (waitListening).
-func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief, tokens *sessionTokens, grant *gitrelay.Grant, tools []mcptool.Tool, observe func(string, []byte, []byte), account *sessionAccount) (map[string]any, string, func(), error) {
+func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief, tokens *sessionTokens, grant *gitrelay.Grant, tools []mcptool.Tool, observe func(string, []byte, []byte), account *sessionAccount, sl *slots) (map[string]any, string, func(), error) {
 	ups := map[string]sessionproxy.Upstream{}
 	for _, s := range b.Servers {
 		if s.Name == "" || s.URL == "" {
@@ -430,6 +438,10 @@ func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief, tokens *sessi
 	p := sessionproxy.New(ups)
 	p.Logf = r.Logf
 	p.Observe = observe
+	// the kind's product tools alone, under its descriptions (slots.go)
+	if sl != nil {
+		p.Tools, sl.proxy = sl.filter(), p
+	}
 	if grant != nil {
 		p.Git = grant
 	}
@@ -746,7 +758,7 @@ func usageOf(o outcome) *meshapi.UsageRequest {
 	res := o.result
 	c := o.counts
 	if res.Usage == nil && res.CostUSD == 0 && len(res.Models) == 0 && len(o.escalations) == 0 &&
-		c.ToolCalls == 0 && len(c.StopRules) == 0 && c.Transcript == nil {
+		c.ToolCalls == 0 && len(c.Tools) == 0 && len(c.StopRules) == 0 && c.Transcript == nil {
 		return nil
 	}
 	apiKey := o.account.apiKey()

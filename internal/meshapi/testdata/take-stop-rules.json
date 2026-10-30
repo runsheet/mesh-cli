@@ -21,6 +21,13 @@
           "host": "github.test"
         }
       },
+      "egress": {
+        "hosts": [],
+        "mcp": [
+          "conform"
+        ],
+        "model": true
+      },
       "evidence_required": [],
       "finish": "result",
       "finish_schema": {
@@ -101,6 +108,41 @@
         "type": "fixture"
       },
       "tenant": "acme",
+      "tools": {
+        "optional": [],
+        "required": [
+          {
+            "description": "Call first, once: names the file to read and what to submit.",
+            "from": "product",
+            "name": "brief"
+          },
+          {
+            "description": "Call last, to finish: the result the brief asks for. A refusal says what to correct.",
+            "from": "product",
+            "name": "submit"
+          },
+          {
+            "description": "Call before you finish with each lesson the next session would use, or none.",
+            "from": "product",
+            "name": "learn"
+          },
+          {
+            "description": "Call to finish with the job's result when the kind has no finish tool.",
+            "from": "mesh",
+            "name": "result"
+          },
+          {
+            "description": "Call when the job cannot run here: hands it back without counting against the work.",
+            "from": "mesh",
+            "name": "hand_back"
+          },
+          {
+            "description": "Call every few steps to say in one line what you are doing.",
+            "from": "mesh",
+            "name": "progress"
+          }
+        ]
+      },
       "transcript": {
         "expires_at": "2026-01-01T00:00:00Z",
         "headers": {

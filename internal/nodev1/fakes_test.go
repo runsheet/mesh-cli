@@ -318,6 +318,17 @@ func (p *product) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.learned = append(p.learned, string(msg.Params.Arguments.Learnings))
 	}
 	p.mu.Unlock()
+	if msg.Method == "tools/list" {
+		// the conform product's tools, and one no kind names
+		var tools []map[string]any
+		for _, n := range []string{"brief", "submit", "learn", "admin_delete"} {
+			tools = append(tools, map[string]any{"name": n, "description": "the product's own " + n, "inputSchema": map[string]any{"type": "object"}})
+		}
+		ans, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": msg.ID, "result": map[string]any{"tools": tools}})
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(ans)
+		return
+	}
 	text := "ok"
 	if msg.Params.Name == "submit" {
 		text = `{"sha256":"5f0c"}`
