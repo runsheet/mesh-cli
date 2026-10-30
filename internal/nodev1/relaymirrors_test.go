@@ -67,6 +67,11 @@ func TestARelaySidecarIsHandedItsTenantsMirrorsAlone(t *testing.T) {
 	if c.Git == nil || c.Git.Mirror != own {
 		t.Fatalf("the sidecar's git mirror %+v", c.Git)
 	}
+	// the read repos ride in the policy, and the one the node holds a
+	// mirror of names it at the path it is mounted at
+	if !slices.Equal(c.Git.Policy.ReadRepos, []string{"acme/lib", "acme/none-held"}) || len(c.Git.ReadMirrors) != 1 || c.Git.ReadMirrors["acme/lib"] != lib {
+		t.Fatalf("the sidecar's read repos %q and mirrors %v", c.Git.Policy.ReadRepos, c.Git.ReadMirrors)
+	}
 	if fi, err := os.Stat(filepath.Join(lib, "HEAD")); err != nil || fi.Mode().Perm()&0o004 == 0 {
 		t.Fatalf("the read repo's mirror is not readable by the sidecar's user: %v %v", fi.Mode(), err)
 	}

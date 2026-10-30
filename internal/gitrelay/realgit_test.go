@@ -71,7 +71,7 @@ func TestRelayWithRealGit(t *testing.T) {
 	relay := &Relay{
 		Policy:   Policy{Repo: "acme/app", Access: Write, Push: []RefRule{{Ref: "refs/heads/mesh/g-1"}, {Ref: "refs/pins/*", CreateOnly: true}}},
 		Upstream: gh.URL,
-		Mint: func(context.Context) (Token, error) {
+		Mint: func(context.Context, string, Access) (Token, error) {
 			return Token{Value: "job-token", ExpiresAt: time.Now().Add(time.Hour)}, nil
 		},
 		Audit: func(e Event) { events = append(events, e) },

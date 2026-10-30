@@ -106,6 +106,12 @@ type Git struct {
 	// it mounted (read-only), "" for none: a fetch it can answer is
 	// answered from it, anything else goes upstream (gitrelay.Relay.Mirror).
 	Mirror string `json:"mirror,omitempty"`
+	// ReadMirrors are the node's mirrors of the brief's read_repos
+	// (Policy.ReadRepos) the sidecar has mounted (read-only), by the
+	// repository as the policy names it; a read repo without one is
+	// fetched upstream. A read repo's token is not here: the sidecar asks
+	// the node for one when it first fetches it (RenewRequest.Repo).
+	ReadMirrors map[string]string `json:"read_mirrors,omitempty"`
 }
 
 // Token is a credential and when it ends.

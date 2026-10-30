@@ -60,6 +60,9 @@ func leasePrompt(b *meshapi.Brief, resumed *resumePoint) string {
 				b.Code.Repo.FullName, by, strings.TrimPrefix(resumed.Ref, "refs/heads/"), shortSHA(resumed.SHA), shortSHA(b.Code.BaseSHA))
 		}
 	}
+	if b.Git != nil && b.Git.Repo != "" && len(b.Git.ReadRepos) > 0 {
+		fmt.Fprintf(&sb, "You may fetch, read-only, %s through the same git relay as your checkout's origin: the origin's URL with <repo>.git in place of its own; a push to one is refused.\n", strings.Join(b.Git.ReadRepos, ", "))
+	}
 	return sb.String()
 }
 

@@ -49,7 +49,7 @@ func TestARelayFetchesFromItsMirrorAndFallsBackUpstream(t *testing.T) {
 			relay := &Relay{
 				Policy:   Policy{Repo: "acme/app", Access: Read},
 				Upstream: gh.URL, Mirror: mirror,
-				Mint: func(context.Context) (Token, error) {
+				Mint: func(context.Context, string, Access) (Token, error) {
 					return Token{Value: "job-token", ExpiresAt: time.Now().Add(time.Hour)}, nil
 				},
 				Audit: func(e Event) { mu.Lock(); events = append(events, e); mu.Unlock() },
