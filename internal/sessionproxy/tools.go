@@ -3,6 +3,7 @@ package sessionproxy
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -40,10 +41,40 @@ type rpc struct {
 	} `json:"params"`
 }
 
-// filtered says the request on name's upstream u is held to the filter.
-func (p *Proxy) filtered(u Upstream) bool {
-	_, product := u.(Product)
-	return product && p.Tools != nil
+// Slot is a tool slot a tenant's connection fills (projectmesh-io/api
+// ADR 001 amendment, slot bindings): Latchkey's MCP proxy for the slot's
+// binding, {latchkey}/v1/connections/for-job/{binding}/mcp, reached on
+// the lease's DPoP-bound session token with a fresh proof per request,
+// as a Product is. Latchkey adds the connection's credential and
+// presents the vendor's one bound tool under the slot's name; the proxy
+// holds the server to that one tool, Tool, with the kind's Description,
+// so whichever vendor is bound the session sees the same tool.
+type Slot struct {
+	URL         string
+	Bearer      func(ctx context.Context) (string, error)
+	Key         Signer
+	Tool        string
+	Description string
+}
+
+func (s Slot) endpoint() string { return s.URL }
+
+func (s Slot) retries401() bool { return true }
+
+func (s Slot) authorize(ctx context.Context, out *http.Request, again bool) ([]string, error) {
+	return Product{URL: s.URL, Bearer: s.Bearer, Key: s.Key}.authorize(ctx, out, again)
+}
+
+// filterOf is the tool filter u's requests are held to, nil for none: a
+// Product's is the proxy's Tools, a Slot's its one tool.
+func (p *Proxy) filterOf(u Upstream) ToolFilter {
+	switch v := u.(type) {
+	case Product:
+		return p.Tools
+	case Slot:
+		return ToolFilter{v.Tool: v.Description}
+	}
+	return nil
 }
 
 // screen reads a request to a filtered upstream: a tools/call of a tool
@@ -51,7 +82,7 @@ func (p *Proxy) filtered(u Upstream) bool {
 // marked for its answer to be filtered (list). A batch holding either is
 // refused whole: MCP sends single messages, and a batch is not read
 // member by member.
-func (p *Proxy) screen(w http.ResponseWriter, name string, body []byte) (handled, list bool) {
+func (p *Proxy) screen(w http.ResponseWriter, f ToolFilter, name string, body []byte) (handled, list bool) {
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {
 		return false, false
@@ -77,7 +108,7 @@ func (p *Proxy) screen(w http.ResponseWriter, name string, body []byte) (handled
 	case "tools/list":
 		return false, true
 	case "tools/call":
-		if _, ok := p.Tools[m.Params.Name]; ok {
+		if _, ok := f[m.Params.Name]; ok {
 			return false, false
 		}
 		p.logf("sessionproxy: %s: refused a call of tool %q, which this session is not served", name, m.Params.Name)
@@ -148,7 +179,7 @@ func (f ToolFilter) filterList(msg []byte) ([]byte, []string) {
 // one message, whether as JSON or one event of a stream), each message
 // rewritten by filterList, masked, and the tools it kept recorded as
 // served on name.
-func (p *Proxy) replyList(w http.ResponseWriter, resp *http.Response, name string, request []byte) {
+func (p *Proxy) replyList(w http.ResponseWriter, resp *http.Response, f ToolFilter, name string, request []byte) {
 	for _, k := range returned {
 		if v := resp.Header.Values(k); len(v) > 0 {
 			w.Header()[http.CanonicalHeaderKey(k)] = append([]string(nil), v...)
@@ -160,9 +191,9 @@ func (p *Proxy) replyList(w http.ResponseWriter, resp *http.Response, name strin
 	}
 	var out []byte
 	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-		out = p.filterStream(b, name, request)
+		out = p.filterStream(b, f, name, request)
 	} else {
-		msg, names := p.Tools.filterList(b)
+		msg, names := f.filterList(b)
 		p.served(name, names)
 		out = []byte(p.mask(string(msg)))
 		if p.Observe != nil && resp.StatusCode/100 == 2 {
@@ -176,7 +207,7 @@ func (p *Proxy) replyList(w http.ResponseWriter, resp *http.Response, name strin
 
 // filterStream rewrites each event of a stream: its data lines joined
 // into one message, filtered, and sent as one data line.
-func (p *Proxy) filterStream(b []byte, name string, request []byte) []byte {
+func (p *Proxy) filterStream(b []byte, f ToolFilter, name string, request []byte) []byte {
 	var out bytes.Buffer
 	var data []string
 	var other []string
@@ -188,7 +219,7 @@ func (p *Proxy) filterStream(b []byte, name string, request []byte) []byte {
 			out.WriteString(l + "\n")
 		}
 		if len(data) > 0 {
-			msg, names := p.Tools.filterList([]byte(strings.Join(data, "\n")))
+			msg, names := f.filterList([]byte(strings.Join(data, "\n")))
 			p.served(name, names)
 			masked := p.mask(string(msg))
 			if p.Observe != nil {

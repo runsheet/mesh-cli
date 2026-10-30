@@ -25,6 +25,12 @@ import (
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
 )
 
+// SlotPath is a binding's MCP route at Latchkey, under its issuer
+// (projectmesh-io/api ADR 001 amendment, slot bindings).
+func SlotPath(binding string) string {
+	return "/v1/connections/for-job/" + url.PathEscape(binding) + "/mcp"
+}
+
 // DefaultNodeToolsServer is the node tools' server name, as nodev1
 // serves them (nodev1.NodeToolsServer).
 const DefaultNodeToolsServer = "mesh-node"
@@ -108,6 +114,12 @@ func New(creds Credentials, nodeSocket string) (*Sidecar, error) {
 	ups := map[string]sessionproxy.Upstream{}
 	for _, srv := range creds.Servers {
 		ups[srv.Name] = sessionproxy.Product{URL: srv.URL, Bearer: s.sessionToken, Key: key}
+	}
+	// each filled tool slot is Latchkey's proxy for its binding, through
+	// the node's tunnel on the session token, held to its one tool
+	for _, sl := range creds.Slots {
+		ups[sl.Name] = sessionproxy.Slot{URL: strings.TrimRight(creds.Latchkey, "/") + SlotPath(sl.Binding), Bearer: s.sessionToken, Key: key,
+			Tool: sl.Name, Description: sl.Description}
 	}
 	s.proxy = sessionproxy.New(ups)
 	s.proxy.HTTP = s.upstream

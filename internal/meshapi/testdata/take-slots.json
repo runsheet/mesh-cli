@@ -1,0 +1,142 @@
+{
+  "name": "take-slots",
+  "method": "POST",
+  "path": "/v1/take",
+  "caller": "node",
+  "request": {
+    "harnesses": [
+      "claude-code"
+    ],
+    "node_id": "7f41f005-46b5-5c7d-8af5-9ec6c44c99f9",
+    "wait_s": 5
+  },
+  "status": 200,
+  "response": {
+    "brief": {
+      "brief_tool": "brief",
+      "code": {
+        "base_ref": "main",
+        "repo": {
+          "full_name": "acme/fixture",
+          "host": "github.test"
+        }
+      },
+      "egress": {
+        "hosts": [],
+        "mcp": [
+          "conform"
+        ],
+        "model": true
+      },
+      "evidence_required": [],
+      "finish": "result",
+      "finish_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sha256"
+        ],
+        "type": "object"
+      },
+      "finish_tool": "submit",
+      "guidance": "You are the conformance product's echo job. It proves a session can read\nits job's repository through the node's relay and hand a result back\nthrough the product's own tool.\n\nCall the brief tool first. It names one file in the repository checked out\nfor you. Read that file's bytes exactly as committed at the checked-out\ncommit, take their SHA-256, and submit it as 64 lowercase hex characters.\nIf submit refuses, read its reason and try again. Change nothing in the\nrepository.",
+      "handbacks": 0,
+      "harness": {
+        "model": {
+          "default": "haiku",
+          "escalate": [
+            "sonnet"
+          ],
+          "max": "sonnet",
+          "on": [
+            "red",
+            "stall"
+          ]
+        },
+        "name": "claude-code"
+      },
+      "job_id": "ab08b5c6-df1b-5744-b5a9-93a084441046",
+      "kind": "echo",
+      "learnings_tool": "learn",
+      "lease_expires_at": "2026-01-01T00:00:00Z",
+      "lease_id": "107f10c8-ede4-53b0-863f-6dbff3ebf42c",
+      "lease_n": 1,
+      "node_tools": [
+        "result",
+        "hand_back",
+        "progress"
+      ],
+      "product": "conform",
+      "renew_every_s": 30,
+      "resources": {
+        "cpus": 1,
+        "mem_gb": 1
+      },
+      "servers": [
+        {
+          "audience": "https://conform.test/mcp",
+          "name": "conform",
+          "url": "https://conform.test/mcp"
+        }
+      ],
+      "subject": {
+        "id": "slots-1",
+        "type": "fixture"
+      },
+      "tenant": "acme",
+      "tools": {
+        "optional": [],
+        "required": [
+          {
+            "description": "Call first, once: names the file to read and what to submit.",
+            "from": "product",
+            "name": "brief"
+          },
+          {
+            "description": "Call last, to finish: the result the brief asks for. A refusal says what to correct.",
+            "from": "product",
+            "name": "submit"
+          },
+          {
+            "description": "Call before you finish with each lesson the next session would use, or none.",
+            "from": "product",
+            "name": "learn"
+          },
+          {
+            "description": "Call to finish with the job's result when the kind has no finish tool.",
+            "from": "mesh",
+            "name": "result"
+          },
+          {
+            "description": "Call when the job cannot run here: hands it back without counting against the work.",
+            "from": "mesh",
+            "name": "hand_back"
+          },
+          {
+            "description": "Call every few steps to say in one line what you are doing.",
+            "from": "mesh",
+            "name": "progress"
+          },
+          {
+            "binding": "5e1a7c2d-9b4f-4e3a-8c6d-0f1e2d3c4b5a",
+            "description": "Search the web for a claim the brief makes; one query per call.",
+            "from": "connection",
+            "name": "web_search"
+          }
+        ]
+      }
+    },
+    "lease": {
+      "expires_at": "2026-01-01T00:00:00Z",
+      "job_id": "ab08b5c6-df1b-5744-b5a9-93a084441046",
+      "lease_id": "107f10c8-ede4-53b0-863f-6dbff3ebf42c",
+      "n": 1,
+      "renew_every_s": 30
+    }
+  }
+}
