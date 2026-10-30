@@ -298,3 +298,55 @@ func TestModelRouteRefusesAnUnknownProvider(t *testing.T) {
 		t.Fatalf("a proxy with no model route answered %d", rec.Code)
 	}
 }
+
+// The node's model forwarder for a relay sidecar (Model.Paths set to
+// ForwarderPaths) sends only a conversation, its token count and the
+// model list on; any other path — another API of the provider's, a
+// path under a conversation, a second segment under the models — is
+// refused 403 and never reaches the upstream with the credential.
+func TestModelForwarderSendsOnlyItsPaths(t *testing.T) {
+	var mu sync.Mutex
+	var reached []string
+	g := newModelRig(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		reached = append(reached, r.URL.Path)
+		mu.Unlock()
+		_, _ = io.WriteString(w, "{}")
+	}), bearer)
+	g.p.Model.Paths = ForwarderPaths
+	cases := map[string]int{
+		"/model/anthropic/v1/messages":              200,
+		"/model/anthropic/v1/messages/count_tokens": 200,
+		"/model/anthropic/v1/models":                200,
+		"/model/anthropic/v1/models/claude-x":       200,
+		"/model/openai/v1/responses":                200,
+		"/model/openai/v1/chat/completions":         200,
+		"/model/anthropic/v1/messages/batches":      403,
+		"/model/anthropic/v1/files":                 403,
+		"/model/anthropic/v1/organizations/me":      403,
+		"/model/anthropic/v1/models/a/b":            403,
+		"/model/anthropic/v1/models/":               403,
+		"/model/openai/v1/files":                    403,
+		"/model/openai/v1/messages":                 403,
+		"/model/anthropic/v1/messages%2f..%2ffiles": 403,
+	}
+	for path, want := range cases {
+		resp, err := http.Post(g.base+path, "application/json", strings.NewReader("{}"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Errorf("%s answered %d, want %d", path, resp.StatusCode, want)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, p := range reached {
+		for _, bad := range []string{"batches", "files", "organizations", "/a/b"} {
+			if strings.Contains(p, bad) {
+				t.Errorf("a refused path reached the upstream: %s", p)
+			}
+		}
+	}
+}
