@@ -1,0 +1,31 @@
+{
+  "name": "lease-security",
+  "method": "POST",
+  "path": "/v1/leases/7b68a27a-f246-502f-ba63-4f3b259aaa27/security",
+  "caller": "node",
+  "request": {
+    "reports": [
+      {
+        "at": "2026-01-01T00:00:00Z",
+        "bytes": 2048,
+        "host": "api.github.com",
+        "rule": "egress.hosts",
+        "type": "egress",
+        "verdict": "allow"
+      },
+      {
+        "at": "2026-01-01T00:00:00Z",
+        "rule": "aws-access-key",
+        "type": "dlp",
+        "verdict": "redact"
+      }
+    ]
+  },
+  "status": 202,
+  "response": {
+    "accepted": 2,
+    "forwarded": true,
+    "job_id": "489c53a3-1e1d-5a90-b2f9-0b5d86ba8e53",
+    "lease_id": "7b68a27a-f246-502f-ba63-4f3b259aaa27"
+  }
+}

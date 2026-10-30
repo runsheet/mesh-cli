@@ -119,6 +119,10 @@ func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take, room *schedule
 		return
 	}
 
+	// what the lease's relay sees reaches Mesh, flushed once the lease
+	// has released (security.go)
+	sec := r.openSecurity(id)
+	defer r.closeSecurity(sec)
 	renewDone := make(chan struct{})
 	go func() {
 		defer close(renewDone)
@@ -129,6 +133,7 @@ func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take, room *schedule
 	<-renewDone
 	out.nodeEnding = ctx.Err() != nil
 	out.access = r.takeAccess(id)
+	reportSandbox(sec, out.err)
 	end := r.report(id, b, out)
 	r.settleThread(b, out.result.SessionID, end.Cause == meshapi.CauseParked)
 	// the account's standing as the session last read it reaches Mesh now,
@@ -499,6 +504,7 @@ func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief, tokens *sessi
 	p := sessionproxy.New(ups)
 	p.Logf = r.Logf
 	p.Observe = observe
+	p.EgressRefused = r.egressReporter(b.LeaseID)
 	// the kind's product tools alone, under its descriptions (slots.go)
 	if sl != nil {
 		p.Tools, sl.proxy = sl.filter(), p

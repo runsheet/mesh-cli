@@ -255,6 +255,18 @@ func (c *Client) Access(ctx context.Context, leaseID string, records []AccessRec
 	return err
 }
 
+// Security posts what the lease's relay saw, 1 to MaxSecurityReports
+// reports, for Mesh to forward to Tripline: POST
+// /v1/leases/{id}/security. A lease may report after it ended. A 422 is
+// final; a 5xx is worth sending again.
+func (c *Client) Security(ctx context.Context, leaseID string, reports []SecurityReport) (*SecurityAccepted, error) {
+	var out SecurityAccepted
+	if _, _, err := c.do(ctx, http.MethodPost, leasePath(leaseID, "security"), SecurityRequest{Reports: reports}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // Usage posts what the lease spent: POST /v1/leases/{id}/usage.
 func (c *Client) Usage(ctx context.Context, leaseID string, req UsageRequest) error {
 	_, _, err := c.do(ctx, http.MethodPost, leasePath(leaseID, "usage"), req, nil)

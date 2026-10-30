@@ -1,0 +1,19 @@
+{
+  "name": "lease-security-refused",
+  "method": "POST",
+  "path": "/v1/leases/7b68a27a-f246-502f-ba63-4f3b259aaa27/security",
+  "caller": "node",
+  "request": {
+    "reports": [
+      {
+        "type": "keylog",
+        "verdict": "allow"
+      }
+    ]
+  },
+  "status": 422,
+  "response": {
+    "error": "refused",
+    "message": "reports[0]: type is egress, dlp, fingerprint or sandbox"
+  }
+}

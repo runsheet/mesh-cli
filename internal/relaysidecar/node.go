@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/meshapi"
+	"projectmesh.io/mesh-cli/internal/secreport"
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
 )
 
@@ -29,7 +30,10 @@ import (
 //     gate, which sign evidence with the lease's identity and so stay
 //     on the node; the sidecar forwards them unchanged;
 //   - RenewPath, a fresh session token and git token for the lease;
-//   - AccessPath, the sidecar's AccessRecords of the lease.
+//   - AccessPath, the sidecar's AccessRecords of the lease;
+//   - SecurityPath, the sidecar's own security reports of the lease
+//     (content-free, checked as Mesh checks them), which the node posts
+//     to Mesh on its machine token: the sidecar holds none.
 
 // Paths of the lease's socket and of the sidecar's control socket.
 const (
@@ -38,6 +42,8 @@ const (
 	StopPath   = "/stop"
 	// ObservePath takes a watched product tool's call and answer.
 	ObservePath = "/relay/observe"
+	// SecurityPath takes the sidecar's security reports.
+	SecurityPath = "/relay/security"
 	// PushPath is served by the sidecar, on its control socket, for the
 	// node's push tool.
 	PushPath = "/relay/push"
@@ -83,6 +89,9 @@ type Node struct {
 	// Observe hears a watched product tool's call and answer, as
 	// sessionproxy.Proxy.Observe does. nil drops them.
 	Observe func(server string, request, response []byte)
+	// Security keeps one of the sidecar's security reports, each one
+	// content-free (secreport.Check). nil drops them.
+	Security func(meshapi.SecurityReport)
 	// Logf takes the node's lines; never a credential.
 	Logf func(format string, args ...any)
 
@@ -106,6 +115,8 @@ func (n *Node) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		n.serveAccess(w, r)
 	case r.URL.Path == ObservePath:
 		n.serveObserve(w, r)
+	case r.URL.Path == SecurityPath:
+		n.serveSecurity(w, r)
 	case r.URL.Path == StopPath:
 		if n.Stop == nil {
 			http.NotFound(w, r)
@@ -241,6 +252,34 @@ func (n *Node) serveObserve(w http.ResponseWriter, r *http.Request) {
 	}
 	if n.Observe != nil {
 		n.Observe(o.Server, o.Request, o.Response)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (n *Node) serveSecurity(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST", http.StatusMethodNotAllowed)
+		return
+	}
+	var reps []meshapi.SecurityReport
+	if err := json.NewDecoder(io.LimitReader(r.Body, accessBodyMax)).Decode(&reps); err != nil {
+		http.Error(w, "not security reports", http.StatusBadRequest)
+		return
+	}
+	if len(reps) > accessMax {
+		http.Error(w, "too many security reports", http.StatusRequestEntityTooLarge)
+		return
+	}
+	for _, rep := range reps {
+		// the node checks what a pod's sidecar sends as Mesh would: a
+		// report that is not content-free goes no further
+		if err := secreport.Check(rep); err != nil {
+			n.logf("relaysidecar: a security report refused: %v", err)
+			continue
+		}
+		if n.Security != nil {
+			n.Security(rep)
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
