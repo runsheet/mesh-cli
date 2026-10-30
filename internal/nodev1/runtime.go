@@ -132,6 +132,11 @@ type Runtime struct {
 	// agent on the brief's CPUs and memory, the relay reached only
 	// through the lease's socket. Its Runtime is the node's Sandbox.
 	Pods *sandbox.Sandbox
+	// RelaySidecar, with Pods, runs each lease's relay as a sidecar in
+	// its pod on the lease's credentials alone, the pod with no network
+	// but its loopback (relaypod.go; `--relay-sidecar`). Off, the relay
+	// is the node's own, as before.
+	RelaySidecar bool
 	// PodWatchEvery is how often an actor reads its pod's agent; 5 s
 	// when zero.
 	PodWatchEvery time.Duration

@@ -106,7 +106,13 @@ func New(creds Credentials, nodeSocket string) (*Sidecar, error) {
 	}
 	s.proxy = sessionproxy.New(ups)
 	s.proxy.HTTP = s.upstream
-	s.proxy.Logf = s.Logf
+	s.proxy.Logf = s.logf
+	if creds.Tools != nil {
+		s.proxy.Tools = sessionproxy.ToolFilter(creds.Tools)
+	}
+	if len(creds.Watch) > 0 {
+		s.proxy.Observe = s.observe
+	}
 	if len(creds.API) > 0 {
 		s.proxy.Latchkey = &sessionproxy.Latchkey{
 			URL: creds.Latchkey, Token: s.sessionToken, Key: key,
@@ -163,7 +169,7 @@ func (s *Sidecar) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		strings.HasPrefix(r.URL.Path, sessionproxy.ModelPrefix),
 		strings.TrimSuffix(r.URL.Path, "/") == sessionproxy.Prefix+s.nodeTools():
 		s.toNode.ServeHTTP(w, r)
-	case r.URL.Path == RenewPath, r.URL.Path == AccessPath, r.URL.Path == PushPath:
+	case strings.HasPrefix(r.URL.Path, "/relay/"):
 		// the node's routes and the push control are never the
 		// session's to call
 		http.NotFound(w, r)
@@ -474,4 +480,47 @@ func (s *Sidecar) base() (string, error) {
 		return "", errors.New("relaysidecar: not serving yet")
 	}
 	return (&url.URL{Scheme: "http", Host: s.addr}).String(), nil
+}
+
+// observe sends the node a watched product tool's call and its answer.
+// It must not block the proxy, so it sends in the background.
+func (s *Sidecar) observe(server string, request, response []byte) {
+	var call struct {
+		Method string `json:"method"`
+		Params struct {
+			Name string `json:"name"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(request, &call) != nil || call.Method != "tools/call" || !s.watched(call.Params.Name) {
+		return
+	}
+	b, err := json.Marshal(Observed{Server: server, Request: request, Response: response})
+	if err != nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://node"+ObservePath, bytes.NewReader(b))
+		if err != nil {
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := s.node.Do(req)
+		if err != nil {
+			s.logf("relaysidecar: a call of %s did not reach the node: %v", call.Params.Name, err)
+			return
+		}
+		resp.Body.Close()
+	}()
+}
+
+// watched says name is one of the tools the node watches.
+func (s *Sidecar) watched(name string) bool {
+	for _, w := range s.creds.Watch {
+		if name == w {
+			return true
+		}
+	}
+	return false
 }

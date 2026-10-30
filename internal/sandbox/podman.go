@@ -87,10 +87,19 @@ func (p *Podman) Version(ctx context.Context) (string, error) {
 // own inside, on pasta with no route to the host's loopback or
 // gateway (no --map-gw, no host.containers.internal), DNS through the
 // forwarder the rules allow.
+//
+// An Isolated pod (spec.Network.None) has no network but its own
+// loopback, and its containers share that network namespace alone:
+// none can see another's processes, read its /proc/<pid>/environ or
+// memory, or reach its IPC.
 func PodCreateArgs(spec PodSpec) []string {
-	args := []string{"pod", "create", "--name", spec.Name, "--userns", KeepIDUserns(spec.UID, spec.GID),
-		"--network", "pasta:--no-map-gw,--dns-forward," + DNSForward,
-		"--dns", DNSForward, "--no-hosts"}
+	args := []string{"pod", "create", "--name", spec.Name, "--userns", KeepIDUserns(spec.UID, spec.GID)}
+	if spec.Network.None {
+		args = append(args, "--network", "none", "--share", "net", "--no-hosts")
+	} else {
+		args = append(args, "--network", "pasta:--no-map-gw,--dns-forward,"+DNSForward,
+			"--dns", DNSForward, "--no-hosts")
+	}
 	keys := make([]string, 0, len(spec.Labels))
 	for k := range spec.Labels {
 		keys = append(keys, k)
@@ -452,6 +461,10 @@ func (p *Podman) CreatePod(ctx context.Context, spec PodSpec) (Pod, error) {
 		return Pod{}, err
 	}
 	pod := Pod{Name: spec.Name}
+	if spec.Network.None {
+		// no network to hold to rules
+		return pod, nil
+	}
 	if _, err := p.output(ctx, NetworkInitArgs(pod, spec.Image), strings.NewReader(spec.Network.Ruleset())); err != nil {
 		_ = p.Remove(context.WithoutCancel(ctx), pod)
 		if validate.IsRuntimeBroken(err.Error()) {

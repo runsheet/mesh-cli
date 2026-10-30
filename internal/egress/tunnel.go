@@ -36,6 +36,30 @@ const Port = "443"
 // any case), on Port alone. The zero Policy allows nothing.
 type Policy struct {
 	hosts map[string]bool
+	// ports are the other ports a fixed upstream named as host:port may
+	// be reached on (a self-hosted Latchkey or vendor on a port of its
+	// own); never a kind's host.
+	ports map[string]map[string]bool
+	// open allows any host on Port: a lease whose kind declares no
+	// egress, whose session reached the internet by HTTPS before a
+	// relay sidecar made the tunnel its only way out (Open).
+	open bool
+}
+
+// Open is p allowing any host on Port as well, dialled on a public
+// address alone as every host is: a lease whose kind declares no egress
+// keeps the internet by HTTPS it had, now only through its tunnel.
+func (p *Policy) Open() *Policy {
+	cp := &Policy{hosts: map[string]bool{}, ports: map[string]map[string]bool{}, open: true}
+	if p != nil {
+		for h := range p.hosts {
+			cp.hosts[h] = true
+		}
+		for h, ports := range p.ports {
+			cp.ports[h] = ports
+		}
+	}
+	return cp
 }
 
 // NewPolicy is the lease's policy: kind, the kind's egress hosts, kept
@@ -59,6 +83,20 @@ func NewPolicy(kind []string, tenant []string, fixed []string) *Policy {
 		}
 	}
 	for _, h := range fixed {
+		if host, port, err := net.SplitHostPort(strings.TrimSpace(h)); err == nil && port != Port {
+			if host = norm(host); host != "" {
+				if p.ports == nil {
+					p.ports = map[string]map[string]bool{}
+				}
+				if p.ports[host] == nil {
+					p.ports[host] = map[string]bool{}
+				}
+				p.ports[host][port] = true
+			}
+			continue
+		} else if err == nil {
+			h = host
+		}
 		if h = norm(h); h != "" {
 			p.hosts[h] = true
 		}
@@ -72,9 +110,11 @@ func norm(h string) string { return strings.TrimSuffix(strings.ToLower(strings.T
 // short code and why.
 func (p *Policy) Allow(host, port string) (ok bool, code, why string) {
 	switch {
+	case p != nil && port != Port && p.ports[norm(host)][port]:
+		return true, "", ""
 	case port != Port:
 		return false, "port", "only port 443 leaves the relay, not " + net.JoinHostPort(host, port)
-	case p == nil || !p.hosts[norm(host)]:
+	case p == nil || !p.open && !p.hosts[norm(host)]:
 		return false, "host", host + " is not in the kind's egress"
 	}
 	return true, "", ""
@@ -201,7 +241,7 @@ func (t *Tunnel) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		dial = publicDial
 	}
 	ctx, cancel := context.WithTimeout(req.Context(), 30*time.Second)
-	up, err := dial(ctx, "tcp", net.JoinHostPort(host, Port))
+	up, err := dial(ctx, "tcp", net.JoinHostPort(host, port))
 	cancel()
 	if err != nil {
 		refused("dial: " + err.Error())

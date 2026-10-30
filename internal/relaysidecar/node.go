@@ -36,6 +36,8 @@ const (
 	RenewPath  = "/relay/renew"
 	AccessPath = "/relay/access"
 	StopPath   = "/stop"
+	// ObservePath takes a watched product tool's call and answer.
+	ObservePath = "/relay/observe"
 	// PushPath is served by the sidecar, on its control socket, for the
 	// node's push tool.
 	PushPath = "/relay/push"
@@ -48,6 +50,7 @@ const (
 	renewBodyMax   = 4 << 10
 	renewTimeout   = 30 * time.Second
 	controlBodyMax = 16 << 10
+	observeBodyMax = 8 << 20
 )
 
 // RenewRequest asks the node for the lease's credentials again: the
@@ -77,6 +80,9 @@ type Node struct {
 	Renew func(ctx context.Context, req RenewRequest) (Renewal, error)
 	// Access keeps one of the lease's AccessRecords. nil drops them.
 	Access func(meshapi.AccessRecord)
+	// Observe hears a watched product tool's call and answer, as
+	// sessionproxy.Proxy.Observe does. nil drops them.
+	Observe func(server string, request, response []byte)
 	// Logf takes the node's lines; never a credential.
 	Logf func(format string, args ...any)
 
@@ -98,6 +104,8 @@ func (n *Node) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		n.serveRenew(w, r)
 	case r.URL.Path == AccessPath:
 		n.serveAccess(w, r)
+	case r.URL.Path == ObservePath:
+		n.serveObserve(w, r)
 	case r.URL.Path == StopPath:
 		if n.Stop == nil {
 			http.NotFound(w, r)
@@ -212,4 +220,27 @@ func (n *Node) Close() error {
 		_ = c.Close()
 	}
 	return srv.Close()
+}
+
+// Observed is one watched product tool's call and its answer.
+type Observed struct {
+	Server   string          `json:"server"`
+	Request  json.RawMessage `json:"request"`
+	Response json.RawMessage `json:"response"`
+}
+
+func (n *Node) serveObserve(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST", http.StatusMethodNotAllowed)
+		return
+	}
+	var o Observed
+	if err := json.NewDecoder(io.LimitReader(r.Body, observeBodyMax)).Decode(&o); err != nil {
+		http.Error(w, "not an observed call", http.StatusBadRequest)
+		return
+	}
+	if n.Observe != nil {
+		n.Observe(o.Server, o.Request, o.Response)
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

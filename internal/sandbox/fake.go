@@ -39,6 +39,13 @@ type Fake struct {
 	cancels map[string]context.CancelFunc
 	// Trees are the paths RemoveTree was asked to remove.
 	Trees []string
+	// Relays are the relay sidecars StartRelay started; RelayErr fails
+	// it. RelayCredentials are what InstallRelay was handed, and
+	// RelayInstalled, when set, hears each install (a test's sidecar).
+	Relays           []RelaySpec
+	RelayErr         error
+	RelayCredentials [][]byte
+	RelayInstalled   func(pod Pod, creds []byte) error
 	// Running and Standing are the store ListContainers and ListPods list: the
 	// containers in any state and the pods. Remove drops a pod and its
 	// containers from them, RemoveContainer a container. ListErr fails

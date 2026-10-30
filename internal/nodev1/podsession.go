@@ -91,7 +91,13 @@ type leasePod struct {
 func (r *Runtime) openLeasePod(ctx context.Context, b *meshapi.Brief, workspace string, a *actor.Actor, keep func(string, func() error)) (*leasePod, error) {
 	sb := r.Pods.WithReserve(nil) // the scheduler holds the lease's CPUs
 	sb.TempDir = r.leaseDir(b.LeaseID)
-	if b.Egress != nil {
+	switch {
+	case r.sidecarMode():
+		// the relay is a sidecar in the pod, reached on its loopback,
+		// and reaches the node by a socket: the pod needs no network
+		// at all (relaypod.go)
+		sb.Config.Network = sandbox.Isolated()
+	case b.Egress != nil:
 		// the relay is the pod's only exit: no port out, no DNS
 		sb.Config.Network = sb.Config.Network.RelayOnly()
 	}
@@ -104,7 +110,7 @@ func (r *Runtime) openLeasePod(ctx context.Context, b *meshapi.Brief, workspace 
 		return nil, err
 	}
 	p := &leasePod{sess: sess, name: PodName(b.LeaseID), gitPort: cmp.Or(r.gitBridgePort, podGitPort)}
-	if b.Egress != nil {
+	if b.Egress != nil || r.sidecarMode() {
 		p.proxyEnv = proxyEnv(p.bridgeBase())
 	}
 	sess.Pin(p.name, map[string]string{PodLeaseLabel: b.LeaseID, PodJobLabel: b.JobID, PodNodeLabel: r.NodeID()})
@@ -215,7 +221,11 @@ var unsafeSlug = regexp.MustCompile(`[^a-z0-9-]+`)
 // rewritten onto the node image's proxy shim, written into the HOME,
 // and the socket's directory mounted.
 func (p *leasePod) podServers(servers map[string]any, sockDir string) (map[string]any, error) {
-	p.sess.ShareProxyDir(sockDir)
+	if sockDir != "" {
+		// a relay sidecar's servers are on its loopback: nothing is
+		// mounted
+		p.sess.ShareProxyDir(sockDir)
+	}
 	if len(servers) == 0 {
 		return servers, nil
 	}
@@ -308,7 +318,12 @@ func stopHookScript() []byte {
 	return []byte(`// mesh: the lease's Stop hook; written per lease.
 "use strict";
 const http = require("http");
-const socketPath = process.argv[2];
+const target = process.argv[2];
+// the gate's socket, or the relay sidecar's loopback root
+// (http://127.0.0.1:<port>), which forwards /stop to the node
+const conn = target.startsWith("http://")
+  ? (() => { const u = new URL(target); return { host: u.hostname, port: Number(u.port) }; })()
+  : { socketPath: target };
 const done = () => process.exit(0);
 setTimeout(done, ` + strconv.Itoa((stopHookTimeoutS-5)*1000) + `).unref();
 const chunks = [];
@@ -316,7 +331,7 @@ process.stdin.on("data", (c) => chunks.push(c));
 process.stdin.on("error", done);
 process.stdin.on("end", () => {
   const body = Buffer.concat(chunks).subarray(0, 65536);
-  const req = http.request({ socketPath, path: "/stop", method: "POST",
+  const req = http.request({ ...conn, path: "/stop", method: "POST",
     headers: { "Content-Type": "application/json", "Content-Length": body.length } }, (res) => {
     const out = [];
     res.on("data", (c) => out.push(c));
@@ -433,4 +448,44 @@ server.listen(port, "127.0.0.1", () => {
   });
 });
 `)
+}
+
+// runSidecar is the lease's PodRun when its relay is a sidecar in the
+// pod: the agent's command as it is, no bridge, since the sidecar
+// listens on the pod's loopback at the bridge's port. The checkout's
+// origin is rewritten onto the sidecar's /git/, every HTTP client is
+// pointed at it (proxyEnv), and the vendor API's root is named in
+// RelayURLEnv.
+func (p *leasePod) runSidecar(workspace, gitBase string) PodRun {
+	return func(ctx context.Context, argv, env []string, stdin io.Reader, stdout, stderr io.Writer) error {
+		var jobEnv, vars []string
+		for _, kv := range env {
+			name, _, _ := strings.Cut(kv, "=")
+			if sandbox.Allowed(name) {
+				jobEnv = append(jobEnv, kv)
+			} else {
+				vars = append(vars, kv)
+			}
+		}
+		if gitBase != "" {
+			vars = append(vars, bridgeGitConfig(gitBase, p.gitPort)...)
+		}
+		vars = append(vars, p.proxyEnv...)
+		vars = append(vars, RelayURLEnv+"="+p.bridgeBase())
+		return p.sess.RunAgent(ctx, sandbox.RunSpec{Workspace: workspace, Env: jobEnv, Vars: vars, Command: argv, Stdin: stdin, Stdout: stdout, Stderr: stderr})
+	}
+}
+
+// stopSettingsSidecar are the Stop hook's settings when the relay is a
+// sidecar: the hook posts to the sidecar's loopback, which forwards it
+// to the node's gate.
+func (p *leasePod) stopSettingsSidecar(g *stopGate) (map[string]any, error) {
+	if g == nil {
+		return nil, nil
+	}
+	shim, err := p.sess.WriteFile(stopHookName, stopHookScript())
+	if err != nil {
+		return nil, fmt.Errorf("the pod's stop hook: %w", err)
+	}
+	return stopHookSettings("node " + shellQuote(shim) + " " + shellQuote(p.bridgeBase())), nil
 }
