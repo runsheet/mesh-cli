@@ -172,7 +172,7 @@ func TestStopGateOwesWhatTheKindFinishesWith(t *testing.T) {
 	r := &Runtime{Logf: t.Logf}
 	fin, hb := &finishCapture{}, &sessionHandBack{}
 	b := &meshapi.Brief{LeaseID: "l", Product: "conform", Servers: []meshapi.Server{{Name: "conform"}}, NodeTools: []string{"result"}}
-	g := r.openStopGate(b, sock, fin, hb)
+	g := r.openStopGate(b, sock, fin, hb, nil)
 	if g == nil {
 		t.Fatal("a kind finishing through result has no stop gate")
 	}
@@ -184,8 +184,77 @@ func TestStopGateOwesWhatTheKindFinishesWith(t *testing.T) {
 	if a := g.decide(); a.Decision != "" {
 		t.Fatalf("a handed-back session's stop: %+v", a)
 	}
-	if g := r.openStopGate(&meshapi.Brief{Thread: &meshapi.Thread{}, FinishTool: "submit"}, sock, fin, hb); g != nil {
+	if g := r.openStopGate(&meshapi.Brief{Thread: &meshapi.Thread{}, FinishTool: "submit"}, sock, fin, hb, nil); g != nil {
 		g.close()
 		t.Fatal("a thread has a stop gate")
+	}
+}
+
+// The gate holds a finished session to the kind's evidence_required:
+// while a required tool has no record and the finish's result names
+// none of the fields the brief's waived_by gives it, present and
+// truthy, the stop is refused naming the tool and its waiving fields;
+// a waiving finish, or the record, lets it stop (projectmesh-io/api ADR
+// 001 amendment, evidence waivers).
+func TestStopGateHonoursTheBriefsWaivers(t *testing.T) {
+	sock := filepath.Join(shortDir(t), "proxy.sock")
+	r := &Runtime{Logf: t.Logf}
+	fin, hb := &finishCapture{}, &sessionHandBack{}
+	b := &meshapi.Brief{LeaseID: "l", Product: "conform", Servers: []meshapi.Server{{Name: "conform"}},
+		NodeTools: []string{"result", "run_suite", "push"}, EvidenceRequired: []string{"run_suite", "push"},
+		WaivedBy: map[string][]string{"run_suite": {"reused", "conflict"}}}
+	g := r.openStopGate(b, sock, fin, hb, nil)
+	if g == nil {
+		t.Fatal("no stop gate")
+	}
+	defer g.close()
+	g.max = 10
+	if a := g.decide(); a.Decision != "block" || !strings.Contains(a.Reason, "run_suite") || !strings.Contains(a.Reason, `"reused" or "conflict"`) {
+		t.Fatalf("an unfinished session is not told its evidence: %+v", a)
+	}
+	fin.keep(json.RawMessage(`{"reused":{"commit":"abc","tree":"def"}}`))
+	if a := g.decide(); a.Decision != "block" || strings.Contains(a.Reason, "run_suite") || !strings.Contains(a.Reason, "push") {
+		t.Fatalf("a reused finish still owes push, and only push: %+v", a)
+	}
+
+	recorded := map[string]bool{"push": true}
+	for _, c := range []struct {
+		result string
+		owed   []string
+	}{
+		{`{"reused":{"commit":"abc"}}`, nil},
+		{`{"conflict":true}`, nil},
+		{`{"reused":{}}`, []string{"run_suite"}},
+		{`{"reused":null,"conflict":false}`, []string{"run_suite"}},
+		{`{"conflict":""}`, []string{"run_suite"}},
+		{`{"conflict":0}`, []string{"run_suite"}},
+		{`{"conflict":[]}`, []string{"run_suite"}},
+		{`{"nested":{"reused":true}}`, []string{"run_suite"}},
+		{`"reused"`, []string{"run_suite"}},
+		{`{"verdict":"pass"}`, []string{"run_suite"}},
+	} {
+		owed := owedEvidence(b, func(t string) bool { return recorded[t] }, func() json.RawMessage { return json.RawMessage(c.result) })
+		var got []string
+		for _, o := range owed {
+			got = append(got, o.tool)
+		}
+		if strings.Join(got, ",") != strings.Join(c.owed, ",") {
+			t.Fatalf("%s owes %v, want %v", c.result, got, c.owed)
+		}
+	}
+	recorded["run_suite"] = true
+	if owed := owedEvidence(b, func(t string) bool { return recorded[t] }, func() json.RawMessage { return json.RawMessage(`{}`) }); len(owed) != 0 {
+		t.Fatalf("recorded tools are still owed: %+v", owed)
+	}
+	// a kind with no waivers owes every record whatever the finish says
+	nb := *b
+	nb.WaivedBy = nil
+	if owed := owedEvidence(&nb, func(string) bool { return false }, func() json.RawMessage { return json.RawMessage(`{"reused":true}`) }); len(owed) != 2 {
+		t.Fatalf("no waivers: %+v", owed)
+	}
+	// a session that handed its job back owes nothing
+	hb.keep("cannot_run", "no podman")
+	if a := g.decide(); a.Decision != "" {
+		t.Fatalf("a handed-back session's stop: %+v", a)
 	}
 }

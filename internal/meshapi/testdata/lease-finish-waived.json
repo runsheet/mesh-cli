@@ -1,0 +1,22 @@
+{
+  "name": "lease-finish-waived",
+  "method": "POST",
+  "path": "/v1/leases/a1576fb5-251a-52d6-9aac-f75955c2c80b/finish",
+  "caller": "node",
+  "request": {
+    "result": {
+      "reused": {
+        "commit": "0123abc",
+        "tree": "4567def"
+      },
+      "verdict": "green"
+    }
+  },
+  "status": 200,
+  "response": {
+    "end": "finished",
+    "handbacks": 0,
+    "job_id": "521f440b-1d81-5e96-92f3-71c3c215ab92",
+    "status": "ended"
+  }
+}

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/mcptool"
@@ -24,16 +25,64 @@ import (
 const RunSuiteTool = "run_suite"
 
 // SuiteRunner runs validate's steps in a workspace (validate.Run on a
-// HostRunner in it).
-type SuiteRunner func(ctx context.Context, workspace string, steps []validate.Step) ([]validate.StepResult, error)
+// HostRunner in it), each step's environment also carrying env: the
+// call's selection (SelectionEnv), empty when it named none.
+type SuiteRunner func(ctx context.Context, workspace string, steps []validate.Step, env []string) ([]validate.StepResult, error)
+
+// The variables a suite's command reads its selection from (projectmesh-io/api
+// ADR 001 amendment, evidence waivers; mesh-specs gap 27): each space
+// separated, and unset when the call named none. A command opts in, e.g.
+// go test ${MESH_SUITE_TARGETS:-./...} ${MESH_SUITE_TESTS:+-run "^(${MESH_SUITE_TESTS// /|})$"};
+// one that ignores them runs whole, which is still correct.
+const (
+	SuiteTargetsEnv = "MESH_SUITE_TARGETS"
+	SuiteTestsEnv   = "MESH_SUITE_TESTS"
+)
 
 // HostSuites runs steps on the host, in the workspace, every step run
 // whatever an earlier one did. The steps are the session's own, so they
 // see none of the node's model variables (harness.ModelEnv; ADR 001
-// amendment "model relay").
-func HostSuites(ctx context.Context, workspace string, steps []validate.Step) ([]validate.StepResult, error) {
-	host := validate.HostRunner{Dir: workspace, Env: harness.EnvironWithoutModel()}
+// amendment "model relay"), and no selection but the call's.
+func HostSuites(ctx context.Context, workspace string, steps []validate.Step, env []string) ([]validate.StepResult, error) {
+	var base []string
+	for _, kv := range harness.EnvironWithoutModel() {
+		if !strings.HasPrefix(kv, SuiteTargetsEnv+"=") && !strings.HasPrefix(kv, SuiteTestsEnv+"=") {
+			base = append(base, kv)
+		}
+	}
+	host := validate.HostRunner{Dir: workspace, Env: append(base, env...)}
 	return validate.Run(ctx, steps, host, validate.Options{Dir: workspace, ContinueOnFailure: true})
+}
+
+// Selection is the part of a suite a run_suite call named: the targets
+// (packages, paths or build targets) and the tests (test names). The
+// signed record carries it exactly as named, either list omitted when
+// empty; a call that named neither has none, and its record no
+// selection key at all.
+type Selection struct {
+	Targets []string `json:"targets,omitempty"`
+	Tests   []string `json:"tests,omitempty"`
+}
+
+// maxSelection is how many targets, and how many tests, a selection may
+// name: Mesh refuses a record naming more.
+const maxSelection = 500
+
+// SelectionEnv is the selection as its suite's command reads it:
+// MESH_SUITE_TARGETS and MESH_SUITE_TESTS, each space separated, each
+// absent when the selection names none.
+func SelectionEnv(s *Selection) []string {
+	if s == nil {
+		return nil
+	}
+	var env []string
+	if len(s.Targets) > 0 {
+		env = append(env, SuiteTargetsEnv+"="+strings.Join(s.Targets, " "))
+	}
+	if len(s.Tests) > 0 {
+		env = append(env, SuiteTestsEnv+"="+strings.Join(s.Tests, " "))
+	}
+	return env
 }
 
 // ErrNoSuiteRunner is run_suite refused: the lease has nowhere to run
@@ -87,22 +136,82 @@ type TestResult struct {
 	Elapsed float64 `json:"elapsed"`
 }
 
-// Tool is run_suite {suites?}.
+// Tool is run_suite {suite?, suites?, targets?, tests?}.
 func (s *RunSuite) Tool() mcptool.Tool {
+	list := func(desc string) map[string]any {
+		return map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": desc}
+	}
 	return mcptool.Tool{
 		Name: RunSuiteTool,
 		Description: "Run the repository's declared validation (.runsheet/validate.yml) on your checkout as it stands, " +
-			"every suite or the ones you name. Answers each step's exit and test counts, the failing tests, " +
-			"and the evidence id of the node's signed record of the run: pass that id on, never your own account of it.",
+			"every suite or the one you name, whole or only the targets and tests you name. Answers each step's exit and test counts, the failing tests, " +
+			"and the evidence id of the node's signed record of the run: pass that id on, never your own account of it. " +
+			"A run of named targets or tests is recorded as that selection, never as the suite's full run.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"suites": map[string]any{"type": "array", "items": map[string]any{"type": "string"},
-					"description": "the suites to run, by name; every suite when absent"},
+				"suite":  map[string]any{"type": "string", "description": "the suite to run, by name"},
+				"suites": list("the suites to run, by name; every suite when neither suite nor suites is given"),
+				"targets": list("the packages, paths or build targets to run, exported to the suite's command as " +
+					SuiteTargetsEnv + " (space separated); the suite's whole set when absent"),
+				"tests": list("the test names to run, exported to the suite's command as " + SuiteTestsEnv +
+					" (space separated); every test when absent"),
 			},
 		},
 		Call: s.call,
 	}
+}
+
+// strings is a call's list argument, its blank entries dropped and the
+// rest trimmed, in order.
+func stringsArg(args map[string]any, key string) ([]string, error) {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return nil, nil
+	}
+	raw, ok := v.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s is a list of strings", key)
+	}
+	var out []string
+	for _, e := range raw {
+		n, ok := e.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s is a list of strings", key)
+		}
+		if n = strings.TrimSpace(n); n != "" {
+			out = append(out, n)
+		}
+	}
+	return out, nil
+}
+
+// selectionArg is the call's selection, nil when it named neither
+// targets nor tests. A name holding whitespace could not be told apart
+// in its space-separated variable, so it is refused.
+func selectionArg(args map[string]any) (*Selection, error) {
+	targets, err := stringsArg(args, "targets")
+	if err != nil {
+		return nil, err
+	}
+	tests, err := stringsArg(args, "tests")
+	if err != nil {
+		return nil, err
+	}
+	if len(targets) == 0 && len(tests) == 0 {
+		return nil, nil
+	}
+	for key, list := range map[string][]string{"targets": targets, "tests": tests} {
+		if len(list) > maxSelection {
+			return nil, fmt.Errorf("%s names at most %d", key, maxSelection)
+		}
+		for _, n := range list {
+			if strings.ContainsFunc(n, unicode.IsSpace) {
+				return nil, fmt.Errorf("%s entry %q holds whitespace: each is one name", key, n)
+			}
+		}
+	}
+	return &Selection{Targets: targets, Tests: tests}, nil
 }
 
 func (s *RunSuite) call(ctx context.Context, args map[string]any) (string, error) {
@@ -113,13 +222,16 @@ func (s *RunSuite) call(ctx context.Context, args map[string]any) (string, error
 		}
 		run = HostSuites
 	}
-	var names []string
-	if raw, ok := args["suites"].([]any); ok {
-		for _, v := range raw {
-			if n, ok := v.(string); ok && strings.TrimSpace(n) != "" {
-				names = append(names, strings.TrimSpace(n))
-			}
-		}
+	names, err := stringsArg(args, "suites")
+	if err != nil {
+		return "", err
+	}
+	if one, _ := args["suite"].(string); strings.TrimSpace(one) != "" && !slices.Contains(names, strings.TrimSpace(one)) {
+		names = append([]string{strings.TrimSpace(one)}, names...)
+	}
+	sel, err := selectionArg(args)
+	if err != nil {
+		return "", err
 	}
 	cfg, err := validate.Load(s.Workspace)
 	if errors.Is(err, validate.ErrNoValidation) {
@@ -147,7 +259,7 @@ func (s *RunSuite) call(ctx context.Context, args map[string]any) (string, error
 	// what the checkout holds beyond HEAD is part of what was run
 	status, _ := git(ctx, s.Workspace, "status", "--porcelain=v1", "-uall")
 	start := time.Now()
-	results, runErr := run(ctx, s.Workspace, steps)
+	results, runErr := run(ctx, s.Workspace, steps, SelectionEnv(sel))
 	ended := time.Now()
 	if runErr != nil && len(results) == 0 {
 		return "", fmt.Errorf("the suites could not run: %v", runErr)
@@ -182,11 +294,22 @@ func (s *RunSuite) call(ctx context.Context, args map[string]any) (string, error
 		}
 	}
 	summary := fmt.Sprintf("%d of %d steps passed; %d tests passed, %d failed", countOK(out.Steps), len(steps), passed, failed)
+	if sel != nil {
+		summary += fmt.Sprintf(" (a selection: %d targets, %d tests)", len(sel.Targets), len(sel.Tests))
+	}
+	input := map[string]any{"suites": stepNames(steps), "head": strings.TrimSpace(head), "tree": strings.TrimSpace(tree), "status": Digest([]byte(status))}
+	if sel != nil {
+		// two selections of one suite are two inputs
+		input["selection"] = sel
+	}
 	rec := Record{Tool: RunSuiteTool, StartedAt: start, EndedAt: ended, Exit: exit, Summary: summary,
-		InputDigest: InputDigest(map[string]any{"suites": stepNames(steps), "head": strings.TrimSpace(head), "tree": strings.TrimSpace(tree), "status": Digest([]byte(status))})}
+		InputDigest: InputDigest(input), Selection: sel}
 	id, recErr := s.Recorder.Record(context.WithoutCancel(ctx), rec, blob)
 	answer := map[string]any{"exit": exit, "summary": summary, "steps": out.Steps, "failing_tests": failing,
 		"head": strings.TrimSpace(head), "tree": strings.TrimSpace(tree), "uncommitted": strings.TrimSpace(status) != "", "output_digest": Digest(blob)}
+	if sel != nil {
+		answer["selection"] = sel
+	}
 	if runErr != nil {
 		answer["error"] = runErr.Error()
 	}

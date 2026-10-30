@@ -373,18 +373,20 @@ func bridgeGitConfig(base string, port int) []string {
 // container beside the agent and the services (sandbox.Session.Exec),
 // in the checkout. A limit's kill is the step failing, 124 for the
 // runtime's timeout and 137 otherwise, as the legacy node's pod runner.
-func (p *leasePod) suites(ctx context.Context, workspace string, steps []validate.Step) ([]validate.StepResult, error) {
-	return validate.Run(ctx, steps, podSteps{p: p, dir: workspace}, validate.Options{Dir: workspace, ContinueOnFailure: true})
+func (p *leasePod) suites(ctx context.Context, workspace string, steps []validate.Step, env []string) ([]validate.StepResult, error) {
+	return validate.Run(ctx, steps, podSteps{p: p, dir: workspace, env: env}, validate.Options{Dir: workspace, ContinueOnFailure: true})
 }
 
-// podSteps is validate.Runner in the lease's pod.
+// podSteps is validate.Runner in the lease's pod; env is the run's
+// selection (nodetools.SelectionEnv).
 type podSteps struct {
 	p   *leasePod
 	dir string
+	env []string
 }
 
 func (s podSteps) Run(ctx context.Context, cmd string, timeout time.Duration, stdout, stderr io.Writer) (int, error) {
-	err := s.p.sess.Exec(ctx, sandbox.RunSpec{Workspace: s.dir, Command: []string{"sh", "-c", cmd}, Timeout: timeout, Stdout: stdout, Stderr: stderr, Vars: append([]string{"GIT_TERMINAL_PROMPT=0"}, s.p.proxyEnv...)})
+	err := s.p.sess.Exec(ctx, sandbox.RunSpec{Workspace: s.dir, Command: []string{"sh", "-c", cmd}, Timeout: timeout, Stdout: stdout, Stderr: stderr, Vars: append(append([]string{"GIT_TERMINAL_PROMPT=0"}, s.p.proxyEnv...), s.env...)})
 	var ee *sandbox.ExitError
 	var le *sandbox.LimitError
 	switch {

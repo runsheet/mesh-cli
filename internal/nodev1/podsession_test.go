@@ -21,6 +21,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/harness/session/sessiontest"
 	"projectmesh.io/mesh-cli/internal/meshapi"
+	"projectmesh.io/mesh-cli/internal/nodetools"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/validate"
 )
@@ -253,7 +254,7 @@ func TestRunSuiteStepsRunInThePod(t *testing.T) {
 		return exits[spec.Command[2]], nil
 	}
 	steps := []validate.Step{{Name: "ok", Command: "echo ok"}, {Name: "red", Command: "exit 3"}, {Name: "big", Command: "oom"}}
-	res, err := p.suites(context.Background(), ws, steps)
+	res, err := p.suites(context.Background(), ws, steps, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,5 +430,27 @@ func TestAPodSessionsStopHookResolvesInThePod(t *testing.T) {
 	}
 	if !strings.Contains(answer, `"decision":"block"`) || !strings.Contains(answer, "Call ") {
 		t.Fatalf("the hook in the pod was not refused by the gate: %q", answer)
+	}
+}
+
+// A selection reaches each of the pod's suite steps as its variables.
+func TestRunSuiteSelectionReachesThePodsSteps(t *testing.T) {
+	f := &sandbox.Fake{}
+	sb := &sandbox.Sandbox{Runtime: f, TempDir: t.TempDir(), Config: sandbox.Config{Image: "mesh-node:test"}}
+	sess, err := sb.Open("lease-1", "conform/validate", sandbox.GitIdentity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	sess.Pin("mesh-v1-lease-1", nil)
+	p := &leasePod{sess: sess, name: "mesh-v1-lease-1"}
+	f.Agent = func(context.Context, sandbox.AgentSpec) (sandbox.Exit, error) { return sandbox.Exit{}, nil }
+	env := nodetools.SelectionEnv(&nodetools.Selection{Tests: []string{"TestX"}})
+	if _, err := p.suites(context.Background(), t.TempDir(), []validate.Step{{Name: "u", Command: "true"}}, env); err != nil {
+		t.Fatal(err)
+	}
+	specs := f.AgentSpecs()
+	if len(specs) != 1 || !slices.Contains(specs[0].Env, "MESH_SUITE_TESTS=TestX") {
+		t.Fatalf("the pod's step env %+v", specs)
 	}
 }

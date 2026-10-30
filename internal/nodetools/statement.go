@@ -55,6 +55,9 @@ type Record struct {
 	EndedAt      time.Time `json:"ended_at"`
 	Exit         int       `json:"exit"`
 	Summary      string    `json:"summary"`
+	// Selection is the part of the suite a run_suite ran when its call
+	// named one (gap 27): absent for a whole run, never empty.
+	Selection *Selection `json:"selection,omitempty"`
 }
 
 type subject struct {

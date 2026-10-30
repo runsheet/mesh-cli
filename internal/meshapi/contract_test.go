@@ -162,6 +162,14 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			decode(t, f.Request, &req)
 			return c.Finish(context.Background(), idOf(f.Path, 3), req)
 		},
+		// a finish whose result names a field the kind's waived_by gives
+		// run_suite, with no evidence (api ADR 001 amendment, evidence
+		// waivers)
+		"lease-finish-waived": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.FinishRequest
+			decode(t, f.Request, &req)
+			return c.Finish(context.Background(), idOf(f.Path, 3), req)
+		},
 		"lease-fail": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
 			var req meshapi.FailRequest
 			decode(t, f.Request, &req)
