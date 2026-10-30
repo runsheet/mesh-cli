@@ -18,10 +18,11 @@ import (
 // token — or, when the node has no Fulcio and Rekor or cannot reach
 // them, by the node's own key. escalate, and a red run_suite or a
 // conflicted apply_onto, move the session up the lease's ladder through
-// its mailbox (PR 2.11). A tool the node does not have is left out and
-// logged. suites, set, runs run_suite's steps in the lease's pod; nil
-// runs them on the host only on a node explicitly unsandboxed
-// (hostSuites), and otherwise run_suite refuses (podsuites.go).
+// its mailbox (PR 2.11). A tool the node does not have never reaches
+// here: work hands the lease back tool_unavailable first (causes.go).
+// suites, set, runs run_suite's steps in the lease's pod; nil runs them
+// on the host only on a node explicitly unsandboxed (hostSuites), and
+// otherwise work hands the lease back tool_unavailable (podsuites.go).
 func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace string, tokens *sessionTokens, ladder *escalate.Ladder, mb *Mailbox, suites nodetools.SuiteRunner) ([]mcptool.Tool, *nodetools.Recorder) {
 	if len(b.NodeTools) == 0 {
 		return nil, nil

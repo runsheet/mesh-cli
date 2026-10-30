@@ -12,6 +12,7 @@ import (
 	"runtime/debug"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/actor"
@@ -167,6 +168,11 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 			closers[i]()
 		}
 	}()
+	// a node tool the kind names that this node does not have is handed
+	// back tool_unavailable before anything is minted (causes.go)
+	if name := unservedTool(b); name != "" {
+		return outcome{err: &toolUnavailableError{tool: name, why: "this node does not have the node tool"}}
+	}
 	dir := filepath.Join(r.WorkRoot, "leases", b.LeaseID)
 	workspace := filepath.Join(dir, "work")
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
@@ -189,21 +195,29 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	if len(b.Servers) > 0 || b.Git != nil || len(apiRules(b)) > 0 || b.CredentialRef != "" {
 		var err error
 		if tokens, err = openSession(ctx, r.API, b.LeaseID, r.LatchkeyHTTP); err != nil {
-			return outcome{err: err, cause: context.Cause(ctx)}
+			return outcome{err: credentialFailed(err), cause: context.Cause(ctx)}
 		}
 	}
 	// the job's model account, when Mesh picked one: read now, so a lease
 	// whose account Latchkey refuses is handed back before any checkout
 	account, err := openAccount(ctx, b.CredentialRef, tokens, os.Environ())
 	if err != nil {
-		return outcome{err: err, cause: context.Cause(ctx)}
+		return outcome{err: credentialFailed(err), cause: context.Cause(ctx)}
 	}
 	var grant *gitrelay.Grant
 	var resumed *resumePoint
 	if b.Git != nil && b.Git.Repo != "" {
 		policy := policyOf(b.Git)
+		// a checkout that failed because its git token was not minted is
+		// credential_timeout, not the checkout's own failure
+		var mintMu sync.Mutex
+		var mintErr error
 		mint := func(ctx context.Context) (gitrelay.Token, error) {
-			return tokens.MintSource(ctx, sourceRequest(b.Git, policy))
+			tok, err := tokens.MintSource(ctx, sourceRequest(b.Git, policy))
+			mintMu.Lock()
+			mintErr = err
+			mintMu.Unlock()
+			return tok, err
 		}
 		g, err := r.relay.Open(b.LeaseID, policy, mint, tokens.RevokeSource)
 		if err != nil {
@@ -226,7 +240,13 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		}
 		if resume == "" {
 			if resumed, err = checkout(ctx, grant, b, workspace, r.mirrors, r.logf); err != nil {
-				return outcome{err: fmt.Errorf("checking out %s: %w", b.Git.Repo, err), cause: context.Cause(ctx)}
+				err = fmt.Errorf("checking out %s: %w", b.Git.Repo, err)
+				mintMu.Lock()
+				if mintErr != nil {
+					err = credentialFailed(fmt.Errorf("%w (its git token was not minted: %v)", err, mintErr))
+				}
+				mintMu.Unlock()
+				return outcome{err: err, cause: context.Cause(ctx)}
 			}
 		}
 		// the relay proves a fast-forward-only push in this checkout
@@ -258,6 +278,15 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		// the session's own pod, beside its services (podsession.go)
 		suites = lp.suites
 	}
+	// run_suite with nowhere to run its steps is handed back
+	// tool_unavailable before the session; a step killed under it, or its
+	// runner failing, ends the lease as the infrastructure's (causes.go)
+	if err := r.unservedSuites(b, suites); err != nil {
+		return outcome{err: err}
+	}
+	ctx, endLease := context.WithCancelCause(ctx)
+	defer endLease(nil)
+	suites = watchSuites(suites, endLease)
 	tools, rec := r.nodeTools(b, grant, workspace, tokens, ladder, mb, suites)
 	hb := &sessionHandBack{}
 	tools = append(tools, r.endTools(b, fin, hb, mb)...)
@@ -546,6 +575,14 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) actor.End {
 		reason := afterWrites("the node stopped while the session ran", writes)
 		r.handBack(id, meshapi.CauseNodeRestart, reason, o.result.SessionID)
 		return actor.End{Report: actor.ReportHandBack, Cause: meshapi.CauseNodeRestart, Reason: reason}
+	case infrastructureCause(o.cause) != "":
+		// a node tool's runner failed under the session (causes.go)
+		r.postAccess(id, o.access)
+		r.postUsage(id, o)
+		cause, reason := infrastructureCause(o.cause), afterWrites(o.cause.Error(), writes)
+		r.logf("nodev1: lease %s: %s", id, reason)
+		r.handBack(id, cause, reason, o.result.SessionID)
+		return actor.End{Report: actor.ReportHandBack, Cause: cause, Reason: reason}
 	}
 	// a stop rule's end fails the job, the rule named first in the
 	// reason (projectmesh-io/api adr-001-amendment-learnings-and-
@@ -566,15 +603,17 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) actor.End {
 		r.handBack(id, meshapi.CauseParked, reason, o.result.SessionID)
 		return actor.End{Report: actor.ReportHandBack, Cause: meshapi.CauseParked, Reason: reason}
 	}
-	// a job actor's session or pod killed from outside is the node's
-	// condition, never the work's (ADR-044): handed back pod_killed,
-	// writes or not, since the next lease builds on what was pushed
-	if why, ok := podKilled(o); ok && r.Actors {
+	// a job actor's session, its pod or a run_suite step killed from
+	// outside is the node's condition, never the work's (ADR-044): handed
+	// back pod_killed with the exit code it was killed with (mesh-specs
+	// gap 14), writes or not, since the next lease builds on what was
+	// pushed
+	if why, code, ok := podKilled(o); ok && r.Actors {
 		r.postAccess(id, o.access)
 		r.postUsage(id, o)
 		reason := afterWrites(why, writes)
 		r.logf("nodev1: lease %s: %s", id, reason)
-		r.handBack(id, meshapi.CausePodKilled, reason, o.result.SessionID)
+		r.handBackExit(id, meshapi.CausePodKilled, reason, o.result.SessionID, code)
 		return actor.End{Report: actor.ReportHandBack, Cause: meshapi.CausePodKilled, Reason: reason}
 	}
 	// a session that gave the job back with the node's hand_back tool is
@@ -606,8 +645,11 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) actor.End {
 		return actor.End{Report: actor.ReportFail, Cause: meshapi.CauseInfrastructure, Reason: reason}
 	}
 	if o.err != nil {
-		r.handBack(id, meshapi.CauseCannotRun, o.err.Error(), o.result.SessionID)
-		return actor.End{Report: actor.ReportHandBack, Cause: meshapi.CauseCannotRun, Reason: o.err.Error()}
+		// a credential not minted or a node tool not served before the
+		// session started says so (causes.go); anything else could not run
+		cause := cmp.Or(infrastructureCause(o.err), meshapi.CauseCannotRun)
+		r.handBack(id, cause, o.err.Error(), o.result.SessionID)
+		return actor.End{Report: actor.ReportHandBack, Cause: cause, Reason: o.err.Error()}
 	}
 	if o.noFinish != "" {
 		r.logf("nodev1: lease %s: no finish: %s", id, o.noFinish)
@@ -672,9 +714,15 @@ func (r *Runtime) fail(id, cause, reason string) {
 }
 
 func (r *Runtime) handBack(id, cause, reason, sessionRef string) {
+	r.handBackExit(id, cause, reason, sessionRef, 0)
+}
+
+// handBackExit is handBack carrying the exit code (137, 143) the
+// session, its pod or a step was killed with; 0 is none.
+func (r *Runtime) handBackExit(id, cause, reason, sessionRef string, exitCode int) {
 	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
 	defer cancel()
-	st, err := r.API.HandBack(ctx, id, meshapi.HandBackRequest{Cause: cause, Reason: clip(reason, maxReason), SessionRef: sessionRef})
+	st, err := r.API.HandBack(ctx, id, meshapi.HandBackRequest{Cause: cause, Reason: clip(reason, maxReason), SessionRef: sessionRef, ExitCode: exitCode})
 	if err != nil && meshapi.LeaseGone(err) {
 		r.logf("nodev1: lease %s was no longer the node's to hand back (%s)", id, cause)
 		return

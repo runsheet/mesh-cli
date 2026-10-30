@@ -1,0 +1,16 @@
+{
+  "name": "lease-hand-back-tool-unavailable",
+  "method": "POST",
+  "path": "/v1/leases/8a612987-555f-58e7-9c37-8f03c4b11bd2/hand-back",
+  "caller": "node",
+  "request": {
+    "cause": "tool_unavailable",
+    "reason": "run_suite: podman is not answering"
+  },
+  "status": 200,
+  "response": {
+    "handbacks": 3,
+    "job_id": "45664f9a-b216-5cd1-b4a9-df036fab1e3a",
+    "status": "queued"
+  }
+}

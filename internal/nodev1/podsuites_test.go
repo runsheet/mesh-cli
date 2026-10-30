@@ -92,18 +92,23 @@ func TestRunSuiteRunsInTheLeasesPodOnASandboxedNode(t *testing.T) {
 }
 
 // On a sandboxed node a lease with no pod has nowhere to run its suites:
-// run_suite refuses, even with HostSuites set, and nothing runs on the
+// the lease is handed back tool_unavailable before its session runs
+// (mesh-specs gap 14), even with HostSuites set, and nothing runs on the
 // host or in any pod.
-func TestRunSuiteRefusesWithoutAPodOnASandboxedNode(t *testing.T) {
+func TestRunSuiteWithoutAPodOnASandboxedNodeHandsBack(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "ran-on-the-host")
 	var text string
 	var refused bool
-	g, sb := actorRig(t, suiteSession(t, marker, &text, &refused))
+	sess := suiteSession(t, marker, &text, &refused)
+	g, sb := actorRig(t, sess)
 	g.rt.HostSuites = true
-	g.offer(t, func(b *meshapi.Brief) { b.NodeTools = []string{nodetools.RunSuiteTool} })
+	job := g.offer(t, func(b *meshapi.Brief) { b.NodeTools = []string{nodetools.RunSuiteTool} })
 	run(t, g, context.Background())
-	if !refused || !strings.Contains(text, "cannot run here") {
-		t.Fatalf("run_suite answered refused=%v %q, want a refusal", refused, text)
+	if hb := onlyHandBack(t, g, job); hb.Cause != meshapi.CauseToolUnavailable || !strings.Contains(hb.Reason, "cannot run here") {
+		t.Fatalf("hand-back %+v", hb)
+	}
+	if len(sess.specs) != 0 {
+		t.Fatal("a session ran with no run_suite to serve it")
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("the session's validate.yml step ran on the host")
@@ -114,14 +119,15 @@ func TestRunSuiteRefusesWithoutAPodOnASandboxedNode(t *testing.T) {
 }
 
 // A node with no sandbox runs run_suite on the host only when explicitly
-// unsandboxed (HostSuites); the zero value refuses.
+// unsandboxed (HostSuites); the zero value cannot serve it, and hands
+// the lease back tool_unavailable with no session run.
 func TestRunSuiteOnTheHostIsAnExplicitOptIn(t *testing.T) {
 	for _, c := range []struct {
 		name       string
 		hostSuites bool
 		ran        bool
 	}{
-		{name: "the zero value refuses", hostSuites: false, ran: false},
+		{name: "the zero value hands back", hostSuites: false, ran: false},
 		{name: "explicitly unsandboxed runs on the host", hostSuites: true, ran: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -130,11 +136,16 @@ func TestRunSuiteOnTheHostIsAnExplicitOptIn(t *testing.T) {
 			var refused bool
 			g := newRig(t, suiteSession(t, marker, &text, &refused))
 			g.rt.HostSuites = c.hostSuites
-			g.offer(t, func(b *meshapi.Brief) { b.NodeTools = []string{nodetools.RunSuiteTool} })
+			job := g.offer(t, func(b *meshapi.Brief) { b.NodeTools = []string{nodetools.RunSuiteTool} })
 			run(t, g, context.Background())
 			_, err := os.Stat(marker)
-			if ran := err == nil; ran != c.ran || refused == c.ran {
+			if ran := err == nil; ran != c.ran || refused {
 				t.Fatalf("ran=%v refused=%v (%s), want ran=%v", ran, refused, text, c.ran)
+			}
+			if !c.ran {
+				if hb := onlyHandBack(t, g, job); hb.Cause != meshapi.CauseToolUnavailable {
+					t.Fatalf("hand-back %+v", hb)
+				}
 			}
 		})
 	}

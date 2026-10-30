@@ -85,9 +85,10 @@ func TestNoCredentialRefKeepsTheNodesLogin(t *testing.T) {
 	}
 }
 
-// A model account Latchkey refuses hands the lease back cannot_run with
-// Latchkey's reason, before any session runs: the job never runs on the
-// node's own login instead.
+// A model account Latchkey refuses hands the lease back
+// credential_timeout with Latchkey's reason, before any session runs
+// (mesh-specs gap 14): the job never runs on the node's own login
+// instead.
 func TestARefusedModelCredentialHandsBack(t *testing.T) {
 	sess := &stubSession{}
 	g := newRig(t, sess)
@@ -101,7 +102,7 @@ func TestARefusedModelCredentialHandsBack(t *testing.T) {
 	}
 	hb := g.fake.Calls("hand-back")
 	var req meshapi.HandBackRequest
-	if len(hb) != 1 || json.Unmarshal(hb[0].Body, &req) != nil || req.Cause != meshapi.CauseCannotRun ||
+	if len(hb) != 1 || json.Unmarshal(hb[0].Body, &req) != nil || req.Cause != meshapi.CauseCredentialTimeout ||
 		!strings.Contains(req.Reason, "the account link is not active") || strings.Contains(req.Reason, fakeModelSecret) {
 		t.Fatalf("hand-backs %+v", hb)
 	}

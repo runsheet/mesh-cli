@@ -168,7 +168,7 @@ func TestAPodKilledMidRunHandsBackPodKilled(t *testing.T) {
 		t.Fatal("the lease outlived its killed pod")
 	}
 	hb := onlyHandBack(t, g, job)
-	if hb.Cause != meshapi.CausePodKilled || !strings.Contains(hb.Reason, "exited 137") {
+	if hb.Cause != meshapi.CausePodKilled || hb.ExitCode != 137 || !strings.Contains(hb.Reason, "exited 137") {
 		t.Fatalf("hand-back %+v", hb)
 	}
 	if !slices.Contains(sb.Removed, pod) {
@@ -184,7 +184,7 @@ func TestOnlyAKillTheActorDidNotCauseIsPodKilled(t *testing.T) {
 		g, _ := actorRig(t, &stubSession{err: errors.New("claude: signal: killed"), result: SessionResult{SessionID: "sess-k"}})
 		job := g.offer(t, nil)
 		run(t, g, context.Background())
-		if hb := onlyHandBack(t, g, job); hb.Cause != meshapi.CausePodKilled || hb.SessionRef != "sess-k" {
+		if hb := onlyHandBack(t, g, job); hb.Cause != meshapi.CausePodKilled || hb.SessionRef != "sess-k" || hb.ExitCode != 137 {
 			t.Fatalf("hand-back %+v", hb)
 		}
 	})
