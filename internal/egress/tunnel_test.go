@@ -180,3 +180,35 @@ func TestPublicIPRefusesPrivateRanges(t *testing.T) {
 		}
 	}
 }
+
+// A fixed upstream named host:port is allowed on that port alone, and a
+// kind's host never off 443; an Open policy allows any host on 443 and
+// still no other port.
+func TestPolicyFixedPortsAndOpen(t *testing.T) {
+	p := NewPolicy([]string{"proxy.golang.org"}, nil, []string{"latchkey.example.com:8443", "mcp.example.com"})
+	for _, tc := range []struct {
+		host, port string
+		want       bool
+	}{
+		{"latchkey.example.com", "8443", true},
+		{"latchkey.example.com", "443", false},
+		{"mcp.example.com", "443", true},
+		{"proxy.golang.org", "443", true},
+		{"proxy.golang.org", "8443", false},
+		{"registry.npmjs.org", "443", false},
+	} {
+		if ok, _, _ := p.Allow(tc.host, tc.port); ok != tc.want {
+			t.Errorf("Allow(%s, %s) = %v, want %v", tc.host, tc.port, ok, tc.want)
+		}
+	}
+	o := p.Open()
+	if ok, _, _ := o.Allow("registry.npmjs.org", "443"); !ok {
+		t.Error("an open policy refused a host on 443")
+	}
+	if ok, _, _ := o.Allow("registry.npmjs.org", "80"); ok {
+		t.Error("an open policy allowed port 80")
+	}
+	if ok, _, _ := o.Allow("latchkey.example.com", "8443"); !ok {
+		t.Error("an open policy dropped a fixed host:port")
+	}
+}

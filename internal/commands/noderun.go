@@ -55,6 +55,7 @@ var (
 	nodeRunCacheMaxGB   float64
 	nodeRunSelfUpdate   bool
 	nodeRunSandbox      bool
+	nodeRunRelaySidecar bool
 )
 
 // nodeRunCmd is the Mesh v1 node runtime (internal/nodev1), beside the
@@ -172,6 +173,9 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 			// the session runs in the lease's pod, and so do run_suite's
 			// steps: never on the host
 			rt.Pods, rt.HostSuites = sb, false
+			rt.RelaySidecar = nodeRunRelaySidecar
+		} else if nodeRunRelaySidecar {
+			return errors.New("mesh node run: --relay-sidecar runs each lease's relay in its pod: it needs --sandbox")
 		}
 		err = rt.Run(ctx)
 		if errors.Is(err, nodev1.ErrRestartForUpdate) {
@@ -300,6 +304,7 @@ func init() {
 	f.StringVar(&nodeRunCacheDir, "cache-dir", "", "with --cache-trim, the Go build cache (default `go env GOCACHE`)")
 	f.Float64Var(&nodeRunCacheMaxGB, "cache-max-gb", 50, "with --cache-trim, the build cache's cap in GB")
 	f.BoolVar(&nodeRunSelfUpdate, "self-update", false, "keep the node on the newest release: drain, hand back node_update what still runs after 30 minutes, install the verified release and exit for the service manager to restart it")
+	f.BoolVar(&nodeRunRelaySidecar, "relay-sidecar", false, "with --sandbox, run each lease's relay as a sidecar in its pod on the lease's credentials alone, the pod with no network but its loopback (projectmesh-io/api ADR 001 amendment \"relay sidecar\")")
 	f.BoolVar(&nodeRunSandbox, "sandbox", false, "with --actors, run each lease's session and its services (the checkout's .mesh/services.yml and the brief's pods) in a rootless podman pod of the lease's own, on node.yaml's sandbox settings and the brief's CPUs and memory; the relay is reached only through the lease's socket")
 	_ = nodeRunCmd.MarkFlagRequired("api")
 	nodeCmd.AddCommand(nodeRunCmd)

@@ -35,7 +35,19 @@ type NetworkPolicy struct {
 	// NoDNS drops DNS too: a pod whose only way out is the relay
 	// (RelayOnly), which resolves for it.
 	NoDNS bool
+	// None is a pod with no network at all but its own loopback
+	// (Isolated): `--network none`, its containers sharing the network
+	// namespace and no other, and no rules to load. A lease whose relay
+	// is a sidecar in the pod reaches the node over a unix socket, so
+	// nothing in the pod needs a route.
+	None bool
 }
+
+// Isolated is a pod with no route out at all (projectmesh-io/api ADR
+// 001 amendment "relay sidecar"): `podman pod create --network none
+// --share net`. Its containers share loopback, where the relay sidecar
+// listens, and share no PID, IPC or UTS namespace.
+func Isolated() NetworkPolicy { return NetworkPolicy{None: true, NoDNS: true} }
 
 // RelayOnly is p for a session whose every exit is its relay (a Mesh v1
 // lease whose kind declares its egress): no port out to any address and
