@@ -113,7 +113,14 @@ func (s *Server) Register(policy Policy, token Token) (string, error) {
 	tok := token
 	s.entries[c] = &entry{key: key, expires: token.ExpiresAt, relay: &Relay{
 		Policy: policy, Upstream: s.Upstream, HTTP: s.HTTP, Audit: s.audit, Now: s.Now,
-		Mint: func(context.Context) (Token, error) { return tok, nil },
+		Mint: func(_ context.Context, repo string, _ Access) (Token, error) {
+			// a registration holds one token, its repository's; a read
+			// repo needs a grant, which mints one for it
+			if !strings.EqualFold(repo, policy.Repo) {
+				return Token{}, errors.New("a token-keyed registration holds no token for " + repo)
+			}
+			return tok, nil
+		},
 		// the node renews the job's token and registers the new one; a
 		// relay serves its own until it expires
 		RefreshBefore: time.Nanosecond,

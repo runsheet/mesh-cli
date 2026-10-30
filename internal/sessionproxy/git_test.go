@@ -51,7 +51,7 @@ func TestProxyGitRouteHoldsThePushRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	g, err := s.Open("lease-1", gitrelay.Policy{Repo: "acme/app", Access: gitrelay.Write, Push: []gitrelay.RefRule{{Ref: "refs/heads/mesh/*", FastForwardOnly: true}}},
-		func(context.Context) (gitrelay.Token, error) {
+		func(context.Context, string, gitrelay.Access) (gitrelay.Token, error) {
 			return gitrelay.Token{Value: "t", ExpiresAt: time.Now().Add(time.Hour)}, nil
 		}, nil)
 	if err != nil {

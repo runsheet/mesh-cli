@@ -179,3 +179,31 @@ func TestSidecarsRelayReadsTheNamedMirror(t *testing.T) {
 		s.Close()
 	}
 }
+
+// The credentials carry the brief's read repos and the mirrors of them
+// the sidecar has mounted, and its relay reads each from its own.
+func TestSidecarsRelayCarriesTheReadRepos(t *testing.T) {
+	c := testCreds(t)
+	c.Git.Policy.ReadRepos = []string{"acme/lib"}
+	c.Git.ReadMirrors = map[string]string{"acme/lib": "/srv/mesh/mirrors/acme/github/github.com/acme/lib.git"}
+	raw, _ := json.Marshal(c)
+	dir := privDir(t)
+	if err := Install(strings.NewReader(string(raw)), dir); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(filepath.Join(dir, CredentialsFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Git.Policy.ReadRepos) != 1 || got.Git.Policy.ReadRepos[0] != "acme/lib" || got.Git.ReadMirrors["acme/lib"] != c.Git.ReadMirrors["acme/lib"] {
+		t.Fatalf("read back %+v", got.Git)
+	}
+	s, err := New(got, filepath.Join(t.TempDir(), "n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if s.relay.Policy.ReadRepos[0] != "acme/lib" || s.relay.ReadMirrors["acme/lib"] != c.Git.ReadMirrors["acme/lib"] {
+		t.Fatalf("the relay reads %+v", s.relay)
+	}
+}

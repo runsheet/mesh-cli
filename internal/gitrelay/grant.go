@@ -21,11 +21,14 @@ import (
 // life while the relay refreshes the token behind it through Mint. Close
 // is the first of the three layers that end a lease's tokens: the
 // capability answers 404 at once, every stream in flight is cut, and
-// Revoke is called once with every token the grant minted.
+// Revoke is called once with every token the grant minted — its read
+// repos' read tokens with its own repository's.
 
-// Mint answers a fresh token for a grant's repository: Latchkey's
-// for-job source mint on the lease's session token, in nodev1.
-type Mint func(ctx context.Context) (Token, error)
+// Mint answers a fresh token for repo at access: the grant's own
+// repository at its policy's access, or one of its read repos at Read.
+// Latchkey's for-job source mint on the lease's session token, in
+// nodev1.
+type Mint func(ctx context.Context, repo string, access Access) (Token, error)
 
 // Revoke ends the tokens a grant minted, once, when it closes. minted
 // may be empty: a grant whose checkout never ran minted nothing.
@@ -84,8 +87,10 @@ func (s *Server) Open(leaseID string, policy Policy, mint Mint, revoke Revoke) (
 	if err != nil {
 		return nil, err
 	}
-	if _, err := vendor.RepoPath(policy.Repo); err != nil {
-		return nil, err
+	for _, repo := range append([]string{policy.Repo}, policy.ReadRepos...) {
+		if _, err := vendor.RepoPath(repo); err != nil {
+			return nil, err
+		}
 	}
 	upstream, err := upstreamOf(s.Upstream, policy.Base)
 	if err != nil {
@@ -124,8 +129,8 @@ func (s *Server) Open(leaseID string, policy Policy, mint Mint, revoke Revoke) (
 			e.Lease = leaseID
 			s.audit(e)
 		},
-		Mint: func(ctx context.Context) (Token, error) {
-			t, err := mint(ctx)
+		Mint: func(ctx context.Context, repo string, access Access) (Token, error) {
+			t, err := mint(ctx, repo, access)
 			if err == nil && t.Value != "" {
 				g.mu.Lock()
 				g.minted = append(g.minted, t)

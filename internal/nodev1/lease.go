@@ -223,16 +223,17 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	if b.Git != nil && b.Git.Repo != "" {
 		policy := policyOf(b.Git)
 		if r.sidecarMode() {
-			// every push goes through the relay sidecar: the node's own
-			// grant, for the checkout and apply_onto, only reads
-			policy.Access, policy.Push = gitrelay.Read, nil
+			// every push and every read repo's fetch goes through the
+			// relay sidecar: the node's own grant, for the checkout and
+			// apply_onto, only reads the job's repository
+			policy.Access, policy.Push, policy.ReadRepos = gitrelay.Read, nil, nil
 		}
 		// a checkout that failed because its git token was not minted is
 		// credential_timeout, not the checkout's own failure
 		var mintMu sync.Mutex
 		var mintErr error
-		mint := func(ctx context.Context) (gitrelay.Token, error) {
-			tok, err := tokens.MintSource(ctx, sourceRequest(b.Git, policy))
+		mint := func(ctx context.Context, repo string, access gitrelay.Access) (gitrelay.Token, error) {
+			tok, err := tokens.MintSource(ctx, sourceRequestFor(b.Git, repo, access))
 			mintMu.Lock()
 			mintErr = err
 			mintMu.Unlock()

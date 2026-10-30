@@ -35,11 +35,11 @@ var oidLine = regexp.MustCompile(`^want ([0-9a-f]{40}|[0-9a-f]{64})(\s|$)`)
 // MirrorGit runs git in the sidecar; "git" on PATH when empty.
 var MirrorGit = "git"
 
-// fromMirror serves an upload-pack POST from r.Mirror when every object
+// fromMirror serves an upload-pack POST from mirror when every object
 // it wants is there, and answers whether it did. When it did not, body
 // is what the request carried, to send upstream whole: the bytes read
 // to decide and the rest still unread.
-func (r *Relay) fromMirror(w http.ResponseWriter, req *http.Request, body io.Reader, ev *Event) (bool, io.Reader) {
+func (r *Relay) fromMirror(w http.ResponseWriter, req *http.Request, mirror string, body io.Reader, ev *Event) (bool, io.Reader) {
 	head, err := io.ReadAll(io.LimitReader(body, mirrorBodyMax+1))
 	replay := io.MultiReader(bytes.NewReader(head), body)
 	if err != nil || len(head) > mirrorBodyMax {
@@ -57,11 +57,11 @@ func (r *Relay) fromMirror(w http.ResponseWriter, req *http.Request, body io.Rea
 		}
 	}
 	wants, fetch := wantsOf(plain)
-	if !fetch || len(wants) == 0 || !r.mirrorHas(req.Context(), wants) {
+	if !fetch || len(wants) == 0 || !mirrorHas(req.Context(), mirror, wants) {
 		return false, replay
 	}
-	cmd := exec.CommandContext(req.Context(), MirrorGit, "-c", "safe.directory="+r.Mirror,
-		"-c", "uploadpack.allowAnySHA1InWant=true", "upload-pack", "--stateless-rpc", r.Mirror)
+	cmd := exec.CommandContext(req.Context(), MirrorGit, "-c", "safe.directory="+mirror,
+		"-c", "uploadpack.allowAnySHA1InWant=true", "upload-pack", "--stateless-rpc", mirror)
 	cmd.Env = mirrorEnv(req.Header.Get("Git-Protocol"))
 	cmd.Stdin = bytes.NewReader(plain)
 	stdout, err := cmd.StdoutPipe()
@@ -127,12 +127,12 @@ func wantsOf(body []byte) (wants []string, fetch bool) {
 	return wants, fetch
 }
 
-// mirrorHas says whether the mirror holds every object of wants.
-func (r *Relay) mirrorHas(ctx context.Context, wants []string) bool {
-	if fi, err := os.Stat(r.Mirror); err != nil || !fi.IsDir() {
+// mirrorHas says whether mirror holds every object of wants.
+func mirrorHas(ctx context.Context, mirror string, wants []string) bool {
+	if fi, err := os.Stat(mirror); err != nil || !fi.IsDir() {
 		return false
 	}
-	cmd := exec.CommandContext(ctx, MirrorGit, "-c", "safe.directory="+r.Mirror, "--git-dir", r.Mirror, "cat-file", "--batch-check=%(objectname) %(objecttype)")
+	cmd := exec.CommandContext(ctx, MirrorGit, "-c", "safe.directory="+mirror, "--git-dir", mirror, "cat-file", "--batch-check=%(objectname) %(objecttype)")
 	cmd.Env = mirrorEnv("")
 	cmd.Stdin = strings.NewReader(strings.Join(wants, "\n") + "\n")
 	out, err := cmd.Output()
