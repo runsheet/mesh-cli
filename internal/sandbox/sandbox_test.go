@@ -589,3 +589,23 @@ func TestRuntimeErrorReasonOpensWithItsKind(t *testing.T) {
 		t.Fatal("validate.EnvironmentKinds() is missing runtime_broken")
 	}
 }
+
+// A relay-only pod (a kind that declares its egress) has no port out and
+// no DNS: its loopback, where its bridge to the relay listens, is all it
+// reaches, and the LAN and the host stay dropped.
+func TestRelayOnlyNetworkReachesNothingButLoopback(t *testing.T) {
+	rules := DefaultNetwork().RelayOnly().Ruleset()
+	for _, want := range []string{"policy drop;", "oif \"lo\" accept", "192.168.0.0/16"} {
+		if !strings.Contains(rules, want) {
+			t.Fatalf("rules lack %q:\n%s", want, rules)
+		}
+	}
+	for _, refused := range []string{"dport { 443", "dport 53", DNSForward + " meta"} {
+		if strings.Contains(rules, refused) {
+			t.Fatalf("a relay-only pod's rules carry %q:\n%s", refused, rules)
+		}
+	}
+	if def := DefaultNetwork().Ruleset(); !strings.Contains(def, "tcp dport { 443, 80 } accept") || !strings.Contains(def, "dport 53 accept") {
+		t.Fatalf("the default policy changed:\n%s", def)
+	}
+}

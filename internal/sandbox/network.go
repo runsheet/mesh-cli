@@ -32,6 +32,20 @@ type NetworkPolicy struct {
 	Refused   []string
 	Refused6  []string
 	HostAddrs []string
+	// NoDNS drops DNS too: a pod whose only way out is the relay
+	// (RelayOnly), which resolves for it.
+	NoDNS bool
+}
+
+// RelayOnly is p for a session whose every exit is its relay (a Mesh v1
+// lease whose kind declares its egress): no port out to any address and
+// no DNS, so the pod reaches nothing beyond its own loopback, where its
+// bridge to the lease's socket listens. Anything that skips the relay's
+// forward proxy finds no route out.
+func (p NetworkPolicy) RelayOnly() NetworkPolicy {
+	p.Ports = nil
+	p.NoDNS = true
+	return p
 }
 
 // DefaultNetwork is ADR 007's policy: HTTPS and HTTP out, the LAN, the
@@ -75,7 +89,9 @@ func (p NetworkPolicy) Ruleset() string {
 	b.WriteString("\t\ttype filter hook output priority 0; policy drop;\n")
 	b.WriteString("\t\toif \"lo\" accept\n")
 	b.WriteString("\t\tct state established,related accept\n")
-	fmt.Fprintf(&b, "\t\tip daddr %s meta l4proto { tcp, udp } th dport 53 accept\n", DNSForward)
+	if !p.NoDNS {
+		fmt.Fprintf(&b, "\t\tip daddr %s meta l4proto { tcp, udp } th dport 53 accept\n", DNSForward)
+	}
 	var v4, v6 []string
 	for _, a := range p.HostAddrs {
 		if strings.Contains(a, ":") {

@@ -363,6 +363,9 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		r.logf("nodev1: lease %s resumes the thread's parked session %s", b.LeaseID, resume)
 	}
 	account.apply(&spec)
+	if b.Egress != nil && lp == nil {
+		r.logf("nodev1: lease %s: the kind declares its egress, but this node runs sessions on the host (no --sandbox): nothing confines the session to its relay", b.LeaseID)
+	}
 	if lp != nil {
 		// the pod reaches the model relay through its bridge, not the
 		// host's loopback the account was served on
@@ -425,6 +428,10 @@ func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief, tokens *sessi
 		if s.Name == NodeToolsServer {
 			return nil, "", nil, fmt.Errorf("the brief names a server %q, the node's own tools' name", s.Name)
 		}
+		if !mcpAllowed(b, s.Name) {
+			r.logf("nodev1: lease %s: the kind's egress names no MCP of %s; server %s is not served", b.LeaseID, b.Product, s.Name)
+			continue
+		}
 		ups[s.Name] = sessionproxy.Product{URL: s.URL, Bearer: tokens.Token, Key: tokens.Key()}
 	}
 	if len(tools) > 0 {
@@ -441,6 +448,18 @@ func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief, tokens *sessi
 	// the kind's product tools alone, under its descriptions (slots.go)
 	if sl != nil {
 		p.Tools, sl.proxy = sl.filter(), p
+	}
+	// the kind's egress: the relay is the session's only exit (egress.go)
+	tunnel := r.egressTunnel(b)
+	if tunnel != nil {
+		p.Egress, p.NoModel = tunnel, !b.Egress.Model
+		r.logf("nodev1: lease %s: egress %s", b.LeaseID, egressLine(b.Egress))
+	}
+	closeAll := func() {
+		p.Close()
+		if tunnel != nil {
+			tunnel.Close()
+		}
 	}
 	if grant != nil {
 		p.Git = grant
@@ -464,17 +483,17 @@ func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief, tokens *sessi
 		models = modelUpstreams()
 	}
 	if err := account.serve(p, models, r.logf, b.LeaseID); err != nil {
-		p.Close()
+		closeAll()
 		os.RemoveAll(sockDir)
 		return nil, "", nil, err
 	}
 	if err := p.Listen(sock); err != nil {
-		p.Close()
+		closeAll()
 		os.RemoveAll(sockDir)
 		return nil, "", nil, err
 	}
 	if err := waitListening(ctx, sock, socketReadyWait); err != nil {
-		p.Close()
+		closeAll()
 		os.RemoveAll(sockDir)
 		return nil, "", nil, err
 	}
@@ -482,7 +501,7 @@ func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief, tokens *sessi
 	for name := range ups {
 		servers[name] = harness.ProxyRelay(r.MeshBinary, sock, name)
 	}
-	return servers, sock, func() { p.Close(); os.RemoveAll(sockDir) }, nil
+	return servers, sock, func() { closeAll(); os.RemoveAll(sockDir) }, nil
 }
 
 // renew extends the lease every renew_every_s until ctx ends. Mesh

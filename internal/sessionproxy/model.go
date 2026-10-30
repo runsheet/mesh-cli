@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/egress"
 )
 
 // No model key in the session (projectmesh-io/api ADR 001 amendment
@@ -132,6 +134,11 @@ func (p *Proxy) serveModel(w http.ResponseWriter, req *http.Request) {
 		call.Err = p.mask(why)
 		done()
 		writeJSON(w, status, map[string]any{"type": "error", "error": map[string]string{"type": "relay_error", "message": "relay: " + call.Err}})
+	}
+	if p.NoModel {
+		w.Header().Set(egress.RefusedHeader, "model")
+		refuse(http.StatusForbidden, "the kind's egress reaches no model")
+		return
 	}
 	if m == nil {
 		refuse(http.StatusNotFound, "this session reaches no model through the relay")
