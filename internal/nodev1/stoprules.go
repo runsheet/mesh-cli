@@ -167,12 +167,15 @@ func (a *sessionAccount) secrets() []string {
 	return out
 }
 
-// secrets are the session's request credential and its token of the
-// moment.
+// secrets are the session's request credential and its tokens of the
+// moment: the session token and the signing token.
 func (s *sessionTokens) secrets() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := []string{s.token}
+	if s.signing != "" {
+		out = append(out, s.signing)
+	}
 	if s.cred != nil {
 		out = append(out, s.cred.RequestToken)
 	}

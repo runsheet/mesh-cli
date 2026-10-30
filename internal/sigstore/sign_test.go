@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -126,5 +127,46 @@ func signsWithFulcioAnswering(t *testing.T, field string, trim bool) {
 	}
 	if _, _, err := (&Signer{}).Sign(context.Background(), token, "t", nil); err == nil {
 		t.Fatal("an unconfigured signer signed")
+	}
+}
+
+// TestFulcioRefusalIsAnsweredAndNamesTheToken: each request goes on a
+// connection of its own (Fulcio closes an idle one after 30 s, and a
+// POST that reuses it as it closes fails with a bare EOF), and Fulcio's
+// refusal comes back as an *HTTPError — permanent for a 400 — whose text
+// names the token's aud and iss, never the token, since Fulcio's own
+// answer does not say why.
+func TestFulcioRefusalIsAnsweredAndNamesTheToken(t *testing.T) {
+	var closes []bool
+	fulcio := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		closes = append(closes, r.Close)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"code":3,"message":"There was an error processing the identity token","details":[]}`))
+	}))
+	defer fulcio.Close()
+	token := "e30." + base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"mesh:acme/p:job:j:lease:1","aud":["mesh-session"],"iss":"https://auth.test"}`)) + ".c2ln"
+	s := &Signer{FulcioURL: fulcio.URL, RekorURL: "http://rekor.invalid"}
+	for range 2 {
+		_, _, err := s.Sign(context.Background(), token, "application/vnd.in-toto+json", []byte(`{}`))
+		var he *HTTPError
+		if !errors.As(err, &he) || he.Status != http.StatusBadRequest || !he.Permanent() {
+			t.Fatalf("got %v, want Fulcio's 400 as a permanent *HTTPError", err)
+		}
+		want := `400 Bad Request: {"code":3,"message":"There was an error processing the identity token","details":[]} (the identity token's aud is [mesh-session], iss "https://auth.test")`
+		if !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), token) {
+			t.Fatalf("error %q, want it to say %q and never the token", err, want)
+		}
+	}
+	if len(closes) != 2 || !closes[0] || !closes[1] {
+		t.Fatalf("requests asked to close their connection: %v, want both", closes)
+	}
+	for _, c := range []struct {
+		status    int
+		permanent bool
+	}{{400, true}, {401, true}, {408, false}, {429, false}, {503, false}} {
+		if got := (&HTTPError{Status: c.status}).Permanent(); got != c.permanent {
+			t.Errorf("%d permanent %v, want %v", c.status, got, c.permanent)
+		}
 	}
 }

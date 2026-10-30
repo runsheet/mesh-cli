@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -24,17 +25,27 @@ import (
 	"projectmesh.io/mesh-cli/internal/meshapi"
 )
 
-// sessionToken is a mesh-session-shaped JWT naming sub (unsigned: the
-// fake Fulcio reads it as Fulcio would after verifying it).
-func sessionToken(sub string) string {
-	claims, _ := json.Marshal(map[string]any{"sub": sub, "aud": "mesh-session", "iss": "https://latchkey.test"})
+// sessionToken is the lease's signing token: a JWT naming sub for
+// audience sigstore, as Latchkey mints it for Fulcio (unsigned: the fake
+// Fulcio reads it as Fulcio would after verifying it).
+func sessionToken(sub string) string { return idToken(sub, "sigstore") }
+
+// idToken is a session JWT naming sub for aud.
+func idToken(sub, aud string) string {
+	claims, _ := json.Marshal(map[string]any{"sub": sub, "aud": aud, "iss": "https://latchkey.test"})
 	return "eyJhbGciOiJSUzI1NiJ9." + base64.RawURLEncoding.EncodeToString(claims) + ".sig"
 }
 
-// fakeFulcio is a test Fulcio: it takes only want's token, checks the
-// proof of possession over the token's subject, and certifies the key
-// for that subject as its SAN URI, chained to its own root. down makes
-// it answer 503.
+// fulcioRefusal is what Fulcio answers for an identity token it will not
+// take, whatever the reason (its log alone says "expected audience").
+const fulcioRefusal = `{"code":3,"message":"There was an error processing the identity token","details":[]}`
+
+// fakeFulcio is a test Fulcio: as Fulcio's runsheet-mesh issuer, it
+// refuses a token whose aud is not its client id `sigstore` with its
+// 400; it takes only want's token, checks the proof of possession over
+// the token's subject, and certifies the key for that subject as its
+// SAN URI, chained to its own root. down makes it answer 503; drop, after
+// down, closes the connection unanswered (a bare EOF to the client).
 type fakeFulcio struct {
 	srv    *httptest.Server
 	caKey  *ecdsa.PrivateKey
@@ -43,6 +54,7 @@ type fakeFulcio struct {
 	want   string
 	mu     sync.Mutex
 	down   int // answer 503 this many more times; -1 for ever
+	drop   bool
 	issued *x509.Certificate
 	calls  int
 }
@@ -71,6 +83,13 @@ func (f *fakeFulcio) serve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "fulcio is down", http.StatusServiceUnavailable)
 		return
 	}
+	if f.drop {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			conn.Close()
+		}
+		return
+	}
 	var in struct {
 		Credentials      struct{ OidcIdentityToken string }
 		PublicKeyRequest struct {
@@ -79,6 +98,17 @@ func (f *fakeFulcio) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	json.NewDecoder(r.Body).Decode(&in)
+	if p := strings.Split(in.Credentials.OidcIdentityToken, "."); len(p) == 3 {
+		raw, _ := base64.RawURLEncoding.DecodeString(p[1])
+		var c struct{ Aud string }
+		json.Unmarshal(raw, &c)
+		if c.Aud != "sigstore" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, fulcioRefusal)
+			return
+		}
+	}
 	if in.Credentials.OidcIdentityToken != f.want {
 		http.Error(w, "unknown token", http.StatusUnauthorized)
 		return

@@ -16,15 +16,18 @@ import (
 
 // Signing a ToolRecord (Mesh v1 spec, "Evidence signing"): Sigstore
 // keyless. internal/sigstore makes an ephemeral key, asks Fulcio for a
-// ten-minute certificate with the lease's mesh-session token as the
-// OIDC identity token — so the certificate names the job, the lease, the
-// tenant and the product the token's subject does — signs the DSSE
-// envelope, logs it in Rekor and drops the key. The token and its DPoP
-// key never leave the node process (Token reads them from the lease's
-// session, held by the relay), so the model can never sign. When Fulcio
-// or Rekor cannot be used, the record is signed by the node's own key
-// and marked node-signed with the reason (meshapi.NoteNodeSigned); a
-// record that gates the job's finish waits for them first (Wait).
+// ten-minute certificate with the lease's session's ID token for
+// audience `sigstore` as the OIDC identity token (Latchkey ADR 017
+// decision 3: Fulcio's client id; a mesh-session token is refused) — so
+// the certificate names the job, the lease, the tenant and the product
+// the token's subject does — signs the DSSE envelope, logs it in Rekor
+// and drops the key. The token never leaves the node process (Token
+// mints it on the lease's session, held by the relay), so the model can
+// never sign. When Fulcio or Rekor cannot be used, the record is signed
+// by the node's own key and marked node-signed with the reason
+// (meshapi.NoteNodeSigned); a record that gates the job's finish waits
+// for them first (Wait), unless Fulcio or Rekor refuses it outright (a
+// 4xx other than 408 and 429), which no wait changes.
 
 // SignWait is how long a gating record's signing tries Fulcio and Rekor
 // before it falls back to the node's key.
@@ -38,8 +41,8 @@ type Signer struct {
 	// Sigstore is the node's Fulcio and Rekor; nil, or one without both,
 	// signs every record with the node's key.
 	Sigstore *sigstore.Signer
-	// Token answers the lease's mesh-session token; nil signs with the
-	// node's key.
+	// Token answers the lease's signing token — its session's ID token
+	// for audience `sigstore`; nil signs with the node's key.
 	Token func(ctx context.Context) (string, error)
 	// NodeKey is the node's ed25519 key, the one it registered.
 	NodeKey ed25519.PrivateKey
@@ -61,7 +64,7 @@ func (s *Signer) Sign(ctx context.Context, payload []byte, gating bool) (meshapi
 		}
 		reason = err.Error()
 	} else if s.Sigstore.Enabled() {
-		reason = "the lease has no mesh-session token"
+		reason = "the lease has no session to sign as"
 	}
 	if ctx.Err() != nil {
 		return meshapi.EvidencePost{}, ctx.Err()
@@ -93,16 +96,30 @@ func (s *Signer) keyless(ctx context.Context, payload []byte, gating bool) (mesh
 		}
 	}
 	deadline := time.Now().Add(wait)
+	// answered is the last refusal Fulcio or Rekor answered, kept so a
+	// last try that fails on the wire does not hide why they refused
+	var answered error
 	for {
 		post, err := s.once(ctx, payload)
 		if err == nil {
 			return post, nil
 		}
-		if !gating || ctx.Err() != nil || time.Now().Add(backoff).After(deadline) {
-			if gating {
-				return meshapi.EvidencePost{}, fmt.Errorf("%v (tried for %s)", err, wait)
-			}
+		var he *sigstore.HTTPError
+		isAnswer := errors.As(err, &he)
+		if isAnswer {
+			answered = err
+		}
+		if isAnswer && he.Permanent() {
 			return meshapi.EvidencePost{}, err
+		}
+		if !gating || ctx.Err() != nil || time.Now().Add(backoff).After(deadline) {
+			if !gating {
+				return meshapi.EvidencePost{}, err
+			}
+			if answered != nil && answered != err {
+				return meshapi.EvidencePost{}, fmt.Errorf("%v (tried for %s; last answered: %v)", err, wait, answered)
+			}
+			return meshapi.EvidencePost{}, fmt.Errorf("%v (tried for %s)", err, wait)
 		}
 		if sleep(ctx, backoff) != nil {
 			return meshapi.EvidencePost{}, err
@@ -114,16 +131,34 @@ func (s *Signer) keyless(ctx context.Context, payload []byte, gating bool) (mesh
 func (s *Signer) once(ctx context.Context, payload []byte) (meshapi.EvidencePost, error) {
 	tok, err := s.Token(ctx)
 	if err != nil {
-		return meshapi.EvidencePost{}, fmt.Errorf("the lease's mesh-session token: %v", err)
+		return meshapi.EvidencePost{}, fmt.Errorf("the lease's signing token: %v", err)
 	}
 	env, entry, err := s.Sigstore.Sign(ctx, tok, PayloadType, payload)
 	if err != nil {
-		return meshapi.EvidencePost{}, errors.New(strings.ReplaceAll(err.Error(), tok, "***"))
+		e := &scrubbed{msg: strings.ReplaceAll(err.Error(), tok, "***")}
+		errors.As(err, &e.answer)
+		return meshapi.EvidencePost{}, e
 	}
 	if !json.Valid([]byte(entry)) {
 		return meshapi.EvidencePost{}, errors.New("sigstore: Rekor's entry is not JSON")
 	}
 	return meshapi.EvidencePost{Signing: meshapi.SigningSigstore, Envelope: json.RawMessage(env), RekorEntry: json.RawMessage(entry)}, nil
+}
+
+// scrubbed is a signing error with the token taken out of its text,
+// still answering Fulcio's or Rekor's refusal when it was one.
+type scrubbed struct {
+	msg    string
+	answer *sigstore.HTTPError
+}
+
+func (e *scrubbed) Error() string { return e.msg }
+
+func (e *scrubbed) Unwrap() error {
+	if e.answer == nil {
+		return nil
+	}
+	return e.answer
 }
 
 // byNode signs with the node's key: an ed25519 signature over the DSSE
