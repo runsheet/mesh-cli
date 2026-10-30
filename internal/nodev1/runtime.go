@@ -17,6 +17,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"path/filepath"
 	"runtime"
@@ -76,6 +77,9 @@ type Runtime struct {
 	// reaches by provider (anthropic, openai) — a test's fake model; else
 	// $MESH_MODEL_UPSTREAM_<PROVIDER>, else each provider's API.
 	ModelUpstreams map[string]string
+	// EgressDial, when set, is how a lease's egress tunnel reaches an
+	// allowed host — a test's fake host; else the host's public address.
+	EgressDial func(ctx context.Context, network, addr string) (net.Conn, error)
 	// SigningKey is the node's ed25519 key, whose public half it
 	// registers: a node tool's record is signed with it when Fulcio or
 	// Rekor cannot be used.

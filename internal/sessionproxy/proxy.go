@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 
+	"projectmesh.io/mesh-cli/internal/egress"
 	"projectmesh.io/mesh-cli/internal/mcprelay"
 	"projectmesh.io/mesh-cli/internal/tools"
 )
@@ -184,6 +185,13 @@ type Proxy struct {
 	// tools/list answers only these, a tools/call of any other is
 	// refused. Nil serves every tool the product has.
 	Tools ToolFilter
+	// Egress, when set, is the session's way out beyond the relay's own
+	// routes: a CONNECT it allows is tunnelled (internal/egress). Nil
+	// refuses every egress request.
+	Egress *egress.Tunnel
+	// NoModel refuses the /model/ route whatever Model holds: a kind
+	// whose egress reaches no model.
+	NoModel bool
 
 	mu sync.Mutex
 	// servedTools are the tools each filtered server presented.
@@ -387,6 +395,15 @@ func (p *Proxy) Close() error {
 
 // ServeHTTP relays one request to the upstream its path names.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if egress.IsEgress(req) {
+		if p.Egress == nil {
+			p.logf("sessionproxy: egress to %s refused: the session has no egress", req.Host)
+			egress.Refuse(w, "no_egress", "this session reaches nothing beyond its relay")
+			return
+		}
+		p.Egress.ServeHTTP(w, req)
+		return
+	}
 	if strings.HasPrefix(req.URL.Path, GitPrefix) {
 		if p.Git == nil {
 			http.Error(w, "sessionproxy: this session has no git relay", http.StatusNotFound)
