@@ -174,3 +174,33 @@ func TestAnInjectSpecIsChecked(t *testing.T) {
 		t.Error("a wildcard host")
 	}
 }
+
+// A rule that Overwrites (a federation's cloud token, mesh-specs gap 32)
+// replaces whatever Authorization the request carries rather than refuse
+// it, and is audited with its purpose; one that does not still refuses.
+func TestAnOverwritingRuleReplacesThePresetHeader(t *testing.T) {
+	spec := InjectSpec{Hosts: []string{"*.googleapis.com"}, Form: FormBearer, Field: "access_token", Overwrite: true}
+	src := &fixedSource{cred: &Credential{Ref: "fed_prod", Spec: spec, Fields: map[string]string{"access_token": "ya29.cloud-1234567"}}}
+	r := NewInjectRule("fed_prod", "federation", src, []string{"storage.googleapis.com"})
+	r.Purpose = "configure"
+	for _, sent := range []string{"", "Bearer mesh", "Bearer the-sandboxs-own"} {
+		req := injectReq("GET", "https://storage.googleapis.com/storage/v1/b", "Authorization", sent)
+		ap, err := r.Apply(req)
+		if err != nil || ap == nil || ap.Purpose != "configure" || ap.Kind != "federation" || ap.Form != FormBearer {
+			t.Fatalf("sent %q: %+v %v", sent, ap, err)
+		}
+		if got := req.Header.Values("Authorization"); len(got) != 1 || got[0] != "Bearer ya29.cloud-1234567" {
+			t.Fatalf("sent %q: Authorization %q", sent, got)
+		}
+	}
+	if ap, _ := r.Apply(injectReq("GET", "https://example.com/x")); ap != nil {
+		t.Fatal("applied off its hosts")
+	}
+	spec.Overwrite = false
+	src.cred.Spec = spec
+	_, err := r.Apply(injectReq("GET", "https://storage.googleapis.com/x", "Authorization", "Bearer the-sandboxs-own"))
+	var rf *Refusal
+	if !errors.As(err, &rf) || rf.Code != CodePreset {
+		t.Fatalf("without Overwrite: %v", err)
+	}
+}

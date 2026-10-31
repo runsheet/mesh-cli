@@ -64,6 +64,9 @@ type Applied struct {
 	Kind string
 	// Version is the version of what it applied, when it has one.
 	Version string
+	// Purpose is what the credential was minted for, when its ref names
+	// one (a federation target's, gap 32).
+	Purpose string
 }
 
 // Refusal is a rule's refusal of a request: the status the session is

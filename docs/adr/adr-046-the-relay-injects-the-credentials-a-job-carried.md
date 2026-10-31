@@ -180,3 +180,83 @@ runsheet v1 plan rules out: the pod must never hold one.
   the session (ADR-045) on all of them, for those leases only.
 - Two rules that write the same header to the same request conflict:
   the second finds it set and refuses `credential_preset`.
+
+## Amendment 2026-10-31: federation targets (mesh-specs gap 32)
+
+`access.federation` (`[{ref, purpose?}]` or bare refs, projectmesh-io/api
+#80) is now served. Latchkey's side is latchkeyid/latchkey #693 (ADR 031
+§3 as built): one route for a product's workload and a job's relay, not
+the for-job route this ADR's item 2 uses.
+
+1. **Minted on the session token.** For each ref the node calls `POST
+   <Latchkey>/v1/federation/token` with `Authorization: DPoP <mesh-session
+   token>`, a fresh proof and `{"target": <ref>, "purpose": <purpose>}`,
+   nothing else (Latchkey refuses `org`, `project` or `environment` from
+   a session). The purpose is the offer's, else the kind's name (its last
+   `/` segment, lower-cased, as Latchkey reads the job's kind). The
+   answer is `{subject_token, issued_token_type, expires_in, target_ref,
+   cloud, exchange}`; the subject token lives five minutes and names the
+   job, kind and lease.
+2. **Traded by the node, at Google alone.** For `cloud: gcp` the node
+   posts STS's token exchange to `exchange.sts_url` (`grant_type`
+   token-exchange, `audience`, `subject_token_type`,
+   `requested_token_type` access_token) and, when the target names a
+   `service_account`, `generateAccessToken` at
+   `<exchange.iam_credentials_url>/projects/-/serviceAccounts/<sa>`
+   with `scope` the target's `scopes` and `lifetime` `<exchange.duration>s`.
+   STS is asked for `cloud-platform` when a service account follows
+   (generateAccessToken takes no narrower federated token; Latchkey's own
+   verify does the same), else for the target's scopes. Before any token
+   is sent, each URL must be `https` on exactly `sts.googleapis.com` or
+   `iamcredentials.googleapis.com` (no user, no port but 443): anything
+   else is refused `gcp_sts`/`gcp_iam` `invalid_exchange`, and no
+   redirect is followed. Only this package's tests can point the trade at
+   a fake (`Runtime.federationHTTP`, `federationCheck`, unexported); no
+   build, flag or variable can.
+3. **Injected as bearer on the kind's Google hosts.** One
+   `egress.InjectRule` per target over the kind's egress hosts under
+   `*.googleapis.com` that the egress allows, exactly as item 3 (never
+   widening egress; a literal `*.` entry is not a host). A host one
+   target writes is not another's, and a target with no host left is not
+   minted, which is said. Federation rules come before secrets', so a
+   secret's rule on the same host still finds the header set and refuses.
+   The rule `Overwrite`s: the Google provider and `gcloud` always send an
+   Authorization, so the one the sandbox sent is replaced, not refused
+   `credential_preset`. The pod holds `GOOGLE_OAUTH_ACCESS_TOKEN=mesh`
+   and `CLOUDSDK_AUTH_ACCESS_TOKEN=mesh`.
+4. **Refreshed, then dropped.** Minted and traded once as the lease
+   opens; again on the first request within a minute of the cloud
+   token's end (`expireTime`, else `duration`), for as long as the lease
+   lives, the old token dropped first; dropped at the lease's end with
+   the held credentials (`releaser.fed`, run by `releaseCarried` before
+   Mesh hears of the end), after which the rule refuses
+   `credential_unavailable`. Nothing is kept across leases, and nothing
+   is released at Latchkey: a subject token is not revocable and dies
+   in five minutes.
+5. **Failure is closed.** A request finding no token is answered `502`
+   with `X-Mesh-Error: credential_refused` and, in the body, Latchkey's
+   code (`target_not_found`, also for the bare 404 of an org without the
+   `federation` feature; `target_disabled`; `purpose_not_granted`;
+   `not_the_jobs`) or `gcp_sts`/`gcp_iam` with Google's error (STS's
+   `error`/`error_description`, IAM's `status`/`message`), or
+   `credential_unavailable` when Latchkey (401, 503, unreachable) or
+   Google (5xx, unreachable) did not serve. At the lease's opening the
+   same failure hands the lease back, its reason naming the code: cause
+   `product` for Latchkey's 4xx other than 401/429, a Google 4xx other
+   than 429, or a cloud the node does not trade; `credential_timeout`
+   otherwise and for an exchange URL that is not Google's (Latchkey's
+   fault, not the product's).
+6. **Redacted and audited.** The subject token, STS's federated token
+   and the cloud token are each handed to the lease's redactor
+   (`injectedValues.add`) as they are had, before they are sent
+   anywhere, so each reads `[secret:<target ref>]` wherever it might
+   echo and is one of the lease's canaries; a lease with a federation
+   rule terminates every egress host for them, as one with a secret
+   does. Error text is scrubbed of the tokens it was sent.
+   Each request is an AccessRecord `{vendor: federation, service: inject
+   bearer, path: <ref>, reason: <status> purpose <purpose>}`.
+
+Not yet: AWS (`AssumeRoleWithWebIdentity`, then `aws_sigv4` re-signing)
+and Azure (a client assertion, then bearer) and generic OIDC. Their
+targets hand the lease back `product` `cloud_not_supported`;
+`heldFederation.tradeFor` is the seam they join at.

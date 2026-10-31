@@ -61,6 +61,8 @@ type fakeLatchkey struct {
 	releases      int
 	refuseRelease int
 	onRelease     func()
+	// fed is the federation-token route's state (federation_test.go)
+	fed fakeFederation
 }
 
 // carriedRefusal is a for-job refusal: Latchkey's status and code.
@@ -106,6 +108,7 @@ func newFakeLatchkey(t *testing.T) *fakeLatchkey {
 	mux.HandleFunc("DELETE /v1/credentials/for-job/source", l.source)
 	mux.HandleFunc("/github/{path...}", l.proxy)
 	mux.HandleFunc("/v1/connections/for-job/{binding}/mcp", l.slot)
+	mux.HandleFunc("POST /v1/federation/token", l.federationToken)
 	l.srv = httptest.NewServer(mux)
 	t.Cleanup(l.srv.Close)
 	return l

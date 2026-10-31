@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -98,6 +99,12 @@ type Runtime struct {
 	// terminates (intercept.go) to their host — a test's, trusting its
 	// fake registry; else the tunnel's own, on the system roots.
 	EgressUpstream http.RoundTripper
+	// federationHTTP and federationCheck are how a lease's federation
+	// targets are traded at the cloud (federation.go): a plain client and
+	// googleURL when nil. Unexported: only this package's tests point
+	// them at a fake STS and IAM; no build or configuration can.
+	federationHTTP  *http.Client
+	federationCheck func(raw, host string) (*url.URL, error)
 	// SigningKey is the node's ed25519 key, whose public half it
 	// registers: a node tool's record is signed with it when Fulcio or
 	// Rekor cannot be used.
