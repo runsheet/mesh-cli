@@ -12,9 +12,12 @@
 // string values are redacted decoded, so an escaped secret is caught
 // too, and the line is written again.
 //
-// The chunk protocol: each chunk is an HTTP PUT to upload_url, with the
-// product's headers and these:
+// The chunk protocol: each chunk is an HTTP PUT to upload_url, with any
+// headers the product's offer still names and these:
 //
+//	Authorization: DPoP <the lease's mesh-session token>
+//	DPoP: <a fresh proof of this PUT>  htm PUT, htu upload_url without
+//	                                   its query or fragment, ath of the token
 //	Content-Type: application/x-ndjson
 //	Mesh-Lease: <lease id>
 //	Mesh-Transcript-Seq: <n>          1, 2, … per lease
@@ -22,6 +25,16 @@
 //	Mesh-Transcript-Final: true       the last chunk alone, sent when the session ends
 //	Mesh-Transcript-Bytes: <total>    the last chunk alone
 //	Mesh-Transcript-Digest: sha256:<hex>   the last chunk alone: of the whole transcript
+//
+// The token and proof are the ones the lease's relay sends a tool call
+// to the product on (mesh-specs gap 30): the lease's Latchkey session's
+// token of the moment, so a token refreshed mid-lease carries the next
+// chunk, and a proof by the session's own DPoP key. Mesh-Lease is the
+// lease the token was minted for. A chunk answered 401 is sent once
+// more at once, on a fresh proof carrying the DPoP-Nonce the product
+// asked for if it asked one, and when that is refused too it is counted
+// failed: the token is not this location's, and trying it again later
+// would not make it so. Neither the token nor a proof is ever logged.
 //
 // A chunk's body is whole lines. A chunk goes once ChunkBytes are held
 // or Every has passed with lines held; the last goes at Close, empty
@@ -37,6 +50,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -76,8 +90,20 @@ type Options struct {
 	HTTP *http.Client
 	// Now is the clock; time.Now when nil.
 	Now func() time.Time
-	// Logf hears a chunk that failed: never its URL or its body.
+	// Logf hears a chunk that failed: never its URL, its body or its
+	// credentials.
 	Logf func(format string, args ...any)
+	// Session is the lease's Latchkey session every chunk is sent on;
+	// nil sends chunks with the offer's headers alone.
+	Session Session
+}
+
+// Session is a lease's Latchkey session as a chunk is sent on it: its
+// mesh-session token of the moment, refreshed when near its end, and a
+// DPoP proof by the key the token is bound to.
+type Session interface {
+	Token(ctx context.Context) (string, error)
+	ProofWithNonce(method, rawURL, token, nonce string) (string, error)
 }
 
 // Secrets answers the lease's secrets as they stand: a lease mints more
@@ -286,8 +312,16 @@ func (u *Uploader) put(body []byte, seq int, offset int64, final bool, total int
 			return true
 		}
 		why := fmt.Sprintf("answered %d", status)
-		if err != nil {
+		if errors.Is(err, errNoToken) {
+			why = "could not be sent: the lease's session token could not be had"
+		} else if err != nil {
 			why = "unreachable"
+		}
+		if status == http.StatusUnauthorized {
+			// refused on a fresh proof twice: the token is not this
+			// location's, and will not be on a later try
+			u.logf("transcript: lease %s: chunk %d dropped: the location refused the lease's session token", u.lease, seq)
+			return false
 		}
 		if try >= u.o.Tries {
 			u.logf("transcript: lease %s: chunk %d dropped after %d tries: the location %s", u.lease, seq, try, why)
@@ -298,15 +332,45 @@ func (u *Uploader) put(body []byte, seq int, offset int64, final bool, total int
 	}
 }
 
+// errNoToken is a chunk not sent because the session answered no token.
+var errNoToken = errors.New("transcript: no session token")
+
+// try sends the chunk once on the session's token of the moment, and
+// once more on a fresh proof when the location answers 401 — with the
+// DPoP-Nonce it asked for, if it asked one.
 func (u *Uploader) try(body []byte, seq int, offset int64, final bool, total int64, digest string) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	token := ""
+	if u.o.Session != nil {
+		var err error
+		if token, err = u.o.Session.Token(ctx); err != nil || token == "" {
+			return 0, errNoToken
+		}
+	}
+	status, h, err := u.tryOnce(ctx, body, seq, offset, final, total, digest, token, "")
+	if err != nil || status != http.StatusUnauthorized || u.o.Session == nil {
+		return status, err
+	}
+	status, _, err = u.tryOnce(ctx, body, seq, offset, final, total, digest, token, h.Get("DPoP-Nonce"))
+	return status, err
+}
+
+func (u *Uploader) tryOnce(ctx context.Context, body []byte, seq int, offset int64, final bool, total int64, digest, token, nonce string) (int, http.Header, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u.loc.UploadURL, bytes.NewReader(body))
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	for k, v := range u.loc.Headers {
 		req.Header.Set(k, v)
+	}
+	if token != "" {
+		proof, err := u.o.Session.ProofWithNonce(http.MethodPut, u.loc.UploadURL, token, nonce)
+		if err != nil {
+			return 0, nil, errNoToken
+		}
+		req.Header.Set("Authorization", "DPoP "+token)
+		req.Header.Set("DPoP", proof)
 	}
 	req.Header.Set("Content-Type", "application/x-ndjson")
 	req.Header.Set(HeaderLease, u.lease)
@@ -319,11 +383,11 @@ func (u *Uploader) try(body []byte, seq int, offset int64, final bool, total int
 	}
 	resp, err := u.o.HTTP.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
-	return resp.StatusCode, nil
+	return resp.StatusCode, resp.Header, nil
 }
 
 // Close sends what is held as the final chunk and answers what the

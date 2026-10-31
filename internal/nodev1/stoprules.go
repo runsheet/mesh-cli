@@ -64,7 +64,13 @@ func (r *Runtime) watchLease(ctx context.Context, b *meshapi.Brief, workspace st
 	w := &leaseWatch{r: r, lease: b.LeaseID, watch: stoprules.New(b.StopRules, workspace, time.Now()),
 		stop: stop, mb: mb, ladder: ladder, done: make(chan struct{})}
 	if t := b.Transcript; t != nil && t.UploadURL != "" {
-		w.upload = transcript.New(*t, b.LeaseID, leaseSecrets(tokens, grant, account, spec), transcript.Options{Logf: r.logf})
+		// every chunk goes on the lease's session token, as its relay's
+		// tool calls to the product do (mesh-specs gap 30)
+		o := transcript.Options{Logf: r.logf}
+		if tokens != nil {
+			o.Session = tokens
+		}
+		w.upload = transcript.New(*t, b.LeaseID, leaseSecrets(tokens, grant, account, spec), o)
 		spec.OnLine = w.upload.Line
 	}
 	onEvent := spec.OnEvent
@@ -123,7 +129,10 @@ func (w *leaseWatch) act(f stoprules.Fired) {
 }
 
 // close stops the watch and answers the lease's counts, with what its
-// transcript upload sent when it had one.
+// transcript upload sent when it had one. The upload's last chunk is
+// sent here, as the session ends and before the lease's end is told to
+// Mesh, which revokes its Latchkey session: the chunk goes while the
+// token it rides on is still the lease's.
 func (w *leaseWatch) close() meshapi.Counts {
 	close(w.done)
 	c := w.watch.Counts()

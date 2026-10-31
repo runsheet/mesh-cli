@@ -85,6 +85,12 @@ func (s *sessionTokens) String() string { return s.cred.String() }
 // Key is the DPoP key the session's tokens are bound to.
 func (s *sessionTokens) Key() *dpop.Key { return s.key }
 
+// ProofWithNonce is a proof by the session's key of one request on its
+// token: what a transcript chunk rides on (stoprules.go).
+func (s *sessionTokens) ProofWithNonce(method, rawURL, token, nonce string) (string, error) {
+	return s.key.ProofWithNonce(method, rawURL, token, nonce)
+}
+
 // issuer is Latchkey's origin: the request URL's scheme and host.
 func (s *sessionTokens) issuer() (string, error) {
 	u, err := url.Parse(s.cred.RequestURL)

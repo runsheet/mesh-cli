@@ -121,15 +121,39 @@ func TestAnEscalateRuleEndsAtTheTopOfTheLadder(t *testing.T) {
 	}
 }
 
-// uploads is a product's transcript location.
+// uploads is runsheet's transcript location (gateway/meshv1stream.go):
+// it keeps a chunk only on `Authorization: DPoP` with a mesh-session
+// token Latchkey minted, a fresh proof of this PUT by the key it is
+// bound to (htu the URL without its query) and the token's lease as the
+// chunk's Mesh-Lease; anything else, a plain chunk too, is 401 with a
+// DPoP WWW-Authenticate.
 type uploads struct {
-	mu     sync.Mutex
-	bodies []string
-	heads  []http.Header
+	lk      *fakeLatchkey
+	mu      sync.Mutex
+	bodies  []string
+	heads   []http.Header
+	refused []string
 }
 
 func (u *uploads) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	b, _ := io.ReadAll(r.Body)
+	tok, err := u.lk.checkToken(r, "http://"+r.Host+r.URL.EscapedPath())
+	if err == nil {
+		u.lk.mu.Lock()
+		lease := u.lk.leaseOf[tok]
+		u.lk.mu.Unlock()
+		if lease == "" || lease != r.Header.Get("Mesh-Lease") {
+			err = fmt.Errorf("the token's lease %q is not the chunk's Mesh-Lease", lease)
+		}
+	}
+	if err != nil {
+		u.mu.Lock()
+		u.refused = append(u.refused, err.Error())
+		u.mu.Unlock()
+		w.Header().Set("WWW-Authenticate", `DPoP realm="mesh", algs="ES256", error="invalid_token"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
 	u.mu.Lock()
 	u.bodies = append(u.bodies, string(b))
 	u.heads = append(u.heads, r.Header.Clone())
@@ -148,6 +172,13 @@ func TestTheTranscriptReachesTheProductRedacted(t *testing.T) {
 	dest := httptest.NewServer(up)
 	t.Cleanup(dest.Close)
 	var g *rig
+	defer func() {
+		up.mu.Lock()
+		defer up.mu.Unlock()
+		if len(up.refused) > 0 {
+			t.Errorf("the product refused chunks: %v", up.refused)
+		}
+	}()
 	held := func() []string {
 		g.latchkey.mu.Lock()
 		defer g.latchkey.mu.Unlock()
@@ -173,6 +204,7 @@ func TestTheTranscriptReachesTheProductRedacted(t *testing.T) {
 		return append(lines, `{"type":"result","subtype":"success","result":"done","session_id":"sess-ruled"}`)
 	}}
 	g = newRig(t, sess)
+	up.lk = g.latchkey
 	job := g.offer(t, func(b *meshapi.Brief) {
 		b.Transcript = &meshapi.Transcript{UploadURL: dest.URL + "/t/1?sig=product-signed", Headers: map[string]string{"X-Product": "p"}, ExpiresAt: time.Now().Add(time.Hour)}
 	})
@@ -180,6 +212,16 @@ func TestTheTranscriptReachesTheProductRedacted(t *testing.T) {
 	if g.fake.Ended(g.fake.LeaseOf(job)) != "finish" {
 		t.Fatalf("ended %q", g.fake.Ended(g.fake.LeaseOf(job)))
 	}
+	// a chunk with the offer's headers alone is refused
+	req, _ := http.NewRequest(http.MethodPut, dest.URL+"/t/1", strings.NewReader("{}\n"))
+	req.Header.Set("X-Product", "p")
+	req.Header.Set("Mesh-Lease", g.fake.LeaseOf(job))
+	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != http.StatusUnauthorized || !strings.HasPrefix(resp.Header.Get("WWW-Authenticate"), "DPoP ") {
+		t.Fatalf("a plain chunk: %v %v", resp, err)
+	}
+	up.mu.Lock()
+	up.refused = nil
+	up.mu.Unlock()
 	if len(secrets) < 4 || len(g.latchkey.minted) == 0 {
 		t.Fatalf("the lease held %d secrets, minted %v", len(secrets), g.latchkey.minted)
 	}

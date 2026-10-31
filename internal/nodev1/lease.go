@@ -205,8 +205,9 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 
 	var tokens *sessionTokens
 	// a relay sidecar holds the lease's session key and token whatever the
-	// brief names (relaypod.go)
-	if len(b.Servers) > 0 || b.Git != nil || len(apiRules(b)) > 0 || b.CredentialRef != "" || b.Registry != nil || sl.hasConnections() || r.sidecarMode() {
+	// brief names (relaypod.go); a transcript's chunks go on its token
+	// (stoprules.go)
+	if (b.Transcript != nil && b.Transcript.UploadURL != "") || len(b.Servers) > 0 || b.Git != nil || len(apiRules(b)) > 0 || b.CredentialRef != "" || b.Registry != nil || sl.hasConnections() || r.sidecarMode() {
 		var err error
 		if tokens, err = openSession(ctx, r.API, b.LeaseID, r.LatchkeyHTTP); err != nil {
 			return outcome{err: credentialFailed(err), cause: context.Cause(ctx)}
