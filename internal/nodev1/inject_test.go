@@ -246,6 +246,14 @@ func TestACarriedCredentialRefusedAtTheStartHandsTheLeaseBack(t *testing.T) {
 		{carriedRefusal{http.StatusConflict, "connection_needs_reauth"}, meshapi.CauseProduct},
 		{carriedRefusal{http.StatusBadGateway, "vendor_unreachable"}, meshapi.CauseCredentialTimeout},
 		{carriedRefusal{http.StatusServiceUnavailable, "temporarily_unavailable"}, meshapi.CauseCredentialTimeout},
+		// latchkey #697's for-job codes: the lease gone is not the
+		// product's configuration; a Secret missing, not injectable,
+		// disabled or expired is
+		{carriedRefusal{http.StatusForbidden, "job_not_live"}, meshapi.CauseCredentialTimeout},
+		{carriedRefusal{http.StatusNotFound, "secret_not_found"}, meshapi.CauseProduct},
+		{carriedRefusal{http.StatusConflict, "secret_not_injectable"}, meshapi.CauseProduct},
+		{carriedRefusal{http.StatusConflict, "secret_disabled"}, meshapi.CauseProduct},
+		{carriedRefusal{http.StatusConflict, "secret_expired"}, meshapi.CauseProduct},
 	} {
 		t.Run(tc.refusal.code, func(t *testing.T) {
 			g, sb, _ := podRig(t)

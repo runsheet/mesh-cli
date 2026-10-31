@@ -36,6 +36,9 @@ type Fake struct {
 	// message) when its status is not 0: Mesh's 404 not_found for a
 	// product that has not published, say.
 	Refuse func(req meshapi.ConnectRequest) (int, string, string)
+	// RefuseFail, set, refuses a lease's fail with its status when not
+	// 0, the lease still live: a Mesh older than a cause answers 422.
+	RefuseFail func(req meshapi.FailRequest) int
 
 	fx      map[string]Fixture
 	mu      sync.Mutex
@@ -422,6 +425,14 @@ func (f *Fake) lease(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "lease_not_live", "lease "+id+" is not live")
 		return
 	}
+	if route == "fail" && f.RefuseFail != nil {
+		var fr meshapi.FailRequest
+		json.Unmarshal(body, &fr)
+		if status := f.RefuseFail(fr); status != 0 {
+			writeErr(w, status, "refused", "cause is work or stopped_by_rule")
+			return
+		}
+	}
 	switch route {
 	case "renew":
 		f.mu.Lock()
@@ -498,11 +509,11 @@ func (f *Fake) lease(w http.ResponseWriter, r *http.Request) {
 		case "finish":
 			state.End = "finished"
 		case "fail":
-			// only cause work ends the job; any other cause is a
-			// hand-back, as Mesh's FailJob has it
+			// only causes work and credential_exposed end the job here;
+			// any other cause is a hand-back, as Mesh's FailJob had it
 			var fr meshapi.FailRequest
 			json.Unmarshal(body, &fr)
-			if fr.Cause == meshapi.CauseWork {
+			if fr.Cause == meshapi.CauseWork || fr.Cause == meshapi.CauseCredentialExposed {
 				state.End = "failed"
 				break
 			}

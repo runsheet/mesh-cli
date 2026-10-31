@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -61,6 +62,12 @@ type fakeLatchkey struct {
 	releases      int
 	refuseRelease int
 	onRelease     func()
+	// exposures are the for-job exposure reports, {secret_ref, version},
+	// in order; refuseExposed, its status set, is the refusal answered
+	// instead; onExposed hears each as it comes
+	exposures     []map[string]string
+	refuseExposed carriedRefusal
+	onExposed     func()
 	// fed is the federation-token route's state (federation_test.go)
 	fed fakeFederation
 }
@@ -105,6 +112,7 @@ func newFakeLatchkey(t *testing.T) *fakeLatchkey {
 	mux.HandleFunc("/oauth/session-token/request", l.sessionToken)
 	mux.HandleFunc("POST /v1/credentials/for-job/source", l.source)
 	mux.HandleFunc("POST /v1/credentials/for-job/release", l.release)
+	mux.HandleFunc("POST /v1/credentials/for-job/exposed", l.exposed)
 	mux.HandleFunc("DELETE /v1/credentials/for-job/source", l.source)
 	mux.HandleFunc("/github/{path...}", l.proxy)
 	mux.HandleFunc("/v1/connections/for-job/{binding}/mcp", l.slot)
@@ -458,4 +466,39 @@ func (l *fakeLatchkey) release(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]int{"released": minted})
+}
+
+// exposed is latchkey #697's for-job exposure: the Secret's version
+// marked exposed, answered as specs/contracts/secret-for-job.json's
+// exposed answer; a second report of a version is already_exposed.
+func (l *fakeLatchkey) exposed(w http.ResponseWriter, r *http.Request) {
+	if _, err := l.checkToken(r, l.srv.URL+r.URL.Path); err != nil {
+		l.fail(w, http.StatusUnauthorized, "exposed: "+err.Error())
+		return
+	}
+	var req map[string]string
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req["secret_ref"] == "" || req["version"] == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid_request", "error_description": "the body is {secret_ref, version}"})
+		return
+	}
+	l.mu.Lock()
+	already := false
+	for _, e := range l.exposures {
+		already = already || (e["secret_ref"] == req["secret_ref"] && e["version"] == req["version"])
+	}
+	l.exposures = append(l.exposures, req)
+	refuse, hook := l.refuseExposed, l.onExposed
+	l.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	if refuse.status != 0 {
+		w.WriteHeader(refuse.status)
+		json.NewEncoder(w).Encode(map[string]string{"error": refuse.code, "error_description": "refused by the fake"})
+		return
+	}
+	v, _ := strconv.Atoi(req["version"])
+	json.NewEncoder(w).Encode(map[string]any{"secret_ref": req["secret_ref"], "name": "fake", "version": v, "exposed": true,
+		"already_exposed": already, "exposed_versions": []int{v}, "exposed_at": time.Now().UTC(), "rotate": true})
 }

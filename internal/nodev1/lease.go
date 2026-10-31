@@ -323,6 +323,9 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		if b.Access != nil && len(b.Access.Mint) > 0 {
 			rel.release = tokens.ReleaseForJob
 		}
+		if b.Access != nil && len(b.Access.Secrets) > 0 {
+			rel.secrets, rel.exposed = b.Access.Secrets, tokens.SecretExposed
+		}
 		vals.setReleaser(rel)
 	}
 	ic, err = r.leaseInterception(ctx, b, tokens, vals)
@@ -750,15 +753,15 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) actor.End {
 		r.handBack(id, cause, reason, o.result.SessionID)
 		return actor.End{Report: actor.ReportHandBack, Cause: cause, Reason: reason}
 	}
-	// an injected value seen where it must not go fails the job,
-	// credential_exposed first in the reason (canary.go)
+	// an injected value seen where it must not go fails the job
+	// credential_exposed, the ref and host in the reason (canary.go)
 	if o.exposed != nil {
 		r.postAccess(id, o.access)
 		r.postUsage(id, o)
-		r.reportExposed(id, b, o.exposed)
+		r.reportExposed(id, o.exposed)
 		reason := afterWrites(o.exposed.Error(), writes)
-		r.fail(id, meshapi.CauseStoppedByRule, reason)
-		return actor.End{Report: actor.ReportFail, Cause: meshapi.CauseStoppedByRule, Reason: reason}
+		cause := r.failExposed(id, reason)
+		return actor.End{Report: actor.ReportFail, Cause: cause, Reason: reason}
 	}
 	// a stop rule's end fails the job, the rule named first in the
 	// reason (projectmesh-io/api adr-001-amendment-learnings-and-

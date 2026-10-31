@@ -215,6 +215,14 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			}
 			return c.Fail(context.Background(), idOf(f.Path, 3), req)
 		},
+		"lease-fail-credential-exposed": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.FailRequest
+			decode(t, f.Request, &req)
+			if req.Cause != meshapi.CauseCredentialExposed {
+				t.Errorf("lease-fail-credential-exposed: cause %q", req.Cause)
+			}
+			return c.Fail(context.Background(), idOf(f.Path, 3), req)
+		},
 		"lease-finish": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
 			var req meshapi.FinishRequest
 			decode(t, f.Request, &req)
