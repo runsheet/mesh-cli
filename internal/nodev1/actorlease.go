@@ -133,6 +133,8 @@ func (r *Runtime) runActor(ctx context.Context, tk *meshapi.Take, room *schedule
 	// proxy closes and the grant's capability answers 404, its git tokens
 	// revoked (the spec's first layer of tokens ending with the lease)
 	a.ReleaseNow(holdProxy, holdGrant)
+	// before Mesh hears the end and revokes the session (release.go)
+	r.releaseCarried(id)
 	out.access = r.takeAccess(id)
 	reportSandbox(sec, out.err)
 	if err := a.Enter(actor.Reporting); err != nil {

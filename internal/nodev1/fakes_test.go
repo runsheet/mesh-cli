@@ -56,6 +56,11 @@ type fakeLatchkey struct {
 	carried       map[string]forJobCredential
 	refuseCarried map[string]carriedRefusal
 	asked         []string
+	// releases counts the for-job releases; refuseRelease, set, is the
+	// status it answers instead; onRelease hears each as it comes
+	releases      int
+	refuseRelease int
+	onRelease     func()
 }
 
 // carriedRefusal is a for-job refusal: Latchkey's status and code.
@@ -97,6 +102,7 @@ func newFakeLatchkey(t *testing.T) *fakeLatchkey {
 	mux.HandleFunc("POST /v1/credentials/for-job", l.modelForJob)
 	mux.HandleFunc("/oauth/session-token/request", l.sessionToken)
 	mux.HandleFunc("POST /v1/credentials/for-job/source", l.source)
+	mux.HandleFunc("POST /v1/credentials/for-job/release", l.release)
 	mux.HandleFunc("DELETE /v1/credentials/for-job/source", l.source)
 	mux.HandleFunc("/github/{path...}", l.proxy)
 	mux.HandleFunc("/v1/connections/for-job/{binding}/mcp", l.slot)
@@ -421,4 +427,32 @@ func (p *product) snapshot() (calls, failures []string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return append([]string(nil), p.calls...), append([]string(nil), p.failures...)
+}
+
+// release is latchkey #694's for-job release: every child minted on the
+// session revoked, answered {released: n}.
+func (l *fakeLatchkey) release(w http.ResponseWriter, r *http.Request) {
+	if _, err := l.checkToken(r, l.srv.URL+r.URL.Path); err != nil {
+		l.fail(w, http.StatusUnauthorized, "release: "+err.Error())
+		return
+	}
+	l.mu.Lock()
+	l.releases++
+	refuse, hook := l.refuseRelease, l.onRelease
+	minted := 0
+	for _, a := range l.asked {
+		if strings.HasPrefix(a, "conn_") {
+			minted++
+		}
+	}
+	l.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	if refuse != 0 {
+		w.WriteHeader(refuse)
+		json.NewEncoder(w).Encode(map[string]string{"error": "temporarily_unavailable", "error_description": "refused by the fake"})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]int{"released": minted})
 }

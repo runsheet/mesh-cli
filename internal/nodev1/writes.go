@@ -20,6 +20,9 @@ func landedWrites(records []meshapi.AccessRecord) []string {
 			continue
 		}
 		switch {
+		case a.Kind == "api" && a.Vendor == "latchkey" && a.Service == "release":
+			// the node's own release of the lease's minted children
+			// (release.go): no write of the job's
 		case a.Kind == "git" && a.Service == "receive-pack" && len(a.Refs) > 0:
 			out = append(out, fmt.Sprintf("pushed %s to %s", strings.Join(a.Refs, ", "), a.Repo))
 		case a.Kind == "api" && !readMethod(a.Method):
