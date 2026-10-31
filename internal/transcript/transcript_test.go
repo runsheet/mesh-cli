@@ -178,3 +178,34 @@ func TestUploadFailuresAreCounted(t *testing.T) {
 		t.Fatalf("a slow location %+v", got)
 	}
 }
+
+// A lease's named values — the credentials its relay injects — read as
+// their own mark in the upload, one registered mid-session too, plainly,
+// JSON-escaped or base64-encoded (mesh-specs gap 28 item 5).
+func TestNamedValuesReadAsTheirMark(t *testing.T) {
+	rc, loc := start(t, 0)
+	value := "cf-child-token-value-0123"
+	b64 := "Y2YtY2hpbGQtdG9rZW4tdmFsdWUtMDEyMw=="
+	var mu sync.Mutex
+	named := map[string]string{}
+	u := New(loc, "lease-1", nil, Options{Every: time.Hour, Named: func() map[string]string {
+		mu.Lock()
+		defer mu.Unlock()
+		out := map[string]string{}
+		for k, v := range named {
+			out[k] = v
+		}
+		return out
+	}})
+	u.Line([]byte(`{"type":"system","subtype":"init"}`))
+	mu.Lock()
+	named[value], named[b64] = "[secret:conn_cf]", "[secret:conn_cf]"
+	mu.Unlock()
+	u.Line([]byte(`{"type":"user","message":{"content":[{"type":"tool_result","content":"Bearer ` + strings.Replace(value, "t", `t`, 1) + `"}]}}`))
+	u.Line([]byte(`not json: basic ` + b64))
+	u.Close()
+	sent := rc.all()
+	if strings.Contains(sent, value) || strings.Contains(sent, b64) || strings.Count(sent, "[secret:conn_cf]") != 2 {
+		t.Fatalf("the upload:\n%s", sent)
+	}
+}

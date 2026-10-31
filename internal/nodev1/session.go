@@ -39,6 +39,10 @@ type SessionSpec struct {
 	Unset []string
 	// Secrets are masked in anything the session's error carries.
 	Secrets []string
+	// Injected, when set, are the relay's injected values, redacted from
+	// the session's errors and stderr first, each read as its mark
+	// (canary.go).
+	Injected *injectedValues
 	// Mailbox is the lease's: turns and escalations for the live session,
 	// and the finish that closes a one-shot job's input. A session with
 	// none takes its first message alone.
@@ -154,7 +158,15 @@ func (c *ClaudeSession) Run(ctx context.Context, spec SessionSpec) (SessionResul
 	var tail bytes.Buffer
 	stderr := io.Writer(&limited{b: &tail, n: 8 << 10})
 	if c.Stderr != nil {
-		stderr = io.MultiWriter(stderr, c.Stderr)
+		out := c.Stderr
+		if spec.Injected != nil {
+			// the session's stderr reaches the node's log without an
+			// injected value (canary.go)
+			sr := &streamRedact{v: spec.Injected, w: c.Stderr}
+			defer sr.Flush()
+			out = sr
+		}
+		stderr = io.MultiWriter(stderr, out)
 	}
 	results := make(chan harness.Event, 16)
 	lastEvent := make(chan struct{}, 1)
@@ -191,7 +203,7 @@ func (c *ClaudeSession) Run(ctx context.Context, spec SessionSpec) (SessionResul
 	}
 	s, err := session.Start(ctx, opts, spec.Prompt)
 	if s == nil {
-		return SessionResult{}, fmt.Errorf("claude: %s", harness.Redact(err.Error(), spec.Secrets...))
+		return SessionResult{}, fmt.Errorf("claude: %s", spec.redact(err.Error()))
 	}
 	parked := false
 	if err == nil {
@@ -208,14 +220,14 @@ func (c *ClaudeSession) Run(ctx context.Context, spec SessionSpec) (SessionResul
 	// a pod that ended before the first message went in says why in its
 	// own end, not in the write that found the input closed
 	if err != nil && (spec.InPod == nil || waitErr == nil) {
-		return sr, fmt.Errorf("claude: %s", harness.Redact(err.Error(), spec.Secrets...))
+		return sr, fmt.Errorf("claude: %s", spec.redact(err.Error()))
 	}
 	if waitErr != nil {
 		msg := strings.TrimSpace(tail.String())
 		if msg == "" {
 			msg = waitErr.Error()
 		}
-		msg = "claude: " + harness.Redact(lastLines(msg, 5), spec.Secrets...)
+		msg = "claude: " + spec.redact(lastLines(msg, 5))
 		if spec.InPod != nil {
 			// the pod's end (an *sandbox.ExitError, a *sandbox.LimitError)
 			// stays readable: an exit 137 or 143 the actor did not cause
@@ -225,7 +237,7 @@ func (c *ClaudeSession) Run(ctx context.Context, spec SessionSpec) (SessionResul
 		return sr, errors.New(msg)
 	}
 	if !res.Success {
-		return sr, errors.New("claude: the session ended with an error: " + harness.Redact(lastLines(res.Text, 5), spec.Secrets...))
+		return sr, errors.New("claude: the session ended with an error: " + spec.redact(lastLines(res.Text, 5)))
 	}
 	return sr, nil
 }
@@ -441,4 +453,10 @@ func lastLines(s string, n int) string {
 		lines = lines[len(lines)-n:]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// redact is s with the spec's values and secrets masked.
+func (spec SessionSpec) redact(s string) string {
+	s = spec.Injected.Redact(s)
+	return harness.Redact(s, spec.Secrets...)
 }

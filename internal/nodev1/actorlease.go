@@ -83,6 +83,9 @@ func (r *Runtime) runActor(ctx context.Context, tk *meshapi.Take, room *schedule
 	r.leases.Put(id, &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: turnToolFor(b), jobID: b.JobID, actor: a})
 	r.mu.Unlock()
 	sec = r.openSecurity(id)
+	// the values the relay injects stay redacted until the lease is
+	// reported and released (canary.go)
+	defer r.closeInjected(r.openInjected(id))
 	defer func() {
 		r.mu.Lock()
 		r.leases.Delete(id)
