@@ -48,8 +48,15 @@ type Runtime struct {
 	// once registered (runsheet ADR 066): Mesh offers a node only the
 	// jobs of a product connected to it for the job's tenant, and accepts
 	// an offer on creation when the keeper is the estate admin or owns the
-	// tenant. An offer Mesh leaves waiting is logged, not fatal.
+	// tenant. An offer Mesh leaves waiting is logged, not fatal; one Mesh
+	// refuses because the product has not published (404), or answers
+	// 429 or 5xx to, is offered again in the background while the node
+	// runs on its other connections (connect.go).
 	Connect []meshapi.ConnectRequest
+	// ConnectRetry is the first wait before a refused connection is
+	// offered again; each wait doubles up to ConnectRetryMax. 1 minute
+	// and 5 minutes when zero.
+	ConnectRetry, ConnectRetryMax time.Duration
 	// WorkRoot holds each lease's directory, leases/<lease_id>.
 	WorkRoot string
 	// SocketRoot is where each lease's sessionproxy socket directory is
@@ -331,7 +338,11 @@ func (r *Runtime) Run(ctx context.Context) error {
 	r.nodeID = node.NodeID
 	r.mu.Unlock()
 	r.logf("nodev1: registered as %s (%s)", node.NodeID, r.Node.Name)
-	if err := r.connect(ctx, node.NodeID); err != nil {
+	// a refused connection offered again in the background stops with
+	// the run
+	connCtx, stopConnecting := context.WithCancel(ctx)
+	defer stopConnecting()
+	if err := r.connect(connCtx, node.NodeID); err != nil {
 		return err
 	}
 	if r.Actors {
@@ -404,22 +415,6 @@ func (r *Runtime) Run(ctx context.Context) error {
 		}()
 	}
 	return ctx.Err()
-}
-
-// connect offers the node to each of Connect.
-func (r *Runtime) connect(ctx context.Context, nodeID string) error {
-	for _, want := range r.Connect {
-		c, err := r.API.Connect(ctx, nodeID, want)
-		if err != nil {
-			return fmt.Errorf("nodev1: connect to %s for %s: %w", want.Tenant, want.Product, err)
-		}
-		if c.Status == "accepted" {
-			r.logf("nodev1: connected to %s for %s (%s)", c.Tenant, c.Product, c.Via)
-			continue
-		}
-		r.logf("nodev1: the connection to %s for %s is %s: it runs nothing until the tenant accepts it", c.Tenant, c.Product, c.Status)
-	}
-	return nil
 }
 
 func (r *Runtime) backoff() time.Duration {

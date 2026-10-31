@@ -32,6 +32,10 @@ type Fake struct {
 	// Security, set, answers a lease's security reports with a status
 	// (202, 422, 503…); 202 when nil.
 	Security func(leaseID string, reports []meshapi.SecurityReport) int
+	// Refuse, set, answers a connection with a refusal (status, code,
+	// message) when its status is not 0: Mesh's 404 not_found for a
+	// product that has not published, say.
+	Refuse func(req meshapi.ConnectRequest) (int, string, string)
 
 	fx      map[string]Fixture
 	mu      sync.Mutex
@@ -318,6 +322,12 @@ func (f *Fake) connect(w http.ResponseWriter, r *http.Request) {
 	if !known {
 		writeErr(w, http.StatusConflict, "node_not_registered", "the node has not registered")
 		return
+	}
+	if f.Refuse != nil {
+		if status, code, msg := f.Refuse(req); status != 0 {
+			writeErr(w, status, code, msg)
+			return
+		}
 	}
 	var c meshapi.Connection
 	json.Unmarshal(f.fx["nodes-connect"].Response, &c)
