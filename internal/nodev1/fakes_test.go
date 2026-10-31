@@ -269,6 +269,10 @@ func (l *fakeLatchkey) source(w http.ResponseWriter, r *http.Request) {
 	}
 	l.n++
 	tok := fmt.Sprintf("ghs_%d", l.n)
+	if body.Vendor != "" && body.Vendor != "github" {
+		// long enough to be redacted and watched (canary.go)
+		tok = fmt.Sprintf("%s-fake-token-%04d", body.Vendor, l.n)
+	}
 	l.minted = append(l.minted, tok)
 	l.access = append(l.access, body.Access)
 	json.NewEncoder(w).Encode(map[string]any{"token": tok, "expires_at": time.Now().Add(time.Hour).UTC(), "repository": body.Repository, "access": body.Access})

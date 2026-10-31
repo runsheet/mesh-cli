@@ -122,3 +122,23 @@ func TestApplyOnto(t *testing.T) {
 		t.Fatal("a brief with nothing to apply applied")
 	}
 }
+
+// A change's head is fetched by its vendor's ref (mesh-specs gap 29).
+func TestChangeRefIsTheVendors(t *testing.T) {
+	for _, tc := range []struct{ vendor, ref, want string }{
+		{"", "refs/pull/7/head", "refs/pull/7/head"},
+		{"github", "refs/merge-requests/7/head", "refs/pull/7/head"},
+		{"gitlab", "refs/pull/7/head", "refs/merge-requests/7/head"},
+		{"gitlab", "refs/merge-requests/12/head", "refs/merge-requests/12/head"},
+		{"bitbucket", "refs/pull/7/head", ""},
+		{"bitbucket", "refs/heads/feature/x", "refs/heads/feature/x"},
+		{"gitlab", "refs/heads/main", "refs/heads/main"},
+		{"gitlab", "refs/pull/x/head", "refs/pull/x/head"},
+		{"gitlab", "", ""},
+		{"gitea", "refs/pull/7/head", "refs/pull/7/head"},
+	} {
+		if got := ChangeRef(tc.vendor, tc.ref); got != tc.want {
+			t.Errorf("ChangeRef(%q, %q) = %q, want %q", tc.vendor, tc.ref, got, tc.want)
+		}
+	}
+}

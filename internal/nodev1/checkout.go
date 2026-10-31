@@ -3,6 +3,7 @@ package nodev1
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os/exec"
 	"slices"
 	"strings"
@@ -75,16 +76,51 @@ func sourceRequestFor(g *meshapi.Git, repo string, access gitrelay.Access) Sourc
 	return SourceRequest{Vendor: g.Vendor, BaseURL: g.BaseURL, Repository: repo, Access: string(access)}
 }
 
-// baseOf is the vendor origin the brief's git names: its base_url, else
-// https://<host>, else "" for the vendor's own.
+// baseOf is the git origin the brief's git names, which the checkout
+// dials (mesh-specs gap 29, amended in #202): https://<host> when it
+// names the host, else the origin of its base_url — the code host's API
+// root (https://gitlab.acme.test/api/v4) is not where git is served, so
+// its path is dropped and a public vendor's API host is its git host
+// (gitrelay.GitHostOf) —
+// else "" for the vendor's own (gitrelay.Vendor.Origin).
 func baseOf(g *meshapi.Git) string {
-	switch {
-	case g.BaseURL != "":
-		return g.BaseURL
-	case g.Host != "":
-		return "https://" + g.Host
+	if h := strings.TrimSpace(g.Host); h != "" {
+		return "https://" + strings.TrimRight(h, "/")
+	}
+	if b := strings.TrimSpace(g.BaseURL); b != "" {
+		return gitOrigin(b)
 	}
 	return ""
+}
+
+// gitOrigin is the git origin of a code host's API root: its scheme and
+// host, a public vendor's API host read as its git host
+// (gitrelay.GitHostOf). A base_url that is no URL is answered as it is,
+// for the relay to refuse (gitrelay.upstreamOf).
+func gitOrigin(base string) string {
+	u, err := url.Parse(base)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return base
+	}
+	return u.Scheme + "://" + gitrelay.GitHostOf(u.Host)
+}
+
+// gitHost is the host the brief's git reaches: its origin's, the
+// vendor's own when it names none.
+func gitHost(g *meshapi.Git) string {
+	origin := baseOf(g)
+	if origin == "" {
+		v, err := gitrelay.VendorNamed(g.Vendor)
+		if err != nil {
+			return ""
+		}
+		origin = v.Origin()
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
 }
 
 // resumePoint is where a retried lease's checkout starts instead of the

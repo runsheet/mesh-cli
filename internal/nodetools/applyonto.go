@@ -33,7 +33,10 @@ type ApplyOnto struct {
 	Repo      string
 	Workspace string
 	Code      *meshapi.Code
-	Recorder  *Recorder
+	// Vendor is the git vendor the grant reaches (gitrelay.VendorNamed):
+	// a change's head is fetched by that vendor's ref (ChangeRef)
+	Vendor   string
+	Recorder *Recorder
 	// Escalate hears a conflict, its summary why (PR 2.11, trigger
 	// "conflict"), and answers the model the session moves to, "" when
 	// it does not; nil never escalates.
@@ -144,8 +147,8 @@ func (a *ApplyOnto) fetch(ctx context.Context) error {
 		refs = append(refs, c.Onto.Ref)
 	}
 	for _, ch := range c.Apply {
-		if ch.Ref != "" {
-			refs = append(refs, ch.Ref)
+		if ref := ChangeRef(a.Vendor, ch.Ref); ref != "" {
+			refs = append(refs, ref)
 		}
 		want = append(want, ch.SHA)
 		if ch.Base != "" {
@@ -171,4 +174,45 @@ func (a *ApplyOnto) fetch(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// ChangeRef is the ref a change's head is fetched by on vendor, from the
+// ref the brief names (mesh-specs gap 29): GitHub keeps a pull request's
+// head at refs/pull/<n>/head, GitLab a merge request's at
+// refs/merge-requests/<n>/head — a brief naming one vendor's change ref
+// on the other's host is read as that host's — and Bitbucket keeps
+// none, so a change ref there is dropped and the head is fetched by its
+// sha (from its branch, when the brief names that instead). Any other
+// ref is answered as it is.
+func ChangeRef(vendor, ref string) string {
+	n, ok := changeNumber(ref)
+	if !ok {
+		return ref
+	}
+	switch strings.ToLower(strings.TrimSpace(vendor)) {
+	case "gitlab":
+		return "refs/merge-requests/" + n + "/head"
+	case "bitbucket":
+		return ""
+	case "", "github":
+		return "refs/pull/" + n + "/head"
+	}
+	return ref
+}
+
+// changeNumber reads a change ref, refs/pull/<n>/head or
+// refs/merge-requests/<n>/head: its number.
+func changeNumber(ref string) (string, bool) {
+	for _, prefix := range []string{"refs/pull/", "refs/merge-requests/"} {
+		rest, found := strings.CutPrefix(ref, prefix)
+		if !found {
+			continue
+		}
+		num, found := strings.CutSuffix(rest, "/head")
+		if !found || num == "" || strings.Trim(num, "0123456789") != "" {
+			return "", false
+		}
+		return num, true
+	}
+	return "", false
 }
