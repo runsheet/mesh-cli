@@ -31,6 +31,7 @@ type fakeLatchkey struct {
 	jkt      map[string]string // session id → the jkt Mesh opened it for
 	creds    map[string]string // lksr_ → session id
 	tokens   map[string]string // session token → jkt
+	leaseOf  map[string]string // session id or session token → the lease it is for
 	minted   []string
 	access   []string // each mint's access, read or write
 	revoked  []string
@@ -54,7 +55,7 @@ type fakeLatchkey struct {
 const fakeModelSecret = "sk-ant-oat01-fake-model-secret"
 
 func newFakeLatchkey(t *testing.T) *fakeLatchkey {
-	l := &fakeLatchkey{jkt: map[string]string{}, creds: map[string]string{}, tokens: map[string]string{},
+	l := &fakeLatchkey{jkt: map[string]string{}, creds: map[string]string{}, tokens: map[string]string{}, leaseOf: map[string]string{},
 		model: modelCredential{Secret: fakeModelSecret, Vendor: "anthropic", Kind: "subscription", Plan: "max", AccountRef: "acct-fake"}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/credentials/for-job", l.modelForJob)
@@ -75,7 +76,7 @@ func (l *fakeLatchkey) open(leaseID, jkt string) (*meshapi.SessionCredential, in
 	l.n++
 	sid := fmt.Sprintf("00000000-0000-4000-8000-%012d", l.n)
 	cred := fmt.Sprintf("lksr_%043d", l.n)
-	l.jkt[sid], l.creds[cred] = jkt, sid
+	l.jkt[sid], l.creds[cred], l.leaseOf[sid] = jkt, sid, leaseID
 	return &meshapi.SessionCredential{
 		SessionID: sid, RequestURL: l.srv.URL + "/oauth/session-token/request?session=" + sid + "&v=1",
 		RequestToken: cred, ExpiresAt: time.Now().Add(10 * time.Minute).UTC(),
@@ -119,6 +120,7 @@ func (l *fakeLatchkey) sessionToken(w http.ResponseWriter, r *http.Request) {
 	l.n++
 	tok := fmt.Sprintf("mst_%d", l.n)
 	l.tokens[tok] = jkt
+	l.leaseOf[tok] = l.leaseOf[sid]
 	l.mu.Unlock()
 	json.NewEncoder(w).Encode(map[string]any{"value": tok, "expires_in": 600, "token_type": "DPoP"})
 }
