@@ -338,6 +338,10 @@ func (rs *relaySidecar) mintGit(ctx context.Context, req SourceRequest) (relaysi
 	if err != nil {
 		return relaysidecar.Token{}, err
 	}
+	// redacted and a canary before the sidecar first sends it
+	if rs.r != nil && rs.b != nil {
+		rs.r.injectedOf(rs.b.LeaseID).addGitToken(rs.b.Git, req.Repository, t)
+	}
 	rs.mu.Lock()
 	rs.minted = append(rs.minted, t)
 	rs.mu.Unlock()

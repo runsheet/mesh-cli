@@ -249,6 +249,10 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		var mintErr error
 		mint := func(ctx context.Context, repo string, access gitrelay.Access) (gitrelay.Token, error) {
 			tok, err := tokens.MintSource(ctx, sourceRequestFor(b.Git, repo, access))
+			if err == nil {
+				// redacted and a canary before the relay first sends it
+				vals.addGitToken(b.Git, repo, tok)
+			}
 			mintMu.Lock()
 			mintErr = err
 			mintMu.Unlock()
