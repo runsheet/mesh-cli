@@ -43,9 +43,26 @@ func (e *RefusedError) Error() string {
 	return fmt.Sprintf("the node's tunnel refused %s: %d %s", e.Addr, e.Status, e.Reason)
 }
 
-// DialContext is a connection to addr (host:port) through the tunnel.
-// network must be a TCP one.
+// OwnHeader marks a CONNECT as the sidecar's own: one of its clients
+// speaking TLS to the host on its own credentials, which the node's
+// tunnel splices whatever host its rules terminate (egress.SpliceOnly).
+// The session's CONNECTs (DialSession) never carry it.
+const OwnHeader = "Mesh-Relay-Dial"
+
+// DialContext is a connection of the sidecar's own to addr (host:port)
+// through the tunnel: spliced, its TLS the sidecar's. network must be
+// a TCP one.
 func (d *Dialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	return d.dial(ctx, network, addr, true)
+}
+
+// DialSession is the session's CONNECT to addr through the tunnel, which
+// terminates it when one of the lease's rules names the host.
+func (d *Dialer) DialSession(ctx context.Context, addr string) (net.Conn, error) {
+	return d.dial(ctx, "tcp", addr, false)
+}
+
+func (d *Dialer) dial(ctx context.Context, network, addr string, own bool) (net.Conn, error) {
 	if !strings.HasPrefix(network, "tcp") {
 		return nil, fmt.Errorf("relaysidecar: the tunnel carries tcp alone, not %s", network)
 	}
@@ -64,7 +81,11 @@ func (d *Dialer) DialContext(ctx context.Context, network, addr string) (net.Con
 	_ = c.SetDeadline(deadline)
 	stop := context.AfterFunc(ctx, func() { _ = c.SetDeadline(time.Now()) })
 	defer stop()
-	if _, err := fmt.Fprintf(c, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", addr, addr); err != nil {
+	mark := ""
+	if own {
+		mark = OwnHeader + ": own\r\n"
+	}
+	if _, err := fmt.Fprintf(c, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n%s\r\n", addr, addr, mark); err != nil {
 		c.Close()
 		return nil, fmt.Errorf("relaysidecar: the node's tunnel: %w", err)
 	}

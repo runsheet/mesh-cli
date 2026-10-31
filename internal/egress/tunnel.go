@@ -5,10 +5,11 @@
 // never widened, plus any fixed upstreams its relay must reach itself.
 // A Tunnel is the only exit: an HTTP CONNECT to host:443 that the
 // Policy allows, whose TLS ClientHello names that same host, is dialled
-// from the node and piped; anything else — another port, plain-HTTP
-// proxying, a host the Policy does not name, a server name that differs
-// from the host asked — is refused, and each request is audited by host
-// and port alone. A Tunnel is an http.Handler, so it serves on a relay's
+// from the node and piped — or, for a host one of the lease's Rules
+// names, terminated by the relay with its lease's CA (intercept.go);
+// anything else — another port, plain-HTTP proxying, a host the Policy
+// does not name, a server name that differs from the host asked — is
+// refused, and each request is audited by host and port alone. A Tunnel is an http.Handler, so it serves on a relay's
 // socket beside other routes, or on a unix socket of its own per lease
 // (Listen), which a relay sidecar in the lease's pod can reach.
 package egress
@@ -190,10 +191,27 @@ type Tunnel struct {
 	// opens; 10 s when zero.
 	HelloTimeout time.Duration
 
-	mu    sync.Mutex
-	srv   *http.Server
-	path  string
-	conns map[net.Conn]bool
+	// CA and Rules terminate TLS for the hosts a rule names, which the
+	// Policy allows (intercept.go); with no CA, or no rule naming the
+	// host, a tunnel is spliced by SNI and nothing past the ClientHello
+	// is read.
+	CA    *CA
+	Rules []Rule
+	// Request hears each request of a terminated tunnel once it is
+	// answered: what the rules applied, never a value. It must not
+	// block.
+	Request func(Request)
+	// Upstream carries a terminated tunnel's requests to their host:
+	// nil is a transport of the tunnel's own, dialling with Dial and
+	// verifying the host against the system roots (tests set one that
+	// trusts their own server).
+	Upstream http.RoundTripper
+
+	mu        sync.Mutex
+	srv       *http.Server
+	path      string
+	conns     map[net.Conn]bool
+	transport *http.Transport
 }
 
 // Call is one request a session made of its tunnel: never a byte of
@@ -288,6 +306,17 @@ func (t *Tunnel) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		refused(RuleSNI, fmt.Sprintf("the TLS server name %q is not the host asked for", sni))
 		return
 	}
+	if t.terminates(req.Context(), host) {
+		// a host a rule names: the relay answers the session's TLS and
+		// forwards each request on a connection of its own (intercept.go)
+		call.Allowed, call.Rule = true, t.Policy.rule(host, port)
+		t.audit(call)
+		call.Bytes = t.terminate(conn, brw.Reader, hello, host, port)
+		if t.Done != nil {
+			t.Done(call)
+		}
+		return
+	}
 	dial := t.Dial
 	if dial == nil {
 		dial = publicDial
@@ -379,6 +408,11 @@ func (t *Tunnel) Close() error {
 	for c := range open {
 		c.Close()
 	}
+	t.mu.Lock()
+	if t.transport != nil {
+		t.transport.CloseIdleConnections()
+	}
+	t.mu.Unlock()
 	if srv == nil {
 		return nil
 	}

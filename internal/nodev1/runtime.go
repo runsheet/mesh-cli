@@ -94,6 +94,10 @@ type Runtime struct {
 	// EgressDial, when set, is how a lease's egress tunnel reaches an
 	// allowed host — a test's fake host; else the host's public address.
 	EgressDial func(ctx context.Context, network, addr string) (net.Conn, error)
+	// EgressUpstream, when set, carries the requests a lease's tunnel
+	// terminates (intercept.go) to their host — a test's, trusting its
+	// fake registry; else the tunnel's own, on the system roots.
+	EgressUpstream http.RoundTripper
 	// SigningKey is the node's ed25519 key, whose public half it
 	// registers: a node tool's record is signed with it when Fulcio or
 	// Rekor cannot be used.
