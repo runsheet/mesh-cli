@@ -1,0 +1,30 @@
+{
+  "name": "lease-renew-turn-kinds",
+  "method": "POST",
+  "path": "/v1/leases/d3c5ac2e-bfe6-5195-8789-6d360011128e/renew",
+  "caller": "node",
+  "request": {
+    "turns_seen": 0
+  },
+  "status": 200,
+  "response": {
+    "expires_at": "2026-01-01T00:00:00Z",
+    "lease_id": "d3c5ac2e-bfe6-5195-8789-6d360011128e",
+    "renew_every_s": 30,
+    "turns": [
+      {
+        "from": "person",
+        "kind": "interrupt",
+        "seq": 1,
+        "turn_id": "steer-7c1e"
+      },
+      {
+        "from": "product",
+        "kind": "nudge",
+        "seq": 2,
+        "turn_id": "nudge-no-finish-1"
+      }
+    ],
+    "turns_through": 2
+  }
+}

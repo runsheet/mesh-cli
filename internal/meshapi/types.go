@@ -359,11 +359,30 @@ type APIAccess struct {
 	Paths   []string `json:"paths"`
 }
 
-// Turn is a thread's turn by its ids alone.
+// Turn is a job's turn by its ids alone, with its kind and who it is
+// from (projectmesh-io/api ADR 001 amendment, threads: "Turns into any
+// live job"): content-free, they say how the node puts the turn to its
+// session. A Mesh before them sends neither: a turn from the product.
 type Turn struct {
 	TurnID string `json:"turn_id"`
 	Seq    int64  `json:"seq"`
+	Kind   string `json:"kind,omitempty"`
+	From   string `json:"from,omitempty"`
 }
+
+// A turn's kinds: a turn the session answers, the platform's advisory
+// nudge, and an interrupt that stops the session's turn in flight first.
+const (
+	TurnKindTurn      = "turn"
+	TurnKindNudge     = "nudge"
+	TurnKindInterrupt = "interrupt"
+)
+
+// Who a turn is from: the product, or a person through it.
+const (
+	TurnFromProduct = "product"
+	TurnFromPerson  = "person"
+)
 
 // Thread is a thread job's timing.
 type Thread struct {

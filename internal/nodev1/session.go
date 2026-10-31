@@ -242,6 +242,8 @@ func (c *ClaudeSession) loop(ctx context.Context, s *session.Session, spec Sessi
 	var finished <-chan struct{}
 	if spec.Mailbox != nil {
 		mail, finished = spec.Mailbox.C(), spec.Mailbox.Finished()
+		// no turn reaches the session once the loop stops reading
+		defer spec.Mailbox.closeInput()
 	}
 	stallAfter := c.StallAfter
 	if stallAfter <= 0 {
@@ -267,13 +269,14 @@ func (c *ClaudeSession) loop(ctx context.Context, s *session.Session, spec Sessi
 		}
 	}
 	defer busy()
-	send := func(text string) {
+	send := func(text string) error {
 		if err := s.Send(text); err != nil {
 			c.logf("nodev1: lease %s: a turn for the session: %v", spec.Label, err)
-			return
+			return err
 		}
 		inFlight++
 		busy()
+		return nil
 	}
 	for {
 		select {
@@ -313,8 +316,23 @@ func (c *ClaudeSession) loop(ctx context.Context, s *session.Session, spec Sessi
 		case m := <-mail:
 			switch m.Kind {
 			case MsgTurn:
-				send(m.Text)
+				// an interrupt turn stops the turn in flight, then goes in
+				// at once: the interrupted turn's result then leaves this
+				// one in flight
+				if m.Interrupt && inFlight > 0 {
+					if err := c.control(ctx, func(ctx context.Context) error { return s.Interrupt(ctx) }); err != nil {
+						c.logf("nodev1: lease %s: interrupting for a turn: %v", spec.Label, err)
+					}
+				}
+				err := send(m.Text)
+				if m.Sent != nil {
+					m.Sent(err)
+				}
 			case MsgInterrupt:
+				// with no turn in flight there is nothing to stop
+				if inFlight == 0 {
+					continue
+				}
 				if err := c.control(ctx, func(ctx context.Context) error { return s.Interrupt(ctx) }); err != nil {
 					c.logf("nodev1: lease %s: interrupt: %v", spec.Label, err)
 				}

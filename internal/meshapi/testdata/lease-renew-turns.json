@@ -13,6 +13,8 @@
     "renew_every_s": 30,
     "turns": [
       {
+        "from": "product",
+        "kind": "turn",
         "seq": 1,
         "turn_id": "t-2"
       }
