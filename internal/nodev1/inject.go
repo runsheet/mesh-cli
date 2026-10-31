@@ -103,12 +103,21 @@ func (e *latchkeyError) Error() string {
 	return fmt.Sprintf("Latchkey %s %s: %d %s", e.Method, e.Path, e.Status, msg)
 }
 
+// codeJobNotLive is Latchkey's 403 for a session whose lease is no
+// longer the job's live one (latchkey #697): the lease is gone, which is
+// not the product's configuration.
+const codeJobNotLive = "job_not_live"
+
 // productsConfig says a Latchkey refusal is the product's configuration
-// — a grant, a ref off the job, a connection to reconnect, a scope
-// outside the grant — not the infrastructure's: a 4xx other than an
-// unaccepted token (401) or a rate limit (429).
+// — a grant, a ref off the job (not_the_jobs, purpose_not_granted), a
+// secret missing, not injectable, disabled or expired (secret_not_found,
+// secret_not_injectable, secret_disabled, secret_expired), a connection
+// to reconnect, a scope outside the grant — not the infrastructure's: a
+// 4xx other than an unaccepted token (401), a rate limit (429), or
+// job_not_live, the lease having ended under the ask.
 func (e *latchkeyError) productsConfig() bool {
-	return e.Status >= 400 && e.Status < 500 && e.Status != http.StatusUnauthorized && e.Status != http.StatusTooManyRequests
+	return e.Status >= 400 && e.Status < 500 && e.Status != http.StatusUnauthorized && e.Status != http.StatusTooManyRequests &&
+		e.Code != codeJobNotLive
 }
 
 // injectRefusal is how a credential that could not be had refuses a
