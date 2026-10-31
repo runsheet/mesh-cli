@@ -46,7 +46,10 @@ func (s *sessionTokens) ReleaseForJob(ctx context.Context) (int, error) {
 // releaser is how a lease's carried credentials end: drop is every held
 // value, release Latchkey's call, nil when nothing was minted.
 type releaser struct {
-	held    func() []*heldCredential
+	held func() []*heldCredential
+	// fed are the federation targets' cloud tokens (federation.go),
+	// dropped with the rest: nothing is kept across leases
+	fed     func() []*heldFederation
 	release func(ctx context.Context) (int, error)
 }
 
@@ -85,6 +88,11 @@ func (r *Runtime) releaseCarried(id string) {
 	}
 	if rel.held != nil {
 		for _, h := range rel.held() {
+			h.drop()
+		}
+	}
+	if rel.fed != nil {
+		for _, h := range rel.fed() {
 			h.drop()
 		}
 	}

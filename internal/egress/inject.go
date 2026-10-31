@@ -30,7 +30,8 @@ import (
 // A request that already carries a header or parameter the rule writes
 // is refused 403 credential_preset — the sandbox may not choose its own
 // value — unless what it carries is the Placeholder, which a tool that
-// insists on a variable holds and the rule replaces. A credential that
+// insists on a variable holds and the rule replaces, or the rule is one
+// that Overwrites (a federation's cloud token, gap 32). A credential that
 // cannot be had refuses the request 502 (credential_unavailable, or
 // credential_refused with Latchkey's code): nothing the sandbox sent
 // goes on in its place. A request outside the rule's paths or methods
@@ -85,6 +86,12 @@ type InjectSpec struct {
 	// Env names the variables a tool insists on, which the session holds
 	// as the Placeholder.
 	Env []string `json:"env,omitempty"`
+	// Overwrite has the rule replace whatever the request carries in the
+	// headers it writes rather than refuse it: a federation's cloud token
+	// on the cloud's hosts, whose own tools always send one (mesh-specs
+	// gap 32). Never Latchkey's to set: the node sets it on the rules it
+	// makes itself.
+	Overwrite bool `json:"-"`
 }
 
 // FormOf is the spec's form: a connection's rule names none and is a
@@ -314,10 +321,13 @@ type InjectSource interface {
 type InjectRule struct {
 	// Ref is the Secret's or Connection's ref, for the audit.
 	Ref string
-	// Kind is secret or connection, for the audit.
-	Kind   string
-	source InjectSource
-	hosts  []string
+	// Kind is secret, connection or federation, for the audit.
+	Kind string
+	// Purpose is what the credential is minted for, when its ref names
+	// one (a federation target's), for the audit.
+	Purpose string
+	source  InjectSource
+	hosts   []string
 }
 
 // NewInjectRule is ref's rule over hosts: the hosts of its spec the
@@ -343,7 +353,7 @@ func (r *InjectRule) Apply(req *http.Request) (*Applied, error) {
 	if !spec.MatchesHost(req.URL.Hostname()) || !spec.matches(req) {
 		return nil, nil
 	}
-	ap := &Applied{Rule: RuleInject, Ref: r.Ref, Form: spec.FormOf(), Kind: r.Kind}
+	ap := &Applied{Rule: RuleInject, Ref: r.Ref, Form: spec.FormOf(), Kind: r.Kind, Purpose: r.Purpose}
 	cred, err := r.source.Credential(req.Context())
 	if err != nil {
 		if _, ok := err.(*Refusal); ok {
@@ -358,6 +368,9 @@ func (r *InjectRule) Apply(req *http.Request) (*Applied, error) {
 	}
 	q := req.URL.Query()
 	for k := range headers {
+		if cred.Spec.Overwrite {
+			break
+		}
 		if sent := req.Header.Values(k); len(sent) > 0 && !(len(sent) == 1 && IsPlaceholder(sent[0])) {
 			return ap, &Refusal{Status: http.StatusForbidden, Code: CodePreset,
 				Message: "the request already carries " + k + ", which the relay writes for " + r.Ref + ": send none, or " + Placeholder}

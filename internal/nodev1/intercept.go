@@ -60,6 +60,9 @@ type interception struct {
 	// inspect sees every terminated request for the lease's canaries
 	// (canary.go): set when the lease injects anything
 	inspect egress.Inspector
+	// fed are the federation targets the relay holds a cloud token of
+	// (federation.go), dropped at the lease's end (release.go)
+	fed []*heldFederation
 }
 
 // watchRule terminates every host a lease's egress allows and writes
@@ -83,7 +86,7 @@ func signsRegistries(b *meshapi.Brief) bool {
 // hosts. nil when the brief names nothing its hosts allow, or the lease
 // runs on the host, where no session is pointed at its tunnel.
 func (r *Runtime) leaseInterception(ctx context.Context, b *meshapi.Brief, tokens *sessionTokens, vals *injectedValues) (*interception, error) {
-	if !signsRegistries(b) && !injects(b) {
+	if !signsRegistries(b) && !injects(b) && !federates(b) {
 		return nil, nil
 	}
 	if r.Pods == nil {
@@ -112,7 +115,7 @@ func (r *Runtime) leaseInterception(ctx context.Context, b *meshapi.Brief, token
 		}
 		prefixes = append(prefixes, p)
 	}
-	if (len(prefixes) > 0 || injects(b)) && tokens == nil {
+	if (len(prefixes) > 0 || injects(b) || federates(b)) && tokens == nil {
 		return nil, credentialFailed(errors.New("the lease has no Latchkey session to sign its registry requests or read its credentials with"))
 	}
 	ic := &interception{}
@@ -125,6 +128,22 @@ func (r *Runtime) leaseInterception(ctx context.Context, b *meshapi.Brief, token
 		ic.rules = append(ic.rules, sign)
 		hosts = append(hosts, sign.Hosts()...)
 	}
+	// the rules that inject come after the sign rule's
+	signed := len(ic.rules)
+	// federation targets first: a secret's rule on the same host then
+	// finds its Authorization written and refuses, rather than a
+	// federation's overwriting the secret's (federation.go)
+	if federates(b) {
+		rules, env, all, err := r.federationRules(ctx, b, tokens, allowed, vals.add)
+		ic.fed = all
+		if err != nil {
+			return ic, err
+		}
+		for _, rule := range rules {
+			hosts = append(hosts, rule.(*egress.InjectRule).Hosts()...)
+		}
+		ic.rules, ic.env = append(ic.rules, rules...), append(ic.env, env...)
+	}
 	if injects(b) {
 		rules, env, all, err := r.injectRules(ctx, b, tokens, allowed, vals.add)
 		ic.held = all
@@ -134,20 +153,20 @@ func (r *Runtime) leaseInterception(ctx context.Context, b *meshapi.Brief, token
 		for _, rule := range rules {
 			hosts = append(hosts, rule.(*egress.InjectRule).Hosts()...)
 		}
-		ic.rules, ic.env = append(ic.rules, rules...), env
-		if len(rules) > 0 && vals != nil {
-			// every host the egress allows is read for the lease's
-			// canaries, not only the injected ones
-			var watched []string
-			for _, h := range b.Egress.Hosts {
-				if ok, _, _ := allowed.Allow(h, egress.Port); ok && validCAHost(h) {
-					watched = append(watched, strings.ToLower(strings.TrimSuffix(h, ".")))
-				}
+		ic.rules, ic.env = append(ic.rules, rules...), append(ic.env, env...)
+	}
+	if len(ic.fed)+len(ic.held) > 0 && len(ic.rules) > signed && vals != nil {
+		// every host the egress allows is read for the lease's canaries,
+		// not only the injected ones
+		var watched []string
+		for _, h := range b.Egress.Hosts {
+			if ok, _, _ := allowed.Allow(h, egress.Port); ok && validCAHost(h) {
+				watched = append(watched, strings.ToLower(strings.TrimSuffix(h, ".")))
 			}
-			ic.rules = append(ic.rules, watchRule{hosts: watched})
-			hosts = append(hosts, watched...)
-			ic.inspect = vals
 		}
+		ic.rules = append(ic.rules, watchRule{hosts: watched})
+		hosts = append(hosts, watched...)
+		ic.inspect = vals
 	}
 	if len(ic.rules) == 0 {
 		return ic, nil
@@ -184,8 +203,9 @@ func (r *Runtime) interceptAudit(lease string) func(egress.Request) {
 			case egress.RuleRegistries:
 				rec = meshapi.AccessRecord{Kind: "api", Vendor: "registry", Service: "signed", Path: a.Ref}
 			case egress.RuleInject:
-				// vendor names what the ref is (secret, connection),
-				// service the form, path the ref and reason the version
+				// vendor names what the ref is (secret, connection,
+				// federation), service the form, path the ref and reason
+				// the version, or a federation target's purpose
 				rec = meshapi.AccessRecord{Kind: "api", Vendor: a.Kind, Service: "inject " + a.Form, Path: a.Ref}
 			default:
 				continue
@@ -193,6 +213,9 @@ func (r *Runtime) interceptAudit(lease string) func(egress.Request) {
 			rec.Method, rec.Outcome, rec.Reason, rec.Bytes, rec.At = q.Method, "ok", strconv.Itoa(q.Status), q.Bytes, time.Now().UTC()
 			if a.Version != "" {
 				rec.Reason += " version " + a.Version
+			}
+			if a.Purpose != "" {
+				rec.Reason += " purpose " + a.Purpose
 			}
 			switch {
 			case q.Refused == egress.CodePreset:

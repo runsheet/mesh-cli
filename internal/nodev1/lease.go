@@ -308,12 +308,17 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	// the lease's end drops what is held and releases what was minted,
 	// whatever happens from here (release.go)
 	var ic *interception
-	if injects(b) && tokens != nil {
+	if (injects(b) || federates(b)) && tokens != nil {
 		rel := &releaser{held: func() []*heldCredential {
 			if ic == nil {
 				return nil
 			}
 			return ic.held
+		}, fed: func() []*heldFederation {
+			if ic == nil {
+				return nil
+			}
+			return ic.fed
 		}}
 		if b.Access != nil && len(b.Access.Mint) > 0 {
 			rel.release = tokens.ReleaseForJob
