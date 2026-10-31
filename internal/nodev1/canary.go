@@ -1,7 +1,9 @@
 package nodev1
 
 import (
+	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -34,8 +36,11 @@ import (
 //   - as a canary: seen in the URL or a header of a request toward a
 //     host outside its rule, or in the body of any request through the
 //     lease's tunnel or its model relay, it ends the job: the request is
-//     refused 403 credential_exposed, the session stopped, and the lease
-//     failed stopped_by_rule with credential_exposed first in the reason.
+//     refused 403 credential_exposed, the session stopped, Latchkey told
+//     of a Secret's exposed version before the session's token ends
+//     (release.go), and the lease failed credential_exposed with the ref
+//     and host in the reason (stopped_by_rule on a Mesh older than
+//     projectmesh-io/api #83).
 
 // minInjectedValue is the shortest value redacted or watched: a shorter
 // one (a username such as "acme") would redact ordinary words and kill
@@ -375,11 +380,11 @@ func validCAHost(h string) bool {
 	return h != "" && net.ParseIP(h) == nil && !strings.ContainsAny(h, "*/:")
 }
 
-// reportExposed tells what it can of an exposure: Tripline, through the
-// lease's security reports (a dlp deny naming the rule, never a value),
-// and Latchkey's secret.exposed — which latchkey #692 does not serve, so
-// the node says so instead (ADR-046).
-func (r *Runtime) reportExposed(id string, b *meshapi.Brief, e *credentialExposed) {
+// reportExposed tells Tripline of an exposure, through the lease's
+// security reports: a dlp deny naming the rule, never a value. Latchkey
+// heard of it before the lease's session ended (release.go,
+// tellExposed).
+func (r *Runtime) reportExposed(id string, e *credentialExposed) {
 	host := e.host
 	if !secreport.BareHost(host) {
 		host = ""
@@ -388,5 +393,30 @@ func (r *Runtime) reportExposed(id string, b *meshapi.Brief, e *credentialExpose
 	if rp := r.reporter(id); rp != nil {
 		rp.Add(meshapi.SecurityReport{Type: meshapi.ReportDLP, Host: host, Verdict: meshapi.VerdictDeny, Rule: egress.CodeExposed, At: &now})
 	}
-	r.logf("nodev1: lease %s of job %s: %s; Latchkey serves no secret.exposed route, so version %q of %s is not marked exposed there: rotate it", id, b.JobID, e, e.version, e.ref)
+}
+
+// failExposed fails lease id credential_exposed (projectmesh-io/api
+// #83); a Mesh that refuses the cause 422, older than #83, has the lease
+// failed stopped_by_rule with the same reason instead, so the fail is
+// never lost. The cause it was failed with is answered.
+func (r *Runtime) failExposed(id, reason string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
+	defer cancel()
+	cause := meshapi.CauseCredentialExposed
+	st, err := r.API.Fail(ctx, id, meshapi.FailRequest{Cause: cause, Reason: clip(r.redact(reason), maxReason)})
+	var me *meshapi.Error
+	if err != nil && errors.As(err, &me) && me.Status == http.StatusUnprocessableEntity {
+		r.logf("nodev1: lease %s: Mesh refused cause %s (%v); failing it %s", id, cause, err, meshapi.CauseStoppedByRule)
+		cause = meshapi.CauseStoppedByRule
+		st, err = r.API.Fail(ctx, id, meshapi.FailRequest{Cause: cause, Reason: clip(r.redact(reason), maxReason)})
+	}
+	switch {
+	case err != nil && meshapi.LeaseGone(err):
+		r.logf("nodev1: lease %s was no longer the node's to fail (%s)", id, cause)
+	case err != nil:
+		r.logf("nodev1: lease %s: fail (%s): %v", id, cause, err)
+	default:
+		r.logf("nodev1: lease %s failed (%s); job %s is %s", id, cause, st.JobID, st.Status)
+	}
+	return cause
 }

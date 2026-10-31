@@ -12,6 +12,15 @@ import "time"
 // work failure does, and the reason starts with the rule's name.
 const CauseStoppedByRule = "stopped_by_rule"
 
+// CauseCredentialExposed ends a job whose session sent a credential the
+// relay injects where it must not go: the job fails, as a work failure
+// does, and the reason starts with credential_exposed and names the ref
+// and the host, never the value (projectmesh-io/api #83, ADR 001
+// amendment, credential exposed; contracts/v1/lease-fail-credential-
+// exposed.json). A Mesh older than #83 refuses it 422; the node then
+// fails the lease stopped_by_rule with the same reason.
+const CauseCredentialExposed = "credential_exposed"
+
 // The stop rule actions.
 const (
 	StopActionEnd      = "end"
