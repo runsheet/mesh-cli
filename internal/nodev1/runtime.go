@@ -82,6 +82,10 @@ type Runtime struct {
 	// whatever its brief names — a test's fake vendor; else each lease's
 	// grant reaches its brief's vendor and base.
 	GitUpstream string
+	// GitHTTP, when set, is how the in-process git relay reaches each
+	// lease's code host — a test's, dialling a fake host over TLS; a
+	// plain client when nil.
+	GitHTTP *http.Client
 	// ModelUpstreams, when set, are the origins a lease's model relay
 	// reaches by provider (anthropic, openai) — a test's fake model; else
 	// $MESH_MODEL_UPSTREAM_<PROVIDER>, else each provider's API.
@@ -338,7 +342,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	if r.Pods != nil && r.Sandbox == nil {
 		r.Sandbox = r.Pods.Runtime
 	}
-	r.relay = &gitrelay.Server{Upstream: r.GitUpstream, Audit: r.audit}
+	r.relay = &gitrelay.Server{Upstream: r.GitUpstream, HTTP: r.GitHTTP, Audit: r.audit}
 	if err := r.relay.Start(ctx); err != nil {
 		return fmt.Errorf("nodev1: the git relay: %w", err)
 	}

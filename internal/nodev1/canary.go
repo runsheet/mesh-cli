@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/egress"
+	"projectmesh.io/mesh-cli/internal/gitrelay"
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/secreport"
 )
@@ -116,6 +117,24 @@ func (v *injectedValues) add(ref string, c *egress.Credential) {
 	}
 	sort.SliceStable(v.forms, func(i, j int) bool { return len(v.forms[i]) > len(v.forms[j]) })
 }
+
+// addGitToken registers a git token the lease's relay was minted for
+// repo (mesh-specs gap 29): never in the sandbox, it is redacted and a
+// canary as an injected value is, under the ref git:<repo>, its own host
+// the brief's git host. Called before the token is first used.
+func (v *injectedValues) addGitToken(g *meshapi.Git, repo string, t gitrelay.Token) {
+	if v == nil || g == nil || t.Value == "" {
+		return
+	}
+	var hosts []string
+	if h := gitHost(g); h != "" {
+		hosts = []string{h}
+	}
+	v.add(gitRef(repo), &egress.Credential{Spec: egress.InjectSpec{Hosts: hosts}, Fields: map[string]string{"token": t.Value}})
+}
+
+// gitRef is the ref a git token of repo is registered under.
+func gitRef(repo string) string { return "git:" + repo }
 
 // valueForms are the forms a value could be seen in.
 func valueForms(val string) []string {

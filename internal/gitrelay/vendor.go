@@ -194,6 +194,20 @@ func (AzureDevOps) Authorize(out *http.Request, token string) { basicAuth(out, "
 // Returned implements Vendor.
 func (AzureDevOps) Returned() []string { return returned }
 
+// GitHostOf is the host a code host serves git on, given the host of
+// its API root (a brief's base_url, mesh-specs gap 29): a public
+// vendor's API host is its git host (api.github.com is github.com,
+// api.bitbucket.org bitbucket.org); a self-managed host serves both.
+func GitHostOf(apiHost string) string {
+	switch strings.ToLower(apiHost) {
+	case "api.github.com":
+		return "github.com"
+	case "api.bitbucket.org":
+		return "bitbucket.org"
+	}
+	return apiHost
+}
+
 // vendors are the adapters a brief may name, by name.
 var vendors = map[string]Vendor{
 	"github":       GitHub{},

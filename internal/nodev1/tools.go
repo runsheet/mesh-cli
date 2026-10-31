@@ -59,7 +59,11 @@ func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace s
 			out = append(out, (&nodetools.RunSuite{Workspace: workspace, Recorder: rec, Run: suites,
 				OnHost: suites == nil && r.hostSuites(), Escalate: escalateOn(ladder, mb, escalate.OnRed)}).Tool())
 		case nodetools.ApplyOntoTool:
-			out = append(out, (&nodetools.ApplyOnto{Grant: g, Repo: repo, Workspace: workspace, Code: b.Code, Recorder: rec,
+			var vendor string
+			if b.Git != nil {
+				vendor = b.Git.Vendor
+			}
+			out = append(out, (&nodetools.ApplyOnto{Grant: g, Repo: repo, Workspace: workspace, Code: b.Code, Vendor: vendor, Recorder: rec,
 				Escalate: escalateOn(ladder, mb, escalate.OnConflict)}).Tool())
 		case EscalateTool:
 			out = append(out, escalateTool(ladder, mb))
