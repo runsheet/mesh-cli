@@ -78,6 +78,9 @@ type outcome struct {
 	// rule that ended it, nil when none did (stoprules.go).
 	counts  meshapi.Counts
 	stopped *ruleStop
+	// exposed is an injected value seen where it must not go: the job
+	// ends credential_exposed (canary.go)
+	exposed *credentialExposed
 }
 
 // runLease runs one lease to its report: the lease's directory and
@@ -101,6 +104,9 @@ func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take, room *schedule
 	r.mu.Lock()
 	r.leases.Put(id, &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: turnToolFor(b), jobID: b.JobID})
 	r.mu.Unlock()
+	// the values the relay injects stay redacted until the lease is
+	// reported (canary.go)
+	defer r.closeInjected(r.openInjected(id))
 	defer func() {
 		r.mu.Lock()
 		r.leases.Delete(id)
@@ -219,6 +225,12 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	if err != nil {
 		return outcome{err: credentialFailed(err), cause: context.Cause(ctx)}
 	}
+	// the values the relay injects: redacted, and canaries in every model
+	// request and through the tunnel (canary.go)
+	vals := r.injectedOf(b.LeaseID)
+	if vals != nil {
+		account.inspect = vals.inspectModel
+	}
 	var grant *gitrelay.Grant
 	var resumed *resumePoint
 	if b.Git != nil && b.Git.Repo != "" {
@@ -291,7 +303,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	}
 	// the hosts the lease's tunnel terminates, and the pod's trust in
 	// the lease's CA (intercept.go)
-	ic, err := r.leaseInterception(ctx, b, tokens, nil)
+	ic, err := r.leaseInterception(ctx, b, tokens, vals)
 	if err != nil {
 		return outcome{err: err, cause: context.Cause(ctx)}
 	}
@@ -458,19 +470,24 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 			return outcome{err: err, cause: context.Cause(ctx)}
 		}
 	}
-	sctx, watch := r.watchLease(sctx, b, workspace, mb, ladder, &spec, tokens, grant, account)
+	sctx, watch := r.watchLease(sctx, b, workspace, mb, ladder, &spec, tokens, grant, account, vals)
+	// an injected value seen where it must not go ends the session
+	// (canary.go)
+	vals.onExposed(watch.stop)
 	res, err := r.Session.Run(sctx, spec)
 	o := outcome{result: res, err: err, finish: fin.result(), handBack: hb.asked(), escalations: taken(ladder.Steps()), evidence: rec.IDs(),
 		account: account, harness: b.Harness.Name, model: ladder.Model(), parked: res.Parked, counts: watch.close()}
 	o.counts.Tools = sl.usage(o.counts.Tools)
-	if ctx.Err() != nil {
+	if e := vals.exposure(); e != nil {
+		o.exposed, o.err = e, nil
+	} else if ctx.Err() != nil {
 		o.cause = context.Cause(ctx)
 	} else if rs := stoppedBy(sctx); rs != nil {
 		o.stopped, o.err = rs, nil
 	} else if errors.Is(err, context.DeadlineExceeded) || sctx.Err() != nil {
 		o.err = fmt.Errorf("the session ran past its %d-minute budget", b.Harness.Budget.Minutes)
 	}
-	if o.err == nil && o.cause == nil && o.stopped == nil && b.Thread == nil && !res.Parked && o.handBack == nil {
+	if o.err == nil && o.cause == nil && o.stopped == nil && o.exposed == nil && b.Thread == nil && !res.Parked && o.handBack == nil {
 		// a one-shot session's finish is its finish tool's answer, or its
 		// last message when that fits the kind's finish_schema, or none
 		// (settle.go); the learnings the finish carried go to the
@@ -711,6 +728,16 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) actor.End {
 		r.handBack(id, cause, reason, o.result.SessionID)
 		return actor.End{Report: actor.ReportHandBack, Cause: cause, Reason: reason}
 	}
+	// an injected value seen where it must not go fails the job,
+	// credential_exposed first in the reason (canary.go)
+	if o.exposed != nil {
+		r.postAccess(id, o.access)
+		r.postUsage(id, o)
+		r.reportExposed(id, b, o.exposed)
+		reason := afterWrites(o.exposed.Error(), writes)
+		r.fail(id, meshapi.CauseStoppedByRule, reason)
+		return actor.End{Report: actor.ReportFail, Cause: meshapi.CauseStoppedByRule, Reason: reason}
+	}
 	// a stop rule's end fails the job, the rule named first in the
 	// reason (projectmesh-io/api adr-001-amendment-learnings-and-
 	// transcripts.md)
@@ -835,7 +862,7 @@ func (r *Runtime) postUsage(id string, o outcome) {
 func (r *Runtime) fail(id, cause, reason string) {
 	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
 	defer cancel()
-	st, err := r.API.Fail(ctx, id, meshapi.FailRequest{Cause: cause, Reason: clip(reason, maxReason)})
+	st, err := r.API.Fail(ctx, id, meshapi.FailRequest{Cause: cause, Reason: clip(r.redact(reason), maxReason)})
 	if err != nil && meshapi.LeaseGone(err) {
 		r.logf("nodev1: lease %s was no longer the node's to fail (%s)", id, cause)
 		return
@@ -856,7 +883,7 @@ func (r *Runtime) handBack(id, cause, reason, sessionRef string) {
 func (r *Runtime) handBackExit(id, cause, reason, sessionRef string, exitCode int) {
 	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
 	defer cancel()
-	st, err := r.API.HandBack(ctx, id, meshapi.HandBackRequest{Cause: cause, Reason: clip(reason, maxReason), SessionRef: sessionRef, ExitCode: exitCode})
+	st, err := r.API.HandBack(ctx, id, meshapi.HandBackRequest{Cause: cause, Reason: clip(r.redact(reason), maxReason), SessionRef: sessionRef, ExitCode: exitCode})
 	if err != nil && meshapi.LeaseGone(err) {
 		r.logf("nodev1: lease %s was no longer the node's to hand back (%s)", id, cause)
 		return

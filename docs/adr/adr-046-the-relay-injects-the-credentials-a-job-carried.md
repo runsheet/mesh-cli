@@ -1,5 +1,5 @@
 ---
-summary: A v1 lease's relay injects the credentials its offer carried (access.secrets, access.mint) on the hosts each credential's Latchkey rule names and the kind's egress allows, as one egress.Rule per ref on ADR-045's TLS termination. Each is asked of Latchkey's for-job route on the lease's session token as the lease opens (a refusal hands the lease back credential_timeout or product), held in memory only, asked again at its expiry and at least every 15 minutes, written in its form (header, bearer, basic, query, template), refused 403 credential_preset when the sandbox set it itself (the placeholder `mesh` excepted), refused 502 credential_unavailable or credential_refused when it cannot be had, and audited by ref, form and version, never a value (mesh-specs gap 28, node half).
+summary: A v1 lease's relay injects the credentials its offer carried (access.secrets, access.mint) on the hosts each credential's Latchkey rule names and the kind's egress allows, as one egress.Rule per ref on ADR-045's TLS termination. Each is asked of Latchkey's for-job route on the lease's session token as the lease opens (a refusal hands the lease back credential_timeout or product), held in memory only, asked again at its expiry and at least every 15 minutes, written in its form (header, bearer, basic, query, template), refused 403 credential_preset when the sandbox set it itself (the placeholder `mesh` excepted), refused 502 credential_unavailable or credential_refused when it cannot be had, and audited by ref, form and version, never a value; every injected value, in every encoding, reads [secret:<ref>] in the node's log, its reports, the transcript and the session's errors, and is a canary whose sight in a request body, or toward a host outside its rule, ends the job credential_exposed (mesh-specs gap 28, node half; gap 5 item 4).
 status: accepted
 ---
 
@@ -100,6 +100,50 @@ runsheet v1 plan rules out: the pod must never hold one.
    reason: <status> [version <v>] | <the relay's code>, bytes}`.
    Latchkey's own rows carry the job and lease.
 
+8. **Redacted wherever it might echo** (gap 28 item 5, amended
+   2026-10-31). Each credential is registered with the lease's
+   `injectedValues` as it is taken, before its first use, in every form
+   it could be seen in: the value, its URL-encoded forms, its base64 in
+   the standard and URL alphabets (padded, and the stable middle at each
+   of the three alignments, so it is found inside a longer base64 run),
+   and a Basic header's `user:pass` and its base64. Values shorter than
+   8 bytes (a username) are neither redacted nor watched. Every form
+   reads `[secret:<ref>]` in one place each output passes through:
+   `Runtime.logf` (every node log line, and so the stop rules', the
+   relay's and the tools' lines) and the reasons sent to Mesh
+   (`fail`, `handBackExit`) redact every live lease's values, held from
+   the take to the release; the transcript chunks the node signs for
+   the product scrub them first (`transcript.Options.Named`,
+   `tripline.Options.Named`, whose marks are kept from the patterns by
+   stand-ins); the session's errors and its stderr (`SessionSpec.
+   Injected`, `streamRedact`, holding back a value split across writes).
+   Tool results and command output reach the product only in the
+   transcript and Mesh only in those reasons, so they pass through the
+   same.
+
+9. **The values are the lease's canaries** (gap 5 item 4, gap 28 item
+   5). A lease that injects anything terminates every host its egress
+   allows (`watchRule`, writing nothing), not only the injected ones, so
+   every request it sends through its tunnel is read; a lease that
+   injects nothing is spliced as before. The tunnel's `Inspector` sees
+   each request as the session sent it, before any rule: a value in its
+   URL or headers toward a host outside the value's rule is refused
+   `403 credential_exposed` and never sent (toward its own host it is
+   left to the rule's preset refusal). Its body is scanned as it streams
+   (`egress.ScanBody`): a rolling window holds back the longest form's
+   length less one byte until the next read rules a split value out, so
+   nothing is buffered and a value never leaves whole; a find cuts the
+   request short and answers `403 credential_exposed` when the answer
+   has not begun. The model relay, which holds each body whole, refuses
+   one holding a value the same way (`sessionproxy.Model.Inspect`). Any
+   exposure stops the session at once and fails the lease
+   `stopped_by_rule` (Mesh takes no other terminal cause) with the
+   reason `credential_exposed: the value of <ref> (version <v>) was seen
+   in <where> toward <host>`, posts a `dlp` security report with rule
+   `credential_exposed`, and logs that Latchkey is not told: #692
+   serves no `secret.exposed` route, so the version is not marked
+   exposed there.
+
 ## Consequences
 
 - A job reaches a vendor's API with `curl` and nothing in its
@@ -112,5 +156,11 @@ runsheet v1 plan rules out: the pod must never hold one.
   step 3). Until then the route reads a Secret ref's ask as the model
   credential's (no `fields` in its answer, or a refusal), and the lease
   is handed back before its session runs.
+- A request that echoes a value toward a host the egress does not
+  allow is refused by egress before anything is read; one by a client
+  that ignores the proxy finds no route. A host that echoes a value
+  back in its answer is not scanned: answers are not read.
+- Terminating every egress host of an injecting lease costs HTTP/2 to
+  the session (ADR-045) on all of them, for those leases only.
 - Two rules that write the same header to the same request conflict:
   the second finds it set and refuses `credential_preset`.
