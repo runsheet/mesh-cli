@@ -142,6 +142,18 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			decode(t, f.Request, &req)
 			return c.Renew(context.Background(), idOf(f.Path, 3), req.TurnsSeen)
 		},
+		// a one-shot job's renewal answers its turns with their kinds and
+		// senders (api ADR 001 amendment, threads: "Turns into any live job")
+		"lease-renew-turn-kinds": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.RenewRequest
+			decode(t, f.Request, &req)
+			resp, err := c.Renew(context.Background(), idOf(f.Path, 3), req.TurnsSeen)
+			if err == nil && (len(resp.Turns) != 2 || resp.Turns[0].Kind != meshapi.TurnKindInterrupt || resp.Turns[0].From != meshapi.TurnFromPerson ||
+				resp.Turns[1].Kind != meshapi.TurnKindNudge) {
+				t.Errorf("lease-renew-turn-kinds: %+v", resp)
+			}
+			return resp, err
+		},
 		"lease-renew-gone": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
 			_, err := c.Renew(context.Background(), idOf(f.Path, 3), nil)
 			if !meshapi.LeaseGone(err) || !strings.Contains(err.Error(), "lease_not_live") {
@@ -241,6 +253,15 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			var turn meshapi.TurnEvent
 			if err == nil && (len(got) != 1 || got[0].Event != meshapi.EventTurn || json.Unmarshal(got[0].Data, &turn) != nil || turn.TurnID == "" || turn.LeaseID == "") {
 				t.Errorf("node-events-turn: %+v", got)
+			}
+			return map[string]any{"events": got}, err
+		},
+		"node-events-turn-nudge": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var got []meshapi.NodeEvent
+			err := c.Events(context.Background(), idOf(f.Path, 3), func(e meshapi.NodeEvent) { got = append(got, e) })
+			var turn meshapi.TurnEvent
+			if err == nil && (len(got) != 1 || json.Unmarshal(got[0].Data, &turn) != nil || turn.Kind != meshapi.TurnKindNudge || turn.From != meshapi.TurnFromProduct) {
+				t.Errorf("node-events-turn-nudge: %+v", got)
 			}
 			return map[string]any{"events": got}, err
 		},

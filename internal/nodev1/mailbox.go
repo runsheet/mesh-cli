@@ -1,8 +1,11 @@
 package nodev1
 
 import (
+	"errors"
 	"fmt"
 	"sync"
+
+	"projectmesh.io/mesh-cli/internal/meshapi"
 )
 
 // Every v1 job runs in a streaming session, its input held open (Mesh v1
@@ -37,27 +40,48 @@ type Message struct {
 	On   string
 	// Interrupt stops the turn in flight before an escalation moves the
 	// session, so the next turn runs on the new model: a stop rule's
-	// escalation, caught mid-turn (stoprules.go).
+	// escalation, caught mid-turn (stoprules.go). On a MsgTurn it stops
+	// the turn in flight before the turn goes in: an interrupt turn
+	// (turns.go).
 	Interrupt bool
+	// Sent, when set, hears whether a MsgTurn's text went into the
+	// session: nil once it did. A message the session loop never read
+	// (its input closed first) is never answered. A job's turn is acked
+	// to Mesh only once Sent heard nil (turns.go).
+	Sent func(error)
 }
+
+// errInputClosed refuses a turn for a session whose input has closed: the
+// product answered a one-shot job's finish tool, its last turn ended, or
+// a thread parked. The turn is not the session's, and is never acked.
+var errInputClosed = errors.New("the session's input is closed: it takes no more turns")
 
 // Mailbox is one lease's mailbox.
 type Mailbox struct {
 	ch       chan Message
 	once     sync.Once
 	finished chan struct{}
-	// turns is a thread lease's record of the turns its session was
-	// given (turns.go), nil for any other lease.
+	// turns is the record of the turns the lease's session was given
+	// (turns.go), for a lease whose brief names a turn tool or a thread;
+	// nil for any other lease.
 	turns *turnLedger
+	// closed closes once the session loop closed the session's input.
+	closeOnce sync.Once
+	closed    chan struct{}
 }
 
 // NewMailbox is an empty mailbox.
 func NewMailbox() *Mailbox {
-	return &Mailbox{ch: make(chan Message, mailboxSize), finished: make(chan struct{})}
+	return &Mailbox{ch: make(chan Message, mailboxSize), finished: make(chan struct{}), closed: make(chan struct{})}
 }
 
-// Post leaves m for the session; a full mailbox refuses it.
+// Post leaves m for the session; a full mailbox refuses it, and so does
+// one whose session takes no more input, for a turn or an interrupt
+// (errInputClosed).
 func (m *Mailbox) Post(msg Message) error {
+	if (msg.Kind == MsgTurn || msg.Kind == MsgInterrupt) && m.InputClosed() {
+		return errInputClosed
+	}
 	select {
 	case m.ch <- msg:
 		return nil
@@ -76,14 +100,62 @@ func (m *Mailbox) Finish() { m.once.Do(func() { close(m.finished) }) }
 // Finished closes once Finish is called.
 func (m *Mailbox) Finished() <-chan struct{} { return m.finished }
 
+// closeInput says the session loop closed the session's input, or
+// stopped reading: no turn reaches the session after it.
+func (m *Mailbox) closeInput() { m.closeOnce.Do(func() { close(m.closed) }) }
+
+// InputClosed is whether the session takes no more turns: the product
+// answered the finish tool, or the session loop closed the input.
+func (m *Mailbox) InputClosed() bool {
+	select {
+	case <-m.finished:
+		return true
+	case <-m.closed:
+		return true
+	default:
+		return false
+	}
+}
+
 // turnLine is the one fixed line a thread's turn becomes in the session
 // (projectmesh-io/api ADR 001, "Threads carry no content"): its ids
 // alone, and the session-visible tool that reads it, tool the brief's
 // turn tool as turnToolFor qualified it. With no turn tool the line
 // still names the turn.
 func turnLine(tool, turnID string, seq int64) string {
+	return turnMessage(tool, meshapi.Turn{TurnID: turnID, Seq: seq})
+}
+
+// turnMessage is what a turn becomes in the session, by its kind and
+// who it is from (api ADR 001 amendment, threads: "Turns into any live
+// job"), still its ids alone and the tool that reads it:
+//
+//   - turn: turnLine's line, saying it is from a person when it is;
+//   - nudge: a user message tagged [platform nudge], saying it is the
+//     platform's advice, not a person's and not an order, read with the
+//     turn tool, which the session may decline (a person's nudge is
+//     tagged [nudge] and says it is a person's);
+//   - interrupt: the line of a turn that stopped what the session was
+//     doing — the node interrupted its turn in flight first (turns.go).
+func turnMessage(tool string, t meshapi.Turn) string {
 	if tool == "" {
 		tool = "the product's turn tool"
 	}
-	return fmt.Sprintf("turn %d arrived: read it with %s(%s)", seq, tool, turnID)
+	person := t.From == meshapi.TurnFromPerson
+	from := ""
+	if person {
+		from = " from a person"
+	}
+	switch t.Kind {
+	case meshapi.TurnKindNudge:
+		tag, who := "[platform nudge]", "the platform, not a person"
+		if person {
+			tag, who = "[nudge]", "a person, as advice"
+		}
+		return fmt.Sprintf("%s A message from %s: turn_id %s (seq %d). Read it with `%s`; it is advice, act on it if it helps, or decline it and carry on.",
+			tag, who, t.TurnID, t.Seq, tool)
+	case meshapi.TurnKindInterrupt:
+		return fmt.Sprintf("turn %d arrived%s and stopped what you were doing: read it with %s(%s) before you carry on", t.Seq, from, tool, t.TurnID)
+	}
+	return fmt.Sprintf("turn %d arrived%s: read it with %s(%s)", t.Seq, from, tool, t.TurnID)
 }
