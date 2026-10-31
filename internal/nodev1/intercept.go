@@ -1,9 +1,11 @@
 package nodev1
 
 import (
+	"context"
 	"errors"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"time"
 
@@ -45,10 +47,14 @@ import (
 // hosts do not name signs nothing: it never widens egress.
 
 // interception is a lease's CA and the rules its tunnel terminates for;
-// nil when the lease terminates nothing.
+// nil when the lease terminates nothing. env are the placeholders the
+// pod holds for its injected credentials' tools (inject.go), and held
+// every credential the relay holds for the lease.
 type interception struct {
 	ca    *egress.CA
 	rules []egress.Rule
+	env   []string
+	held  []*heldCredential
 }
 
 // signsRegistries says the brief names registries to sign.
@@ -57,15 +63,20 @@ func signsRegistries(b *meshapi.Brief) bool {
 }
 
 // leaseInterception is the lease's interception: its registries' sign
-// rule, kept to the prefixes its egress hosts allow, and a CA over
-// their hosts. nil when the brief names no registry its hosts allow, or
-// the lease runs on the host, where no session is pointed at its tunnel.
-func (r *Runtime) leaseInterception(b *meshapi.Brief, tokens *sessionTokens) (*interception, error) {
-	if !signsRegistries(b) {
+// rule, kept to the prefixes its egress hosts allow, the rule of each
+// credential its access carries (inject.go), and a CA over every rule's
+// hosts. nil when the brief names nothing its hosts allow, or the lease
+// runs on the host, where no session is pointed at its tunnel.
+func (r *Runtime) leaseInterception(ctx context.Context, b *meshapi.Brief, tokens *sessionTokens, held func(string, *egress.Credential)) (*interception, error) {
+	if !signsRegistries(b) && !injects(b) {
 		return nil, nil
 	}
 	if r.Pods == nil {
-		r.logf("nodev1: lease %s: a session on the host is not pointed at its relay; its registry requests are not signed", b.LeaseID)
+		r.logf("nodev1: lease %s: a session on the host is not pointed at its relay; its registry requests are not signed and no credential is injected", b.LeaseID)
+		return nil, nil
+	}
+	if b.Egress == nil {
+		r.logf("nodev1: lease %s: the kind declares no egress; its access's credentials are not injected", b.LeaseID)
 		return nil, nil
 	}
 	allowed := egress.NewPolicy(b.Egress.Hosts, tenantHosts(b), nil)
@@ -86,27 +97,46 @@ func (r *Runtime) leaseInterception(b *meshapi.Brief, tokens *sessionTokens) (*i
 		}
 		prefixes = append(prefixes, p)
 	}
-	if len(prefixes) == 0 {
-		return nil, nil
+	if (len(prefixes) > 0 || injects(b)) && tokens == nil {
+		return nil, credentialFailed(errors.New("the lease has no Latchkey session to sign its registry requests or read its credentials with"))
 	}
-	if tokens == nil {
-		return nil, credentialFailed(errors.New("the lease has no Latchkey session to sign its registry requests with"))
+	ic := &interception{}
+	var hosts []string
+	if len(prefixes) > 0 {
+		sign, err := egress.NewSignRule(prefixes, tokens.Token, tokens.Key())
+		if err != nil {
+			return nil, err
+		}
+		ic.rules = append(ic.rules, sign)
+		hosts = append(hosts, sign.Hosts()...)
 	}
-	sign, err := egress.NewSignRule(prefixes, tokens.Token, tokens.Key())
+	if injects(b) {
+		rules, env, all, err := r.injectRules(ctx, b, tokens, allowed, held)
+		ic.held = all
+		if err != nil {
+			return ic, err
+		}
+		for _, rule := range rules {
+			hosts = append(hosts, rule.(*egress.InjectRule).Hosts()...)
+		}
+		ic.rules, ic.env = append(ic.rules, rules...), env
+	}
+	if len(ic.rules) == 0 {
+		return ic, nil
+	}
+	slices.Sort(hosts)
+	ca, err := egress.NewCA(b.LeaseID, slices.Compact(hosts), 0)
 	if err != nil {
-		return nil, err
+		return ic, err
 	}
-	ca, err := egress.NewCA(b.LeaseID, sign.Hosts(), 0)
-	if err != nil {
-		return nil, err
-	}
-	return &interception{ca: ca, rules: []egress.Rule{sign}}, nil
+	ic.ca = ca
+	return ic, nil
 }
 
 // install has t terminate the interception's hosts, each request
 // audited on the lease.
 func (ic *interception) install(r *Runtime, lease string, t *egress.Tunnel) {
-	if ic == nil || t == nil {
+	if ic == nil || ic.ca == nil || t == nil {
 		return
 	}
 	t.CA, t.Rules = ic.ca, ic.rules
@@ -114,18 +144,32 @@ func (ic *interception) install(r *Runtime, lease string, t *egress.Tunnel) {
 	t.Request = r.interceptAudit(lease)
 }
 
-// interceptAudit keeps each signed request of lease's tunnel as an
-// AccessRecord: the prefix, method, status and bytes, never the token
-// or the path past the prefix.
+// interceptAudit keeps each signed or injected request of lease's
+// tunnel as an AccessRecord: the prefix, or the credential's ref, form
+// and version, with the method, status and bytes — never a token, a
+// value or the path past the prefix.
 func (r *Runtime) interceptAudit(lease string) func(egress.Request) {
 	return func(q egress.Request) {
 		for _, a := range q.Applied {
-			if a.Rule != egress.RuleRegistries {
+			var rec meshapi.AccessRecord
+			switch a.Rule {
+			case egress.RuleRegistries:
+				rec = meshapi.AccessRecord{Kind: "api", Vendor: "registry", Service: "signed", Path: a.Ref}
+			case egress.RuleInject:
+				// vendor names what the ref is (secret, connection),
+				// service the form, path the ref and reason the version
+				rec = meshapi.AccessRecord{Kind: "api", Vendor: a.Kind, Service: "inject " + a.Form, Path: a.Ref}
+			default:
 				continue
 			}
-			rec := meshapi.AccessRecord{Kind: "api", Vendor: "registry", Service: "signed", Method: q.Method, Path: a.Ref,
-				Outcome: "ok", Reason: strconv.Itoa(q.Status), Bytes: q.Bytes, At: time.Now().UTC()}
-			if q.Refused != "" {
+			rec.Method, rec.Outcome, rec.Reason, rec.Bytes, rec.At = q.Method, "ok", strconv.Itoa(q.Status), q.Bytes, time.Now().UTC()
+			if a.Version != "" {
+				rec.Reason += " version " + a.Version
+			}
+			switch {
+			case q.Refused == egress.CodePreset:
+				rec.Outcome, rec.Reason = "refused", q.Refused
+			case q.Refused != "":
 				rec.Outcome, rec.Reason = "failed", q.Refused
 			}
 			r.keepAccess(lease, rec)

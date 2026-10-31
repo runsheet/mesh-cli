@@ -1,0 +1,196 @@
+{
+  "name": "take-carried",
+  "method": "POST",
+  "path": "/v1/take",
+  "caller": "node",
+  "request": {
+    "harnesses": [
+      "claude-code"
+    ],
+    "node_id": "7f41f005-46b5-5c7d-8af5-9ec6c44c99f9",
+    "wait_s": 5
+  },
+  "status": 200,
+  "response": {
+    "brief": {
+      "access": {
+        "api": [
+          {
+            "methods": [
+              "GET"
+            ],
+            "paths": [
+              "projects/{id}/merge_requests"
+            ],
+            "vendor": "gitlab"
+          }
+        ],
+        "federation": [
+          {
+            "ref": "fed_runsheet_prod"
+          },
+          {
+            "purpose": "configure",
+            "ref": "fed_staging"
+          }
+        ],
+        "mcp": [
+          "conform"
+        ],
+        "mint": [
+          {
+            "connection_ref": "conn_cloudflare",
+            "permissions": [
+              "zone:dns:edit"
+            ],
+            "resources": [
+              "zone:acme.test"
+            ],
+            "ttl": 900
+          }
+        ],
+        "model": true,
+        "repo": true,
+        "secrets": [
+          "REDACTED"
+        ]
+      },
+      "brief_tool": "brief",
+      "code": {
+        "base_ref": "main",
+        "repo": {
+          "full_name": "acme/fixture",
+          "host": "github.test"
+        }
+      },
+      "egress": {
+        "hosts": [
+          "api.runsheet.dev"
+        ],
+        "mcp": [
+          "conform"
+        ],
+        "model": true,
+        "registries": [
+          "https://api.runsheet.dev/npm/",
+          "https://api.runsheet.dev/v2/",
+          "https://api.runsheet.dev/artifacts/"
+        ]
+      },
+      "evidence_required": [],
+      "finish": "result",
+      "finish_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sha256"
+        ],
+        "type": "object"
+      },
+      "finish_tool": "submit",
+      "git": {
+        "access": "write",
+        "host": "gitlab",
+        "host_url": "https://gitlab.acme.test/api/v4",
+        "push": [
+          {
+            "ref": "refs/heads/mesh/*"
+          }
+        ],
+        "repo": "acme/platform/web"
+      },
+      "guidance": "You are the conformance product's echo job. It proves a session can read\nits job's repository through the node's relay and hand a result back\nthrough the product's own tool.\n\nCall the brief tool first. It names one file in the repository checked out\nfor you. Read that file's bytes exactly as committed at the checked-out\ncommit, take their SHA-256, and submit it as 64 lowercase hex characters.\nIf submit refuses, read its reason and try again. Change nothing in the\nrepository.",
+      "handbacks": 0,
+      "harness": {
+        "model": {
+          "default": "haiku",
+          "escalate": [
+            "sonnet"
+          ],
+          "max": "sonnet",
+          "on": [
+            "red",
+            "stall"
+          ]
+        },
+        "name": "claude-code"
+      },
+      "job_id": "fe97aae9-64e0-52d6-886a-9cfd9da2e7f4",
+      "kind": "echo",
+      "learnings_tool": "learn",
+      "lease_expires_at": "2026-01-01T00:00:00Z",
+      "lease_id": "afef469f-5df4-57ea-83d7-085dd39b5ad6",
+      "lease_n": 1,
+      "node_tools": [
+        "result",
+        "hand_back",
+        "progress"
+      ],
+      "product": "conform",
+      "renew_every_s": 30,
+      "resources": {
+        "cpus": 1,
+        "mem_gb": 1
+      },
+      "servers": [
+        {
+          "audience": "https://conform.test/mcp",
+          "name": "conform",
+          "url": "https://conform.test/mcp"
+        }
+      ],
+      "subject": {
+        "id": "1",
+        "type": "fixture"
+      },
+      "tenant": "acme",
+      "tools": {
+        "optional": [],
+        "required": [
+          {
+            "description": "Call first, once: names the file to read and what to submit.",
+            "from": "product",
+            "name": "brief"
+          },
+          {
+            "description": "Call last, to finish: the result the brief asks for. A refusal says what to correct.",
+            "from": "product",
+            "name": "submit"
+          },
+          {
+            "description": "Call before you finish with each lesson the next session would use, or none.",
+            "from": "product",
+            "name": "learn"
+          },
+          {
+            "description": "Call to finish with the job's result when the kind has no finish tool.",
+            "from": "mesh",
+            "name": "result"
+          },
+          {
+            "description": "Call when the job cannot run here: hands it back without counting against the work.",
+            "from": "mesh",
+            "name": "hand_back"
+          },
+          {
+            "description": "Call every few steps to say in one line what you are doing.",
+            "from": "mesh",
+            "name": "progress"
+          }
+        ]
+      }
+    },
+    "lease": {
+      "expires_at": "2026-01-01T00:00:00Z",
+      "job_id": "fe97aae9-64e0-52d6-886a-9cfd9da2e7f4",
+      "lease_id": "afef469f-5df4-57ea-83d7-085dd39b5ad6",
+      "n": 1,
+      "renew_every_s": 30
+    }
+  }
+}

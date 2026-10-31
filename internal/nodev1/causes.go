@@ -31,8 +31,13 @@ import (
 // perhaps to a node that has what this one lacked.
 
 // credentialError is a credential the lease needs that was not minted
-// before its session started.
-type credentialError struct{ err error }
+// before its session started: the infrastructure's, or — product set —
+// the product's configuration that Latchkey refused (a grant, a ref off
+// the job, a connection to reconnect; mesh-specs gap 28 item 7).
+type credentialError struct {
+	err     error
+	product bool
+}
 
 func (e *credentialError) Error() string { return e.err.Error() }
 func (e *credentialError) Unwrap() error { return e.err }
@@ -131,11 +136,14 @@ func suitesUnavailable(res []validate.StepResult, err error) bool {
 
 // infrastructureCause is the hand-back cause of a lease whose session
 // could not start, or was stopped, for the infrastructure's sake:
-// credential_timeout, tool_unavailable, or none ("").
+// credential_timeout (product, when Latchkey refused the product's
+// configuration), tool_unavailable, or none ("").
 func infrastructureCause(err error) string {
 	var ce *credentialError
 	var te *toolUnavailableError
 	switch {
+	case errors.As(err, &ce) && ce.product:
+		return meshapi.CauseProduct
 	case errors.As(err, &ce):
 		return meshapi.CauseCredentialTimeout
 	case errors.As(err, &te):
