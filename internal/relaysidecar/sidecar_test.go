@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/egress"
 	"projectmesh.io/mesh-cli/internal/mcptool"
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
@@ -31,11 +32,13 @@ type testTunnel struct {
 
 	mu    sync.Mutex
 	asked []string
+	own   []bool // whether each ask was the sidecar's own (OwnHeader)
 }
 
 func (tt *testTunnel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	tt.mu.Lock()
 	tt.asked = append(tt.asked, r.Host)
+	tt.own = append(tt.own, r.Header.Get(OwnHeader) != "")
 	tt.mu.Unlock()
 	addr, ok := tt.routes[r.Host]
 	if !ok {
@@ -287,6 +290,48 @@ func TestSidecarEgressGoesThroughTheTunnel(t *testing.T) {
 	why, _ := io.ReadAll(r.Body)
 	if r.StatusCode != http.StatusForbidden || !strings.Contains(string(why), "not on the lease's egress") {
 		t.Fatalf("a refused CONNECT answered %d %q", r.StatusCode, why)
+	}
+	// the session's CONNECTs never say they are the sidecar's own, so
+	// the node may terminate them; the sidecar's own dial says so
+	tunnel := g.tunnel
+	tunnel.mu.Lock()
+	for i, own := range tunnel.own {
+		if own {
+			t.Fatalf("the session's CONNECT %s was marked the sidecar's own", tunnel.asked[i])
+		}
+	}
+	tunnel.mu.Unlock()
+	d := &Dialer{Socket: filepath.Join(g.dir, "n")}
+	if c, err := d.DialContext(context.Background(), "tcp", "allowed.example.com:443"); err != nil {
+		t.Fatal(err)
+	} else {
+		c.Close()
+	}
+	tunnel.mu.Lock()
+	defer tunnel.mu.Unlock()
+	if !tunnel.own[len(tunnel.own)-1] {
+		t.Fatal("the sidecar's own CONNECT was not marked")
+	}
+}
+
+// The node splices a CONNECT the sidecar marks its own: the tunnel sees
+// it SpliceOnly, and the session's unmarked one not.
+func TestNodeSplicesTheSidecarsOwnConnects(t *testing.T) {
+	var marks []bool
+	n := &Node{Tunnel: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		marks = append(marks, egress.IsSpliceOnly(r.Context()))
+		w.WriteHeader(http.StatusForbidden)
+	})}
+	for _, own := range []bool{false, true} {
+		r := httptest.NewRequest(http.MethodConnect, "http://api.runsheet.dev:443", nil)
+		r.Host = "api.runsheet.dev:443"
+		if own {
+			r.Header.Set(OwnHeader, "own")
+		}
+		n.ServeHTTP(httptest.NewRecorder(), r)
+	}
+	if len(marks) != 2 || marks[0] || !marks[1] {
+		t.Fatalf("splice-only marks %v", marks)
 	}
 }
 

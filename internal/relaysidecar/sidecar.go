@@ -215,7 +215,7 @@ func (s *Sidecar) serveConnect(w http.ResponseWriter, r *http.Request) {
 	if addr == "" {
 		addr = r.URL.Host
 	}
-	up, err := s.dialer.DialContext(r.Context(), "tcp", addr)
+	up, err := s.dialer.DialSession(r.Context(), addr)
 	if err != nil {
 		var ref *RefusedError
 		if errors.As(err, &ref) {

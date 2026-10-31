@@ -37,19 +37,22 @@ func tenantHosts(*meshapi.Brief) []string { return nil }
 
 // egressTunnel is the lease's tunnel under its egress, nil when the kind
 // declares none.
-func (r *Runtime) egressTunnel(b *meshapi.Brief) *egress.Tunnel {
+func (r *Runtime) egressTunnel(b *meshapi.Brief, ic *interception) *egress.Tunnel {
 	if b.Egress == nil {
 		return nil
 	}
 	// each request is reported (security.go)
 	report := r.egressReporter(b.LeaseID)
-	return &egress.Tunnel{
+	t := &egress.Tunnel{
 		Policy: egress.NewPolicy(b.Egress.Hosts, tenantHosts(b), nil),
 		Dial:   r.EgressDial,
 		Logf:   r.logf,
 		Audit:  r.tunnelAudit(b.LeaseID, "egress", report),
 		Done:   report,
 	}
+	// the hosts the lease's rules terminate (intercept.go)
+	ic.install(r, b.LeaseID, t)
+	return t
 }
 
 // mcpAllowed says the session may reach server, one of the brief's
@@ -88,5 +91,9 @@ func egressLine(e *meshapi.Egress) string {
 	if len(e.Hosts) > 0 {
 		hosts = strings.Join(e.Hosts, ", ")
 	}
-	return "hosts " + hosts + "; mcp " + strings.Join(e.MCP, ", ") + map[bool]string{true: "; model", false: "; no model"}[e.Model]
+	line := "hosts " + hosts + "; mcp " + strings.Join(e.MCP, ", ") + map[bool]string{true: "; model", false: "; no model"}[e.Model]
+	if len(e.Registries) > 0 {
+		line += "; signs " + strings.Join(e.Registries, ", ")
+	}
+	return line
 }

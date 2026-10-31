@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/egress"
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/secreport"
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
@@ -21,7 +22,10 @@ import (
 // the sidecar's container has it mounted. What the node serves on it:
 //
 //   - CONNECT host:port, the tunnel, which allows or refuses by host and
-//     port and then pipes bytes it never reads;
+//     port and then pipes bytes it never reads — except the session's
+//     CONNECT to a host one of the lease's rules names, whose TLS the
+//     node terminates with the lease's CA (egress, intercept.go); the
+//     sidecar's own CONNECTs say so (OwnHeader) and are always piped;
 //   - /model/<provider>/…, the node's model forwarder, which adds the
 //     node's model credential to a fixed set of paths (the one place
 //     the node reads HTTP a pod sent it, until a lease-scoped model
@@ -111,6 +115,10 @@ func (n *Node) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if n.Tunnel == nil {
 			http.Error(w, "this lease has no egress", http.StatusForbidden)
 			return
+		}
+		if r.Header.Get(OwnHeader) != "" {
+			// the sidecar's own connection: spliced, never terminated
+			r = r.WithContext(egress.SpliceOnly(r.Context()))
 		}
 		n.Tunnel.ServeHTTP(w, r)
 	case r.URL.Path == RenewPath:
