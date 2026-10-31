@@ -197,6 +197,9 @@ type Tunnel struct {
 	// is read.
 	CA    *CA
 	Rules []Rule
+	// Inspect, when set, sees every terminated request as the session
+	// sent it, before the rules, and scans its body (canary.go).
+	Inspect Inspector
 	// Request hears each request of a terminated tunnel once it is
 	// answered: what the rules applied, never a value. It must not
 	// block.

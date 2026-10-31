@@ -91,6 +91,10 @@ type Model struct {
 	// Transport sends each request; http.DefaultTransport when nil. A
 	// proxy follows no redirect, so it is a RoundTripper.
 	Transport http.RoundTripper
+	// Inspect, when set, sees each request's body, held whole: an error
+	// refuses the request 403 credential_exposed, never sent (the lease's
+	// canaries, mesh-specs gap 28 item 5).
+	Inspect func(body []byte) error
 }
 
 // ModelCall is one model request a session made through the relay:
@@ -174,6 +178,13 @@ func (p *Proxy) serveModel(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		held = b
+	}
+	if m.Inspect != nil && len(held) > 0 {
+		if err := m.Inspect(held); err != nil {
+			w.Header().Set(egress.ErrorHeader, egress.CodeExposed)
+			refuse(http.StatusForbidden, err.Error())
+			return
+		}
 	}
 	target := strings.TrimRight(base, "/") + "/" + path
 	if req.URL.RawQuery != "" {

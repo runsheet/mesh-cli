@@ -10,7 +10,9 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -38,6 +40,9 @@ type Options struct {
 	// Env is KEY=value pairs whose values are never sent, as a session's
 	// tool env is (tools.Redact).
 	Env []string
+	// Named are literal values replaced by their own mark, not Redacted:
+	// a lease's injected credentials, each reading [secret:<ref>].
+	Named map[string]string
 }
 
 // Scrubber redacts every field of a sentry event. The zero value scrubs
@@ -47,6 +52,9 @@ type Scrubber struct {
 	home    string
 	secrets []string // longest first
 	env     []string
+	named   []string // Named's values, longest first
+	markOf  map[string]int
+	marks   []string // the distinct marks
 }
 
 // minFragment is the shortest run of a literal secret redacted where the
@@ -79,7 +87,22 @@ func NewScrubber(o Options) *Scrubber {
 		secrets = append(secrets, s)
 	}
 	sort.Slice(secrets, func(i, j int) bool { return len(secrets[i]) > len(secrets[j]) })
-	return &Scrubber{node: o.Node, home: home, secrets: secrets, env: o.Env}
+	var named, marks []string
+	markOf := map[string]int{}
+	for v := range o.Named {
+		if v != "" {
+			named = append(named, v)
+		}
+	}
+	sort.Slice(named, func(i, j int) bool { return len(named[i]) > len(named[j]) })
+	for _, v := range named {
+		i := slices.Index(marks, o.Named[v])
+		if i < 0 {
+			i, marks = len(marks), append(marks, o.Named[v])
+		}
+		markOf[v] = i
+	}
+	return &Scrubber{node: o.Node, home: home, secrets: secrets, env: o.Env, named: named, markOf: markOf, marks: marks}
 }
 
 var defaultScrubber = NewScrubber(Options{})
@@ -400,7 +423,21 @@ var rules = []rule{
 var b64Run = regexp.MustCompile(`[A-Za-z0-9+/_\-]{20,}={0,2}`)
 
 // text scrubs one string.
-func (s *Scrubber) text(in string) string { return s.textDepth(in, 0) }
+func (s *Scrubber) text(in string) string {
+	out := s.textDepth(in, 0)
+	// a named value's mark, kept from the patterns by a stand-in until
+	// the end (namedStandIn)
+	for i, m := range s.marks {
+		out = strings.ReplaceAll(out, namedStandIn(i), m)
+	}
+	return out
+}
+
+// namedStandIn is what the i-th mark reads as while the patterns run —
+// a named value, and a mark already written (a JSON line is scrubbed
+// value by value, then whole) — private-use characters no pattern
+// matches.
+func namedStandIn(i int) string { return "\ue000" + strconv.Itoa(i) + "\ue001" }
 
 func (s *Scrubber) textDepth(in string, depth int) string {
 	if in == "" {
@@ -415,7 +452,14 @@ func (s *Scrubber) textDepth(in string, depth int) string {
 			}
 		}
 	}
-	out := harness.Redact(in, s.secrets...)
+	out := in
+	for i, m := range s.marks {
+		out = strings.ReplaceAll(out, m, namedStandIn(i))
+	}
+	for _, v := range s.named {
+		out = strings.ReplaceAll(out, v, namedStandIn(s.markOf[v]))
+	}
+	out = harness.Redact(out, s.secrets...)
 	out = tools.Redact(out, s.env)
 	out = s.fragments(out)
 	for _, r := range rules {

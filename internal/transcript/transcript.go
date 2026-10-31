@@ -96,6 +96,10 @@ type Options struct {
 	// Session is the lease's Latchkey session every chunk is sent on;
 	// nil sends chunks with the offer's headers alone.
 	Session Session
+	// Named answers the lease's named values as they stand, each form
+	// with the mark it reads as ([secret:<ref>]): redacted before any
+	// other secret or pattern.
+	Named func() map[string]string
 }
 
 // Session is a lease's Latchkey session as a chunk is sent on it: its
@@ -122,6 +126,7 @@ type Uploader struct {
 	scrub   *tripline.Scrubber
 	known   map[string]bool // every secret the lease has held: one refreshed away is still redacted
 	all     []string
+	named   int // how many named values the scrubber was made with
 	sum     hash.Hash
 	total   int64
 	seq     int
@@ -211,8 +216,15 @@ func (u *Uploader) redact(line []byte) []byte {
 			grew = true
 		}
 	}
+	var named map[string]string
+	if u.o.Named != nil {
+		named = u.o.Named()
+		if len(named) != u.named {
+			u.named, grew = len(named), true
+		}
+	}
 	if grew {
-		u.scrub = tripline.NewScrubber(tripline.Options{Secrets: u.all})
+		u.scrub = tripline.NewScrubber(tripline.Options{Secrets: u.all, Named: named})
 	}
 	return Redact(u.scrub, line)
 }

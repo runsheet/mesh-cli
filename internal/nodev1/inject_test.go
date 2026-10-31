@@ -51,6 +51,9 @@ func injectHostRig(t *testing.T, g *rig) *injectHost {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		line := fmt.Sprintf("%s %s %s?%s auth=%q key=%q body=%d", r.Method, r.Host, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization"), r.Header.Get("X-Api-Key"), len(body))
+		if strings.Contains(string(body), injChildToken) {
+			line += " LEAKED"
+		}
 		h.mu.Lock()
 		h.seen = append(h.seen, line)
 		h.mu.Unlock()

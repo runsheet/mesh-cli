@@ -104,9 +104,12 @@ type sessionAccount struct {
 	// served.
 	base string
 
-	mu   sync.Mutex
-	cred *modelCredential // the job's account; nil otherwise
-	own  string           // the node's own key
+	// inspect sees each model request's body: the lease's canaries
+	// (canary.go); nil sees none
+	inspect func([]byte) error
+	mu      sync.Mutex
+	cred    *modelCredential // the job's account; nil otherwise
+	own     string           // the node's own key
 }
 
 // ownLogin is the node's own login, as its environment holds it: the
@@ -257,6 +260,9 @@ func (a *sessionAccount) model(ups map[string]string, logf func(string, ...any),
 	return &sessionproxy.Model{
 		Upstreams:  ups,
 		Credential: a.credential,
+		// the lease's injected values are canaries in every model
+		// request (canary.go)
+		Inspect: a.inspect,
 		Log: func(c sessionproxy.ModelCall) {
 			line := fmt.Sprintf("nodev1: lease %s: model %s %s %s answered %d, %d bytes in %s", lease, c.Provider, c.Method, c.Path, c.Status, c.Bytes, c.Latency.Round(time.Millisecond))
 			if c.Refreshed {

@@ -59,7 +59,7 @@ type leaseWatch struct {
 // and raw lines reach it, and the context answered is the session's,
 // which a rule's end cancels. close the watch once the session ends.
 func (r *Runtime) watchLease(ctx context.Context, b *meshapi.Brief, workspace string, mb *Mailbox, ladder *escalate.Ladder,
-	spec *SessionSpec, tokens *sessionTokens, grant *gitrelay.Grant, account *sessionAccount) (context.Context, *leaseWatch) {
+	spec *SessionSpec, tokens *sessionTokens, grant *gitrelay.Grant, account *sessionAccount, vals *injectedValues) (context.Context, *leaseWatch) {
 	sctx, stop := context.WithCancelCause(ctx)
 	w := &leaseWatch{r: r, lease: b.LeaseID, watch: stoprules.New(b.StopRules, workspace, time.Now()),
 		stop: stop, mb: mb, ladder: ladder, done: make(chan struct{})}
@@ -70,9 +70,14 @@ func (r *Runtime) watchLease(ctx context.Context, b *meshapi.Brief, workspace st
 		if tokens != nil {
 			o.Session = tokens
 		}
+		// the relay's injected values read [secret:<ref>] (canary.go)
+		if vals != nil {
+			o.Named = vals.Named
+		}
 		w.upload = transcript.New(*t, b.LeaseID, leaseSecrets(tokens, grant, account, spec), o)
 		spec.OnLine = w.upload.Line
 	}
+	spec.Injected = vals
 	onEvent := spec.OnEvent
 	spec.OnEvent = func(ev harness.Event) {
 		if onEvent != nil {
