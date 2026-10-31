@@ -72,9 +72,10 @@ type ToolCount struct {
 	Errors int64  `json:"errors"`
 	// Slot and Binding name a connection slot's tool: the kind's slot
 	// and the binding that filled it (projectmesh-io/api ADR 001
-	// amendment, slot bindings). Names and refs only.
-	Slot    string `json:"slot,omitempty"`
-	Binding string `json:"binding,omitempty"`
+	// amendment, slot bindings). Names and refs only, and always sent,
+	// "" for any other tool, as Mesh writes them back (api #70, #75).
+	Slot    string `json:"slot"`
+	Binding string `json:"binding"`
 }
 
 // TranscriptUpload is what the lease sent to the product's location: the

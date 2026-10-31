@@ -36,18 +36,24 @@
     "tool_errors": 3,
     "tools": [
       {
+        "binding": "",
         "calls": 3,
         "errors": 3,
+        "slot": "",
         "tool": "Bash"
       },
       {
+        "binding": "",
         "calls": 1,
         "errors": 0,
+        "slot": "",
         "tool": "Edit"
       },
       {
+        "binding": "",
         "calls": 1,
         "errors": 0,
+        "slot": "",
         "tool": "mcp__conform__brief"
       }
     ],
@@ -95,18 +101,24 @@
       "tool_errors": 3,
       "tools": [
         {
+          "binding": "",
           "calls": 3,
           "errors": 3,
+          "slot": "",
           "tool": "Bash"
         },
         {
+          "binding": "",
           "calls": 1,
           "errors": 0,
+          "slot": "",
           "tool": "Edit"
         },
         {
+          "binding": "",
           "calls": 1,
           "errors": 0,
+          "slot": "",
           "tool": "mcp__conform__brief"
         }
       ],
@@ -152,18 +164,24 @@
       "tool_errors": 3,
       "tools": [
         {
+          "binding": "",
           "calls": 3,
           "errors": 3,
+          "slot": "",
           "tool": "Bash"
         },
         {
+          "binding": "",
           "calls": 1,
           "errors": 0,
+          "slot": "",
           "tool": "Edit"
         },
         {
+          "binding": "",
           "calls": 1,
           "errors": 0,
+          "slot": "",
           "tool": "mcp__conform__brief"
         }
       ],
