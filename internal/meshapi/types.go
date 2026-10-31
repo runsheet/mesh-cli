@@ -2,6 +2,7 @@ package meshapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -349,12 +350,59 @@ type PushRule struct {
 	FastForwardOnly *bool  `json:"fast_forward_only,omitempty"`
 }
 
-// Access is what a job may reach.
+// Access is what a job may reach. Secrets, Mint and Federation are the
+// credentials the product carried from its offer (projectmesh-io/api ADR
+// 001 amendment "carried access"; mesh-specs gaps 28 and 32): opaque refs
+// Latchkey resolves for the lease's relay, never a value. Each is nil
+// when the offer named none.
 type Access struct {
 	Repo  bool        `json:"repo"`
 	API   []APIAccess `json:"api,omitempty"`
 	MCP   []string    `json:"mcp"`
 	Model bool        `json:"model"`
+	// Secrets are Latchkey Secret refs the relay injects (latchkey ADR
+	// 031).
+	Secrets []string `json:"secrets,omitempty"`
+	// Mint are scoped connections the relay is minted a child of for the
+	// lease (latchkey ADR 027 §9).
+	Mint []MintGrant `json:"mint,omitempty"`
+	// Federation are FederationTarget refs (latchkey ADR 031 §3, gap 32).
+	Federation []FederationRef `json:"federation,omitempty"`
+}
+
+// MintGrant is one entry of access.mint: a connection the lease's relay
+// may be minted a scoped child of, what the child may hold, and its
+// longest life in seconds (0: Latchkey's bound). Latchkey reads the
+// scope from the job itself; the relay names only the connection.
+type MintGrant struct {
+	ConnectionRef string   `json:"connection_ref"`
+	Permissions   []string `json:"permissions,omitempty"`
+	Resources     []string `json:"resources,omitempty"`
+	TTL           int64    `json:"ttl,omitempty"`
+}
+
+// FederationRef is one entry of access.federation: a FederationTarget's
+// ref and the purpose it is minted for ("" is the kind's name).
+type FederationRef struct {
+	Ref     string `json:"ref"`
+	Purpose string `json:"purpose,omitempty"`
+}
+
+// UnmarshalJSON reads either form Mesh answers: the bare ref, or
+// {ref, purpose?}.
+func (f *FederationRef) UnmarshalJSON(b []byte) error {
+	var ref string
+	if json.Unmarshal(b, &ref) == nil {
+		*f = FederationRef{Ref: ref}
+		return nil
+	}
+	type plain FederationRef
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return fmt.Errorf("a federation entry is a ref or {ref, purpose?}: %w", err)
+	}
+	*f = FederationRef(p)
+	return nil
 }
 
 // APIAccess is one vendor API the job may call through Latchkey's proxy.

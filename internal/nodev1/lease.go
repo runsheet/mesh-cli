@@ -291,7 +291,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	}
 	// the hosts the lease's tunnel terminates, and the pod's trust in
 	// the lease's CA (intercept.go)
-	ic, err := r.leaseInterception(b, tokens)
+	ic, err := r.leaseInterception(ctx, b, tokens, nil)
 	if err != nil {
 		return outcome{err: err, cause: context.Cause(ctx)}
 	}
@@ -299,6 +299,8 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		if err := lp.trust(ic.ca, r.logf, b.LeaseID); err != nil {
 			return outcome{err: fmt.Errorf("the lease's pod: trusting its relay: %w", err), cause: context.Cause(ctx)}
 		}
+		// the placeholders the injected credentials' tools read
+		lp.proxyEnv = append(lp.proxyEnv, ic.env...)
 	}
 	// the lease's relay as a sidecar in its pod (relaypod.go)
 	var rs *relaySidecar

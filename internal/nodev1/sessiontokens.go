@@ -247,7 +247,17 @@ func (s *sessionTokens) onToken(ctx context.Context, method, path string, body, 
 		return err
 	}
 	if status/100 != 2 {
-		return fmt.Errorf("Latchkey %s %s: %d %s", method, path, status, latchkeyMessage(raw))
+		le := &latchkeyError{Method: method, Path: path, Status: status}
+		var e struct {
+			Error       string `json:"error"`
+			Description string `json:"error_description"`
+		}
+		if json.Unmarshal(raw, &e) == nil && (e.Error != "" || e.Description != "") {
+			le.Code, le.Description = e.Error, e.Description
+		} else {
+			le.Description = latchkeyMessage(raw)
+		}
+		return le
 	}
 	if out != nil && len(bytes.TrimSpace(raw)) > 0 {
 		return json.Unmarshal(raw, out)
