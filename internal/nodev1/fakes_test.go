@@ -49,6 +49,42 @@ type fakeLatchkey struct {
 	// signingMints counts the sigstore-audience ID tokens minted
 	signingMints int
 	n            int
+	// carried are the for-job credentials the fake answers by ref (a
+	// Secret's or a connection's child, inject.go), refuseCarried the
+	// refusals it answers in their place, {status, code}, and asked
+	// each for-job ask's ref in order
+	carried       map[string]forJobCredential
+	refuseCarried map[string]carriedRefusal
+	asked         []string
+}
+
+// carriedRefusal is a for-job refusal: Latchkey's status and code.
+type carriedRefusal struct {
+	status int
+	code   string
+}
+
+// setCarried has the fake answer ref with c from now on.
+func (l *fakeLatchkey) setCarried(ref string, c forJobCredential) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.carried == nil {
+		l.carried = map[string]forJobCredential{}
+	}
+	l.carried[ref] = c
+}
+
+// asks counts the for-job asks of ref.
+func (l *fakeLatchkey) asks(ref string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := 0
+	for _, a := range l.asked {
+		if a == ref {
+			n++
+		}
+	}
+	return n
 }
 
 // fakeModelSecret is the fake account's secret.
@@ -145,6 +181,31 @@ func (l *fakeLatchkey) checkToken(r *http.Request, url string) (string, error) {
 func (l *fakeLatchkey) modelForJob(w http.ResponseWriter, r *http.Request) {
 	if _, err := l.checkToken(r, l.srv.URL+r.URL.Path); err != nil {
 		l.fail(w, http.StatusUnauthorized, "for-job: "+err.Error())
+		return
+	}
+	// a body naming a credential_ref asks for a carried credential, as
+	// latchkey #694's connectionForJob (and ADR 031 §2.4 for a Secret)
+	var body struct {
+		CredentialRef string `json:"credential_ref"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+	if ref := body.CredentialRef; ref != "" {
+		l.mu.Lock()
+		l.asked = append(l.asked, ref)
+		c, ok := l.carried[ref]
+		rf, refused := l.refuseCarried[ref]
+		l.mu.Unlock()
+		switch {
+		case refused:
+			w.WriteHeader(rf.status)
+			json.NewEncoder(w).Encode(map[string]string{"error": rf.code, "error_description": "refused by the fake"})
+		case !ok:
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]string{"error": "not_the_jobs", "error_description": "the ref is not on the job's access"})
+		default:
+			w.Header().Set("Cache-Control", "no-store")
+			json.NewEncoder(w).Encode(c)
+		}
 		return
 	}
 	l.mu.Lock()

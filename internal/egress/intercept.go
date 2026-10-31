@@ -60,6 +60,10 @@ type Applied struct {
 	Ref string
 	// Form is how: dpop, bearer, header, ...
 	Form string
+	// Kind is what Ref names (secret, connection), when a rule says.
+	Kind string
+	// Version is the version of what it applied, when it has one.
+	Version string
 }
 
 // Refusal is a rule's refusal of a request: the status the session is

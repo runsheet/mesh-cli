@@ -93,6 +93,24 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			// only the stop rules and the transcript are held to the fixture
 			return nil, err
 		},
+		"take-carried": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.TakeRequest
+			decode(t, f.Request, &req)
+			tk, err := c.Take(context.Background(), req)
+			// the credentials the offer carried (api ADR 001 amendment
+			// "carried access"; mesh-specs gaps 28 and 32): only they are
+			// held to the fixture, federation in its object form
+			if err == nil {
+				a := tk.Brief.Access
+				if a == nil || len(a.Secrets) != 1 || a.Secrets[0] == "" || len(a.Mint) != 1 || a.Mint[0].ConnectionRef != "conn_cloudflare" ||
+					len(a.Mint[0].Permissions) != 1 || len(a.Mint[0].Resources) != 1 || a.Mint[0].TTL != 900 ||
+					len(a.Federation) != 2 || a.Federation[0] != (meshapi.FederationRef{Ref: "fed_runsheet_prod"}) ||
+					a.Federation[1] != (meshapi.FederationRef{Ref: "fed_staging", Purpose: "configure"}) {
+					t.Errorf("take-carried: the brief's access %+v", a)
+				}
+			}
+			return nil, err
+		},
 		"take-registry": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
 			var req meshapi.TakeRequest
 			decode(t, f.Request, &req)
