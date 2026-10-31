@@ -144,6 +144,22 @@ runsheet v1 plan rules out: the pod must never hold one.
    serves no `secret.exposed` route, so the version is not marked
    exposed there.
 
+10. **The lease's end releases** (gap 28 item 6). However the lease
+    ends — finished, failed (an exposure included), handed back before
+    or after its session, cancelled by Mesh, past its budget, the node
+    stopping — and before its end is told to Mesh, which revokes its
+    Latchkey session, `releaseCarried` drops every held credential (no
+    rule injects after) and, when the access minted children, calls
+    `POST /v1/credentials/for-job/release {}` on the session token
+    (latchkey #694, `{released: n}`), bounded by 15 s. The answer is an
+    AccessRecord of the lease `{vendor: latchkey, service: release,
+    outcome: ok, reason: released <n>}` or `{outcome: failed, reason:
+    release_failed: <why>}`, which is not one of the lease's writes; a
+    failure never holds the lease open, and Latchkey's backstops (the
+    session's end revoking its children, the five-minute sweep) revoke
+    what it missed. A lease whose access names only Secrets drops them
+    and calls nothing.
+
 ## Consequences
 
 - A job reaches a vendor's API with `curl` and nothing in its

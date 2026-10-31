@@ -138,6 +138,8 @@ func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take, room *schedule
 	cancel(nil)
 	<-renewDone
 	out.nodeEnding = ctx.Err() != nil
+	// before Mesh hears the end and revokes the session (release.go)
+	r.releaseCarried(id)
 	out.access = r.takeAccess(id)
 	reportSandbox(sec, out.err)
 	end := r.report(id, b, out)
@@ -303,7 +305,22 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	}
 	// the hosts the lease's tunnel terminates, and the pod's trust in
 	// the lease's CA (intercept.go)
-	ic, err := r.leaseInterception(ctx, b, tokens, vals)
+	// the lease's end drops what is held and releases what was minted,
+	// whatever happens from here (release.go)
+	var ic *interception
+	if injects(b) && tokens != nil {
+		rel := &releaser{held: func() []*heldCredential {
+			if ic == nil {
+				return nil
+			}
+			return ic.held
+		}}
+		if b.Access != nil && len(b.Access.Mint) > 0 {
+			rel.release = tokens.ReleaseForJob
+		}
+		vals.setReleaser(rel)
+	}
+	ic, err = r.leaseInterception(ctx, b, tokens, vals)
 	if err != nil {
 		return outcome{err: err, cause: context.Cause(ctx)}
 	}

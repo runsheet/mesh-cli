@@ -58,6 +58,8 @@ type injectedValues struct {
 	// session, set once it runs
 	exposed *credentialExposed
 	stop    func(error)
+	// rel ends the lease's carried credentials (release.go)
+	rel *releaser
 }
 
 func newInjectedValues(lease string, logf func(string, ...any)) *injectedValues {
