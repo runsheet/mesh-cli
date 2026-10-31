@@ -194,6 +194,10 @@ type Runtime struct {
 	// actor's, under --actors): the node keeps no other in-flight state
 	// of a lease (ADR-044; guard_test.go)
 	leases actor.Registry[*running]
+	// injected are the live leases' injected values, which every log
+	// line and report redacts (canary.go); each lease's own, gone with it
+	injectedMu sync.Mutex
+	injected   []*injectedValues
 	// accounts are the model accounts' latest standing, from their
 	// sessions' rate-limit readings, for the heartbeat (accounts.go)
 	accounts map[string]*accountReading
@@ -294,7 +298,8 @@ func (r *Runtime) cancelReason(id string) string {
 
 func (r *Runtime) logf(format string, args ...any) {
 	if r.Logf != nil {
-		r.Logf(format, args...)
+		// a live lease's injected values never reach the log (canary.go)
+		r.Logf("%s", r.redact(fmt.Sprintf(format, args...)))
 	}
 }
 

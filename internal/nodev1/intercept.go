@@ -3,10 +3,12 @@ package nodev1
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/url"
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/egress"
@@ -55,7 +57,20 @@ type interception struct {
 	rules []egress.Rule
 	env   []string
 	held  []*heldCredential
+	// inspect sees every terminated request for the lease's canaries
+	// (canary.go): set when the lease injects anything
+	inspect egress.Inspector
 }
+
+// watchRule terminates every host a lease's egress allows and writes
+// nothing: a lease that injects credentials has every request it sends
+// through its tunnel read for them (canary.go), so a value is seen on
+// whatever host it is sent to.
+type watchRule struct{ hosts []string }
+
+func (w watchRule) Terminates(host string) bool { return slices.Contains(w.hosts, host) }
+
+func (w watchRule) Apply(*http.Request) (*egress.Applied, error) { return nil, nil }
 
 // signsRegistries says the brief names registries to sign.
 func signsRegistries(b *meshapi.Brief) bool {
@@ -67,7 +82,7 @@ func signsRegistries(b *meshapi.Brief) bool {
 // credential its access carries (inject.go), and a CA over every rule's
 // hosts. nil when the brief names nothing its hosts allow, or the lease
 // runs on the host, where no session is pointed at its tunnel.
-func (r *Runtime) leaseInterception(ctx context.Context, b *meshapi.Brief, tokens *sessionTokens, held func(string, *egress.Credential)) (*interception, error) {
+func (r *Runtime) leaseInterception(ctx context.Context, b *meshapi.Brief, tokens *sessionTokens, vals *injectedValues) (*interception, error) {
 	if !signsRegistries(b) && !injects(b) {
 		return nil, nil
 	}
@@ -111,7 +126,7 @@ func (r *Runtime) leaseInterception(ctx context.Context, b *meshapi.Brief, token
 		hosts = append(hosts, sign.Hosts()...)
 	}
 	if injects(b) {
-		rules, env, all, err := r.injectRules(ctx, b, tokens, allowed, held)
+		rules, env, all, err := r.injectRules(ctx, b, tokens, allowed, vals.add)
 		ic.held = all
 		if err != nil {
 			return ic, err
@@ -120,6 +135,19 @@ func (r *Runtime) leaseInterception(ctx context.Context, b *meshapi.Brief, token
 			hosts = append(hosts, rule.(*egress.InjectRule).Hosts()...)
 		}
 		ic.rules, ic.env = append(ic.rules, rules...), env
+		if len(rules) > 0 && vals != nil {
+			// every host the egress allows is read for the lease's
+			// canaries, not only the injected ones
+			var watched []string
+			for _, h := range b.Egress.Hosts {
+				if ok, _, _ := allowed.Allow(h, egress.Port); ok && validCAHost(h) {
+					watched = append(watched, strings.ToLower(strings.TrimSuffix(h, ".")))
+				}
+			}
+			ic.rules = append(ic.rules, watchRule{hosts: watched})
+			hosts = append(hosts, watched...)
+			ic.inspect = vals
+		}
 	}
 	if len(ic.rules) == 0 {
 		return ic, nil
@@ -139,7 +167,7 @@ func (ic *interception) install(r *Runtime, lease string, t *egress.Tunnel) {
 	if ic == nil || ic.ca == nil || t == nil {
 		return
 	}
-	t.CA, t.Rules = ic.ca, ic.rules
+	t.CA, t.Rules, t.Inspect = ic.ca, ic.rules, ic.inspect
 	t.Upstream = r.EgressUpstream
 	t.Request = r.interceptAudit(lease)
 }

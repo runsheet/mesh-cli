@@ -210,6 +210,19 @@ func (t *Tunnel) interceptor(host, port string) http.Handler {
 			return
 		}
 		req.URL.Scheme, req.URL.Host, req.Host = "https", authority, authority
+		// the request as the session sent it, before a rule writes to it
+		if t.Inspect != nil {
+			if err := t.Inspect.Inspect(req); err != nil {
+				var ref *Refusal
+				if errors.As(err, &ref) {
+					refuse(ref.Status, ref.Code, ref.Message)
+				} else {
+					refuse(http.StatusForbidden, CodeExposed, err.Error())
+				}
+				t.logf("egress: %s %s refused: %v", req.Method, host, err)
+				return
+			}
+		}
 		for _, r := range rules {
 			ap, err := r.Apply(req)
 			if ap != nil {
@@ -226,7 +239,12 @@ func (t *Tunnel) interceptor(host, port string) http.Handler {
 				return
 			}
 		}
+		var scanned exposer
 		if req.Body != nil && req.Body != http.NoBody {
+			if t.Inspect != nil {
+				req.Body = t.Inspect.Body(req, req.Body)
+				scanned, _ = req.Body.(exposer)
+			}
 			req.Body = &countedBody{ReadCloser: req.Body}
 		}
 		rp := &httputil.ReverseProxy{
@@ -238,6 +256,13 @@ func (t *Tunnel) interceptor(host, port string) http.Handler {
 			FlushInterval: -1,
 			ErrorLog:      errLog,
 			ErrorHandler: func(_ http.ResponseWriter, _ *http.Request, err error) {
+				if scanned != nil && scanned.Exposed() {
+					t.logf("egress: %s %s: cut short: an injected value was in its body", req.Method, host)
+					if cw.status == 0 {
+						refuse(http.StatusForbidden, CodeExposed, "the request carried a credential the relay injects")
+					}
+					return
+				}
 				t.logf("egress: %s %s: upstream: %v", req.Method, host, err)
 				if cw.status != 0 {
 					// the answer had begun: it ends cut short
