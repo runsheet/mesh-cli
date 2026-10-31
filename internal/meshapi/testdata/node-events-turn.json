@@ -8,7 +8,9 @@
     "events": [
       {
         "data": {
+          "from": "product",
           "job_id": "ed49b3c3-a88f-5d05-bf34-9493c5104201",
+          "kind": "turn",
           "lease_id": "38ad98aa-c031-55ee-8f9b-60203e2de50b",
           "seq": 1,
           "turn_id": "t-2"

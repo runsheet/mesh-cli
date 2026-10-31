@@ -76,7 +76,7 @@ func (r *Runtime) onEvent(e meshapi.NodeEvent) {
 			r.logf("nodev1: a turn event names no lease or turn: %s", e.Data)
 			return
 		}
-		r.deliverTurn(t.LeaseID, meshapi.Turn{TurnID: t.TurnID, Seq: t.Seq}, "the event stream")
+		r.deliverTurn(t.LeaseID, meshapi.Turn{TurnID: t.TurnID, Seq: t.Seq, Kind: t.Kind, From: t.From}, "the event stream")
 	default:
 		// pause is the actor node's (wave 3)
 		r.logf("nodev1: event %s ignored by this runtime", e.Event)

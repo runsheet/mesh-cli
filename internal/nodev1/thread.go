@@ -190,13 +190,21 @@ func reattach(ctx context.Context, grant *gitrelay.Grant, b *meshapi.Brief, work
 	return nil
 }
 
-// threadPrompt is a thread lease's first message: for a resumed session
-// the newest turn's line alone (the session has the rest); for a fresh
-// one, prompt then that line, when the thread has a turn.
+// threadPrompt is a lease's first message: for a resumed thread's
+// session the newest turn's line alone (the session has the rest); for
+// a fresh one, prompt then that line, when the job has a turn — a
+// thread's, or any job's whose kind names a turn tool and whose turn
+// came while it waited (api ADR 001 amendment, threads: "Turns into any
+// live job"). The line says the turn's kind and sender (turnMessage); an
+// interrupt reads as a turn, since nothing is in flight to stop yet.
 func threadPrompt(b *meshapi.Brief, prompt, resume string) string {
 	var line string
 	if t := b.LastTurn; t != nil && t.TurnID != "" {
-		line = turnLine(turnToolFor(b), t.TurnID, t.Seq)
+		first := *t
+		if first.Kind == meshapi.TurnKindInterrupt {
+			first.Kind = meshapi.TurnKindTurn // nothing is in flight yet
+		}
+		line = turnMessage(turnToolFor(b), first)
 	}
 	switch {
 	case resume != "" && line != "":

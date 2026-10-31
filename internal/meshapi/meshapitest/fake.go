@@ -239,7 +239,8 @@ func (f *Fake) Calls(route string) []Call {
 	return out
 }
 
-// Turn adds a turn to the thread job, as a product's POST
+// Turn adds a turn to the job (a thread, or any job whose brief names a
+// turn tool), as a product's POST
 // /v1/jobs/{id}/turns would: renewals that say a turns_seen below it
 // answer it (projectmesh-io/api ADR 001 amendment, threads:
 // "Acknowledged turns"). It reaches no event stream; Stream does that.
@@ -427,7 +428,7 @@ func (f *Fake) lease(w http.ResponseWriter, r *http.Request) {
 		l.expires = time.Now().Add(f.ttl()).UTC().Truncate(time.Second)
 		resp := meshapi.RenewResponse{LeaseID: id, ExpiresAt: l.expires, RenewEveryS: l.brief.RenewEveryS}
 		var req meshapi.RenewRequest
-		if json.Unmarshal(body, &req) == nil && req.TurnsSeen != nil && l.brief.Thread != nil {
+		if json.Unmarshal(body, &req) == nil && req.TurnsSeen != nil && (l.brief.Thread != nil || l.brief.TurnTool != "") {
 			job := l.brief.JobID
 			f.seen[job] = max(f.seen[job], *req.TurnsSeen)
 			resp.TurnsThrough = *req.TurnsSeen
