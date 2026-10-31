@@ -207,7 +207,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	// a relay sidecar holds the lease's session key and token whatever the
 	// brief names (relaypod.go); a transcript's chunks go on its token
 	// (stoprules.go)
-	if (b.Transcript != nil && b.Transcript.UploadURL != "") || len(b.Servers) > 0 || b.Git != nil || len(apiRules(b)) > 0 || b.CredentialRef != "" || b.Registry != nil || sl.hasConnections() || r.sidecarMode() {
+	if (b.Transcript != nil && b.Transcript.UploadURL != "") || len(b.Servers) > 0 || b.Git != nil || len(apiRules(b)) > 0 || b.CredentialRef != "" || b.Registry != nil || sl.hasConnections() || r.sidecarMode() || signsRegistries(b) {
 		var err error
 		if tokens, err = openSession(ctx, r.API, b.LeaseID, r.LatchkeyHTTP); err != nil {
 			return outcome{err: credentialFailed(err), cause: context.Cause(ctx)}
@@ -289,12 +289,24 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 			return outcome{err: fmt.Errorf("the lease's pod: %w", err), cause: context.Cause(ctx)}
 		}
 	}
+	// the hosts the lease's tunnel terminates, and the pod's trust in
+	// the lease's CA (intercept.go)
+	ic, err := r.leaseInterception(b, tokens)
+	if err != nil {
+		return outcome{err: err, cause: context.Cause(ctx)}
+	}
+	if ic != nil && lp != nil {
+		if err := lp.trust(ic.ca, r.logf, b.LeaseID); err != nil {
+			return outcome{err: fmt.Errorf("the lease's pod: trusting its relay: %w", err), cause: context.Cause(ctx)}
+		}
+	}
 	// the lease's relay as a sidecar in its pod (relaypod.go)
 	var rs *relaySidecar
 	if r.sidecarMode() && lp != nil {
 		if rs, err = r.prepareRelaySidecar(ctx, b, lp, tokens); err != nil {
 			return outcome{err: fmt.Errorf("the lease's relay sidecar: %w", err), cause: context.Cause(ctx)}
 		}
+		rs.ic = ic
 		keep("the relay sidecar", rs.close)
 	}
 
@@ -340,7 +352,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		sock = rs.ownSock
 	} else {
 		var closeProxy func()
-		servers, sock, closeProxy, err = r.openProxy(ctx, b, tokens, grant, tools, fin.observe, account, sl)
+		servers, sock, closeProxy, err = r.openProxy(ctx, b, tokens, grant, tools, fin.observe, account, sl, ic)
 		if err != nil {
 			return outcome{err: fmt.Errorf("the lease's sessionproxy: %w", err), cause: context.Cause(ctx)}
 		}
@@ -480,7 +492,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 // brief's access names vendor APIs, the proxy's /latchkey/<vendor>/
 // route reaches Latchkey's proxy on the session token (wave 2.7). It
 // answers only once the socket does (waitListening).
-func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief, tokens *sessionTokens, grant *gitrelay.Grant, tools []mcptool.Tool, observe func(string, []byte, []byte), account *sessionAccount, sl *slots) (map[string]any, string, func(), error) {
+func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief, tokens *sessionTokens, grant *gitrelay.Grant, tools []mcptool.Tool, observe func(string, []byte, []byte), account *sessionAccount, sl *slots, ic *interception) (map[string]any, string, func(), error) {
 	ups := map[string]sessionproxy.Upstream{}
 	for _, s := range b.Servers {
 		if s.Name == "" || s.URL == "" {
@@ -528,7 +540,7 @@ func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief, tokens *sessi
 		p.Tools, sl.proxy = sl.filter(), p
 	}
 	// the kind's egress: the relay is the session's only exit (egress.go)
-	tunnel := r.egressTunnel(b)
+	tunnel := r.egressTunnel(b, ic)
 	if tunnel != nil {
 		// the harness always reaches the lease's model through the relay:
 		// every job is harnessed, so egress.model never closes the route
@@ -789,8 +801,15 @@ func (r *Runtime) postAccess(id string, records []meshapi.AccessRecord) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
 	defer cancel()
-	if err := r.API.Access(ctx, id, records); err != nil {
-		r.logf("nodev1: lease %s: access records: %v", id, err)
+	// Mesh takes at most MaxAccessPost records a post: a lease whose
+	// relay signed every request of an npm ci has thousands
+	for len(records) > 0 {
+		n := min(len(records), meshapi.MaxAccessPost)
+		if err := r.API.Access(ctx, id, records[:n]); err != nil {
+			r.logf("nodev1: lease %s: access records: %v", id, err)
+			return
+		}
+		records = records[n:]
 	}
 }
 

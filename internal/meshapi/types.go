@@ -242,10 +242,15 @@ type SlotTool struct {
 // Egress is where a kind's session may reach beyond the relay's git
 // route: Hosts by HTTPS (host and SNI, port 443, exact), the products
 // whose MCP servers it reaches, and whether it calls a model.
+// Registries are URL prefixes (https://api.runsheet.dev/npm/) whose
+// every request the relay signs with the lease's session token in the
+// DPoP scheme (mesh-specs gap 31); a prefix's host is reached only when
+// Hosts names it too, and nil or empty signs nothing.
 type Egress struct {
-	Hosts []string `json:"hosts"`
-	MCP   []string `json:"mcp"`
-	Model bool     `json:"model"`
+	Hosts      []string `json:"hosts"`
+	MCP        []string `json:"mcp"`
+	Model      bool     `json:"model"`
+	Registries []string `json:"registries,omitempty"`
 }
 
 // Subject is what a job is about, in the product's own terms.
@@ -554,6 +559,9 @@ const (
 
 // MaxSecurityReports bounds one post.
 const MaxSecurityReports = 100
+
+// MaxAccessPost bounds one post of AccessRecords: Mesh refuses more.
+const MaxAccessPost = 500
 
 // SecurityAccepted is Mesh's answer: how many it took, and whether it
 // forwards them (false while Tripline is not configured).

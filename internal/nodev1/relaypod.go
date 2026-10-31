@@ -87,6 +87,9 @@ type relaySidecar struct {
 	gitReq SourceRequest
 	node   *relaysidecar.Node
 	tunnel *egress.Tunnel
+	// ic is what the tunnel terminates for the session (intercept.go):
+	// the sidecar's own connections are spliced whatever it names
+	ic *interception
 	// own is the node's own product proxy, on a socket only the node
 	// has: what hands in a finish's learnings (callProductTool).
 	own     *sessionproxy.Proxy
@@ -198,6 +201,7 @@ func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe 
 		},
 		Done: report,
 	}
+	rs.ic.install(r, b.LeaseID, rs.tunnel)
 	rs.node = &relaysidecar.Node{
 		Tunnel: rs.tunnel, Proxy: np, Renew: rs.renew, Logf: r.logf,
 		Access:  func(rec meshapi.AccessRecord) { r.keepAccess(b.LeaseID, rec) },
