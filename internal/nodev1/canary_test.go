@@ -143,10 +143,11 @@ func TestACanaryLeakEndsTheJob(t *testing.T) {
 			run(t, g, context.Background())
 			got, _ := os.ReadFile(answers)
 			lines := strings.Split(strings.TrimSpace(string(got)), "\n")
-			// the leaking request is refused, or cut off as the job ends
-			// under it: never answered by its host
+			// the leaking request is refused 403 credential_exposed, or
+			// cut off as the job ends under it first: never answered by
+			// its host
 			if len(lines) != 2 || !strings.Contains(lines[0], "200 OK") || strings.Contains(lines[1], "200 OK") ||
-				(tc.name == "in a header" && !strings.Contains(strings.ToLower(lines[1]), "credential_exposed")) {
+				(strings.Contains(lines[1], " 403") && !strings.Contains(strings.ToLower(lines[1]), "credential_exposed")) {
 				t.Fatalf("the pod's answers %q", got)
 			}
 			// a body streams: its start may have gone, never the value,
