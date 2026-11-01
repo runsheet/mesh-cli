@@ -169,6 +169,11 @@ func New(creds Credentials, nodeSocket string) (*Sidecar, error) {
 			ReadMirrors:   g.ReadMirrors,
 			Audit:         s.gitEvent,
 		}
+		if rc, ok := s.proxy.Canary.(*remoteCanary); ok {
+			// every push's content, scanned on the node (canary.go)
+			s.relay.Scan = rc.Scan
+			s.relay.Bases = gitrelay.CatFileBases(g.Mirror, g.Checkout)
+		}
 		s.proxy.Git = s.relay
 	}
 	go s.postAccess()

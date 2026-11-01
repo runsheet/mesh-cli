@@ -284,6 +284,13 @@ func carriedCredentials(b *meshapi.Brief) [][2]string {
 // injects says the brief carries credentials for the relay to inject.
 func injects(b *meshapi.Brief) bool { return len(carriedCredentials(b)) > 0 }
 
+// carriesCredentials says the brief's access carries anything the relay
+// injects — a Secret, a scoped mint or a federation target — whose
+// values its pushes and its sidecar's calls are read for.
+func carriesCredentials(b *meshapi.Brief) bool {
+	return injects(b) || (b.Access != nil && len(b.Access.Federation) > 0)
+}
+
 // injectRules asks Latchkey for each carried credential and answers its
 // rule over the hosts of allowed that the credential's rule names, the
 // placeholders its tools read, and every credential held. A ref whose

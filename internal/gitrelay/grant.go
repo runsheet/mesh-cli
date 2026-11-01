@@ -125,6 +125,13 @@ func (s *Server) Open(leaseID string, policy Policy, mint Mint, revoke Revoke) (
 			g.mu.Unlock()
 			return CheckoutAncestry(dir)(ctx, old, new)
 		},
+		// a thin push's delta bases, from the lease's checkout
+		Bases: func(ctx context.Context, id string) (string, []byte, error) {
+			g.mu.Lock()
+			dir := g.checkout
+			g.mu.Unlock()
+			return CatFileBases(dir)(ctx, id)
+		},
 		Audit: func(e Event) {
 			e.Lease = leaseID
 			s.audit(e)
@@ -193,6 +200,10 @@ func (g *Grant) SetCheckout(dir string) {
 	defer g.mu.Unlock()
 	g.checkout = dir
 }
+
+// SetScan has every later push through the grant read by scan for the
+// lease's injected values (packscan.go).
+func (g *Grant) SetScan(scan Scan) { g.relay.SetScan(scan) }
 
 // upstreamOf is a grant's git origin: the server's when it names one
 // (`--git-upstream`, a test's override for every lease), else the

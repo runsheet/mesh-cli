@@ -393,3 +393,41 @@ Latchkey's vendor proxy. Now the relay's own routes are scanned too
    answer replaced by `relay: this answer could not be checked for
    injected credentials`. The node tools' calls, forwarded to the node
    unchanged, are scanned there.
+
+## Amendment 2026-11-01: a push's content is checked
+
+A git push was the other way a value could leave: committed to a file
+or a message and pushed through the git relay, which read only the
+command list. Now the relay reads the pack too (mesh-specs gap 28 item
+5; `gitrelay/packscan.go`).
+
+1. **Every object, as the object it makes.** As a push streams upstream
+   its pack is parsed: each blob, tree, commit and tag is inflated and
+   scanned a MiB at a time with a 4 KiB overlap; each delta is applied to
+   its base and the object it makes is scanned, since git may copy a
+   value's last bytes from the base and a delta's inserts alone would
+   miss it. A delta's base is an object earlier in the pack, else (a
+   thin pack) one the vendor already has, read from the node's mirror or
+   the pushing checkout with hardened git and checked to hash to its id,
+   so a planted object cannot stand in for it.
+2. **The push is held back until it is clean.** The last 4 KiB of the
+   push, the pack's checksum among them, go upstream only once the whole
+   pack is read and clean: the vendor cannot accept a pack it never had
+   whole, so a value found anywhere refuses the push (`403`, the git
+   client says `the push carried a credential the relay injects`) with
+   nothing updated, and the lease fails `credential_exposed` toward the
+   repository, `seen in a git push's content`.
+3. **Nothing goes unread.** A pack the relay cannot read — a sha256
+   repository's `REF_DELTA`, a base neither in the push nor in a store
+   the relay reads, a delta or base past 64 MiB, more than 512 MiB of
+   bases held — refuses the push (`the push's pack could not be read`).
+   Decided here: failing closed is the spec's rule, and a thin push's
+   bases are what the checkout fetched, so they are there.
+4. **Where.** The node's grant (`Grant.SetScan`, the lease's values,
+   bases from its checkout) and a relay sidecar's relay (scanned on the
+   node through `POST /relay/scan`, bases from the node's mirror, then
+   the checkout it has read-only). Only a lease whose access carries a
+   Secret, a scoped mint or a federation target has its pushes read, and
+   only such a lease's sidecar hands its calls to the node (amending the
+   amendment above, whose sidecar half is so gated too); the node's own
+   proxy scans every lease's MCP and vendor calls, which costs nothing.
