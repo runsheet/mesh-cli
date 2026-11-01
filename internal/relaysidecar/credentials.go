@@ -89,6 +89,10 @@ type Credentials struct {
 	// session token: a name, a description and a ref, never a
 	// connection's credential.
 	Slots []Slot `json:"slots,omitempty"`
+	// Canary has the sidecar hand its MCP and vendor API calls to the
+	// node to scan, and their answers to redact (canary.go): the lease's
+	// injected values, which the sidecar never holds.
+	Canary bool `json:"canary,omitempty"`
 }
 
 // Slot is one filled connection slot: the name its server and tool are

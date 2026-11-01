@@ -37,7 +37,10 @@ import (
 //   - AccessPath, the sidecar's AccessRecords of the lease;
 //   - SecurityPath, the sidecar's own security reports of the lease
 //     (content-free, checked as Mesh checks them), which the node posts
-//     to Mesh on its machine token: the sidecar holds none.
+//     to Mesh on its machine token: the sidecar holds none;
+//   - ScanPath and RedactPath, the lease's canary (canary.go): the
+//     sidecar's MCP and vendor API calls scanned, and their answers
+//     redacted, for the injected values the pod never holds.
 
 // Paths of the lease's socket and of the sidecar's control socket.
 const (
@@ -100,6 +103,9 @@ type Node struct {
 	// Security keeps one of the sidecar's security reports, each one
 	// content-free (secreport.Check). nil drops them.
 	Security func(meshapi.SecurityReport)
+	// Canary scans the sidecar's calls for the lease's injected values
+	// and redacts them from its answers (canary.go). nil finds none.
+	Canary sessionproxy.Canary
 	// Logf takes the node's lines; never a credential.
 	Logf func(format string, args ...any)
 
@@ -129,6 +135,10 @@ func (n *Node) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		n.serveObserve(w, r)
 	case r.URL.Path == SecurityPath:
 		n.serveSecurity(w, r)
+	case r.URL.Path == ScanPath:
+		n.serveScan(w, r)
+	case r.URL.Path == RedactPath:
+		n.serveRedact(w, r)
 	case r.URL.Path == StopPath:
 		if n.Stop == nil {
 			http.NotFound(w, r)

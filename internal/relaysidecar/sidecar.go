@@ -127,6 +127,9 @@ func New(creds Credentials, nodeSocket string) (*Sidecar, error) {
 	// an egress request the sidecar refuses itself (plain HTTP, which
 	// never reaches the node's tunnel) is passed to the node to report
 	s.proxy.EgressRefused = s.egressRefused
+	if creds.Canary {
+		s.proxy.Canary = &remoteCanary{node: s.node, logf: s.logf}
+	}
 	if creds.Tools != nil {
 		s.proxy.Tools = sessionproxy.ToolFilter(creds.Tools)
 	}

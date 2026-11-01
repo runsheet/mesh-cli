@@ -581,6 +581,9 @@ func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief, tokens *sessi
 	p.Logf = r.Logf
 	p.Observe = observe
 	p.EgressRefused = r.egressReporter(b.LeaseID)
+	// the lease's injected values are canaries on its MCP and vendor
+	// API calls, and redacted from their answers (canary.go)
+	p.Canary = r.injectedOf(b.LeaseID).canary()
 	// the kind's registry, on the lease's session token (registry.go)
 	p.Registry = r.registryRelay(b, tokens, nil)
 	// the kind's product tools alone, under its descriptions (slots.go)
