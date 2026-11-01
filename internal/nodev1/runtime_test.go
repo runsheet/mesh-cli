@@ -127,17 +127,27 @@ func newRig(t *testing.T, sess Session) *rig {
 	prod.url = ps.URL + "/mcp"
 	work := t.TempDir()
 	_, nodeKey, _ := ed25519.GenerateKey(rand.Reader)
+	// the sessions' model: a local one that answers every call, so no
+	// test reaches a vendor (a vendor's 401 or 403 now ends the lease
+	// account_refused, ADR-048); a test that needs another sets its own
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"type":"message","content":[]}`)
+	}))
+	t.Cleanup(model.Close)
 	rt := &Runtime{
-		SigningKey:  nodeKey,
-		API:         &meshapi.Client{BaseURL: mesh.URL, Token: func(context.Context) (string, error) { return "machine", nil }},
-		Node:        meshapi.RegisterRequest{Name: "test-node", Version: "v0.0.0-test", CapacityTotal: meshapi.Capacity{CPUs: 4, MemGB: 8, Slots: 1}, SigningKey: "ed25519:AAAA"},
-		WorkRoot:    work,
-		MeshBinary:  "/usr/local/bin/mesh",
-		Session:     sess,
-		Once:        true,
-		Logf:        t.Logf,
-		Backoff:     10 * time.Millisecond,
-		GitUpstream: gh.srv.URL,
+		ModelUpstreams: map[string]string{"anthropic": model.URL, "openai": model.URL},
+		SigningKey:     nodeKey,
+		API:            &meshapi.Client{BaseURL: mesh.URL, Token: func(context.Context) (string, error) { return "machine", nil }},
+		Node:           meshapi.RegisterRequest{Name: "test-node", Version: "v0.0.0-test", CapacityTotal: meshapi.Capacity{CPUs: 4, MemGB: 8, Slots: 1}, SigningKey: "ed25519:AAAA"},
+		WorkRoot:       work,
+		MeshBinary:     "/usr/local/bin/mesh",
+		Session:        sess,
+		Once:           true,
+		Logf:           t.Logf,
+		Backoff:        10 * time.Millisecond,
+		GitUpstream:    gh.srv.URL,
 	}
 	return &rig{fake: fake, latchkey: lk, github: gh, product: prod, productURL: prod.url, rt: rt, work: work}
 }

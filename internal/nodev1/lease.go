@@ -376,6 +376,9 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	ctx, endLease := context.WithCancelCause(ctx)
 	defer endLease(nil)
 	suites = watchSuites(suites, endLease)
+	// the job's account refused by its vendor ends the lease at once: it
+	// is handed back account_refused (accountrefused.go)
+	account.onRefused = func(err error) { endLease(err) }
 	var pusher nodetools.Pusher
 	if rs != nil {
 		pusher = rs.pusher()
@@ -784,6 +787,17 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) actor.End {
 		reason := afterWrites(o.stopped.fired.Reason(), writes)
 		r.fail(id, meshapi.CauseStoppedByRule, reason)
 		return actor.End{Report: actor.ReportFail, Cause: meshapi.CauseStoppedByRule, Reason: reason}
+	}
+	// the job's model account refused by its vendor is the account's
+	// fault: handed back account_refused, which Mesh does not count, and
+	// the job is offered again on another account (accountrefused.go),
+	// writes or not, since the next lease builds on what was pushed
+	if refused := o.accountRefused(); refused != nil {
+		r.postAccess(id, o.access)
+		r.postUsage(id, o)
+		reason := afterWrites(refused.Error(), writes)
+		cause := r.handBackRefused(id, refused, reason, o.result.SessionID)
+		return actor.End{Report: actor.ReportHandBack, Cause: cause, Reason: reason}
 	}
 	// a thread quiet for its park_after hands back parked, keeping its
 	// session for the next turn (projectmesh-io/api ADR 001, Threads)

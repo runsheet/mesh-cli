@@ -320,6 +320,18 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			decode(t, f.Request, &req)
 			return c.HandBack(context.Background(), idOf(f.Path, 3), req)
 		},
+		"lease-hand-back-account-refused": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.HandBackRequest
+			decode(t, f.Request, &req)
+			if req.Account == nil || req.Account.AccountRef == "" || req.Account.ErrorType == "" {
+				t.Errorf("lease-hand-back-account-refused: the request's account %+v", req.Account)
+			}
+			st, err := c.HandBack(context.Background(), idOf(f.Path, 3), req)
+			if err == nil && (st.Status != "queued" || st.Handbacks != 0) {
+				t.Errorf("lease-hand-back-account-refused: %+v", st)
+			}
+			return st, err
+		},
 		"lease-hand-back-tool-unavailable": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
 			var req meshapi.HandBackRequest
 			decode(t, f.Request, &req)
