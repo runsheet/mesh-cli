@@ -26,6 +26,8 @@ import (
 //   - basic:    Authorization: Basic base64(user:pass)
 //   - query:    each params entry, a {{field}} template, as a parameter
 //   - template: each headers entry, a {{field}} template, as a header
+//   - signing:  the request signed with the credential (signing.go):
+//     aws_sigv4 {region, service} or hmac_sha256 {header, canonical}
 //
 // A request that already carries a header or parameter the rule writes
 // is refused 403 credential_preset — the sandbox may not choose its own
@@ -86,6 +88,13 @@ type InjectSpec struct {
 	// Env names the variables a tool insists on, which the session holds
 	// as the Placeholder.
 	Env []string `json:"env,omitempty"`
+	// Scheme is the signing form's: aws_sigv4 (with Region and Service)
+	// or hmac_sha256 (with Header, Prefix, Field, Canonical and TSHeader).
+	Scheme    string `json:"scheme,omitempty"`
+	Region    string `json:"region,omitempty"`
+	Service   string `json:"service,omitempty"`
+	Canonical string `json:"canonical,omitempty"`
+	TSHeader  string `json:"ts_header,omitempty"`
 	// Overwrite has the rule replace whatever the request carries in the
 	// headers it writes rather than refuse it: a federation's cloud token
 	// on the cloud's hosts, whose own tools always send one (mesh-specs
@@ -133,7 +142,7 @@ func (s InjectSpec) Check() string {
 			}
 		}
 	case FormSigning:
-		return "the signing form is not one this node applies yet"
+		return s.checkSigning()
 	default:
 		return fmt.Sprintf("the inject form %q is not one this node knows", s.Form)
 	}
@@ -362,6 +371,10 @@ func (r *InjectRule) Apply(req *http.Request) (*Applied, error) {
 		return ap, &Refusal{Status: http.StatusBadGateway, Code: CodeUnavailable, Message: "the credential for " + r.Ref + " could not be had"}
 	}
 	ap.Version, ap.Form = cred.Version, cred.Spec.FormOf()
+	if ap.Form == FormSigning {
+		ap.Form += " " + strings.ToLower(cred.Spec.Scheme)
+		return ap, cred.sign(req, r.Ref)
+	}
 	headers, params, err := cred.Writes()
 	if err != nil {
 		return ap, &Refusal{Status: http.StatusBadGateway, Code: CodeUnavailable, Message: r.Ref + ": " + err.Error()}

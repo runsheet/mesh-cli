@@ -47,7 +47,8 @@ type Rule interface {
 	// nil when the request is none of its business, and an error that
 	// refuses the request (with what it would have applied, for the
 	// audit): a *Refusal says how, any other is a 502 rule_failed. It
-	// must not read the body.
+	// must not read the body, but for a signing rule, which may hold a
+	// bounded body and put the bytes it read back (signing.go).
 	Apply(req *http.Request) (*Applied, error)
 }
 
