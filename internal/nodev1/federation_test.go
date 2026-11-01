@@ -228,7 +228,7 @@ func fedRig(t *testing.T, g *rig) *fakeGoogle {
 	g.rt.federationCheck = func(raw, host string) (*url.URL, error) {
 		u, err := url.Parse(raw)
 		if err != nil || u.Host != fg.srv.Listener.Addr().String() {
-			return googleURL(raw, host)
+			return cloudURL(raw, host)
 		}
 		return u, nil
 	}
@@ -383,11 +383,11 @@ func TestAFederationTokenRefusedAtTheStartHandsTheLeaseBack(t *testing.T) {
 		{"gcp_unavailable", func(_ *fakeLatchkey, fg *fakeGoogle) {
 			fg.refuseSTS = &googleRefusal{http.StatusServiceUnavailable, `{"error":"temporarily_unavailable"}`}
 		}, meshapi.CauseCredentialTimeout, []string{"credential_unavailable", "gcp_sts"}},
-		{"aws", func(l *fakeLatchkey, _ *fakeGoogle) {
+		{"a cloud no node trades", func(l *fakeLatchkey, _ *fakeGoogle) {
 			l.mu.Lock()
-			l.fed.cloud = map[string]string{"fed_prod": "aws"}
+			l.fed.cloud = map[string]string{"fed_prod": "alibaba"}
 			l.mu.Unlock()
-		}, meshapi.CauseProduct, []string{"credential_refused", "cloud_not_supported", "aws"}},
+		}, meshapi.CauseProduct, []string{"credential_refused", "cloud_not_supported", "alibaba"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g, sb, _ := podRig(t)
@@ -480,7 +480,7 @@ func TestAFederationTokenIsRefreshedBeforeItLapsesAndDroppedAtTheEnd(t *testing.
 	var heard []string
 	redactor := newInjectedValues("lease-fed", t.Logf)
 	h := &heldFederation{ref: "fed_prod", purpose: "configure", now: func() time.Time { return now }, logf: t.Logf,
-		trader: gcpTrader{http: fg.srv.Client(), check: func(raw, _ string) (*url.URL, error) { return url.Parse(raw) }},
+		trader: cloudTrader{http: fg.srv.Client(), check: func(raw, _ string) (*url.URL, error) { return url.Parse(raw) }},
 		held: func(ref string, c *egress.Credential) {
 			redactor.add(ref, c)
 			for name, v := range c.Fields {
@@ -574,7 +574,8 @@ func TestAFederationPurposeIsTheKindsByDefault(t *testing.T) {
 
 // A federation target is injected on the kind's egress hosts under
 // *.googleapis.com alone, a host of one target never another's; a target
-// whose hosts the egress names none of is not minted.
+// whose hosts the egress names none of is minted (its cloud is known only
+// then) but never traded.
 func TestAFederationTargetIsInjectedOnItsEgressHostsAlone(t *testing.T) {
 	g, _, _ := podRig(t)
 	fg := fedRig(t, g)
@@ -599,10 +600,16 @@ func TestAFederationTargetIsInjectedOnItsEgressHostsAlone(t *testing.T) {
 	if strings.Join(env, ",") != "CLOUDSDK_AUTH_ACCESS_TOKEN=mesh,GOOGLE_OAUTH_ACCESS_TOKEN=mesh" {
 		t.Fatalf("env %v", env)
 	}
-	// fed_b had no host left: not minted
+	// fed_b had no host left: minted, never traded
 	bodies, _ := g.latchkey.fedMints()
-	if len(bodies) != 1 || !strings.Contains(bodies[0], `"fed_a"`) {
+	if len(bodies) != 2 || !strings.Contains(bodies[0], `"fed_a"`) || !strings.Contains(bodies[1], `"fed_b"`) {
 		t.Fatalf("Latchkey was asked %q", bodies)
+	}
+	fg.mu.Lock()
+	sts := len(fg.sts)
+	fg.mu.Unlock()
+	if sts != 1 {
+		t.Fatalf("Google was asked %d trades", sts)
 	}
 }
 

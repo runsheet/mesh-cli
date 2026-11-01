@@ -198,10 +198,13 @@ func TestSigningSpecCheck(t *testing.T) {
 		{Scheme: "aws_sigv4", Region: "ap-southeast-2", Service: "s3"},
 		{Scheme: "hmac_sha256", Header: "X-Sig", Canonical: "body"},
 		{Scheme: "hmac_sha256", Header: "X-Sig", Canonical: "ts_body", TSHeader: "X-Ts"},
+		// a federation target's: each request's own region and service
+		{Scheme: "aws_sigv4"},
+		{Scheme: "aws_sigv4", Region: "us-east-1"},
 	}
 	bad := []InjectSpec{
 		{Scheme: "aws_sigv4", Region: "nowhere", Service: "s3"},
-		{Scheme: "aws_sigv4", Region: "us-east-1"},
+		{Scheme: "aws_sigv4", Service: "S3!"},
 		{Scheme: "hmac_sha256", Header: "X-Sig"},
 		{Scheme: "hmac_sha256", Header: "X-Sig", Canonical: "ts_body"},
 		{Scheme: "hmac_sha256", Header: "X-Sig", Canonical: "body", TSHeader: "X-Ts"},
@@ -221,5 +224,90 @@ func TestSigningSpecCheck(t *testing.T) {
 	}
 	if !(InjectSpec{Form: FormSigning, Scheme: SchemeSigV4}).NotSecret("access_key_id") || (InjectSpec{Form: FormBearer}).NotSecret("access_key_id") {
 		t.Fatal("NotSecret")
+	}
+}
+
+// A rule naming no region or service (a federation target's, mesh-specs
+// gap 32) signs each request for the scope the sandbox's own signature
+// names, else its host's, and refuses one that names neither.
+func TestSigV4ScopeFromTheRequest(t *testing.T) {
+	spec := InjectSpec{Hosts: []string{"*.amazonaws.com", "api.example.com"}, Form: FormSigning, Scheme: SchemeSigV4}
+	rule := NewInjectRule("fed_aws", "federation", &fixedSource{cred: &Credential{Ref: "fed_aws", Spec: spec, Fields: awsSuiteFields}},
+		[]string{"my-bucket.s3.eu-west-1.amazonaws.com", "lambda.us-west-2.amazonaws.com", "api.example.com"})
+	resigned := func(req *http.Request, region, service string) {
+		t.Helper()
+		auth := req.Header.Get("Authorization")
+		if !strings.Contains(auth, "Credential=AKIDEXAMPLE/") || !strings.Contains(auth, "/"+region+"/"+service+"/aws4_request") {
+			t.Fatalf("Authorization %q", auth)
+		}
+		at, err := time.Parse("20060102T150405Z", req.Header.Get("X-Amz-Date"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		again := req.Clone(req.Context())
+		again.Header.Del("Authorization")
+		payload := req.Header.Get("X-Amz-Content-Sha256")
+		if payload == "" {
+			payload = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+		}
+		if want := SigV4Authorization(again, payload, "AKIDEXAMPLE", awsSuiteFields["secret_access_key"], region, service, at); want != auth {
+			t.Fatalf("not the real key's signature of the request:\n got %s\nwant %s", auth, want)
+		}
+	}
+	// the sandbox signed for eu-west-1's s3 on the placeholder
+	signed := injectReq("GET", "https://my-bucket.s3.eu-west-1.amazonaws.com/state.tfstate",
+		"Authorization", "AWS4-HMAC-SHA256 Credential=mesh/20261101/eu-west-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=00",
+		"X-Amz-Date", "20261101T000000Z", "X-Amz-Content-Sha256", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+	if _, err := rule.Apply(signed); err != nil {
+		t.Fatal(err)
+	}
+	resigned(signed, "eu-west-1", "s3")
+	// unsigned: the host's name says it
+	plain := injectReq("GET", "https://lambda.us-west-2.amazonaws.com/2015-03-31/functions")
+	if _, err := rule.Apply(plain); err != nil {
+		t.Fatal(err)
+	}
+	resigned(plain, "us-west-2", "lambda")
+	// neither: refused, nothing signed
+	none := injectReq("GET", "https://api.example.com/x")
+	_, err := rule.Apply(none)
+	var rf *Refusal
+	if !errors.As(err, &rf) || rf.Status != http.StatusBadRequest || rf.Code != CodeScopeUnknown || none.Header.Get("Authorization") != "" {
+		t.Fatalf("no scope: %v", err)
+	}
+}
+
+// An AWS host's name says its region and service.
+func TestAWSHostScope(t *testing.T) {
+	for host, want := range map[string]string{
+		"sts.amazonaws.com":                          "us-east-1 sts",
+		"iam.amazonaws.com":                          "us-east-1 iam",
+		"sts.ap-southeast-2.amazonaws.com":           "ap-southeast-2 sts",
+		"s3.amazonaws.com":                           "us-east-1 s3",
+		"my-bucket.s3.amazonaws.com":                 "us-east-1 s3",
+		"my.bucket.s3.eu-west-1.amazonaws.com":       "eu-west-1 s3",
+		"my-bucket.s3-us-west-2.amazonaws.com":       "us-west-2 s3",
+		"s3.dualstack.us-east-2.amazonaws.com":       "us-east-2 s3",
+		"abc123.execute-api.us-east-1.amazonaws.com": "us-east-1 execute-api",
+		"dynamodb-fips.us-gov-west-1.amazonaws.com":  "us-gov-west-1 dynamodb",
+		"ec2.cn-north-1.amazonaws.com.cn":            "cn-north-1 ec2",
+		"iam.amazonaws.com.cn":                       "cn-north-1 iam",
+		"STS.US-EAST-1.AMAZONAWS.COM.":               "us-east-1 sts",
+	} {
+		r, s, ok := awsHostScope(host)
+		if !ok || r+" "+s != want {
+			t.Errorf("awsHostScope(%q) = %q %q %v, want %q", host, r, s, ok, want)
+		}
+	}
+	for _, host := range []string{"amazonaws.com", "example.com", "s3.amazonaws.com.evil.test", ".amazonaws.com"} {
+		if _, _, ok := awsHostScope(host); ok {
+			t.Errorf("awsHostScope(%q) read a scope", host)
+		}
+	}
+	if r, s, ok := sigV4Scope("AWS4-HMAC-SHA256 Credential=mesh/20261101/eu-west-1/s3/aws4_request, SignedHeaders=host, Signature=00"); !ok || r != "eu-west-1" || s != "s3" {
+		t.Fatalf("sigV4Scope: %q %q %v", r, s, ok)
+	}
+	if _, _, ok := sigV4Scope("Bearer x"); ok {
+		t.Fatal("a bearer has a scope")
 	}
 }

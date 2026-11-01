@@ -33,8 +33,9 @@ import (
 //     node's system bundle with the CA appended, named by SSL_CERT_FILE
 //     (Go, OpenSSL, Python's ssl, uv), CURL_CA_BUNDLE, REQUESTS_CA_BUNDLE
 //     and PIP_CERT (Python's requests and pip), GIT_SSL_CAINFO and
-//     CARGO_HTTP_CAINFO; and the CA alone in NODE_EXTRA_CA_CERTS, which
-//     node and npm add to their own roots.
+//     CARGO_HTTP_CAINFO, AWS_CA_BUNDLE (the AWS CLI and SDKs); and the CA
+//     alone in NODE_EXTRA_CA_CERTS, which node and npm add to their own
+//     roots.
 //   - Only a pod's session is pointed at the tunnel (HTTPS_PROXY): a
 //     session on the host has no CA and nothing is terminated for it.
 //     A relay sidecar's own upstream connections are spliced whatever
@@ -299,4 +300,5 @@ var trustBundleEnv = []string{
 	"PIP_CERT",           // pip
 	"GIT_SSL_CAINFO",     // git over https
 	"CARGO_HTTP_CAINFO",  // cargo
+	"AWS_CA_BUNDLE",      // the AWS CLI and SDKs (botocore keeps its own bundle otherwise)
 }

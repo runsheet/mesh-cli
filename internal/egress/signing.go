@@ -2,6 +2,7 @@ package egress
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -23,7 +24,11 @@ import (
 //   - aws_sigv4 {region, service}: the sandbox's AWS SDK or CLI runs on
 //     the placeholder keys (AWS_ACCESS_KEY_ID=mesh); the relay drops its
 //     signature and signs again with the secret's access_key_id,
-//     secret_access_key and session_token? and a fresh X-Amz-Date. The
+//     secret_access_key and session_token? and a fresh X-Amz-Date. A
+//     rule naming no region or service (a federation target's, whose
+//     keys reach every service: mesh-specs gap 32) signs for the scope
+//     the sandbox's own signature names, else the one its host's name
+//     says (awsHostScope), else refuses 400 signing_scope_unknown. The
 //     payload hash is the one the sandbox sent when it is a SHA-256 or
 //     unsigned (AWS checks it against the body), else the body's, read
 //     up to maxSignedBody; a larger body is UNSIGNED-PAYLOAD on S3 and
@@ -59,6 +64,10 @@ const (
 // more of its body than it will.
 const CodeNeedsBody = "signing_needs_body"
 
+// CodeScopeUnknown refuses an aws_sigv4 request whose region and service
+// neither the rule, the sandbox's signature nor its host names.
+const CodeScopeUnknown = "signing_scope_unknown"
+
 // maxSignedBody is the most of a body the relay holds to sign it.
 const maxSignedBody = 10 << 20
 
@@ -75,10 +84,12 @@ var (
 func (s InjectSpec) checkSigning() string {
 	switch strings.ToLower(s.Scheme) {
 	case SchemeSigV4:
-		if !awsRegion.MatchString(s.Region) {
+		// either absent is read off each request (a federation target's
+		// rule, which the node makes; Latchkey's Secret rules name both)
+		if s.Region != "" && !awsRegion.MatchString(s.Region) {
 			return fmt.Sprintf("the aws_sigv4 scheme's region %q is not an AWS region", s.Region)
 		}
-		if !awsService.MatchString(s.Service) {
+		if s.Service != "" && !awsService.MatchString(s.Service) {
 			return fmt.Sprintf("the aws_sigv4 scheme's service %q is not an AWS service name", s.Service)
 		}
 	case SchemeHMAC:
@@ -263,7 +274,19 @@ func (c *Credential) signSigV4(req *http.Request, ref string) error {
 	if t := req.Header.Values("X-Amz-Security-Token"); len(t) > 0 && !(len(t) == 1 && IsPlaceholder(t[0])) {
 		return signPreset(ref, "X-Amz-Security-Token")
 	}
-	s3 := strings.EqualFold(c.Spec.Service, "s3")
+	region, service := c.Spec.Region, strings.ToLower(c.Spec.Service)
+	if region == "" || service == "" {
+		r, sv, ok := sigV4Scope(req.Header.Get("Authorization"))
+		if !ok {
+			r, sv, ok = awsHostScope(req.URL.Hostname())
+		}
+		if !ok {
+			return &Refusal{Status: http.StatusBadRequest, Code: CodeScopeUnknown,
+				Message: ref + ": the request names no AWS region and service to sign for: sign it on the key " + Placeholder + ", or send it to the service's regional host"}
+		}
+		region, service = cmp.Or(region, r), cmp.Or(service, sv)
+	}
+	s3 := service == "s3"
 	payload := strings.TrimSpace(req.Header.Get("X-Amz-Content-Sha256"))
 	switch {
 	case sha256Hex.MatchString(payload), payload == unsignedPayload, payload == unsignedPayloadTrailer:
@@ -297,7 +320,7 @@ func (c *Credential) signSigV4(req *http.Request, ref string) error {
 	} else {
 		req.Header.Del("X-Amz-Security-Token")
 	}
-	req.Header.Set("Authorization", SigV4Authorization(req, payload, akid, secret, c.Spec.Region, strings.ToLower(c.Spec.Service), now))
+	req.Header.Set("Authorization", SigV4Authorization(req, payload, akid, secret, region, service, now))
 	return nil
 }
 
@@ -315,6 +338,66 @@ func sigV4Key(auth string) string {
 		}
 	}
 	return ""
+}
+
+// sigV4Scope is the region and service an AWS4-HMAC-SHA256 Authorization
+// was signed for: its Credential's <key>/<date>/<region>/<service>/aws4_request.
+func sigV4Scope(auth string) (region, service string, ok bool) {
+	rest, found := strings.CutPrefix(strings.TrimSpace(auth), "AWS4-HMAC-SHA256 ")
+	if !found {
+		return "", "", false
+	}
+	for _, part := range strings.Split(rest, ",") {
+		if cred, found := strings.CutPrefix(strings.TrimSpace(part), "Credential="); found {
+			p := strings.Split(cred, "/")
+			if len(p) == 5 && p[4] == "aws4_request" && awsRegion.MatchString(p[2]) && awsService.MatchString(p[3]) {
+				return p[2], p[3], true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// awsHostScope is the region and service an AWS host's name says:
+// <service>.<region>.amazonaws.com, a bucket's virtual host
+// (<bucket>.s3.<region>.amazonaws.com, <bucket>.s3.amazonaws.com,
+// <bucket>.s3-<region>.amazonaws.com), a dual-stack or FIPS endpoint, or
+// a global one (sts.amazonaws.com, iam.amazonaws.com: us-east-1;
+// cn-north-1 in the .cn partition). false for a host not AWS's.
+func awsHostScope(host string) (region, service string, ok bool) {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	global := "us-east-1"
+	rest, found := strings.CutSuffix(host, ".amazonaws.com")
+	if !found {
+		if rest, found = strings.CutSuffix(host, ".amazonaws.com.cn"); !found {
+			return "", "", false
+		}
+		global = "cn-north-1"
+	}
+	labels := strings.Split(rest, ".")
+	i := len(labels) - 1
+	if labels[i] == "" {
+		return "", "", false
+	}
+	region = global
+	if awsRegion.MatchString(labels[i]) {
+		region = labels[i]
+		i--
+	}
+	for i >= 0 && labels[i] == "dualstack" {
+		i--
+	}
+	if i < 0 {
+		return "", "", false
+	}
+	service = strings.TrimSuffix(labels[i], "-fips")
+	if r, found := strings.CutPrefix(service, "s3-"); found && awsRegion.MatchString(r) {
+		return r, "s3", true
+	}
+	if !awsService.MatchString(service) {
+		return "", "", false
+	}
+	return region, service, true
 }
 
 // SigV4Authorization is req's AWS Signature Version 4 Authorization at

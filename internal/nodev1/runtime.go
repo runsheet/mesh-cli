@@ -105,8 +105,8 @@ type Runtime struct {
 	EgressUpstream http.RoundTripper
 	// federationHTTP and federationCheck are how a lease's federation
 	// targets are traded at the cloud (federation.go): a plain client and
-	// googleURL when nil. Unexported: only this package's tests point
-	// them at a fake STS and IAM; no build or configuration can.
+	// cloudURL when nil. Unexported: only this package's tests point
+	// them at fake clouds; no build or configuration can.
 	federationHTTP  *http.Client
 	federationCheck func(raw, host string) (*url.URL, error)
 	// SigningKey is the node's ed25519 key, whose public half it

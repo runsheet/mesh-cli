@@ -431,3 +431,70 @@ command list. Now the relay reads the pack too (mesh-specs gap 28 item
    only such a lease's sidecar hands its calls to the node (amending the
    amendment above, whose sidecar half is so gated too); the node's own
    proxy scans every lease's MCP and vendor calls, which costs nothing.
+
+## Amendment 2026-11-01: AWS, Azure and generic OIDC federation targets (mesh-specs gap 32)
+
+The federation amendment's "not yet" is built. Latchkey's side is
+latchkeyid/latchkey's ADR 031 amendment "Federation to AWS, Azure and
+generic OIDC": every `exchange` names `hosts`, an aws exchange its
+`role_session_name` (`mesh-<lease>`), and an oidc target may be direct.
+
+1. **The cloud is known from the first mint.** A target's cloud and the
+   hosts its credential is written on come only in Latchkey's answer, so
+   each target is minted as the lease opens before its hosts are chosen
+   (`heldFederation.open`), and that subject token is the one traded
+   while it is fresh (three minutes). A target whose hosts the kind's
+   egress names none of is now minted but not traded — said, and still
+   never widening egress. The rule's spec is fixed at that first mint.
+2. **aws.** `AssumeRoleWithWebIdentity` at `exchange.sts_url`, which must
+   be STS's own host on https (`sts.amazonaws.com`,
+   `sts.<region>.amazonaws.com`, or the `.amazonaws.com.cn` partition's),
+   with `role_arn`, `role_session_name`, `duration` and
+   `session_policy`; the XML answer's keys are the credential
+   (`access_key_id`, `secret_access_key`, `session_token`, the signing
+   form's fields), ending at its `Expiration`. The rule is the signing
+   form, `aws_sigv4` with **no region or service**, on the kind's egress
+   hosts under `*.amazonaws.com` (`*.amazonaws.com.cn` when STS is the cn
+   partition's); the pod holds the placeholder keys as for a Secret's
+   rule. The secret and the session token are handed to the redactor as
+   they are had and are canaries; the key's id is not, as for a Secret.
+3. **The signing form's region and service may be absent.** One signer
+   serves both gaps (`internal/egress/signing.go`, gap 28's): an
+   `aws_sigv4` spec that names no region or service — a federation
+   target's, whose role reaches every service, built by the node, never
+   by Latchkey (whose Secret rules name both) — signs each request for
+   the scope the sandbox's own placeholder signature names (its
+   `Authorization`'s `Credential`), else the one its host's name says
+   (`awsHostScope`: `<service>.<region>.amazonaws.com`, a bucket's
+   virtual host, dual-stack, FIPS, or a global endpoint as `us-east-1`),
+   else refuses `400 signing_scope_unknown`. `s3`'s single path escaping
+   and unsigned large payload follow the scope so found. The signer's
+   canonical request was checked against aws-sdk-go-v2's own signer
+   (v1.42.0) on an S3 path and query with reserved characters and a
+   Lambda path, and matches.
+4. **azure.** The subject token as a client assertion (`grant_type
+   client_credentials`, `client_id`, `scope`, RFC 7523's assertion type)
+   at `exchange.token_url`, which must be `login.microsoftonline.com` on
+   https; the access token is a bearer, `Overwrite`, on the kind's egress
+   hosts among `exchange.hosts`.
+5. **oidc.** A direct target (`mode: direct`, or no `token_url`) has its
+   subject token itself written as the bearer, minted again a minute
+   before its `expires_in` (five minutes) ends. A trading target's is
+   traded by RFC 8693 at `exchange.token_url` (any https URL with no user
+   or fragment: the tenant's own endpoint, which Latchkey holds), with
+   `audience`, `subject_token_type`, `requested_token_type`; the access
+   token is the bearer, `Overwrite`, ending at `expires_in` (else five
+   minutes). Both on the kind's egress hosts among `exchange.hosts`.
+6. **Refusals** name the step: `aws_sts` (AWS's XML `Code` and
+   `Message`), `azure_entra`, `oidc_token` (OAuth's `error` and
+   `error_description`), beside `gcp_sts`/`gcp_iam`. A 4xx other than 429
+   is the product's configuration; a 5xx or no answer, or an exchange URL
+   that is not the cloud's, is `credential_timeout`. An azure or oidc
+   exchange naming no hosts is the product's. `cloud_not_supported` is
+   now only a cloud no node knows.
+7. **The pod's trust bundle** is also named by `AWS_CA_BUNDLE`, which
+   the AWS CLI and SDKs read in place of their own bundle.
+
+Not yet: sovereign Azure clouds' authorities; a presigned URL the
+sandbox made on the placeholder (refused `credential_preset`, as for a
+Secret).
