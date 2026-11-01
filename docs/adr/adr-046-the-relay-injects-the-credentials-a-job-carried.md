@@ -357,3 +357,39 @@ A signing rule is the one rule that reads a body (`egress.Rule`'s
 contract says so): it holds at most 10 MiB and puts it back for the
 canary scan and the upstream. AWS federation (a FederationTarget's
 `AssumeRoleWithWebIdentity`, then this form) is still gap 32's.
+
+## Amendment 2026-11-01: the canary scan covers MCP and vendor API calls
+
+Item 9 read only the tunnel's and the model relay's requests. A session
+that got a value could still hand it to a product's MCP tool (which
+might post it anywhere) or write it into a pull request through
+Latchkey's vendor proxy. Now the relay's own routes are scanned too
+(mesh-specs gap 28 item 5; `sessionproxy.Canary`).
+
+1. **Requests.** Every MCP request's body — to a product's server, a
+   slot's binding, a local server or the node's own tools (the finish
+   among them) — and every vendor API call's path, query and body is
+   scanned before it leaves. None of them is a value's own host, so a
+   value seen is an exposure as item 9's: the call is refused `403
+   credential_exposed` (a JSON-RPC error for MCP, `X-Mesh-Relay-Error`
+   for a vendor call), the session stopped, the lease failed
+   `credential_exposed` with `seen in an MCP request's body toward the
+   MCP server <name>` or `a vendor API call's path or query|body toward
+   <vendor>'s API`. A vendor call's streamed body (over 4 MiB) is
+   scanned a MiB at a time with the last 4 KiB of the one before, so a
+   value split across two is found before the second is sent.
+2. **Answers.** What those servers and vendors answer passes through
+   the proxy's mask, which now redacts every injected value as
+   `[secret:<ref>]` before the session reads it (decided here: an
+   answer is redacted, not an exposure, since the value never reached
+   the session). The tunnel's answers are still not read (item 9's
+   consequence stands).
+3. **The relay sidecar holds no value.** In a pod with a relay sidecar
+   the sidecar serves the product's MCP and the vendor calls but never
+   holds the values, so it hands each scanned part to the node on the
+   lease's socket (`POST /relay/scan`, 204 clean, 403 exposed) and each
+   answer to be redacted (`POST /relay/redact`), when its credentials
+   say `canary`. Either failing fails closed: the call is refused, the
+   answer replaced by `relay: this answer could not be checked for
+   injected credentials`. The node tools' calls, forwarded to the node
+   unchanged, are scanned there.

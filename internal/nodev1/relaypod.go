@@ -165,6 +165,8 @@ func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe 
 	// renewal, AccessRecords, the tunnel
 	np := sessionproxy.New(nil)
 	np.Logf = r.Logf
+	// the node tools' calls, which the sidecar forwards unchanged
+	np.Canary = r.injectedOf(b.LeaseID).canary()
 	if len(tools) > 0 {
 		np.Add(NodeToolsServer, sessionproxy.InProcess{Handler: &mcptool.Handler{Name: NodeToolsServer, Tools: tools}})
 	}
@@ -209,6 +211,9 @@ func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe 
 		// what the sidecar itself refused, which the node posts: the
 		// sidecar holds no machine token
 		Security: r.securityReporter(b.LeaseID),
+		// the sidecar's MCP and vendor API calls, scanned and redacted
+		// here, where the lease's injected values are (canary.go)
+		Canary: r.injectedOf(b.LeaseID).canary(),
 	}
 	if gate != nil {
 		rs.node.Stop = gate.handler()
@@ -277,7 +282,10 @@ func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe 
 // credentials are what the sidecar holds: the lease's alone.
 func (rs *relaySidecar) credentials(ctx context.Context, sl *slots) (relaysidecar.Credentials, error) {
 	b, tokens := rs.b, rs.tokens
-	c := relaysidecar.Credentials{Lease: b.LeaseID, API: apiRules(b), Tools: sl.filter(), Slots: sl.sidecarSlots()}
+	c := relaysidecar.Credentials{Lease: b.LeaseID, API: apiRules(b), Tools: sl.filter(), Slots: sl.sidecarSlots(),
+		// the node scans and redacts the sidecar's calls for the
+		// lease's injected values (canary.go)
+		Canary: rs.r.injectedOf(b.LeaseID) != nil}
 	if b.Registry != nil {
 		// the kind's registry, which the sidecar serves on the pod's
 		// loopback (registry.go)

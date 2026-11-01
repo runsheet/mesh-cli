@@ -282,3 +282,27 @@ func TestASecretsLeakIsToldToLatchkey(t *testing.T) {
 		})
 	}
 }
+
+// A value in an MCP or vendor API call the relay carries is an exposure
+// toward that server or vendor, and the relay's answers are redacted
+// (mesh-specs gap 28 item 5; sessionproxy.Canary).
+func TestAValueInAnMCPOrVendorCallIsAnExposure(t *testing.T) {
+	v := valuesWith(t)
+	c := v.canary()
+	if err := c.Scan("an MCP request's body", "the MCP server runsheet", []byte(`{"v":"hello"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Redact("the key is " + injChildToken); got != "the key is [secret:conn_cloudflare]" {
+		t.Fatalf("redacted %q", got)
+	}
+	if err := c.Scan("a vendor API call's body", "github's API", []byte(`{"body":"`+injChildToken+`"}`)); err == nil {
+		t.Fatal("the leak went to the vendor")
+	}
+	if e := v.exposure(); e == nil || e.ref != "conn_cloudflare" || e.host != "github's API" || e.where != "a vendor API call's body" {
+		t.Fatalf("exposure %+v", e)
+	}
+	var none *injectedValues
+	if none.canary() != nil {
+		t.Fatal("a lease with no values has a canary")
+	}
+}

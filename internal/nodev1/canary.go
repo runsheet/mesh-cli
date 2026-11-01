@@ -18,6 +18,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/gitrelay"
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/secreport"
+	"projectmesh.io/mesh-cli/internal/sessionproxy"
 )
 
 // The values a lease's relay injects are redacted wherever they might
@@ -303,6 +304,31 @@ func (v *injectedValues) Inspect(req *http.Request) error {
 func (v *injectedValues) Body(req *http.Request, body io.ReadCloser) io.ReadCloser {
 	host := req.URL.Hostname()
 	return egress.ScanBody(body, v.find, v.window, func(ref string) { v.expose(ref, host, "a request body") })
+}
+
+// Scan looks for a value in part of a call the session sent a product's
+// MCP server, the node's tools or a vendor's API through the relay
+// (sessionproxy.Canary): none of them is a value's own host, so any is
+// an exposure.
+func (v *injectedValues) Scan(where, toward string, b []byte) error {
+	if v == nil {
+		return nil
+	}
+	if ref, ok := v.find(b); ok {
+		v.expose(ref, toward, where)
+		return fmt.Errorf("%s: the call carried a credential the relay injects", egress.CodeExposed)
+	}
+	return nil
+}
+
+// canary is v as the lease's proxy's Canary, nil when the lease has no
+// values: a nil *injectedValues in the interface would scan for nothing
+// on every call.
+func (v *injectedValues) canary() sessionproxy.Canary {
+	if v == nil {
+		return nil
+	}
+	return v
 }
 
 // inspectModel scans a model request's body, held whole by the relay.

@@ -171,6 +171,19 @@ func (p *Proxy) serveLatchkey(w http.ResponseWriter, req *http.Request) {
 		}
 		held, length = b, int64(len(b))
 	}
+	// the lease's injected values go to no vendor (canary.go)
+	if c := p.Canary; c != nil {
+		toward := vendor + "'s API"
+		exposed := c.Scan("a vendor API call's path or query", toward, []byte(path+"?"+req.URL.RawQuery)) != nil ||
+			(held != nil && c.Scan("a vendor API call's body", toward, held) != nil)
+		if exposed {
+			refuse(http.StatusForbidden, CodeExposed, "the call carried a credential the relay injects")
+			return
+		}
+		if stream != nil {
+			stream = scanStream(stream, c, "a vendor API call's body", toward)
+		}
+	}
 
 	target := strings.TrimRight(l.URL, "/") + "/" + vendor + "/" + path
 	if req.URL.RawQuery != "" {
