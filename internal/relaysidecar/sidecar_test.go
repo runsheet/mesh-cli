@@ -73,6 +73,7 @@ type rig struct {
 	mu       sync.Mutex
 	access   []meshapi.AccessRecord
 	security chan meshapi.SecurityReport
+	node     *Node
 	renewals int
 	renewed  []RenewRequest
 	auth     []string // the product's Authorization headers
@@ -134,6 +135,7 @@ func newRig(t *testing.T, creds Credentials, upstreams map[string]http.Handler) 
 		Security: func(rep meshapi.SecurityReport) { g.security <- rep },
 		Logf:     t.Logf,
 	}
+	g.node = node
 	nodeSock := filepath.Join(g.dir, "n")
 	if err := node.Listen(nodeSock); err != nil {
 		t.Fatal(err)

@@ -201,6 +201,10 @@ type Proxy struct {
 	// and /artifacts/ (internal/registryrelay), the session's
 	// MESH_REGISTRY. Nil answers those routes 404.
 	Registry http.Handler
+	// Canary, when set, scans what the session sends its MCP servers and
+	// vendor APIs for the lease's injected values, and redacts them from
+	// what those answer (canary.go). Nil scans nothing.
+	Canary Canary
 
 	mu sync.Mutex
 	// servedTools are the tools each filtered server presented.
@@ -340,7 +344,11 @@ func (p *Proxy) mask(s string) string {
 		env = append(env, "s="+v)
 	}
 	p.mu.Unlock()
-	return tools.Redact(s, env)
+	s = tools.Redact(s, env)
+	if p.Canary != nil {
+		s = p.Canary.Redact(s)
+	}
+	return s
 }
 
 func (p *Proxy) logf(format string, args ...any) {
@@ -464,6 +472,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		body = b
+	}
+	if p.Canary != nil && len(body) > 0 {
+		if err := p.Canary.Scan("an MCP request's body", "the MCP server "+name, body); err != nil {
+			p.logf("sessionproxy: %s: refused: %s", name, CodeExposed)
+			writeError(w, http.StatusForbidden, -32600, "relay: "+CodeExposed+": the request carried a credential the relay injects")
+			return
+		}
 	}
 	if l, ok := u.(Local); ok {
 		p.serveLocal(w, req, name, l, body)
