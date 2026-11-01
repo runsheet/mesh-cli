@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/githarden"
+	"projectmesh.io/mesh-cli/internal/gitrelay"
 )
 
 // One enforcement point for every push (projectmesh-io/api ADR 001
@@ -32,6 +33,10 @@ const pushTimeout = 5 * time.Minute
 type PushRequest struct {
 	Ref string `json:"ref"`
 	SHA string `json:"sha"`
+	// Lease, set, pushes under a lease (gitrelay/lease.go): the commit
+	// Ref must be at, or gitrelay.LeaseHeadAsked for the relay's head of
+	// it, where the job found it.
+	Lease string `json:"lease,omitempty"`
 }
 
 // PushResult is the sidecar's answer: Pushed, or Refused with the
@@ -42,6 +47,8 @@ type PushResult struct {
 	SHA     string `json:"sha"`
 	Refused string `json:"refused,omitempty"`
 	Failed  string `json:"failed,omitempty"`
+	// Lease is the commit a leased push replaced Ref from.
+	Lease string `json:"lease,omitempty"`
 }
 
 func (s *Sidecar) servePush(w http.ResponseWriter, r *http.Request) {
@@ -80,8 +87,25 @@ func (s *Sidecar) Push(ctx context.Context, req PushRequest) PushResult {
 	ctx, cancel := context.WithTimeout(ctx, pushTimeout)
 	defer cancel()
 	target := base + "/git/" + g.Policy.Repo + ".git"
+	args := []string{"push", "--porcelain", "--no-verify", target, req.SHA + ":" + req.Ref}
+	if req.Lease != "" {
+		lease := req.Lease
+		if lease == gitrelay.LeaseHeadAsked {
+			head, ok := s.relay.Head(req.Ref)
+			if !ok {
+				res.Refused = req.Ref + " takes no lease: a lease replaces only the job's push_to, from where the job found it"
+				return res
+			}
+			lease = head
+		}
+		if !objectID(lease) {
+			return fail(fmt.Sprintf("%q is not a commit id to lease from", lease))
+		}
+		res.Lease = lease
+		args = gitrelay.LeasedPushArgs(target, req.SHA, req.Ref, lease)
+	}
 	start := time.Now()
-	cmd := githarden.ForeignCommand(ctx, g.Checkout, nil, "push", "--porcelain", "--no-verify", target, req.SHA+":"+req.Ref)
+	cmd := githarden.ForeignCommand(ctx, g.Checkout, nil, args...)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		res.Pushed = true
@@ -89,6 +113,12 @@ func (s *Sidecar) Push(ctx context.Context, req PushRequest) PushResult {
 	}
 	if why := s.refusalSince(start); why != "" {
 		res.Refused = why
+		return res
+	}
+	if res.Lease != "" && gitrelay.StaleLease(string(out)) {
+		// git refused the lease itself: the ref moved since
+		ls, _ := githarden.ForeignCommand(ctx, g.Checkout, nil, "ls-remote", target, req.Ref).Output()
+		res.Refused = gitrelay.StaleLeaseReason(req.Ref, res.Lease, gitrelay.RemoteHead(string(ls), req.Ref))
 		return res
 	}
 	return fail(strings.ReplaceAll(lastLines(string(out), 5), target, "<relay>"))
@@ -158,12 +188,12 @@ type PushClient struct {
 
 // Push asks the sidecar to push sha to ref. An error is the sidecar not
 // answering; a refusal or a failed push is in the result.
-func (c PushClient) Push(ctx context.Context, ref, sha string) (PushResult, error) {
+func (c PushClient) Push(ctx context.Context, ref, sha, lease string) (PushResult, error) {
 	hc := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		var d net.Dialer
 		return d.DialContext(ctx, "unix", c.Socket)
 	}}}
-	b, _ := json.Marshal(PushRequest{Ref: ref, SHA: sha})
+	b, _ := json.Marshal(PushRequest{Ref: ref, SHA: sha, Lease: lease})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://sidecar"+PushPath, bytes.NewReader(b))
 	if err != nil {
 		return PushResult{}, err

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/gitrelay"
 	"projectmesh.io/mesh-cli/internal/mcptool"
 )
 
@@ -21,6 +22,13 @@ import (
 // deletion and proves a fast-forward, and records the push, allowed or
 // refused, as the lease's AccessRecord. The tool records what it pushed
 // (or what the relay refused) as its signed ToolRecord.
+//
+// A push takes a lease (mesh-specs gaps, 35; gitrelay/lease.go): a
+// rebased push_to is never a fast-forward, so `lease` replaces push_to
+// only if it is still where the job found it — "head", or that commit —
+// and a branch someone pushed to since is refused naming where it is
+// now, never overwritten. Without a lease a push stays fast-forward
+// only. The ref defaults to the brief's push_to (gap 24).
 
 // PushTool is the push node tool's name, as a kind's node_tools names it.
 const PushTool = "push"
@@ -45,13 +53,24 @@ type PushOutcome struct {
 	Pushed  bool
 	Refused string
 	Failed  string
+	// Lease is the commit a leased push replaced the ref from.
+	Lease string
 }
 
 // Pusher pushes sha to ref through the lease's relay sidecar
 // (projectmesh-io/api ADR 001 amendment "relay sidecar"): the one place
 // every push is checked, so the tool holds no git token and checks no
-// push rule itself. An error is the sidecar not answering.
-type Pusher func(ctx context.Context, ref, sha string) (PushOutcome, error)
+// push rule itself. lease, set, pushes under a lease: the commit ref
+// must be at, or gitrelay.LeaseHeadAsked for where the job found it,
+// which the sidecar's relay holds. An error is the sidecar not
+// answering.
+type Pusher func(ctx context.Context, ref, sha, lease string) (PushOutcome, error)
+
+// Heads is a Grant that holds where the job found the refs a leased
+// push may replace (gitrelay.Grant.Head).
+type Heads interface {
+	Head(ref string) (string, bool)
+}
 
 // Push is one lease's push tool.
 type Push struct {
@@ -61,30 +80,75 @@ type Push struct {
 	Grant     Grant
 	Repo      string
 	Workspace string
+	// PushTo is the brief's push_to: the ref a push names when it names
+	// none, and the one ref a lease may replace.
+	PushTo string
 	// Refusal answers the relay's latest refusal of a push of the lease
 	// since a moment, "" when there is none.
 	Refusal  func(since time.Time) string
 	Recorder *Recorder
 }
 
-// Tool is push {ref, from?}.
+// Tool is push {ref?, from?, lease?}.
 func (p *Push) Tool() mcptool.Tool {
+	refDesc := "the ref to push to: refs/heads/<branch>, or a branch name"
+	if p.PushTo != "" {
+		refDesc += "; the job's push_to (" + fullRef(p.PushTo) + ") when absent"
+	}
 	return mcptool.Tool{
 		Name: PushTool,
 		Description: "Push a commit of your checkout to a ref of the job's repository, through the node's git relay. " +
 			"The job's push rules decide which refs you may push; a push must fast-forward the ref unless its rule says otherwise, " +
-			"a create-only ref can never be moved, and nothing can be deleted. Answers the ref and the commit pushed, " +
-			"and the evidence id of the node's signed record of the push.",
+			"a create-only ref can never be moved, and nothing can be deleted. " +
+			"A rebased or rewritten branch is not a fast-forward: push it with lease \"head\" to replace the job's push_to " +
+			"only if it is still where the job found it; if someone pushed to it since, the push is refused naming where it is now, " +
+			"and nothing is overwritten. Answers the ref and the commit pushed, and the evidence id of the node's signed record of the push.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"ref":  map[string]any{"type": "string", "description": "the ref to push to: refs/heads/<branch>, or a branch name"},
+				"ref":  map[string]any{"type": "string", "description": refDesc},
 				"from": map[string]any{"type": "string", "description": "the commit to push, any revision of your checkout; HEAD when absent"},
+				"lease": map[string]any{"type": "string", "description": "replace the ref even if the push is not a fast-forward, only if it is still at this commit: " +
+					"\"head\" for where the job found it (or what the job last pushed there), or that commit's sha. Only the job's push_to takes a lease. " +
+					"Absent: the push must fast-forward."},
 			},
-			"required": []string{"ref"},
 		},
 		Call: p.call,
 	}
+}
+
+// fullRef is ref as git names it: a branch name is refs/heads/<name>.
+func fullRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" || strings.HasPrefix(ref, "refs/") {
+		return ref
+	}
+	return "refs/heads/" + ref
+}
+
+// leaseArg reads the lease a call asks for: "" for none,
+// gitrelay.LeaseHeadAsked for the head, else a revision. true is the
+// head too.
+func leaseArg(v any) (string, error) {
+	switch l := v.(type) {
+	case nil:
+		return "", nil
+	case bool:
+		if l {
+			return gitrelay.LeaseHeadAsked, nil
+		}
+		return "", nil
+	case string:
+		l = strings.TrimSpace(l)
+		if strings.EqualFold(l, gitrelay.LeaseHeadAsked) || strings.EqualFold(l, "true") {
+			return gitrelay.LeaseHeadAsked, nil
+		}
+		if strings.HasPrefix(l, "-") {
+			return "", errors.New("lease is a commit, not an option")
+		}
+		return l, nil
+	}
+	return "", errors.New(`lease is "head" or a commit sha`)
 }
 
 func (p *Push) call(ctx context.Context, args map[string]any) (string, error) {
@@ -94,17 +158,32 @@ func (p *Push) call(ctx context.Context, args map[string]any) (string, error) {
 	ref, _ := args["ref"].(string)
 	from, _ := args["from"].(string)
 	ref, from = strings.TrimSpace(ref), strings.TrimSpace(from)
+	pushTo := fullRef(p.PushTo)
 	if ref == "" {
-		return "", errors.New("ref is required")
+		ref = pushTo
 	}
-	if !strings.HasPrefix(ref, "refs/") {
-		ref = "refs/heads/" + ref
+	if ref == "" {
+		return "", errors.New("ref is required: this job names no push_to")
 	}
+	if strings.HasPrefix(ref, "-") {
+		return "", errors.New("ref and from are revisions, not options")
+	}
+	ref = fullRef(ref)
 	if from == "" {
 		from = "HEAD"
 	}
-	if strings.HasPrefix(from, "-") || strings.HasPrefix(ref, "-") {
+	if strings.HasPrefix(from, "-") {
 		return "", errors.New("ref and from are revisions, not options")
+	}
+	lease, err := leaseArg(args["lease"])
+	if err != nil {
+		return "", err
+	}
+	if lease != "" && (pushTo == "" || ref != pushTo) {
+		if pushTo == "" {
+			return "", fmt.Errorf("%s takes no lease: this job names no push_to, and a lease replaces only the job's push_to; push without one to fast-forward it", ref)
+		}
+		return "", fmt.Errorf("%s takes no lease: a lease replaces only the job's push_to (%s), from where the job found it; push without one to fast-forward %s", ref, pushTo, ref)
 	}
 	ctx, cancel := context.WithTimeout(ctx, pushTimeout)
 	defer cancel()
@@ -116,6 +195,25 @@ func (p *Push) call(ctx context.Context, args map[string]any) (string, error) {
 		return "", fmt.Errorf("%s names no commit in your checkout", from)
 	}
 	sha = strings.TrimSpace(sha)
+	if lease != "" && lease != gitrelay.LeaseHeadAsked && !fullID(lease) {
+		// an abbreviated commit the checkout holds
+		full, err := git(ctx, p.Workspace, "rev-parse", "--verify", "-q", lease+"^{commit}")
+		if err != nil {
+			return "", fmt.Errorf("lease %s names no commit: give the full sha, or \"head\"", lease)
+		}
+		lease = strings.TrimSpace(full)
+	}
+	if lease == gitrelay.LeaseHeadAsked && p.Pusher == nil {
+		h, ok := p.Grant.(Heads)
+		head := ""
+		if ok {
+			head, ok = h.Head(ref)
+		}
+		if !ok {
+			return "", fmt.Errorf("%s takes no lease: the node did not find where it was when the job started; push without one to fast-forward it", ref)
+		}
+		lease = head
+	}
 	tree, _ := git(ctx, p.Workspace, "rev-parse", "--verify", "-q", sha+"^{tree}")
 	tree = strings.TrimSpace(tree)
 	if keys, _ := git(ctx, p.Workspace, "config", "--local", "--name-only", "--get-regexp", `^url\.`); keys != "" {
@@ -128,33 +226,49 @@ func (p *Push) call(ctx context.Context, args map[string]any) (string, error) {
 	start := time.Now()
 	var refused error
 	if p.Pusher != nil {
-		res, err := p.Pusher(ctx, ref, sha)
+		res, err := p.Pusher(ctx, ref, sha, lease)
 		switch {
 		case err != nil:
 			refused = fmt.Errorf("pushing %s to %s: %v", short(sha), ref, err)
 		case res.Refused != "":
 			refused = fmt.Errorf("the relay refused the push to %s: %s", ref, res.Refused)
 		case !res.Pushed:
-			refused = fmt.Errorf("pushing %s to %s: %s", short(sha), ref, res.Failed)
+			refused = fmt.Errorf("pushing %s to %s: %s%s", short(sha), ref, res.Failed, p.leaseHint(ref, lease, res.Failed))
+		}
+		if lease != "" {
+			lease = res.Lease
 		}
 	} else {
 		target := p.Grant.Base() + p.Repo + ".git"
-		out, pushErr := git(ctx, p.Workspace, "push", "--porcelain", "--no-verify", target, sha+":"+ref)
+		pushArgs := []string{"push", "--porcelain", "--no-verify", target, sha + ":" + ref}
+		if lease != "" {
+			pushArgs = gitrelay.LeasedPushArgs(target, sha, ref, lease)
+		}
+		out, pushErr := git(ctx, p.Workspace, pushArgs...)
 		if pushErr != nil {
 			if why := p.Refusal(start); why != "" {
 				refused = fmt.Errorf("the relay refused the push to %s: %s", ref, why)
+			} else if lease != "" && gitrelay.StaleLease(out) {
+				// git refused the lease itself: the ref moved since
+				ls, _ := git(ctx, p.Workspace, "ls-remote", target, ref)
+				refused = fmt.Errorf("the push to %s was refused: %s", ref, gitrelay.StaleLeaseReason(ref, lease, gitrelay.RemoteHead(ls, ref)))
 			} else {
-				refused = fmt.Errorf("pushing %s to %s: %s", short(sha), ref, strings.ReplaceAll(lastLines(out, 5), target, "<relay>"))
+				refused = fmt.Errorf("pushing %s to %s: %s%s", short(sha), ref, strings.ReplaceAll(lastLines(out, 5), target, "<relay>"), p.leaseHint(ref, lease, out))
 			}
 		}
 	}
 	ended := time.Now()
 
-	rec := Record{Tool: PushTool, StartedAt: start, EndedAt: ended,
-		InputDigest: InputDigest(map[string]string{"repo": p.Repo, "ref": ref, "sha": sha, "tree": tree})}
+	input := map[string]string{"repo": p.Repo, "ref": ref, "sha": sha, "tree": tree}
+	if lease != "" {
+		input["lease"] = lease
+	}
+	rec := Record{Tool: PushTool, StartedAt: start, EndedAt: ended, InputDigest: InputDigest(input)}
 	if refused != nil {
 		rec.Exit = 1
 		rec.Summary = refused.Error()
+	} else if lease != "" {
+		rec.Summary = fmt.Sprintf("pushed %s (tree %s) to %s of %s, leased from %s", sha, tree, ref, p.Repo, lease)
 	} else {
 		rec.Summary = fmt.Sprintf("pushed %s (tree %s) to %s of %s", sha, tree, ref, p.Repo)
 	}
@@ -166,6 +280,9 @@ func (p *Push) call(ctx context.Context, args map[string]any) (string, error) {
 		return "", refused
 	}
 	answer := map[string]any{"pushed": true, "ref": ref, "sha": sha, "tree": tree}
+	if lease != "" {
+		answer["lease"] = lease
+	}
 	if recErr != nil {
 		answer["evidence_error"] = recErr.Error()
 	} else {
@@ -173,4 +290,27 @@ func (p *Push) call(ctx context.Context, args map[string]any) (string, error) {
 	}
 	b, _ := json.Marshal(answer)
 	return string(b), nil
+}
+
+// leaseHint is what a refused unleased push of push_to adds: git refused
+// it as no fast-forward, which a lease from where the job found it can
+// replace.
+func (p *Push) leaseHint(ref, lease, out string) string {
+	if lease != "" || ref != fullRef(p.PushTo) || !(strings.Contains(out, "non-fast-forward") || strings.Contains(out, "fetch first")) {
+		return ""
+	}
+	return `; a rebased branch is not a fast-forward: push again with lease "head" to replace it only if it is still where the job found it`
+}
+
+// fullID says whether s is a full hex object id.
+func fullID(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !strings.ContainsRune("0123456789abcdef", c) {
+			return false
+		}
+	}
+	return true
 }

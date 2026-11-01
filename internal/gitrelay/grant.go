@@ -205,6 +205,16 @@ func (g *Grant) SetCheckout(dir string) {
 // lease's injected values (packscan.go).
 func (g *Grant) SetScan(scan Scan) { g.relay.SetScan(scan) }
 
+// SetHead names where the job found ref, the brief's push_to: the
+// commit a leased push of it replaces (lease.go), ZeroID when the ref
+// did not exist.
+func (g *Grant) SetHead(ref, sha string) { g.relay.SetHead(ref, sha) }
+
+// Head is the commit a leased push of ref replaces through the grant:
+// where the job found it, or what the job last pushed there; ok is false
+// for a ref that takes no lease.
+func (g *Grant) Head(ref string) (string, bool) { return g.relay.Head(ref) }
+
 // upstreamOf is a grant's git origin: the server's when it names one
 // (`--git-upstream`, a test's override for every lease), else the
 // policy's base, else "" for the vendor's own. A base is an absolute

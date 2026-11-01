@@ -235,6 +235,9 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	}
 	var grant *gitrelay.Grant
 	var resumed *resumePoint
+	// pushHeads are where the job found its push_to, which a leased push
+	// replaces from (gitrelay/lease.go)
+	var pushHeads map[string]string
 	if b.Git != nil && b.Git.Repo != "" {
 		policy := policyOf(b.Git)
 		if r.sidecarMode() {
@@ -290,6 +293,14 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		}
 		// the relay proves a fast-forward-only push in this checkout
 		grant.SetCheckout(workspace)
+		// and replaces push_to under a lease only from where the job
+		// found it; a head not found leaves push_to fast-forward only
+		if ref, sha, err := pushHead(leaseGitRun(ctx), b, workspace); err != nil {
+			r.logf("nodev1: lease %s: where %s is was not read, so it takes no lease: %v", b.LeaseID, b.Code.PushTo, err)
+		} else if ref != "" {
+			pushHeads = map[string]string{ref: sha}
+			grant.SetHead(ref, sha)
+		}
 		// and reads every push's content for the lease's injected
 		// values (canary.go), when its access carries any
 		if vals != nil && carriesCredentials(b) {
@@ -355,6 +366,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 			return outcome{err: fmt.Errorf("the lease's relay sidecar: %w", err), cause: context.Cause(ctx)}
 		}
 		rs.ic = ic
+		rs.pushHeads = pushHeads
 		keep("the relay sidecar", rs.close)
 	}
 

@@ -52,7 +52,11 @@ func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace s
 	for _, name := range b.NodeTools {
 		switch name {
 		case nodetools.PushTool:
-			p := &nodetools.Push{Grant: g, Pusher: pusher, Repo: repo, Workspace: workspace, Recorder: rec,
+			pushTo := ""
+			if b.Code != nil {
+				pushTo = b.Code.PushTo
+			}
+			p := &nodetools.Push{Grant: g, Pusher: pusher, Repo: repo, Workspace: workspace, Recorder: rec, PushTo: pushTo,
 				Refusal: func(since time.Time) string { return r.refusalSince(b.LeaseID, since) }}
 			out = append(out, p.Tool())
 		case nodetools.RunSuiteTool:
