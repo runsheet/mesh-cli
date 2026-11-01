@@ -255,6 +255,16 @@ func placeholderEnv(service string) []string {
 	return nil
 }
 
+// signingEnv are the variables a signing rule's tools read their keys
+// from: an AWS SDK or CLI signs on the placeholder keys, and the relay
+// signs again with the real ones.
+func signingEnv(spec egress.InjectSpec) []string {
+	if spec.FormOf() == egress.FormSigning && strings.EqualFold(spec.Scheme, egress.SchemeSigV4) {
+		return []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"}
+	}
+	return nil
+}
+
 // carriedCredentials are the refs of the brief's access the relay
 // injects, each with its kind, in the access's order.
 func carriedCredentials(b *meshapi.Brief) [][2]string {
@@ -308,6 +318,7 @@ func (r *Runtime) injectRules(ctx context.Context, b *meshapi.Brief, tokens *ses
 		rules = append(rules, egress.NewInjectRule(ref, kind, h, hosts))
 		env = append(env, spec.Env...)
 		env = append(env, placeholderEnv(h.service)...)
+		env = append(env, signingEnv(spec)...)
 		r.logf("nodev1: lease %s: injects %s (%s, %s) on %s", b.LeaseID, ref, kind, spec.FormOf(), strings.Join(hosts, ", "))
 	}
 	slices.Sort(env)

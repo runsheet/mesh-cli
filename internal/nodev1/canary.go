@@ -84,7 +84,12 @@ func (v *injectedValues) add(ref string, c *egress.Credential) {
 		return
 	}
 	var values []string
-	for _, f := range c.Fields {
+	for name, f := range c.Fields {
+		if c.Spec.NotSecret(name) {
+			// an AWS access key id is written in the clear on every
+			// request it signs
+			continue
+		}
 		values = append(values, f)
 	}
 	if c.Spec.FormOf() == egress.FormBasic {
