@@ -175,6 +175,14 @@ type Relay struct {
 	// ReadMirrors are bare mirrors of read repos, by the repository as
 	// Policy.ReadRepos names it, served as Mirror is.
 	ReadMirrors map[string]string
+	// Scan, set, reads every push's content for the lease's injected
+	// values before the vendor may accept it (packscan.go): a value
+	// found, or a pack it cannot read, ends the push. Nil reads none.
+	Scan Scan
+	// Bases answers a thin push's delta bases, which the vendor already
+	// has: the mirror's, else the pushing checkout's (CatFileBases). A
+	// push naming a base it cannot answer is refused.
+	Bases BaseSource
 
 	mu     sync.Mutex
 	tokens map[string]Token
@@ -237,6 +245,9 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 		body = replay
+		if scan := r.scanner(); scan != nil {
+			body = scanPush(req.Context(), body, scan, r.Bases, repo)
+		}
 	}
 	if mirror := r.mirrorOf(target); service == "upload-pack" && req.Method == http.MethodPost && mirror != "" {
 		served, rest := r.fromMirror(w, req, mirror, body, &ev)
@@ -276,6 +287,17 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	vendor.Authorize(out, tok)
 	resp, err := r.client().Do(out)
+	var unread *errPackUnread
+	if err != nil && (errors.Is(err, ErrPushExposed) || errors.As(err, &unread)) {
+		// the push was cut short before its pack was whole: nothing
+		// was updated
+		reason := ErrPushExposed.Error()
+		if unread != nil {
+			reason = unread.Error()
+		}
+		refuse(reason)
+		return
+	}
 	if err != nil {
 		ev.Outcome, ev.Reason = "failed", strings.ReplaceAll(err.Error(), tok, "***")
 		r.audit(ev)
@@ -296,6 +318,19 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		ev.Outcome, ev.Reason = "failed", fmt.Sprintf("%s answered %d", vendor.Name(), resp.StatusCode)
 	}
 	r.audit(ev)
+}
+
+// SetScan has every later push read by scan (Scan).
+func (r *Relay) SetScan(scan Scan) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Scan = scan
+}
+
+func (r *Relay) scanner() Scan {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.Scan
 }
 
 // splitPath reads /git/<repo>[.git]<rest>: the repository is every

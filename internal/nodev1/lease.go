@@ -290,6 +290,11 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		}
 		// the relay proves a fast-forward-only push in this checkout
 		grant.SetCheckout(workspace)
+		// and reads every push's content for the lease's injected
+		// values (canary.go), when its access carries any
+		if vals != nil && carriesCredentials(b) {
+			grant.SetScan(vals.Scan)
+		}
 	}
 	// the lease's pod, with --sandbox: its services start once the
 	// checkout declares them, before the session (podsession.go)
