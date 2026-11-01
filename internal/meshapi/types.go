@@ -752,6 +752,21 @@ type HandBackRequest struct {
 	Reason     string `json:"reason"`
 	SessionRef string `json:"session_ref,omitempty"`
 	ExitCode   int    `json:"exit_code,omitempty"`
+	// Account is an account_refused hand-back's account and what its
+	// vendor answered (projectmesh-io/api ADR 001 amendment, account
+	// failover).
+	Account *RefusedAccount `json:"account,omitempty"`
+}
+
+// RefusedAccount is the model account a vendor refused, and its answer:
+// the status (401 or 403) and the vendor's error type and message,
+// bounded and redacted of the lease's values.
+type RefusedAccount struct {
+	AccountRef   string `json:"account_ref,omitempty"`
+	Vendor       string `json:"vendor,omitempty"`
+	Status       int    `json:"status,omitempty"`
+	ErrorType    string `json:"error_type,omitempty"`
+	ErrorMessage string `json:"error_message,omitempty"`
 }
 
 // JobState is the answer of every route that ends a lease: the job's
@@ -793,4 +808,8 @@ const (
 	// CauseCancelled is a node stopping on Mesh's cancel: the job then
 	// ends cancelled (projectmesh-io/api wave 1.5).
 	CauseCancelled = "cancelled"
+	// CauseAccountRefused is the lease's model account refused by its
+	// vendor (401 or 403): Mesh does not count it against the job, cools
+	// the account down and offers the job again on another (ADR-048).
+	CauseAccountRefused = "account_refused"
 )

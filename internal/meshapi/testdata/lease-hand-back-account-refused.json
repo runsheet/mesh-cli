@@ -1,0 +1,23 @@
+{
+  "name": "lease-hand-back-account-refused",
+  "method": "POST",
+  "path": "/v1/leases/d3681f4d-e794-5c6f-b3e2-615d244ed86c/hand-back",
+  "caller": "node",
+  "request": {
+    "account": {
+      "account_ref": "acct-team-a",
+      "error_message": "OAuth authentication is currently not allowed for this organization.",
+      "error_type": "permission_error",
+      "status": 403,
+      "vendor": "anthropic"
+    },
+    "cause": "account_refused",
+    "reason": "model anthropic POST /v1/messages answered 403: permission_error"
+  },
+  "status": 200,
+  "response": {
+    "handbacks": 0,
+    "job_id": "f85ac19e-3d67-5e8d-ae51-3c4abb637266",
+    "status": "queued"
+  }
+}

@@ -39,6 +39,10 @@ type Fake struct {
 	// RefuseFail, set, refuses a lease's fail with its status when not
 	// 0, the lease still live: a Mesh older than a cause answers 422.
 	RefuseFail func(req meshapi.FailRequest) int
+	// RefuseHandBack, set, refuses a lease's hand-back with its status
+	// when not 0, the lease still live: a Mesh older than a cause
+	// (account_refused) answers 422.
+	RefuseHandBack func(req meshapi.HandBackRequest) int
 
 	fx      map[string]Fixture
 	mu      sync.Mutex
@@ -433,6 +437,14 @@ func (f *Fake) lease(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if route == "hand-back" && f.RefuseHandBack != nil {
+		var hb meshapi.HandBackRequest
+		json.Unmarshal(body, &hb)
+		if status := f.RefuseHandBack(hb); status != 0 {
+			writeErr(w, status, "refused", "cause is not one Mesh knows")
+			return
+		}
+	}
 	switch route {
 	case "renew":
 		f.mu.Lock()
@@ -530,6 +542,12 @@ func (f *Fake) lease(w http.ResponseWriter, r *http.Request) {
 			if hb.Cause == meshapi.CauseParked {
 				// a thread's park is never counted (Mesh wave 4.1)
 				state.Status = "parked"
+				break
+			}
+			if hb.Cause == meshapi.CauseAccountRefused {
+				// an account its vendor refused is not the job's fault
+				// (Mesh ADR 001 amendment, account failover)
+				state.Status = "queued"
 				break
 			}
 			state.Status = "queued"

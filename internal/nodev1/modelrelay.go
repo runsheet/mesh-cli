@@ -107,9 +107,13 @@ type sessionAccount struct {
 	// inspect sees each model request's body: the lease's canaries
 	// (canary.go); nil sees none
 	inspect func([]byte) error
-	mu      sync.Mutex
-	cred    *modelCredential // the job's account; nil otherwise
-	own     string           // the node's own key
+	// onRefused hears the first refusal of the job's account by its
+	// vendor (accountrefused.go): it ends the lease. nil hears none.
+	onRefused func(error)
+	mu        sync.Mutex
+	cred      *modelCredential // the job's account; nil otherwise
+	own       string           // the node's own key
+	refusal   *accountRefusedError
 }
 
 // ownLogin is the node's own login, as its environment holds it: the
@@ -271,7 +275,13 @@ func (a *sessionAccount) model(ups map[string]string, logf func(string, ...any),
 			if c.Err != "" {
 				line += ": " + c.Err
 			}
+			// the vendor's own error on a 4xx or 5xx: its type and message,
+			// bounded and redacted by the relay (ADR-048)
+			if c.Status >= 400 && (c.ErrorType != "" || c.ErrorMessage != "") {
+				line += ": " + vendorErrorLine(c.ErrorType, c.ErrorMessage)
+			}
 			logf("%s", line)
+			a.noteRefusal(c, logf, lease)
 		},
 	}
 }

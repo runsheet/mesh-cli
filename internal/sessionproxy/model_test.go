@@ -2,6 +2,8 @@ package sessionproxy
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"io"
@@ -348,5 +350,68 @@ func TestModelForwarderSendsOnlyItsPaths(t *testing.T) {
 				t.Errorf("a refused path reached the upstream: %s", p)
 			}
 		}
+	}
+}
+
+// A vendor's error is read for its type and message alone (mesh-cli
+// ADR-048): Anthropic's and OpenAI's shapes, a gzipped body, and nothing
+// from a body that is neither.
+func TestVendorError(t *testing.T) {
+	var gz bytes.Buffer
+	zw := gzip.NewWriter(&gz)
+	zw.Write([]byte(`{"type":"error","error":{"type":"permission_error","message":"revoked"}}`))
+	zw.Close()
+	for _, tc := range []struct {
+		name, body, encoding, typ, msg string
+	}{
+		{"anthropic", `{"type":"error","error":{"type":"permission_error","message":"OAuth token revoked"}}`, "", "permission_error", "OAuth token revoked"},
+		{"openai", `{"error":{"message":"Incorrect API key provided","type":"invalid_request_error","code":"invalid_api_key"}}`, "", "invalid_request_error", "Incorrect API key provided"},
+		{"openai code only", `{"error":{"message":"no","type":null,"code":"invalid_api_key"}}`, "", "invalid_api_key", "no"},
+		{"gzip", gz.String(), "gzip", "permission_error", "revoked"},
+		{"html", `<html>403 Forbidden</html>`, "", "", ""},
+		{"no error", `{"type":"message","content":[]}`, "", "", ""},
+		{"brotli", `...`, "br", "", ""},
+	} {
+		typ, msg := VendorError([]byte(tc.body), tc.encoding)
+		if typ != tc.typ || msg != tc.msg {
+			t.Errorf("%s: %q %q, want %q %q", tc.name, typ, msg, tc.typ, tc.msg)
+		}
+	}
+}
+
+// An error answer's call names the vendor's error type and message,
+// bounded and with the credential redacted; the session still reads the
+// whole answer.
+func TestModelCallNamesTheVendorError(t *testing.T) {
+	long := strings.Repeat("x", 500)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, `{"type":"error","error":{"type":"permission_error","message":"token sk-real-secret refused `+long+`"}}`)
+	}))
+	t.Cleanup(up.Close)
+	calls := make(chan ModelCall, 1)
+	p := &Proxy{Model: &Model{Upstreams: map[string]string{"anthropic": up.URL},
+		Credential: func(context.Context, string, bool) (ModelCredential, error) {
+			return ModelCredential{Header: "X-Api-Key", Value: "sk-real-secret"}, nil
+		},
+		Log: func(c ModelCall) { calls <- c }}}
+	base, err := p.ListenModel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { p.Close() })
+	resp, err := http.Post(base+ModelPrefix+"anthropic/v1/messages", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden || !strings.Contains(string(got), long) {
+		t.Fatalf("the session read %d %d bytes", resp.StatusCode, len(got))
+	}
+	c := <-calls
+	if c.Status != http.StatusForbidden || c.ErrorType != "permission_error" || strings.Contains(c.ErrorMessage, "sk-real-secret") ||
+		!strings.HasPrefix(c.ErrorMessage, "token ") || len(c.ErrorMessage) > MaxVendorMessage+len("…") {
+		t.Fatalf("the call %+v", c)
 	}
 }

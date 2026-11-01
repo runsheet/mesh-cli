@@ -2,10 +2,12 @@ package sessionproxy
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +15,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"projectmesh.io/mesh-cli/internal/egress"
 )
@@ -115,7 +118,23 @@ type ModelCall struct {
 	Refreshed bool
 	// Err says why the relay refused or failed it.
 	Err string
+	// ErrorType and ErrorMessage are the vendor's own error, read from an
+	// answer of 400 or more (Anthropic's {"type":"error","error":{"type",
+	// "message"}}, OpenAI's {"error":{"type"|"code","message"}}): its
+	// type and message alone, never the rest of the body, the message
+	// bounded to MaxVendorMessage and redacted of the lease's values
+	// (mesh-cli ADR-048). Blank when the answer was not one of those.
+	ErrorType    string
+	ErrorMessage string
 }
+
+// MaxVendorMessage bounds a vendor error's message as a call keeps it.
+const MaxVendorMessage = 300
+
+// errorPeek is how much of an error answer the relay reads its type and
+// message from, as it streams back: a vendor's error is a few hundred
+// bytes.
+const errorPeek = 16 << 10
 
 func (m *Model) upstream(provider string) (string, bool) {
 	ups := m.Upstreams
@@ -253,11 +272,104 @@ func (p *Proxy) serveModel(w http.ResponseWriter, req *http.Request) {
 	}
 	call.Status = resp.StatusCode
 	w.WriteHeader(resp.StatusCode)
-	call.Bytes, err = streamBody(w, resp.Body)
+	var body io.Reader = resp.Body
+	var peek *peekBuffer
+	if resp.StatusCode >= http.StatusBadRequest {
+		// the vendor's error type and message, read from what streams back
+		peek = &peekBuffer{max: errorPeek}
+		body = io.TeeReader(resp.Body, peek)
+	}
+	call.Bytes, err = streamBody(w, body)
 	if err != nil && req.Context().Err() == nil {
 		call.Err = p.mask(err.Error())
 	}
+	if peek != nil {
+		typ, msg := VendorError(peek.Bytes(), resp.Header.Get("Content-Encoding"))
+		call.ErrorType, call.ErrorMessage = clipRunes(p.mask(typ), 100), clipRunes(p.mask(msg), MaxVendorMessage)
+	}
 	done()
+}
+
+// peekBuffer keeps the first max bytes written to it and drops the rest.
+type peekBuffer struct {
+	max int
+	buf bytes.Buffer
+}
+
+func (b *peekBuffer) Write(p []byte) (int, error) {
+	if room := b.max - b.buf.Len(); room > 0 {
+		b.buf.Write(p[:min(room, len(p))])
+	}
+	return len(p), nil
+}
+
+func (b *peekBuffer) Bytes() []byte { return b.buf.Bytes() }
+
+// VendorError is a model vendor's error type and message in an error
+// answer's body (Content-Encoding gzip or none): Anthropic's
+// {"type":"error","error":{"type":"permission_error","message":"..."}}
+// or OpenAI's {"error":{"type":"...","code":"...","message":"..."}}.
+// Both are blank for a body that is neither: nothing else of a body is
+// ever read out of it.
+func VendorError(body []byte, encoding string) (string, string) {
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	case "", "identity":
+	case "gzip":
+		zr, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			return "", ""
+		}
+		// a truncated stream still yields what it held
+		raw, _ := io.ReadAll(io.LimitReader(zr, errorPeek))
+		body = raw
+	default:
+		return "", ""
+	}
+	var e struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(body, &e) != nil || len(e.Error) == 0 {
+		return "", ""
+	}
+	var inner struct {
+		Type    string          `json:"type"`
+		Code    json.RawMessage `json:"code"`
+		Message string          `json:"message"`
+	}
+	if json.Unmarshal(e.Error, &inner) != nil {
+		// an error that is a bare string
+		var msg string
+		if json.Unmarshal(e.Error, &msg) == nil {
+			return "", strings.TrimSpace(msg)
+		}
+		return "", ""
+	}
+	typ := strings.TrimSpace(inner.Type)
+	if typ == "" {
+		var code string
+		if json.Unmarshal(inner.Code, &code) == nil {
+			typ = strings.TrimSpace(code)
+		}
+	}
+	return typ, strings.TrimSpace(inner.Message)
+}
+
+// clipRunes is s bounded to n bytes, on a rune boundary, its control
+// characters spaces, so a log line stays one line.
+func clipRunes(s string, n int) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, s)
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
 }
 
 // streamBody copies body to w a read at a time, flushing each, so an
