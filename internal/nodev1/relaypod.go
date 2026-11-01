@@ -285,7 +285,7 @@ func (rs *relaySidecar) credentials(ctx context.Context, sl *slots) (relaysideca
 	c := relaysidecar.Credentials{Lease: b.LeaseID, API: apiRules(b), Tools: sl.filter(), Slots: sl.sidecarSlots(),
 		// the node scans and redacts the sidecar's calls for the
 		// lease's injected values (canary.go)
-		Canary: rs.r.injectedOf(b.LeaseID) != nil}
+		Canary: rs.r.injectedOf(b.LeaseID) != nil && carriesCredentials(b)}
 	if b.Registry != nil {
 		// the kind's registry, which the sidecar serves on the pod's
 		// loopback (registry.go)
