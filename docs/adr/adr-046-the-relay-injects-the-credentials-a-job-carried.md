@@ -306,3 +306,54 @@ exposure.
    `404 secret_not_found`, `409 secret_not_injectable`, `409
    secret_disabled` and `409 secret_expired`, with `403 not_the_jobs`
    and `purpose_not_granted`, are the product's: `product`.
+
+## Amendment 2026-11-01: the signing form (aws_sigv4, hmac_sha256)
+
+Item 4's `signing` is now applied (mesh-specs gap 28 item 3; latchkey
+ADR 031 §2.3, rollout step 4). Latchkey's rule names it flat, beside the
+other forms' settings: `{form: signing, scheme, region?, service?,
+header?, prefix?, field?, canonical?, ts_header?}`
+(`internal/egress/signing.go`).
+
+1. **`aws_sigv4 {region, service}`.** The secret's fields are
+   `access_key_id`, `secret_access_key` and `session_token?`. The pod
+   holds `AWS_ACCESS_KEY_ID=mesh` and `AWS_SECRET_ACCESS_KEY=mesh`, so an
+   unmodified SDK or CLI signs with the placeholder key; the relay drops
+   that signature and signs again (Signature Version 4, AWS's own test
+   suite's vectors) with the real key, a fresh `X-Amz-Date` and, when
+   the secret has one, `X-Amz-Security-Token`. It signs the host, the
+   content type and MD5 and every `X-Amz-*` header the request carries;
+   the canonical URI is the path as sent for `s3` and escaped again for
+   every other service, as AWS's SDKs do.
+2. **The payload hash.** A sandbox's `X-Amz-Content-Sha256` that is a
+   SHA-256, `UNSIGNED-PAYLOAD` or `STREAMING-UNSIGNED-PAYLOAD-TRAILER`
+   is kept: AWS checks it against the body, or signs none. Otherwise the
+   body is read, up to 10 MiB, hashed and sent on; a larger body is
+   `UNSIGNED-PAYLOAD` on `s3`, the one service that takes it, and
+   refused `413 signing_needs_body` on any other. A body signed chunk by
+   chunk (`STREAMING-AWS4-HMAC-SHA256-*`) is refused the same way: its
+   chunk signatures chain from the placeholder key's seed.
+3. **`hmac_sha256 {header, prefix?, field?, canonical, ts_header?}`.**
+   The key is the rule's `field`, the only field, or the first of
+   `secret`, `key`, `value`. `canonical: body` signs the body;
+   `canonical: ts_body` signs `<unix seconds>.<body>` and writes the
+   seconds to `ts_header` (decided here, the spec leaving it open: the
+   form most webhook schemes use). The signature is lower-case hex after
+   `prefix` (`sha256=`). The body is read whole, up to 10 MiB, else
+   `413 signing_needs_body`.
+4. **Preset.** As every form: a request carrying its own signature is
+   refused `403 credential_preset` — for `aws_sigv4` an `Authorization`
+   signed with a key other than `mesh`, an `X-Amz-Security-Token` other
+   than `mesh`, or a presigned query (`X-Amz-Signature`,
+   `X-Amz-Credential`, `X-Amz-Security-Token`); for `hmac_sha256` the
+   header or `ts_header` set to anything but `mesh`.
+5. **Redaction and canaries.** Every field is registered as item 8 says
+   but the access key id, which every signed request carries in the
+   clear in its `Authorization` and AWS answers in some responses: it is
+   neither redacted nor a canary. The audit's form reads `signing
+   aws_sigv4` or `signing hmac_sha256`.
+
+A signing rule is the one rule that reads a body (`egress.Rule`'s
+contract says so): it holds at most 10 MiB and puts it back for the
+canary scan and the upstream. AWS federation (a FederationTarget's
+`AssumeRoleWithWebIdentity`, then this form) is still gap 32's.
