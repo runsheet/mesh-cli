@@ -238,6 +238,133 @@ func TestAJobsGitReachesTheCodeHostItsBriefNames(t *testing.T) {
 	}
 }
 
+// A leased push works over GitLab and Bitbucket exactly as it does over
+// GitHub (mesh-specs gaps 35/36; ADR 001 amendment "push lease"): the
+// relay's lease checks are the same whatever the vendor, and the minted
+// token reaches the code host in that vendor's own Basic shape, never
+// git's own. A rebased push_to is not a fast-forward, so a plain push
+// is refused, naming the lease hint; a leased push replaces push_to
+// from where the job found it, landing on the code host under that
+// shape; once someone else pushes to it, a further leased push is
+// refused naming where the branch is now, and nothing is overwritten.
+// No token reaches the session's environment, its checkout's config or
+// the node's log.
+func TestALeasedPushWorksOverGitLabAndBitbucket(t *testing.T) {
+	const branch = "refs/heads/mesh/candidate-1"
+	for _, tc := range []struct {
+		name, vendor, baseURL, repo, dials, user string
+	}{
+		{name: "GitLab", vendor: "gitlab", baseURL: "https://gitlab.acme.test/api/v4", repo: "acme/platform/web",
+			dials: "gitlab.acme.test", user: "oauth2"},
+		{name: "Bitbucket", vendor: "bitbucket", baseURL: "https://api.bitbucket.org", repo: "acme/web",
+			dials: "bitbucket.org", user: "x-token-auth"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host := newFakeCodeHost(t, tc.repo, branch)
+			var rebased, theirs string
+			type answer struct {
+				name, text string
+				refused    bool
+			}
+			var answers []answer
+			var specEnv []string
+			var gitConfig []byte
+			sess := &stubSession{calls: []string{"conform/submit"}, result: SessionResult{SessionID: "sess-codehost-lease", Text: "pushed"}}
+			sess.inspect = func(spec SessionSpec) {
+				ctx := context.Background()
+				specEnv = spec.Env
+				gitConfig, _ = os.ReadFile(filepath.Join(spec.Workspace, ".git", "config"))
+				push := func(name string, args map[string]any) {
+					text, refused, err := callTool(ctx, spec.Servers[NodeToolsServer], PushTool, args)
+					if err != nil {
+						t.Errorf("%s: %v", name, err)
+					}
+					answers = append(answers, answer{name, text, refused})
+				}
+				rebased = commitIn(t, spec.Workspace, "rebased")
+				push("plain", map[string]any{})
+				push("leased", map[string]any{"lease": "head"})
+				theirs = bareCommit(t, host.bare, rebased, "theirs")
+				bareSet(t, host.bare, branch, theirs)
+				commitIn(t, spec.Workspace, "rebased again")
+				push("moved", map[string]any{"lease": "head"})
+			}
+			g := newRig(t, sess)
+			logs := &logSink{t: t}
+			g.rt.Logf = logs.logf
+			g.rt.GitUpstream, g.rt.GitHTTP = "", host.client()
+			job := g.offer(t, func(b *meshapi.Brief) {
+				b.Git = &meshapi.Git{Vendor: tc.vendor, BaseURL: tc.baseURL, Repo: tc.repo, Access: "write",
+					Push: []meshapi.PushRule{{Ref: "refs/heads/mesh/*"}}}
+				b.Code.BaseRef = "main"
+				b.Code.BaseSHA = host.base
+				b.Code.PushTo = "mesh/candidate-1"
+				b.NodeTools = []string{PushTool}
+			})
+			if err := run(t, g, context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if lease := g.fake.LeaseOf(job); g.fake.Ended(lease) != "finish" {
+				t.Fatalf("lease ended %q; hand-backs %+v", g.fake.Ended(lease), g.fake.Calls("hand-back"))
+			}
+			want := map[string]struct {
+				refused bool
+				says    string
+			}{
+				"plain":  {true, `lease "head"`},
+				"leased": {false, `"lease":"` + host.change + `"`},
+				"moved":  {true, "is at " + theirs + " now, not " + rebased},
+			}
+			if len(answers) != len(want) {
+				t.Fatalf("answers %+v", answers)
+			}
+			for _, a := range answers {
+				w := want[a.name]
+				if a.refused != w.refused || !strings.Contains(a.text, w.says) {
+					t.Errorf("%s: refused %v, %q; want refused %v saying %q", a.name, a.refused, a.text, w.refused, w.says)
+				}
+			}
+			if got := host.ref(branch); got != theirs {
+				t.Errorf("%s is %s, want their push %s, never overwritten", branch, got, theirs)
+			}
+
+			// the leased push, and the checkout before it, both reached
+			// the code host on a minted token in the vendor's own Basic
+			// shape, never git's
+			minted, _, _ := g.latchkey.snapshot()
+			if len(minted) == 0 {
+				t.Fatal("no git token was minted")
+			}
+			reqs := host.requests()
+			if len(reqs) == 0 {
+				t.Fatal("the code host saw nothing")
+			}
+			for _, r := range reqs {
+				ok := false
+				for _, tok := range minted {
+					ok = ok || r == tc.dials+" Basic "+base64.StdEncoding.EncodeToString([]byte(tc.user+":"+tok))
+				}
+				if !ok {
+					t.Fatalf("the code host saw %q", r)
+				}
+			}
+
+			// no token in the session's environment, its checkout's
+			// config or the node's log
+			for _, tok := range minted {
+				for _, e := range specEnv {
+					if strings.Contains(e, tok) {
+						t.Fatalf("the session's environment holds the git token: %s", e)
+					}
+				}
+				if strings.Contains(string(gitConfig), tok) || strings.Contains(logs.String(), tok) {
+					t.Fatal("the git token is in the checkout's config or the node's log")
+				}
+			}
+		})
+	}
+}
+
 // A brief naming no vendor or base_url reaches github.com, as before
 // vendors were named; a self-managed host's origin is its host or its
 // base_url's, never the API root; and a lease's relay sidecar may dial
