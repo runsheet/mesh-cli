@@ -87,6 +87,9 @@ type relaySidecar struct {
 	gitReq SourceRequest
 	node   *relaysidecar.Node
 	tunnel *egress.Tunnel
+	// pushHeads are where the job found its push_to, the sidecar's
+	// relay's heads for a leased push (gitrelay/lease.go)
+	pushHeads map[string]string
 	// ic is what the tunnel terminates for the session (intercept.go):
 	// the sidecar's own connections are spliced whatever it names
 	ic *interception
@@ -145,12 +148,12 @@ func (r *Runtime) prepareRelaySidecar(ctx context.Context, b *meshapi.Brief, lp 
 // pusher is the push tool's way to the sidecar.
 func (rs *relaySidecar) pusher() nodetools.Pusher {
 	pc := relaysidecar.PushClient{Socket: rs.controlSocket()}
-	return func(ctx context.Context, ref, sha string) (nodetools.PushOutcome, error) {
-		res, err := pc.Push(ctx, ref, sha)
+	return func(ctx context.Context, ref, sha, lease string) (nodetools.PushOutcome, error) {
+		res, err := pc.Push(ctx, ref, sha, lease)
 		if err != nil {
 			return nodetools.PushOutcome{}, err
 		}
-		return nodetools.PushOutcome{Pushed: res.Pushed, Refused: res.Refused, Failed: res.Failed}, nil
+		return nodetools.PushOutcome{Pushed: res.Pushed, Refused: res.Refused, Failed: res.Failed, Lease: res.Lease}, nil
 	}
 }
 
@@ -326,6 +329,7 @@ func (rs *relaySidecar) credentials(ctx context.Context, sl *slots) (relaysideca
 	}
 	if b.Git != nil && b.Git.Repo != "" {
 		policy := policyOf(b.Git)
+		policy.Heads = rs.pushHeads
 		rs.gitReq = sourceRequest(b.Git, policy)
 		t, err := rs.mintGit(ctx, rs.gitReq)
 		if err != nil {

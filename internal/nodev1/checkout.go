@@ -228,3 +228,53 @@ func resumePushed(git func(string, ...string) (string, error), b *meshapi.Brief,
 	at.SHA = sha
 	return &at, nil
 }
+
+// fullRef is a brief's ref as git names it: a bare branch name is
+// refs/heads/<name>.
+func fullRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" || strings.HasPrefix(ref, "refs/") {
+		return ref
+	}
+	return "refs/heads/" + ref
+}
+
+// pushHead is where the job found its push_to, the one ref a leased push
+// may replace (gitrelay/lease.go; mesh-specs gaps, 35): the commit the
+// latest of the job's earlier pushes left there (the brief's pushed),
+// else the brief's own commit for it — its base when base_ref is
+// push_to, or an apply's — else what the vendor holds there as the
+// lease's checkout finds it, the zero id when nothing is. ref is "" for
+// a brief with no push_to, or a read job's.
+func pushHead(git func(string, ...string) (string, error), b *meshapi.Brief, workspace string) (ref, sha string, err error) {
+	if b.Code == nil || b.Git == nil || b.Git.Access != string(gitrelay.Write) {
+		return "", "", nil
+	}
+	ref = fullRef(b.Code.PushTo)
+	if ref == "" {
+		return "", "", nil
+	}
+	for i := len(b.Pushed) - 1; i >= 0; i-- {
+		if fullRef(b.Pushed[i].Ref) == ref && b.Pushed[i].SHA != "" {
+			return ref, b.Pushed[i].SHA, nil
+		}
+	}
+	if fullRef(b.Code.BaseRef) == ref && b.Code.BaseSHA != "" {
+		return ref, b.Code.BaseSHA, nil
+	}
+	for _, a := range b.Code.Apply {
+		if fullRef(a.Ref) == ref && a.SHA != "" {
+			return ref, a.SHA, nil
+		}
+	}
+	out, err := git(workspace, "ls-remote", "origin", ref)
+	if err != nil {
+		return "", "", err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if f := strings.Fields(line); len(f) == 2 && f[1] == ref {
+			return ref, f[0], nil
+		}
+	}
+	return ref, gitrelay.ZeroID, nil
+}

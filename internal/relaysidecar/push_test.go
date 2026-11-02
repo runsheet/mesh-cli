@@ -77,7 +77,9 @@ func TestAPushIsRefusedTheSameWhoeverAsks(t *testing.T) {
 	})
 	c := testCreds(t)
 	c.Git = &Git{
-		Policy:   gitrelay.Policy{Repo: "acme/app", Access: gitrelay.Write, Push: []gitrelay.RefRule{{Ref: "refs/heads/mesh/g-1", FastForwardOnly: true}}},
+		Policy: gitrelay.Policy{Repo: "acme/app", Access: gitrelay.Write, Push: []gitrelay.RefRule{{Ref: "refs/heads/mesh/g-1", FastForwardOnly: true}},
+			// the job found its push_to absent
+			Heads: map[string]string{"refs/heads/mesh/g-1": gitrelay.ZeroID}},
 		Upstream: "https://git.example.com",
 		Token:    Token{Value: gitSecret, ExpiresAt: time.Now().Add(time.Hour)},
 		Checkout: checkout,
@@ -91,7 +93,7 @@ func TestAPushIsRefusedTheSameWhoeverAsks(t *testing.T) {
 		t.Fatalf("the session pushed main: %s", out)
 	}
 	// the push tool's push of main
-	res, err := tool.Push(ctx, "refs/heads/main", sha)
+	res, err := tool.Push(ctx, "refs/heads/main", sha, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +114,7 @@ func TestAPushIsRefusedTheSameWhoeverAsks(t *testing.T) {
 	}
 
 	// the job's own ref goes through either way
-	res, err = tool.Push(ctx, "refs/heads/mesh/g-1", sha)
+	res, err = tool.Push(ctx, "refs/heads/mesh/g-1", sha, "")
 	if err != nil || !res.Pushed {
 		t.Fatalf("the push tool's push of the job's ref: %+v, %v", res, err)
 	}
@@ -131,7 +133,7 @@ func TestAPushIsRefusedTheSameWhoeverAsks(t *testing.T) {
 	if last.Outcome != "refused" || !strings.Contains(last.Reason, "force push") {
 		t.Fatalf("the session's force push was recorded %+v, want refused as a force push", last)
 	}
-	res, err = tool.Push(ctx, "refs/heads/mesh/g-1", first)
+	res, err = tool.Push(ctx, "refs/heads/mesh/g-1", first, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,5 +142,47 @@ func TestAPushIsRefusedTheSameWhoeverAsks(t *testing.T) {
 	}
 	if got := must(bare, "rev-parse", "refs/heads/mesh/g-1"); got != sha {
 		t.Fatalf("the vendor's mesh/g-1 moved to %s", got)
+	}
+
+	// a leased push replaces it from where the job left it: the
+	// sidecar's relay holds the head, moved by the job's own push
+	res, err = tool.Push(ctx, "refs/heads/mesh/g-1", first, gitrelay.LeaseHeadAsked)
+	if err != nil || !res.Pushed || res.Lease != sha {
+		t.Fatalf("the push tool's leased push: %+v, %v", res, err)
+	}
+	if got := must(bare, "rev-parse", "refs/heads/mesh/g-1"); got != first {
+		t.Fatalf("the vendor's mesh/g-1 is %s after the leased push, want %s", got, first)
+	}
+	recs = g.records()
+	if last := recs[len(recs)-1]; last.Outcome != "ok" || !strings.Contains(last.Reason, "leased: refs/heads/mesh/g-1 from "+sha) {
+		t.Fatalf("the leased push was recorded %+v", last)
+	}
+	// someone else pushes to it: a lease from the job's head is refused,
+	// naming where it is now, and nothing is overwritten
+	must(checkout, "push", "-q", "--force", bare, sha+":refs/heads/mesh/g-1")
+	res, err = tool.Push(ctx, "refs/heads/mesh/g-1", first, gitrelay.LeaseHeadAsked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Pushed || !strings.Contains(res.Refused, "is at "+sha+" now, not "+first) {
+		t.Fatalf("the leased push of a moved branch: %+v", res)
+	}
+	if got := must(bare, "rev-parse", "refs/heads/mesh/g-1"); got != sha {
+		t.Fatalf("the vendor's mesh/g-1 was overwritten: %s", got)
+	}
+	// the session's own forced push carrying the lease header for a
+	// commit the job never found it at is refused by the relay
+	if out, err := run(checkout, "-c", "http.extraHeader="+gitrelay.LeaseHeader+": refs/heads/mesh/g-1 "+sha, "push", "--force",
+		g.base+"/git/acme/app.git", first+":refs/heads/mesh/g-1"); err == nil {
+		t.Fatalf("the session's leased push from another commit went through: %s", out)
+	}
+	recs = g.records()
+	if last := recs[len(recs)-1]; last.Outcome != "refused" || !strings.Contains(last.Reason, "the job found it at "+first) {
+		t.Fatalf("the session's lease was recorded %+v", last)
+	}
+	// and a ref other than push_to takes no lease
+	res, err = tool.Push(ctx, "refs/heads/main", first, gitrelay.LeaseHeadAsked)
+	if err != nil || res.Pushed || !strings.Contains(res.Refused, "takes no lease") {
+		t.Fatalf("a lease on main: %+v, %v", res, err)
 	}
 }

@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -71,6 +72,10 @@ type Policy struct {
 	// same vendor and base the job may fetch and never push, each on a
 	// read token minted for it alone.
 	ReadRepos []string
+	// Heads are the refs a push may replace with a lease (lease.go), each
+	// at the commit the job found it at — the brief's push_to, the zero
+	// id when it did not exist. A ref not named here takes no lease.
+	Heads map[string]string `json:",omitempty"`
 }
 
 // target is the repository a request names as the policy has it, and
@@ -186,6 +191,9 @@ type Relay struct {
 
 	mu     sync.Mutex
 	tokens map[string]Token
+	// heads are Policy.Heads as the job's own pushes moved them
+	// (lease.go).
+	heads map[string]string
 }
 
 // forwarded are the only client headers sent upstream: what git's smart
@@ -228,22 +236,44 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if req.Body == nil {
 		body = http.NoBody
 	}
+	var pushCmds []command
 	if service == "receive-pack" && req.Method == http.MethodPost {
 		cmds, replay, err := readCommands(body, req.Header.Get("Content-Encoding"))
 		if err != nil {
 			refuse("reading the push: " + err.Error())
 			return
 		}
+		leases, err := readLeases(req.Header.Values(LeaseHeader))
+		if err != nil {
+			refuse(err.Error())
+			return
+		}
+		var leased []string
 		for _, c := range cmds {
 			ev.Refs = append(ev.Refs, c.ref)
 			if c.new != zeroID {
 				ev.Pushed = append(ev.Pushed, PushedRef{Ref: c.ref, SHA: c.new})
 			}
-			if reason := r.check(req.Context(), c); reason != "" {
+			lease, isLeased := leases[c.ref]
+			if reason := r.check(req.Context(), c, lease, isLeased); reason != "" {
 				refuse(reason)
 				return
 			}
+			if isLeased {
+				leased = append(leased, fmt.Sprintf("%s from %s", c.ref, leaseShort(lease)))
+			}
 		}
+		for ref := range leases {
+			if !slices.ContainsFunc(cmds, func(c command) bool { return c.ref == ref }) {
+				refuse("the push names a lease on " + ref + " but does not push it")
+				return
+			}
+		}
+		if len(leased) > 0 {
+			// the lease is logged with the push: its AccessRecord's reason
+			ev.Reason = "leased: " + strings.Join(leased, ", ")
+		}
+		pushCmds = cmds
 		body = replay
 		if scan := r.scanner(); scan != nil {
 			body = scanPush(req.Context(), body, scan, r.Bases, repo)
@@ -316,6 +346,8 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	ev.Outcome = "ok"
 	if resp.StatusCode/100 != 2 {
 		ev.Outcome, ev.Reason = "failed", fmt.Sprintf("%s answered %d", vendor.Name(), resp.StatusCode)
+	} else if pushCmds != nil {
+		r.moved(pushCmds)
 	}
 	r.audit(ev)
 }
@@ -386,18 +418,29 @@ type command struct {
 const zeroID = "0000000000000000000000000000000000000000"
 
 // check refuses a ref update the policy does not name, any deletion,
-// moving a create-only ref, and a fast-forward-only ref's update that is
-// not proved a fast-forward.
-func (r *Relay) check(ctx context.Context, c command) string {
+// moving a create-only ref, a leased update the lease does not allow
+// (lease.go), and an unleased fast-forward-only ref's update that is not
+// proved a fast-forward.
+func (r *Relay) check(ctx context.Context, c command, lease string, leased bool) string {
 	rule, reason := r.Policy.check(c)
-	if reason != "" || !rule.FastForwardOnly || strings.Trim(c.old, "0") == "" {
+	if reason != "" {
 		return reason
+	}
+	if leased {
+		return r.checkLease(c, lease)
+	}
+	if !rule.FastForwardOnly || strings.Trim(c.old, "0") == "" {
+		return ""
 	}
 	if r.IsAncestor == nil {
 		return c.ref + " may only fast-forward, and this relay cannot prove one"
 	}
 	if err := r.IsAncestor(ctx, c.old, c.new); err != nil {
-		return c.ref + " may only fast-forward: " + err.Error()
+		why := c.ref + " may only fast-forward: " + err.Error()
+		if head, ok := r.Head(c.ref); ok && head == c.old {
+			why += "; to replace it from where the job found it (" + head + "), push with a lease"
+		}
+		return why
 	}
 	return ""
 }
