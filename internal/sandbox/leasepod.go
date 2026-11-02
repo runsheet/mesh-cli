@@ -2,8 +2,11 @@ package sandbox
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -153,4 +156,38 @@ func (s *Session) RunAgent(ctx context.Context, spec RunSpec) error {
 		return fmt.Errorf("sandbox: agent: %w", err)
 	}
 	return classify(exit, time.Since(start), spec.Timeout, s.limits(), tail.String())
+}
+
+// OpenBeside opens a session of s in a pod of its own that sees what
+// parent's commands see (mesh-cli ADR-049 amendment, a lane sees its
+// lease): parent's HOME — the Go module and build caches, ~/go/bin, the
+// tools a step installed, the relay's CA, every file a step or the
+// session wrote there — mounted read-write at its own path and named
+// HOME, the same MESH_ITEM and kind, the same image, hooks directory,
+// confinement and sessionproxy socket directories. Its pod, network,
+// limits and reservation are s's. Close removes its pods and never the
+// HOME, which is parent's to remove. Two sessions on one HOME at once
+// are what Go's caches are made for; a tool whose state in HOME is not
+// safe for concurrent use is not.
+func (s *Sandbox) OpenBeside(parent *Session, label string) (*Session, error) {
+	if parent == nil {
+		return nil, fmt.Errorf("sandbox: no session to open beside")
+	}
+	var rnd [4]byte
+	_, _ = rand.Read(rnd[:])
+	name := strings.Trim(unsafeName.ReplaceAllString(strings.ToLower(label), "-"), "-")
+	if len(name) > 40 {
+		name = name[:40]
+	}
+	parent.mu.Lock()
+	sess := &Session{sb: s, Home: parent.Home, Label: parent.Label, Kind: parent.Kind, hooks: parent.hooks,
+		image: parent.image, confine: parent.confine, proxyDirs: append([]string(nil), parent.proxyDirs...),
+		sharedHome: true, name: "mesh-" + name + "-" + hex.EncodeToString(rnd[:])}
+	parent.mu.Unlock()
+	set := s.openSessions()
+	set.mu.Lock()
+	set.m[sess] = struct{}{}
+	set.mu.Unlock()
+	sess.reserve(s.Config.Limits.CPUs)
+	return sess, nil
 }

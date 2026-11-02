@@ -416,6 +416,13 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		}
 		// the node's own product proxy, for the finish's learnings
 		sock = rs.ownSock
+		// run_suite's lanes reach the lease's egress on a socket of
+		// their own (lanes.go)
+		laneSock, err := rs.openLaneTunnel()
+		if err != nil {
+			return outcome{err: fmt.Errorf("the lease's relay sidecar: its lanes' tunnel: %w", err), cause: context.Cause(ctx)}
+		}
+		lp.setLaneSocket(laneSock)
 	} else {
 		var closeProxy func()
 		servers, sock, closeProxy, err = r.openProxy(ctx, b, tokens, grant, tools, fin.observe, account, sl, ic)
@@ -423,6 +430,11 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 			return outcome{err: fmt.Errorf("the lease's sessionproxy: %w", err), cause: context.Cause(ctx)}
 		}
 		keep(holdProxy, func() error { closeProxy(); return nil })
+		if lp != nil {
+			// run_suite's lanes reach the relay as the lease's pod
+			// does, on its socket (lanes.go)
+			lp.setLaneSocket(sock)
+		}
 		gate = r.openStopGate(b, sock, fin, hb, rec)
 		if gate != nil {
 			keep("the stop gate", func() error { gate.close(); return nil })

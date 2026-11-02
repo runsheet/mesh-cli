@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -105,6 +107,10 @@ type relaySidecar struct {
 	mirrors     []string
 	mirror      string
 	readMirrors map[string]string
+
+	// lanes serves the lease's egress to run_suite's lanes
+	// (openLaneTunnel)
+	lanes *http.Server
 
 	mu     sync.Mutex
 	minted []gitrelay.Token
@@ -500,10 +506,13 @@ func (rs *relaySidecar) close() error {
 		return nil
 	}
 	rs.closed = true
-	minted := rs.minted
+	minted, lanes := rs.minted, rs.lanes
 	rs.mu.Unlock()
 	if rs.node != nil {
 		_ = rs.node.Close()
+	}
+	if lanes != nil {
+		_ = lanes.Close()
 	}
 	if rs.own != nil {
 		rs.own.Close()
@@ -561,4 +570,58 @@ func relayPrompt(b *meshapi.Brief, p string) string {
 		fmt.Fprintf(&sb, "- %s: %s %s\n", r.Vendor, strings.Join(r.Methods, ", "), strings.Join(r.Paths, ", "))
 	}
 	return sb.String()
+}
+
+// relayLaneDir is the directory, in the lease's socket directory, of
+// the socket its lanes reach its egress on; relayLaneSocket the socket.
+const (
+	relayLaneDir    = "l"
+	relayLaneSocket = "s"
+)
+
+// openLaneTunnel serves the lease's egress to run_suite's lanes
+// (lanes.go), which cannot reach the sidecar on its pod's loopback: a
+// socket in a directory of its own, mounted into each lane, where each
+// step's bridge pipes its HTTPS_PROXY. It answers CONNECT alone, on the
+// lease's tunnel — its policy, its interception, its audit, as the
+// session's CONNECT through the sidecar — and nothing else of the
+// node's side: no renewal, no credentials, no node tools, no model.
+// The lease's end closes it.
+func (rs *relaySidecar) openLaneTunnel() (string, error) {
+	if rs.tunnel == nil {
+		return "", errors.New("the lease has no egress tunnel")
+	}
+	dir := filepath.Join(rs.dir, relayLaneDir)
+	if err := os.Mkdir(dir, 0o711); err != nil {
+		return "", err
+	}
+	sock := filepath.Join(dir, relayLaneSocket)
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		return "", err
+	}
+	// a lane's user is the pod's, mapped as the session's is
+	if err := os.Chmod(sock, 0o666); err != nil {
+		ln.Close()
+		return "", err
+	}
+	tunnel := rs.tunnel
+	srv := &http.Server{ReadHeaderTimeout: 30 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			http.Error(w, "a lane reaches the lease's egress by CONNECT alone", http.StatusForbidden)
+			return
+		}
+		// never the sidecar's own connection, whatever a step says
+		r.Header.Del(relaysidecar.OwnHeader)
+		tunnel.ServeHTTP(w, r)
+	})}
+	rs.mu.Lock()
+	rs.lanes = srv
+	rs.mu.Unlock()
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			rs.r.logf("nodev1: lease %s: the lanes' tunnel: %v", rs.b.LeaseID, err)
+		}
+	}()
+	return sock, nil
 }

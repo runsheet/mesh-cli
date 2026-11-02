@@ -6,10 +6,13 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -181,9 +184,15 @@ func TestASuitesShardsRunAtOnceEachWithItsOwnServices(t *testing.T) {
 			t.Fatalf("pod %s started %d Postgres, want its own one", p, n)
 		}
 	}
+	var leaseNet sandbox.NetworkPolicy
 	for _, p := range g.f.PodSpecs() {
-		if strings.Contains(p.Name, "-lane-") && (p.Labels[PodLeaseLabel] != "lease-1" || !p.Network.None) {
-			t.Fatalf("lane pod %+v: not the lease's, or not isolated", p)
+		if p.Name == g.lp.name {
+			leaseNet = p.Network
+		}
+	}
+	for _, p := range g.f.PodSpecs() {
+		if strings.Contains(p.Name, "-lane-") && (p.Labels[PodLeaseLabel] != "lease-1" || !reflect.DeepEqual(p.Network, leaseNet)) {
+			t.Fatalf("lane pod %+v: not the lease's, or not on the lease's network %+v", p, leaseNet)
 		}
 	}
 	for _, p := range lanes {
@@ -287,4 +296,162 @@ func (m *evidenceMesh) Evidence(_ context.Context, _ string, recs []meshapi.Evid
 		m.records = append(m.records, r)
 	}
 	return &meshapi.EvidenceResponse{IDs: ids}, nil
+}
+
+// goTestInPod is the fake runtime's `go test -json` of a package whose
+// modules are only in the lease's Go module cache, as runsheet's e2e
+// is on a node: a step whose HOME is not mounted, or holds no modules,
+// fails as go does on a pod that cannot download them — at once, 0
+// tests, [setup failed] (dl360, 2026-11-02, every shard but the first);
+// one that sees them runs its two tests.
+func goTestInPod(spec sandbox.AgentSpec) sandbox.Exit {
+	var home string
+	for _, kv := range spec.Env {
+		if v, ok := strings.CutPrefix(kv, "HOME="); ok {
+			home = v
+		}
+	}
+	mounted := slices.ContainsFunc(spec.Mounts, func(m sandbox.Mount) bool { return m.Source == home && !m.ReadOnly })
+	if _, err := os.Stat(filepath.Join(home, "go", "pkg", "mod", "cache", "download", "example.com", "dep", "@v", "v1.0.0.zip")); err != nil || !mounted {
+		fmt.Fprintln(spec.Stderr, `e2e/helpers_test.go:36:2: example.com/dep@v1.0.0: Get "https://proxy.golang.org/example.com/dep/@v/v1.0.0.zip": dial tcp: lookup proxy.golang.org: connect: network is unreachable`)
+		fmt.Fprintln(spec.Stdout, `{"Action":"output","Package":"example.com/e2e","Output":"FAIL\texample.com/e2e [setup failed]\n"}`)
+		fmt.Fprintln(spec.Stdout, `{"Action":"fail","Package":"example.com/e2e"}`)
+		return sandbox.Exit{Code: 1}
+	}
+	for _, test := range []string{"TestA", "TestB"} {
+		fmt.Fprintf(spec.Stdout, `{"Action":"run","Package":"example.com/e2e","Test":%q}`+"\n", test)
+		fmt.Fprintf(spec.Stdout, `{"Action":"pass","Package":"example.com/e2e","Test":%q}`+"\n", test)
+	}
+	fmt.Fprintln(spec.Stdout, `{"Action":"pass","Package":"example.com/e2e"}`)
+	return sandbox.Exit{}
+}
+
+// A lane sees what a step in the lease's pod sees (ADR-049 amendment;
+// dl360, 2026-11-02): a sharded Go suite whose modules are only in the
+// lease's Go module cache — what its session and its earlier steps
+// downloaded through the lease's relay — runs every shard's tests, not
+// only the first's. Each lane runs on the lease's HOME, mounted
+// read-write, and the HOME outlives the lanes.
+func TestEveryShardSeesTheLeasesGoModuleCache(t *testing.T) {
+	g := newShardRig(t, shardedYML, 0, scheduler.Capacity{CPUs: 32, MemGB: 64, Slots: 3})
+	home := g.lp.sess.Home
+	zip := filepath.Join(home, "go", "pkg", "mod", "cache", "download", "example.com", "dep", "@v", "v1.0.0.zip")
+	if err := os.MkdirAll(filepath.Dir(zip), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(zip, []byte("module"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g.f.Agent = func(_ context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
+		if !strings.Contains(spec.Name, "-exec-") {
+			return sandbox.Exit{}, nil
+		}
+		return goTestInPod(spec), nil
+	}
+	_, last := g.run(t, map[string]any{"suite": "integration"})
+	shards := last["steps"].([]any)[0].(map[string]any)["shards"].([]any)
+	if len(shards) != 4 {
+		t.Fatalf("the answer's shards %v", shards)
+	}
+	for _, sh := range shards {
+		sh := sh.(map[string]any)
+		if sh["exit"] != float64(0) || sh["tests_run"] != float64(2) {
+			t.Fatalf("shard %v: want exit 0 and its 2 tests, the lease's modules seen", sh)
+		}
+	}
+	if last["exit"] != float64(0) {
+		t.Fatalf("the run answered %v", last)
+	}
+	if len(g.lanePods()) != 3 {
+		t.Fatalf("lane pods %v, want 3", g.lanePods())
+	}
+	if _, err := os.Stat(zip); err != nil {
+		t.Fatalf("a lane's end removed the lease's HOME: %v", err)
+	}
+}
+
+// A step that fails in a lane is in the node's log: its lane, its
+// shard, its exit and the last lines of its stderr.
+func TestALanesFailedStepIsInTheNodesLog(t *testing.T) {
+	g := newShardRig(t, shardedYML, 0, scheduler.Capacity{CPUs: 32, MemGB: 64, Slots: 3})
+	var mu sync.Mutex
+	var lines []string
+	g.rt.Logf = func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, fmt.Sprintf(format, args...))
+	}
+	g.f.Agent = func(_ context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
+		if !strings.Contains(spec.Name, "-exec-") {
+			return sandbox.Exit{}, nil
+		}
+		return goTestInPod(spec), nil // no modules anywhere: every shard fails
+	}
+	_, last := g.run(t, map[string]any{"suite": "integration"})
+	if last["exit"] == float64(0) {
+		t.Fatalf("the run answered %v, want red", last)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var lane, own bool
+	for _, l := range lines {
+		if !strings.Contains(l, "nodev1: lease lease-1: run_suite's step MESH_SHARD_INDEX=") || !strings.Contains(l, "exited 1 after") ||
+			!strings.Contains(l, "network is unreachable") {
+			continue
+		}
+		if strings.Contains(l, " in lane integration-") && strings.Contains(l, "-lane-") {
+			lane = true
+		}
+		if strings.Contains(l, " in the lease's pod "+g.lp.name+" ") {
+			own = true
+		}
+	}
+	if !lane || !own {
+		t.Fatalf("a lane's failed step (%v) or the lease pod's (%v) is not in the log:\n%s", lane, own, strings.Join(lines, "\n"))
+	}
+}
+
+// A lane reaches out as the lease's pod does, never on a raw network:
+// with the lease's relay as its only exit, the lane is on the lease's
+// network, the relay's socket directory is mounted into it, and each
+// step runs behind the bridge to it on the lane's loopback, with the
+// lease's proxy environment.
+func TestALaneReachesTheLeasesRelay(t *testing.T) {
+	g := newShardRig(t, shardedYML, 0, scheduler.Capacity{CPUs: 32, MemGB: 64, Slots: 3})
+	sockDir := t.TempDir()
+	sock := filepath.Join(sockDir, "s")
+	g.lp.proxyEnv = proxyEnv(g.lp.bridgeBase())
+	g.lp.setLaneSocket(sock)
+	var mu sync.Mutex
+	var lanes []sandbox.AgentSpec
+	g.f.Agent = func(_ context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
+		if strings.Contains(spec.Name, "-lane-") && strings.Contains(spec.Name, "-exec-") {
+			mu.Lock()
+			lanes = append(lanes, spec)
+			mu.Unlock()
+		}
+		return sandbox.Exit{}, nil
+	}
+	_, last := g.run(t, map[string]any{"suite": "integration"})
+	if last["exit"] != float64(0) {
+		t.Fatalf("the run answered %v", last)
+	}
+	if len(lanes) != 3 {
+		t.Fatalf("%d steps ran in lanes, want 3", len(lanes))
+	}
+	for _, spec := range lanes {
+		if len(spec.Command) < 6 || spec.Command[0] != "node" || spec.Command[1] != filepath.Join(g.lp.sess.Home, laneBridgeName) ||
+			spec.Command[2] != sock || spec.Command[3] != strconv.Itoa(g.lp.gitPort) || spec.Command[4] != "--" || spec.Command[5] != "sh" {
+			t.Fatalf("a lane's step ran %q, want it behind the bridge to %s", spec.Command, sock)
+		}
+		if !slices.ContainsFunc(spec.Mounts, func(m sandbox.Mount) bool { return m.Source == sockDir }) {
+			t.Fatalf("the relay's socket directory is not mounted in the lane: %+v", spec.Mounts)
+		}
+		if !slices.Contains(spec.Env, "HTTPS_PROXY="+g.lp.bridgeBase()) {
+			t.Fatalf("the lane's step has not the lease's proxy env: %v", spec.Env)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(g.lp.sess.Home, laneBridgeName)); err != nil {
+		t.Fatalf("the lanes' bridge is not in the lease's HOME: %v", err)
+	}
 }
