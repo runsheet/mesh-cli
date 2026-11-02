@@ -70,7 +70,7 @@ type fakeLease struct {
 
 // Call is one request the fake answered.
 type Call struct {
-	Route   string // register, connect, heartbeat, take, renew, session, evidence, access, usage, progress, security, finish, fail, hand-back, blob
+	Route   string // register, connect, drain, heartbeat, take, renew, session, evidence, access, usage, progress, security, finish, fail, hand-back, blob
 	LeaseID string
 	Auth    string
 	Body    json.RawMessage
@@ -84,6 +84,7 @@ func NewFake(t testing.TB) *Fake {
 	f.mux.HandleFunc("POST /v1/nodes", f.register)
 	f.mux.HandleFunc("POST /v1/nodes/{id}/heartbeat", f.heartbeat)
 	f.mux.HandleFunc("POST /v1/nodes/{id}/connections", f.connect)
+	f.mux.HandleFunc("POST /v1/nodes/{id}/drain", f.drainNode)
 	f.mux.HandleFunc("GET /v1/nodes/{id}/events", f.events)
 	f.mux.HandleFunc("POST /v1/take", f.take)
 	f.mux.HandleFunc("POST /v1/leases/{id}/{route}", f.lease)
@@ -233,6 +234,47 @@ func (f *Fake) Drain() {
 	f.drain = true
 }
 
+// Draining says whether the node is drained, by Drain or its own POST
+// /v1/nodes/{id}/drain.
+func (f *Fake) Draining() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.drain
+}
+
+// drainNode is POST /v1/nodes/{id}/drain: as Mesh, drain true has every
+// heartbeat answer drain and false clears it.
+func (f *Fake) drainNode(w http.ResponseWriter, r *http.Request) {
+	body := f.record(r, "drain", "")
+	var req meshapi.DrainRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	f.mu.Lock()
+	known := r.PathValue("id") == f.nodeID
+	if known {
+		f.drain = req.Drain
+	}
+	f.mu.Unlock()
+	if known && req.Drain {
+		// a take waiting on its long poll reads the drain now
+		select {
+		case f.offered <- struct{}{}:
+		default:
+		}
+	}
+	if !known {
+		writeErr(w, http.StatusConflict, "node_not_registered", "the node has not registered")
+		return
+	}
+	out := meshapi.Drained{NodeID: r.PathValue("id"), Draining: req.Drain}
+	if req.Drain {
+		out.DrainReason = req.Reason
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 // Calls are the calls of route ("" for all), in order.
 func (f *Fake) Calls(route string) []Call {
 	f.mu.Lock()
@@ -369,6 +411,12 @@ func (f *Fake) take(w http.ResponseWriter, r *http.Request) {
 	deadline := time.After(wait)
 	for {
 		f.mu.Lock()
+		if f.drain {
+			// as Mesh: a draining node is offered nothing, each pass
+			f.mu.Unlock()
+			WriteFixture(w, f.fx["take-waiting"])
+			return
+		}
 		if len(f.offers) > 0 {
 			b := f.offers[0]
 			f.offers = f.offers[1:]

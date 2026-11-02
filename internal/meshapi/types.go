@@ -113,6 +113,22 @@ type HeartbeatResponse struct {
 	RenewEveryS int      `json:"renew_every_s,omitempty"`
 }
 
+// DrainRequest is POST /v1/nodes/{id}/drain: drain true stops Mesh
+// offering the node anything (its take answers 204, every heartbeat
+// answers drain), false lets it take again. A restart does not clear
+// it; only drain false does.
+type DrainRequest struct {
+	Drain  bool   `json:"drain"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// Drained is a drain's answer.
+type Drained struct {
+	NodeID      string `json:"node_id"`
+	Draining    bool   `json:"draining"`
+	DrainReason string `json:"drain_reason,omitempty"`
+}
+
 // TakeRequest is POST /v1/take, a long-poll of at most WaitS (≤25) seconds.
 // A WaitS of 0 is left out, as contracts/v1/take-waiting sends it: the
 // service answers at once either way.

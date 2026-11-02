@@ -354,6 +354,21 @@ var nodeStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Heartbeat once, list the org's nodes and this machine's session scopes",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// a Mesh v1 node running here is shown from what it left in
+		// ~/.mesh/node-v1; with no legacy node beside it, that is all
+		if v1, err := v1RunState(); err == nil {
+			if lines, ok := v1StatusLines(v1, time.Now()); ok {
+				for _, l := range lines {
+					fmt.Println(l)
+				}
+				if legacy, err := node.DefaultRunState(); err == nil {
+					if _, ok := liveNode(legacy); !ok {
+						return nil
+					}
+				}
+				fmt.Println()
+			}
+		}
 		cfg, err := node.LoadConfig()
 		if err != nil {
 			return err
@@ -857,14 +872,29 @@ func formatHeldTime(t time.Time) string {
 	return t.Format(time.RFC3339)
 }
 
+var (
+	nodeDrainAPI  string
+	nodeDrainWait time.Duration
+)
+
 var nodeDrainCmd = &cobra.Command{
 	Use:   "drain",
 	Short: "Drain the node running on this machine: it claims nothing new, lets its sessions finish, then exits",
-	Long: `Sends the running node (its pid is in ~/.mesh/node.pid) SIGUSR1 — the
-same as ` + "`kill -USR1 <pid>`" + `. The node stops claiming items, plans, research
-and evaluations, lets every session it has running end, and exits 0;
-under systemd or launchd it is started again, on the binary and config
-now on disk. ` + "`mesh node status`" + ` shows it as draining meanwhile.
+	Long: `Sends the running node (its pid is in ~/.mesh/node.pid, or a Mesh v1
+node's in ~/.mesh/node-v1/node.pid) SIGUSR1 — the same as ` + "`kill -USR1 <pid>`" + `.
+The node stops claiming or taking work, lets every session it has running
+end, and exits 0; under systemd or launchd it is started again, on the
+binary and config now on disk. ` + "`mesh node status`" + ` shows it as draining
+meanwhile.
+
+A Mesh v1 node (` + "`mesh node run --api v1`" + `) also asks Mesh to stop offering
+it leases (POST /v1/nodes/{id}/drain), and its next start asks Mesh to
+resume it. With --wait, what it still runs once the wait is up is handed
+back node_update (the job keeps its place, no attempt spent) and the node
+exits. SIGTERM is not a drain: it stops at once, handing every lease back
+node_restart.
+
+With both a legacy and a v1 node running as this user, --api says which.
 
 Capacity and the orgs served need no drain: the node reads them every
 tick.`,
@@ -874,8 +904,40 @@ tick.`,
 		if err != nil {
 			return err
 		}
-		return drainNode(state, cmd.OutOrStdout())
+		v1, err := v1RunState()
+		if err != nil {
+			return err
+		}
+		return drainEither(state, v1, nodeDrainAPI, nodeDrainWait, cmd.OutOrStdout())
 	},
+}
+
+// drainEither drains the legacy node (state) or the v1 node (v1): the
+// one api names, else the one running, else the legacy node as before.
+func drainEither(state, v1 node.RunState, api string, wait time.Duration, out io.Writer) error {
+	if wait < 0 {
+		return fmt.Errorf("--wait %s: a wait is not negative", wait)
+	}
+	switch api {
+	case "v1":
+		return drainV1Node(v1, wait, out)
+	case "v0", "legacy":
+	case "":
+		_, legacy := liveNode(state)
+		_, isV1 := liveNode(v1)
+		switch {
+		case legacy && isV1:
+			return errors.New("a legacy node and a Mesh v1 node both run as this user: say which with --api v0 or --api v1")
+		case isV1:
+			return drainV1Node(v1, wait, out)
+		}
+	default:
+		return fmt.Errorf("--api is v0 or v1, not %q", api)
+	}
+	if wait > 0 {
+		return errors.New("--wait is the Mesh v1 node's: the legacy node's drain waits for its sessions")
+	}
+	return drainNode(state, out)
 }
 
 // drainNode signals the node whose pid state holds to drain.
@@ -2216,6 +2278,8 @@ func init() {
 	nodeModelCmd.Flags().StringVar(&nodeModelPlanFlag, "plan", "", "model for planner sessions")
 	nodeModelCmd.Flags().StringVar(&nodeModelResearchFlag, "research", "", "model for director (research) sessions")
 	nodeModelCmd.Flags().StringVar(&nodeModelRebaseFlag, "rebase", "", "model for rebase sessions")
+	nodeDrainCmd.Flags().StringVar(&nodeDrainAPI, "api", "", "the node to drain when a legacy and a v1 node both run as this user: v0 or v1 (default the one running)")
+	nodeDrainCmd.Flags().DurationVar(&nodeDrainWait, "wait", 0, "a Mesh v1 node's drain: hand back node_update what still runs after this long, then exit (default wait for every lease)")
 	nodeCmd.AddCommand(nodeLoginCmd, nodeRegisterCmd, nodeStartCmd, nodeStatusCmd, nodeDrainCmd, nodeUpgradeCmd, nodeLogoutCmd, nodeModelCmd)
 }
 

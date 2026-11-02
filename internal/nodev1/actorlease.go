@@ -80,8 +80,9 @@ func (r *Runtime) runActor(ctx context.Context, tk *meshapi.Take, room *schedule
 	mb := NewMailbox()
 	mb.turns = newTurnLedger(b)
 	r.mu.Lock()
-	r.leases.Put(id, &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: turnToolFor(b), jobID: b.JobID, actor: a})
+	r.leases.Put(id, &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: turnToolFor(b), jobID: b.JobID, kind: b.Kind, started: time.Now(), actor: a})
 	r.mu.Unlock()
+	r.publishStatus()
 	sec = r.openSecurity(id)
 	// the values the relay injects stay redacted until the lease is
 	// reported and released (canary.go)
@@ -90,6 +91,7 @@ func (r *Runtime) runActor(ctx context.Context, tk *meshapi.Take, room *schedule
 		r.mu.Lock()
 		r.leases.Delete(id)
 		r.mu.Unlock()
+		r.publishStatus()
 	}()
 	// a panic anywhere in the lease is recovered into its report and
 	// then its release

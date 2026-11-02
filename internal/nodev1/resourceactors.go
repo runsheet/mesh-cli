@@ -30,8 +30,9 @@ var _ resources.Node = updateNode{}
 // waits for the update.
 func (n updateNode) Drain(why string) {
 	n.r.mu.Lock()
-	n.r.drain, n.r.updating = true, true
+	n.r.updating = true
 	n.r.mu.Unlock()
+	n.r.markDrain(why)
 	n.r.logf("nodev1: %s; the node takes no more leases", why)
 }
 
@@ -44,20 +45,7 @@ func (n updateNode) Live() int {
 
 // HandBackAll implements resources.Node: every live lease is stopped and
 // handed back node_update.
-func (n updateNode) HandBackAll(why string) {
-	n.r.mu.Lock()
-	defer n.r.mu.Unlock()
-	for _, e := range n.r.leases.All() {
-		l := e.Value
-		if l.cancelled == "" {
-			l.cancelled = why
-		}
-		if l.actor != nil {
-			l.actor.Cancel(why)
-		}
-		l.cancel(errNodeUpdate)
-	}
-}
+func (n updateNode) HandBackAll(why string) { n.r.handBackAll(why, errNodeUpdate) }
 
 // startResources starts the node's resource actors under ctx; updated
 // closes once the self-update ends, holding the version it installed.

@@ -177,6 +177,16 @@ func (c *Client) Heartbeat(ctx context.Context, nodeID string, req HeartbeatRequ
 	return &out, nil
 }
 
+// Drain asks Mesh to stop (drain true) or resume (false) offering the
+// node leases: POST /v1/nodes/{id}/drain.
+func (c *Client) Drain(ctx context.Context, nodeID string, req DrainRequest) (*Drained, error) {
+	var out Drained
+	if _, _, err := c.do(ctx, http.MethodPost, "/v1/nodes/"+url.PathEscape(nodeID)+"/drain", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // WaitingHeader carries a 204 take's waiting reason: a 204 has no body.
 const WaitingHeader = "Mesh-Waiting"
 
