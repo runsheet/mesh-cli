@@ -9,7 +9,12 @@
 // names, terminated by the relay with its lease's CA (intercept.go);
 // anything else — another port, plain-HTTP proxying, a host the Policy
 // does not name, a server name that differs from the host asked — is
-// refused, and each request is audited by host and port alone. A Tunnel is an http.Handler, so it serves on a relay's
+// refused, and each request is audited by host and port alone. The one
+// exception is a raw host:port the Policy names explicitly (AddRaw): no
+// ClientHello is asked for, since what rides the tunnel is not TLS — a
+// relay sidecar's own dial to a credential's upstream (a database,
+// tcp_auth), never a session's, since no InjectRule ever names it. A
+// Tunnel is an http.Handler, so it serves on a relay's
 // socket beside other routes, or on a unix socket of its own per lease
 // (Listen), which a relay sidecar in the lease's pod can reach.
 package egress
@@ -43,6 +48,10 @@ type Policy struct {
 	// be reached on (a self-hosted Latchkey or vendor on a port of its
 	// own); never a kind's host.
 	ports map[string]map[string]bool
+	// raw are host:port pairs the tunnel pipes with no TLS ClientHello
+	// asked for first: a relay sidecar's own dial to a credential's
+	// upstream (AddRaw), never a kind's host or a fixed one.
+	raw map[string]map[string]bool
 	// open allows any host on Port: a lease whose kind declares no
 	// egress, whose session reached the internet by HTTPS before a
 	// relay sidecar made the tunnel its only way out (Open).
@@ -111,12 +120,41 @@ func NewPolicy(kind []string, tenant []string, fixed []string) *Policy {
 	return p
 }
 
+// AddRaw allows host:port as a raw TCP dial: the tunnel pipes it with
+// no TLS ClientHello asked for first. It is for a relay sidecar's own
+// dial to a credential's upstream (a tcp_auth database) alone — no
+// InjectRule ever names it, so a session cannot reach it any other way
+// — and must be called on the Policy a Tunnel actually uses, since Open
+// does not copy it.
+func (p *Policy) AddRaw(hostport string) error {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(hostport))
+	if err != nil {
+		return fmt.Errorf("%q is not host:port", hostport)
+	}
+	if host = norm(host); host == "" {
+		return fmt.Errorf("%q has no host", hostport)
+	}
+	if p.raw == nil {
+		p.raw = map[string]map[string]bool{}
+	}
+	if p.raw[host] == nil {
+		p.raw[host] = map[string]bool{}
+	}
+	p.raw[host][port] = true
+	return nil
+}
+
+func (p *Policy) isRaw(host, port string) bool {
+	return p != nil && p.raw[norm(host)][port]
+}
+
 // The rules a tunnel's request is allowed or refused by, as its Call
 // names them: content-free names Mesh forwards to Tripline (projectmesh-io/api
 // ADR 001 amendment, security events).
 const (
 	RuleHosts    = "egress.hosts"    // the kind's egress hosts
 	RuleFixed    = "egress.fixed"    // a fixed upstream of the relay's own
+	RuleRaw      = "egress.raw"      // a raw TCP dial, no TLS asked for
 	RuleOpen     = "egress.open"     // a kind with no egress: any host by HTTPS
 	RulePort     = "egress.port"     // only port 443
 	RuleHTTPS    = "egress.https"    // only HTTPS by CONNECT
@@ -133,6 +171,8 @@ func (p *Policy) rule(host, port string) string {
 	switch {
 	case p == nil:
 		return RuleHosts
+	case p.raw[h][port]:
+		return RuleRaw
 	case port != Port && p.ports[h][port], p.fixed[h]:
 		return RuleFixed
 	case p.hosts[h]:
@@ -149,6 +189,8 @@ func norm(h string) string { return strings.TrimSuffix(strings.ToLower(strings.T
 // short code and why.
 func (p *Policy) Allow(host, port string) (ok bool, code, why string) {
 	switch {
+	case p != nil && p.raw[norm(host)][port]:
+		return true, "", ""
 	case p != nil && port != Port && p.ports[norm(host)][port]:
 		return true, "", ""
 	case port != Port:
@@ -292,6 +334,30 @@ func (t *Tunnel) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	t.track(conn, true)
 	defer t.track(conn, false)
 	if _, err := io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+		return
+	}
+	if t.Policy.isRaw(host, port) {
+		// a raw TCP dial the Policy names explicitly (AddRaw): what
+		// rides the tunnel is not TLS, so no ClientHello is read.
+		dial := t.Dial
+		if dial == nil {
+			dial = publicDial
+		}
+		ctx, cancel := context.WithTimeout(req.Context(), 30*time.Second)
+		up, err := dial(ctx, "tcp", net.JoinHostPort(host, port))
+		cancel()
+		if err != nil {
+			refused(RuleDial, "dial: "+err.Error())
+			return
+		}
+		defer up.Close()
+		call.Allowed, call.Rule = true, RuleRaw
+		t.audit(call)
+		sent, got := pipe(conn, brw.Reader, up)
+		call.Bytes = sent + got
+		if t.Done != nil {
+			t.Done(call)
+		}
 		return
 	}
 	timeout := t.HelloTimeout

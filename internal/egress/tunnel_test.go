@@ -212,3 +212,108 @@ func TestPolicyFixedPortsAndOpen(t *testing.T) {
 		t.Error("an open policy dropped a fixed host:port")
 	}
 }
+
+// AddRaw allows host:port by raw TCP, on a port a kind's host or a
+// fixed one could never be reached on by itself, and names RuleRaw.
+func TestPolicyAddRaw(t *testing.T) {
+	p := NewPolicy([]string{"proxy.golang.org"}, nil, nil)
+	if err := p.AddRaw("db.example.internal:5432"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, _ := p.Allow("db.example.internal", "5432"); !ok {
+		t.Error("a raw host:port was refused")
+	}
+	if got := p.rule("db.example.internal", "5432"); got != RuleRaw {
+		t.Errorf("rule = %s, want %s", got, RuleRaw)
+	}
+	if ok, _, _ := p.Allow("db.example.internal", "443"); ok {
+		t.Error("a raw host was allowed on a port it never named")
+	}
+	if ok, _, _ := p.Allow("proxy.golang.org", "5432"); ok {
+		t.Error("the kind's host was allowed on the raw port")
+	}
+	if err := p.AddRaw("not-a-hostport"); err == nil {
+		t.Error("a bad host:port was accepted")
+	}
+}
+
+// A raw host:port never asks its connection for a TLS ClientHello: a
+// Postgres-shaped handshake, or any other plain bytes, are piped
+// straight through to the dialled upstream and back.
+func TestTunnelPipesARawDialWithNoClientHello(t *testing.T) {
+	p := NewPolicy(nil, nil, nil)
+	if err := p.AddRaw("db.example.internal:5432"); err != nil {
+		t.Fatal(err)
+	}
+	echo, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer echo.Close()
+	go func() {
+		for {
+			c, err := echo.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				_, _ = io.Copy(c, c)
+			}(c)
+		}
+	}()
+	tun := &Tunnel{Policy: p, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, echo.Addr().String())
+	}}
+	sock := filepath.Join(sockettest.Dir(t, "raw"), "raw.sock")
+	if err := tun.Listen(sock); err != nil {
+		t.Fatal(err)
+	}
+	defer tun.Close()
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_, _ = io.WriteString(conn, "CONNECT db.example.internal:5432 HTTP/1.1\r\nHost: db.example.internal:5432\r\n\r\n")
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("CONNECT answered %+v %v", resp, err)
+	}
+	msg := []byte("a Postgres StartupMessage, not a TLS ClientHello")
+	if _, err := conn.Write(msg); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	got := make([]byte, len(msg))
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatalf("raw bytes were not piped straight through: %v", err)
+	}
+	if string(got) != string(msg) {
+		t.Fatalf("echoed %q, want %q", got, msg)
+	}
+}
+
+// A host:port not named raw still needs its TLS ClientHello: AddRaw
+// narrows no other path, only adds one of its own.
+func TestTunnelRawDoesNotExemptAnOrdinaryHost(t *testing.T) {
+	g := newRig(t, NewPolicy([]string{"proxy.golang.org"}, nil, nil))
+	conn, err := net.Dial("unix", g.sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_, _ = io.WriteString(conn, "CONNECT proxy.golang.org:443 HTTP/1.1\r\nHost: proxy.golang.org:443\r\n\r\n")
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("CONNECT answered %+v %v", resp, err)
+	}
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := io.WriteString(conn, "not a ClientHello"); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 1)
+	if _, err := conn.Read(buf); err == nil {
+		t.Fatal("plain bytes on an ordinary host's tunnel were not refused")
+	}
+}

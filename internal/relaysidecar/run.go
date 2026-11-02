@@ -79,6 +79,12 @@ func Run(ctx context.Context, o Options) error {
 			return err
 		}
 	}
+	for _, p := range creds.Postgres {
+		if err := s.ServePostgres(p); err != nil {
+			ln.Close()
+			return err
+		}
+	}
 	errc := make(chan error, 1)
 	go func() { errc <- s.Serve(ln) }()
 	if o.Ready != nil {

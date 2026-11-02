@@ -68,6 +68,11 @@ const (
 	relayControlSocket = "s"
 )
 
+// postgresBasePort is the first loopback port, inside a lease's pod,
+// of its tcp_auth bridges (podGitPort's neighbor); each further
+// tcp_auth credential of the same lease takes the next one.
+const postgresBasePort = 47420
+
 // RelayURLEnv names the relay sidecar's loopback root in the session's
 // environment, where /latchkey/<vendor>/ is reached.
 const RelayURLEnv = "MESH_RELAY_URL"
@@ -198,6 +203,11 @@ func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe 
 		// a kind that declares no egress keeps the internet by HTTPS,
 		// now only through the tunnel
 		policy = policy.Open()
+	}
+	for _, hp := range rs.rawUpstreams() {
+		if err := policy.AddRaw(hp); err != nil {
+			return nil, err
+		}
 	}
 	// every request of the sidecar's tunnel is reported, as the
 	// in-process relay's (security.go)
@@ -346,6 +356,28 @@ func (rs *relaySidecar) credentials(ctx context.Context, sl *slots) (relaysideca
 		c.Git = &relaysidecar.Git{Policy: policy, Upstream: rs.r.GitUpstream, Token: t, Checkout: sandbox.RelayCheckout,
 			Mirror: rs.mirror, ReadMirrors: rs.readMirrors}
 	}
+	if rs.ic != nil {
+		port := postgresBasePort
+		for _, h := range rs.ic.held {
+			if h.Spec().FormOf() != egress.FormTCPAuth {
+				continue
+			}
+			cred, err := h.Credential(ctx)
+			if err != nil {
+				return c, credentialFailed(fmt.Errorf("the relay sidecar's postgres credential: %w", err))
+			}
+			user, pass, database, err := cred.TCPAuth()
+			if err != nil {
+				return c, credentialFailed(fmt.Errorf("the relay sidecar's postgres credential: %w", err))
+			}
+			spec := h.Spec()
+			c.Postgres = append(c.Postgres, relaysidecar.Postgres{
+				Listen: port, Host: spec.Host, Port: spec.Port,
+				User: user, Password: pass, Database: database,
+			})
+			port++
+		}
+	}
 	return c, nil
 }
 
@@ -461,6 +493,23 @@ func (rs *relaySidecar) fixedUpstreams() ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// rawUpstreams are a tcp_auth credential's own host:port — the
+// sidecar's own dial to the real database, never the session's: no
+// InjectRule names it, so the tunnel pipes it (Policy.AddRaw) by
+// host:port alone, with no TLS ClientHello asked for, since what rides
+// it is the Postgres wire protocol, not TLS.
+func (rs *relaySidecar) rawUpstreams() []string {
+	var out []string
+	if rs.ic != nil {
+		for _, h := range rs.ic.held {
+			if spec := h.Spec(); spec.FormOf() == egress.FormTCPAuth {
+				out = append(out, fmt.Sprintf("%s:%d", spec.Host, spec.Port))
+			}
+		}
+	}
+	return out
 }
 
 // openOwn serves the node's own product proxy on a socket of a

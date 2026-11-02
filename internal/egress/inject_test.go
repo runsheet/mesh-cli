@@ -175,6 +175,45 @@ func TestAnInjectSpecIsChecked(t *testing.T) {
 	}
 }
 
+// A tcp_auth spec needs a host and a port, not Hosts: it is read
+// directly by whatever dials there, never matched against a request.
+func TestATCPAuthSpecIsCheckedOnHostAndPort(t *testing.T) {
+	for _, s := range []InjectSpec{
+		{Form: FormTCPAuth},
+		{Form: FormTCPAuth, Host: "db.internal"},
+		{Form: FormTCPAuth, Port: 5432},
+	} {
+		if s.Check() == "" {
+			t.Errorf("%+v passed", s)
+		}
+	}
+	if got := (InjectSpec{Form: FormTCPAuth, Host: "db.internal", Port: 5432}).Check(); got != "" {
+		t.Errorf("a complete tcp_auth spec: %q", got)
+	}
+}
+
+// TCPAuth reads the credential's user, password and database directly;
+// it is never written through Writes or Apply.
+func TestCredentialTCPAuth(t *testing.T) {
+	c := &Credential{
+		Spec:   InjectSpec{Form: FormTCPAuth, Host: "db.internal", Port: 5432},
+		Fields: map[string]string{"user": "app", "password": "s3cret", "database": "orders"},
+	}
+	user, pass, database, err := c.TCPAuth()
+	if err != nil || user != "app" || pass != "s3cret" || database != "orders" {
+		t.Fatalf("%q %q %q %v", user, pass, database, err)
+	}
+	c = &Credential{Spec: InjectSpec{Form: FormTCPAuth, Host: "db.internal", Port: 5432}, Fields: map[string]string{"username": "app2", "pass": "x"}}
+	user, pass, database, err = c.TCPAuth()
+	if err != nil || user != "app2" || pass != "x" || database != "" {
+		t.Fatalf("%q %q %q %v", user, pass, database, err)
+	}
+	c = &Credential{Spec: InjectSpec{Form: FormTCPAuth, Host: "db.internal", Port: 5432}, Fields: map[string]string{"password": "x"}}
+	if _, _, _, err := c.TCPAuth(); err == nil {
+		t.Fatal("no user: passed")
+	}
+}
+
 // A rule that Overwrites (a federation's cloud token, mesh-specs gap 32)
 // replaces whatever Authorization the request carries rather than refuse
 // it, and is audited with its purpose; one that does not still refuses.

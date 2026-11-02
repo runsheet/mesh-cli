@@ -55,6 +55,11 @@ const (
 	FormQuery    = "query"
 	FormTemplate = "template"
 	FormSigning  = "signing"
+	// FormTCPAuth is a raw TCP credential (a database's): no HTTP rule,
+	// no host match against the lease's egress. Host and Port name where
+	// it is used, and the credential's own fields (TCPAuth) are read
+	// directly by whatever dials there — never through Writes or Apply.
+	FormTCPAuth = "tcp_auth"
 )
 
 // The relay's own refusals of an injected host's request.
@@ -101,6 +106,11 @@ type InjectSpec struct {
 	// gap 32). Never Latchkey's to set: the node sets it on the rules it
 	// makes itself.
 	Overwrite bool `json:"-"`
+	// Host and Port are the tcp_auth form's: where the raw credential is
+	// used, read directly rather than matched against a lease's egress
+	// hosts (MatchesHost never matches a tcp_auth spec, having no Hosts).
+	Host string `json:"host,omitempty"`
+	Port int    `json:"port,omitempty"`
 }
 
 // FormOf is the spec's form: a connection's rule names none and is a
@@ -114,6 +124,15 @@ func (s InjectSpec) FormOf() string {
 
 // Check says why the spec is not one the relay can apply, "" when it is.
 func (s InjectSpec) Check() string {
+	if s.FormOf() == FormTCPAuth {
+		if s.Host == "" {
+			return "the tcp_auth form names no host"
+		}
+		if s.Port <= 0 {
+			return "the tcp_auth form names no port"
+		}
+		return ""
+	}
 	if len(s.Hosts) == 0 {
 		return "the inject rule names no host"
 	}
@@ -246,25 +265,46 @@ func (c *Credential) render(t string) (string, error) {
 	return out, nil
 }
 
+// templated is tmpl rendered, or the first of names the credential has.
+func (c *Credential) templated(tmpl string, names ...string) (string, error) {
+	if tmpl != "" {
+		return c.render(tmpl)
+	}
+	for _, n := range names {
+		if v, ok := c.Fields[n]; ok {
+			return v, nil
+		}
+	}
+	return "", fmt.Errorf("the credential has no %s field", names[0])
+}
+
 // basic is the basic form's user and password.
 func (c *Credential) basic() (string, string, error) {
-	field := func(tmpl string, names ...string) (string, error) {
-		if tmpl != "" {
-			return c.render(tmpl)
-		}
-		for _, n := range names {
-			if v, ok := c.Fields[n]; ok {
-				return v, nil
-			}
-		}
-		return "", fmt.Errorf("the credential has no %s field", names[0])
-	}
-	u, err := field(c.Spec.User, "user", "username")
+	u, err := c.templated(c.Spec.User, "user", "username")
 	if err != nil {
 		return "", "", err
 	}
-	p, err := field(c.Spec.Pass, "pass", "password")
+	p, err := c.templated(c.Spec.Pass, "pass", "password")
 	return u, p, err
+}
+
+// TCPAuth is the tcp_auth form's user, password and database: read
+// directly by whatever dials the credential's host and port, never
+// through Writes or Apply (there is no request to write onto).
+func (c *Credential) TCPAuth() (user, pass, database string, err error) {
+	user, err = c.templated(c.Spec.User, "user", "username")
+	if err != nil {
+		return "", "", "", err
+	}
+	pass, err = c.templated(c.Spec.Pass, "pass", "password")
+	if err != nil {
+		return "", "", "", err
+	}
+	database = c.Fields["database"]
+	if database == "" {
+		database = c.Fields["dbname"]
+	}
+	return user, pass, database, nil
 }
 
 // Writes is what the credential's rule writes on a request: its headers
