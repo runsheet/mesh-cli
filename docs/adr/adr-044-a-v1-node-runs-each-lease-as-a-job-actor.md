@@ -205,8 +205,12 @@ self-update and Mesh ask for.
 
 Sessions that outlive a restart (`mesh node upgrade` for v1, the
 legacy node's ADR-009 adoption) are not part of this amendment. Today a
-lease's agent is a `podman run -i` child whose stdin and stdout are the
-node's own pipes. Its credentials are in the node's memory: the DPoP
+lease's agent is a `podman run -i` child whose real stdin is a named
+pipe and whose real stdout is a plain file, both under the lease's own
+directory (`leases/<lease id>/`): the node writes to the pipe and
+reads the agent's output by tailing the file from a saved offset,
+rather than holding either end in an in-memory pipe of its own that a
+restart would drop. Its credentials are in the node's memory: the DPoP
 key, the session token, the interception CA, the canary values. Its
 end state (the result held, the turn ledger, the access records) is
 in memory too. Adopting it takes a detached agent, a sidecar that can

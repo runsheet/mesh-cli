@@ -76,6 +76,9 @@ type leasePod struct {
 	sess     *sandbox.Session
 	name     string
 	statuses []sandbox.ServiceStatus
+	// dir is the lease's own directory (Runtime.leaseDir): the agent's
+	// stdio files go here, not the node's own pipes (agentio.go).
+	dir string
 	// shim is the proxy shim's path in the HOME, once written.
 	shim string
 	// gitPort is the bridge's port in the pod (podGitPort).
@@ -145,7 +148,7 @@ func (r *Runtime) openLeasePod(ctx context.Context, b *meshapi.Brief, workspace 
 	if err != nil {
 		return nil, err
 	}
-	p := &leasePod{sess: sess, name: PodName(b.LeaseID), gitPort: cmp.Or(r.gitBridgePort, podGitPort),
+	p := &leasePod{sess: sess, name: PodName(b.LeaseID), dir: sb.TempDir, gitPort: cmp.Or(r.gitBridgePort, podGitPort),
 		denied: r.sandboxReporter(b.LeaseID)}
 	p.logf = func(format string, args ...any) {
 		r.logf("nodev1: lease %s: "+format, append([]any{b.LeaseID}, args...)...)
@@ -340,7 +343,9 @@ func (p *leasePod) run(workspace, gitBase, sock string, model bool) (PodRun, err
 			vars = append(vars, p.proxyEnv...)
 			vars = append(vars, p.registryEnv...)
 		}
-		return p.sess.RunAgent(ctx, sandbox.RunSpec{Workspace: workspace, Env: jobEnv, Vars: vars, Command: cmd, Stdin: stdin, Stdout: stdout, Stderr: stderr})
+		return runWithAgentIO(ctx, p.dir, stdin, stdout, func(stdin, stdout *os.File) error {
+			return p.sess.RunAgent(ctx, sandbox.RunSpec{Workspace: workspace, Env: jobEnv, Vars: vars, Command: cmd, Stdin: stdin, Stdout: stdout, Stderr: stderr})
+		})
 	}, nil
 }
 
@@ -614,7 +619,9 @@ func (p *leasePod) runSidecar(workspace, gitBase string) PodRun {
 		vars = append(vars, p.proxyEnv...)
 		vars = append(vars, p.registryEnv...)
 		vars = append(vars, RelayURLEnv+"="+p.bridgeBase())
-		return p.sess.RunAgent(ctx, sandbox.RunSpec{Workspace: workspace, Env: jobEnv, Vars: vars, Command: argv, Stdin: stdin, Stdout: stdout, Stderr: stderr})
+		return runWithAgentIO(ctx, p.dir, stdin, stdout, func(stdin, stdout *os.File) error {
+			return p.sess.RunAgent(ctx, sandbox.RunSpec{Workspace: workspace, Env: jobEnv, Vars: vars, Command: argv, Stdin: stdin, Stdout: stdout, Stderr: stderr})
+		})
 	}
 }
 
