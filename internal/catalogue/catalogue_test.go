@@ -173,3 +173,86 @@ func TestLoadCarriesTheProductsTools(t *testing.T) {
 		t.Fatalf("published kind: %s", raw)
 	}
 }
+
+// TestLoadCarriesToolsAndEgress: a kind's node_tools, tools and egress
+// are sent as written (ADR 001 amendment "tool slots and egress"), and
+// absent is not empty: a kind with no egress key sends none, egress: {}
+// sends {}.
+func TestLoadCarriesToolsAndEgress(t *testing.T) {
+	files := acme()
+	files[".mesh/jobs/triage.yml"] += `node_tools: [result, progress]
+tools:
+  required:
+    - {name: brief, from: product, description: Call first to read the subject.}
+    - {name: result, from: mesh, description: Call to finish.}
+  optional:
+    - {name: web_search, from: connection, description: Search the web.}
+egress:
+  hosts: [api.search.brave.com]
+  mcp: [acme]
+  model: true
+  registries: [https://api.runsheet.dev/npm/]
+`
+	files[".mesh/jobs/review.yml"] += "egress: {}\n"
+	b, err := Load(checkout(t, files), Source{Commit: "c1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := b.Kinds[2]
+	if tr.Egress == nil || tr.Egress.Hosts[0] != "api.search.brave.com" || !tr.Egress.Model || tr.Tools == nil || len(tr.Tools.Required) != 2 || tr.Tools.Optional[0].From != "connection" {
+		t.Fatalf("triage: %+v", tr)
+	}
+	raw, _ := json.Marshal(tr)
+	for _, want := range []string{`"node_tools":["result","progress"]`, `"egress":{"hosts":["api.search.brave.com"],"mcp":["acme"],"model":true,"registries":["https://api.runsheet.dev/npm/"]}`, `"optional":[{"name":"web_search","from":"connection","description":"Search the web."}]`} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("published triage lacks %s: %s", want, raw)
+		}
+	}
+	if raw, _ = json.Marshal(b.Kinds[1]); !strings.Contains(string(raw), `"egress":{}`) || strings.Contains(string(raw), "tools") {
+		t.Errorf("egress: {} is sent as {}, with no tools: %s", raw)
+	}
+	if raw, _ = json.Marshal(b.Kinds[0]); strings.Contains(string(raw), "egress") || strings.Contains(string(raw), "tools") {
+		t.Errorf("a kind that declares neither sends neither: %s", raw)
+	}
+}
+
+// TestLoadRefusesBadToolsAndEgress: each refusal Mesh's publish makes
+// of tools and egress is made before sending, all at once.
+func TestLoadRefusesBadToolsAndEgress(t *testing.T) {
+	long := strings.Repeat("x", 201)
+	cases := []struct{ name, yaml, want string }{
+		{"tool name", "tools:\n  optional:\n    - {name: Web-Search, from: connection, description: d}\n", "tools.optional[Web-Search]: a tool's name must match"},
+		{"description", "tools:\n  required:\n    - {name: brief, from: product, description: " + long + "}\n", "the description is 201 characters; at most 200"},
+		{"from", "tools:\n  required:\n    - {name: brief, from: vendor, description: d}\n", `from "vendor" is not one of`},
+		{"optional not a slot", "tools:\n  optional:\n    - {name: brief, from: product, description: d}\n", "an optional tool is a connection slot"},
+		{"mesh not in node_tools", "tools:\n  required:\n    - {name: result, from: mesh, description: d}\n", "a mesh tool must also be in node_tools"},
+		{"twice", "tools:\n  required:\n    - {name: submit, from: product, description: d}\n  optional:\n    - {name: submit, from: connection, description: d}\n", `tools.optional[submit]: "submit" is named twice`},
+		{"count", "node_tools: [a, b, c, d, e, f]\ntools:\n  required:\n    - {name: g, from: product, description: d}\n    - {name: h, from: product, description: d}\n    - {name: i, from: product, description: d}\n    - {name: j, from: product, description: d}\n    - {name: k, from: product, description: d}\n", "served 11 tools"},
+		{"host scheme", "egress:\n  hosts: [https://proxy.golang.org]\n", `"https://proxy.golang.org", which is not a bare hostname`},
+		{"host wildcard", "egress:\n  hosts: ['*.brave.com']\n", "not a bare hostname"},
+		{"host address", "egress:\n  hosts: [10.0.0.1]\n", "not a bare hostname"},
+		{"host twice", "egress:\n  hosts: [pypi.org, pypi.org]\n", `"pypi.org" twice`},
+		{"other product's mcp", "egress:\n  mcp: [runsheet]\n", `egress.mcp names "runsheet"`},
+		{"registry prefix", "egress:\n  registries: [https://api.runsheet.dev/npm]\n", "not an https prefix ending"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			files := acme()
+			files[".mesh/jobs/triage.yml"] += c.yaml
+			_, err := Load(checkout(t, files), Source{Commit: "c1"})
+			if err == nil || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), ".mesh/jobs/triage.yml") {
+				t.Fatalf("want a refusal naming triage.yml and %q, got: %v", c.want, err)
+			}
+		})
+	}
+}
+
+// TestLoadTakesAGoodSlotList: a single-label host, a mesh tool counted
+// once with node_tools, and ten tools in all are accepted.
+func TestLoadTakesAGoodSlotList(t *testing.T) {
+	files := acme()
+	files[".mesh/jobs/triage.yml"] += "node_tools: [result, a, b, c, d, e]\ntools:\n  required:\n    - {name: result, from: mesh, description: d}\n    - {name: g, from: product, description: d}\n    - {name: h, from: product, description: d}\n    - {name: i, from: product, description: d}\n  optional:\n    - {name: j, from: connection, description: d}\negress:\n  hosts: [localhost, abr.business.gov.au]\n"
+	if _, err := Load(checkout(t, files), Source{Commit: "c1"}); err != nil {
+		t.Fatal(err)
+	}
+}
