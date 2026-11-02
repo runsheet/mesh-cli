@@ -66,9 +66,7 @@ func (r *Runtime) onEvent(e meshapi.NodeEvent) {
 			r.logf("nodev1: lease %s: %s", c.LeaseID, why)
 		}
 	case meshapi.EventDrain:
-		r.mu.Lock()
-		r.drain = true
-		r.mu.Unlock()
+		r.markDrain("Mesh asked the node to drain")
 		r.logf("nodev1: Mesh asked the node to drain")
 	case meshapi.EventTurn:
 		var t meshapi.TurnEvent

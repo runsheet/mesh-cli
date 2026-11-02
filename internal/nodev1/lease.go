@@ -102,8 +102,9 @@ func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take, room *schedule
 	mb := NewMailbox()
 	mb.turns = newTurnLedger(b)
 	r.mu.Lock()
-	r.leases.Put(id, &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: turnToolFor(b), jobID: b.JobID})
+	r.leases.Put(id, &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: turnToolFor(b), jobID: b.JobID, kind: b.Kind, started: time.Now()})
 	r.mu.Unlock()
+	r.publishStatus()
 	// the values the relay injects stay redacted until the lease is
 	// reported (canary.go)
 	defer r.closeInjected(r.openInjected(id))
@@ -111,6 +112,7 @@ func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take, room *schedule
 		r.mu.Lock()
 		r.leases.Delete(id)
 		r.mu.Unlock()
+		r.publishStatus()
 	}()
 	defer func() {
 		if p := recover(); p != nil {

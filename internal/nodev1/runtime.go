@@ -186,9 +186,16 @@ type Runtime struct {
 	// newer release drains the node, waits DrainWait (30 minutes) for
 	// its leases, hands back node_update what still runs, installs, and
 	// ends Run with ErrRestartForUpdate.
-	Updater        resources.Updater
-	UpdateEvery    time.Duration
-	DrainWait      time.Duration
+	Updater     resources.Updater
+	UpdateEvery time.Duration
+	DrainWait   time.Duration
+	// OnStatus, when set, hears the node's status (drain.go) at each
+	// heartbeat, as a lease starts or ends, and as the node drains: the
+	// command leaves it for `mesh node status`.
+	OnStatus func(Status)
+	// DrainTick is how often a drain with a wait looks whether it is up
+	// (a second when zero).
+	DrainTick      time.Duration
 	QuietAfter     time.Duration
 	SuperviseEvery time.Duration
 	ReconcileEvery time.Duration
@@ -213,6 +220,18 @@ type Runtime struct {
 	// sessions' rate-limit readings, for the heartbeat (accounts.go)
 	accounts map[string]*accountReading
 	drain    bool
+	// drained closes when the node drains, waking a take or a wait for a
+	// slot; drainSince, drainReason and handBackAt are the drain as
+	// `mesh node status` shows it, askedDrain says the operator's drain
+	// (Drain) asked it, and handedBack that its wait is spent
+	drained     chan struct{}
+	drainSince  time.Time
+	drainReason string
+	handBackAt  time.Time
+	askedDrain  bool
+	handedBack  bool
+	// telling is the operator's drain told to Mesh, which Run waits for
+	telling sync.WaitGroup
 	// updating is a drain the self-update asked for; updated closes when
 	// it ends, holding the version it installed
 	updating bool
@@ -230,8 +249,11 @@ type running struct {
 	// with.
 	mailbox  *Mailbox
 	turnTool string
-	// jobID is the lease's job, for the thread sweep (thread.go).
-	jobID string
+	// jobID is the lease's job, for the thread sweep (thread.go); kind
+	// its kind and started when the node took it, for the status.
+	jobID   string
+	kind    string
+	started time.Time
 	// actor is the lease's job actor, under --actors; pod its pod, and
 	// escalatedAt when the supervisor last escalated it for quiet.
 	actor       *actor.Actor
@@ -356,8 +378,17 @@ func (r *Runtime) Run(ctx context.Context) error {
 	}
 	r.mu.Lock()
 	r.nodeID = node.NodeID
+	askedEarly := r.askedDrain
 	r.mu.Unlock()
 	r.logf("nodev1: registered as %s (%s)", node.NodeID, r.Node.Name)
+	// a drain this node asked Mesh for before a restart is cleared
+	// before it takes or beats; one asked before the registration
+	// answered is told now
+	r.resumeOwnDrain(ctx, node.NodeID)
+	if askedEarly {
+		r.tellMeshDrain(node.NodeID, r.Status().DrainReason)
+	}
+	r.publishStatus()
 	// a refused connection offered again in the background stops with
 	// the run
 	connCtx, stopConnecting := context.WithCancel(ctx)
@@ -386,6 +417,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 		go s.Run(hbCtx)
 	}
 	r.startResources(hbCtx)
+	go r.handBackWhenWaitIsUp(hbCtx)
 
 	var leases sync.WaitGroup
 	defer leases.Wait()
@@ -395,10 +427,21 @@ func (r *Runtime) Run(ctx context.Context) error {
 			if err := r.awaitUpdate(ctx); err != nil {
 				return err
 			}
-			r.logf("nodev1: Mesh asked the node to drain; it takes no more leases")
+			r.telling.Wait()
+			r.logf("%s", r.drainedEnd())
 			return nil
 		}
-		r.waitForSlot(ctx)
+		// a drain ends the wait for a slot. The take in flight is left to
+		// answer: Mesh, told of the drain, answers it 204 at its next
+		// pass (at most MaxWaitS), and a lease it placed before is run,
+		// never dropped unanswered to lapse
+		slotCtx, stopSlot := r.untilDrain(ctx)
+		r.waitForSlot(slotCtx)
+		drained := slotCtx.Err() != nil && ctx.Err() == nil
+		stopSlot()
+		if drained {
+			continue
+		}
 		if ctx.Err() != nil {
 			break
 		}
@@ -408,6 +451,9 @@ func (r *Runtime) Run(ctx context.Context) error {
 		if err != nil {
 			if ctx.Err() != nil {
 				break
+			}
+			if r.draining() {
+				continue
 			}
 			r.logf("nodev1: take: %v", err)
 			r.sleep(ctx, r.backoff())
@@ -509,10 +555,12 @@ func (r *Runtime) heartbeat(ctx context.Context) {
 	}
 	r.sentAccounts(accounts)
 	if resp.Drain {
-		r.mu.Lock()
-		r.drain = true
-		r.mu.Unlock()
+		r.markDrain("Mesh asked the node to drain")
 	}
+	if st := r.Status(); st.Draining && len(st.Leases) > 0 {
+		r.logf("nodev1: draining: %d lease(s) still running", len(st.Leases))
+	}
+	r.publishStatus()
 	for _, id := range resp.Cancel {
 		r.cancelLease(id, "Mesh cancelled the lease (heartbeat)")
 	}

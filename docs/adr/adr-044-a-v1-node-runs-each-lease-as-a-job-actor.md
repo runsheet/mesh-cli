@@ -142,3 +142,74 @@ one session at a time.
 
 A node with no slot limit should say its memory (`--mem-gb`): with
 memory 0 Mesh fits only jobs that ask none, as before.
+
+## Amendment, 2026-11-02: the operator's drain (`mesh node drain`)
+
+A v1 node had no way to restart that let its leases finish. Its service
+manager's restart is a SIGTERM, which ends Run's context: every lease is
+handed back `node_restart` and its job starts again from the beginning
+on the next take. On 2026-11-02 every deploy of dl360's v1 node did
+exactly that. The legacy node had `mesh node drain` (SIGUSR1 through
+`~/.mesh/node.pid`); the only drain in nodev1 was the one the
+self-update and Mesh ask for.
+
+1. **A pidfile of its own.** `mesh node run --api v1` writes its pid to
+   `~/.mesh/node-v1/node.pid`. A legacy node and a v1 node run by one
+   user keep apart: their state is in different directories. Beside the
+   pid are:
+   - `node.draining`, the draining marker;
+   - `node.status`, the node's status (registration, drain, live
+     leases). It is written at each heartbeat, as a lease starts or
+     ends, and as the node drains.
+
+   All three are removed as the process exits.
+2. **SIGUSR1 drains.** `mesh node drain` signals the running node.
+   - With a legacy and a v1 node both running as the user, `--api v0|v1`
+     says which; otherwise it is the one running.
+   - The node takes no new lease. A wait for a free slot ends at the
+     drain. A take already in its long poll is not cut off: a lease Mesh
+     placed but the node never heard would sit unrun until its TTL
+     lapsed. Mesh, told of the drain, answers that take 204 on its next
+     pass (within `MaxWaitS`, 25 s). A lease it had already placed runs,
+     and the drain waits for it.
+   - The node asks Mesh to stop offering it work with `POST
+     /v1/nodes/{id}/drain {drain: true, reason}`. The take answers 204,
+     and Mesh's health reads show the node as draining.
+   - The running leases finish as they would. Once none runs, Run ends
+     nil (the Mesh call answered first), the process exits 0, and
+     systemd (`Restart=always`) starts the binary now on disk.
+3. **`--wait <dur>`.** When the wait is up, what still runs is handed
+   back `node_update`, as the self-update's drain wait does: the job
+   keeps its place and no attempt is spent. The node then exits as
+   above. The wait reaches the node in `node.drain-wait`, written before
+   the signal and read once as it arrives. A second drain may shorten
+   the wait, never lengthen it.
+4. **The drain is resumed by the node that asked for it.** Mesh keeps a
+   drain across a restart; only `drain: false` clears it. Before the
+   node calls Mesh, it marks the work root with `mesh-drained`. Its next
+   start finds the mark and calls `POST /v1/nodes/{id}/drain {drain:
+   false}` before it beats or takes. A drain Mesh holds without the mark
+   is not the node's to clear, and stays. If the resume fails, the mark
+   stays and the next start asks again.
+5. **SIGTERM is unchanged.** It is the fast stop, drain or no drain:
+   every lease is handed back `node_restart` at once.
+6. **The heartbeat is unchanged.** Mesh's heartbeat body is strict
+   (unknown fields refused), so the node adds no `draining` field. Mesh
+   learns of the drain from the drain call, and every heartbeat's answer
+   then says `drain: true`. While draining, the node logs each beat with
+   the leases it still runs.
+7. **`mesh node status`.** It shows a v1 node from `node.status`: its
+   pid, node id and version; whether it drains, for how long, and when
+   its wait hands back; and each live lease with its job, kind and age.
+   With no legacy node beside it, nothing else is printed.
+
+Sessions that outlive a restart (`mesh node upgrade` for v1, the
+legacy node's ADR-009 adoption) are not part of this amendment. Today a
+lease's agent is a `podman run -i` child whose stdin and stdout are the
+node's own pipes. Its credentials are in the node's memory: the DPoP
+key, the session token, the interception CA, the canary values. Its
+end state (the result held, the turn ledger, the access records) is
+in memory too. Adopting it takes a detached agent, a sidecar that can
+reload its credentials, and the lease's state on disk, so it is staged
+separately. Until then, a deploy that should not restart work is a
+drain.

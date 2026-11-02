@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -162,6 +163,49 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
+		// the pidfile under ~/.mesh/node-v1: SIGUSR1 (`mesh node drain`)
+		// drains — no new lease, Mesh told, the running leases finish,
+		// and Run ends nil so the process exits 0 and its service
+		// manager starts the binary on disk. SIGTERM stays the fast stop.
+		state, err := v1RunState()
+		if err != nil {
+			return err
+		}
+		pid := os.Getpid()
+		if err := v1Started(state, pid); err != nil {
+			return fmt.Errorf("mesh node run: pidfile: %w", err)
+		}
+		// nothing the node writes there outlives it: a status or a marker
+		// arriving as Run ends is dropped once the state is removed
+		var stateMu sync.Mutex
+		stopped := false
+		defer func() {
+			stateMu.Lock()
+			defer stateMu.Unlock()
+			stopped = true
+			v1Stopped(state, pid)
+		}()
+		rt.OnStatus = func(st nodev1.Status) {
+			stateMu.Lock()
+			defer stateMu.Unlock()
+			if stopped {
+				return
+			}
+			if err := writeV1Status(state, st); err != nil {
+				logger.Printf("status: %v", err)
+			}
+		}
+		defer onDrainSignal(func() {
+			stateMu.Lock()
+			wait := takeV1DrainWait(state)
+			if !stopped {
+				if err := state.MarkDraining(); err != nil {
+					logger.Printf("draining marker: %v", err)
+				}
+			}
+			stateMu.Unlock()
+			rt.Drain("`mesh node drain` asked", wait)
+		})()
 		if nodeRunSandbox {
 			if !nodeRunActors {
 				return errors.New("mesh node run: --sandbox runs each lease's pod as its job actor's: it needs --actors")

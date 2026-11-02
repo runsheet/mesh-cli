@@ -48,6 +48,11 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			decode(t, f.Request, &req)
 			return c.Connect(context.Background(), idOf(f.Path, 3), req)
 		},
+		"nodes-drain": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.DrainRequest
+			decode(t, f.Request, &req)
+			return c.Drain(context.Background(), idOf(f.Path, 3), req)
+		},
 		"take-lease": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
 			var req meshapi.TakeRequest
 			decode(t, f.Request, &req)
