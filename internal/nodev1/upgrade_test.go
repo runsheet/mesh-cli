@@ -27,6 +27,9 @@ func TestUpgradeWritesHandoffAndLeavesLeaseRunning(t *testing.T) {
 	}
 	job := g.offer(t, func(b *meshapi.Brief) {
 		b.Pods = []json.RawMessage{json.RawMessage(`{"name":"postgres","image":"postgres:17-alpine","env":["POSTGRES_PASSWORD=mysecret"]}`)}
+		b.TurnTool = "turn"
+		b.Git.Access = "write"
+		b.Code.PushTo = "main"
 	})
 	done := make(chan error, 1)
 	go func() { done <- g.rt.Run(context.Background()) }()
@@ -38,6 +41,26 @@ func TestUpgradeWritesHandoffAndLeavesLeaseRunning(t *testing.T) {
 	}
 	id := g.fake.LeaseOf(job)
 	pod := PodName(id)
+
+	// a turn over the event stream the session's mailbox is given and
+	// acks, so the handoff's ledger has a given seq to show: a renewal
+	// would forget it once a later turns_seen passed it, but no renewal
+	// here ever answers it (Mesh never heard of it through Turn), so it
+	// stays given; and a push_to that resolves to the brief's own base
+	// so the handoff's push heads do too
+	turnData, _ := json.Marshal(meshapi.TurnEvent{LeaseID: id, JobID: job, TurnID: "t-1", Seq: 1})
+	waitFor(t, "the turn to reach the event stream", func() bool {
+		return g.fake.Stream(meshapi.NodeEvent{Event: meshapi.EventTurn, Data: turnData}) > 0
+	})
+	waitFor(t, "the turn to be given to the session", func() bool {
+		l := g.rt.leaseTurns(id)
+		if l == nil {
+			return false
+		}
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		return l.given[1]
+	})
 
 	g.rt.Upgrade("the node is updating")
 
@@ -67,6 +90,12 @@ func TestUpgradeWritesHandoffAndLeavesLeaseRunning(t *testing.T) {
 	}
 	if st.SocketDir == "" {
 		t.Fatalf("hand-off socket dir is empty")
+	}
+	if sha := st.PushHeads["refs/heads/main"]; len(st.PushHeads) != 1 || sha != g.github.head {
+		t.Fatalf("hand-off push heads %+v, want refs/heads/main at %s", st.PushHeads, g.github.head)
+	}
+	if st.Turns == nil || st.Turns.Seen != 0 || !slices.Contains(st.Turns.Given, int64(1)) {
+		t.Fatalf("hand-off turns %+v, want seen 0 and seq 1 given", st.Turns)
 	}
 
 	// let the lease end so the test does not leak it: its outcome past
