@@ -928,8 +928,9 @@ func (s *Session) Exec(ctx context.Context, spec RunSpec) error {
 		stderr = io.MultiWriter(spec.Stderr, tail)
 	}
 	start := time.Now()
+	name := ExecName(pod, n)
 	exit, err := s.sb.Runtime.RunAgent(ctx, pod, AgentSpec{
-		Name:           ExecName(pod, n),
+		Name:           name,
 		Image:          cfg.Image,
 		Workdir:        spec.Workspace,
 		Mounts:         mounts,
@@ -942,6 +943,10 @@ func (s *Session) Exec(ctx context.Context, spec RunSpec) error {
 		Stderr:         stderr,
 	})
 	if ctx.Err() != nil {
+		// killing podman's client leaves the command's container
+		// running beside the agent: a run_suite stopped by its budget
+		// or by fail fast (nodev1) stops here, not when the pod goes
+		s.removeRun(ctx, name)
 		return ctx.Err()
 	}
 	if err != nil {

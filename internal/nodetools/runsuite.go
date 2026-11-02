@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -109,6 +111,41 @@ type RunSuite struct {
 	// "red"), and answers the model the session moves to, "" when it
 	// does not; nil never escalates.
 	Escalate func(why string) string
+
+	// A run outlives the call that starts it (ADR-049): the call waits
+	// at most Wait (DefaultSuiteWait when zero) — under the MCP call's
+	// own timeout — and then answers the run's handle, {run_id, status:
+	// running}, which the session polls with run_suite {run_id}. The run
+	// goes on in Context, the lease's (context.Background when nil), so
+	// it ends with the lease and never with a call.
+	Wait    time.Duration
+	Context context.Context
+	// Budget is the repository's validation budget (validate.yml's
+	// budget:, read from the checkout as the lease began) and Began the
+	// lease's start: a run still going at Began+Budget is stopped and
+	// answered red, out of time, and a run asked for after it runs
+	// nothing and is answered the same. Zero Budget bounds nothing.
+	Budget time.Duration
+	Began  time.Time
+
+	mu   sync.Mutex
+	runs map[string]*suiteRun
+	n    int
+}
+
+// DefaultSuiteWait is how long one run_suite call waits on its run
+// before it answers the run's handle: well under the 30 minutes a
+// session's MCP call gives up after (mesh-specs gap 36).
+const DefaultSuiteWait = 10 * time.Minute
+
+// suiteRun is one run_suite run, started by a call and polled by its id.
+type suiteRun struct {
+	id      string
+	suites  []string
+	started time.Time
+	done    chan struct{}
+	answer  string
+	err     error
 }
 
 // SuiteOutput is run_suite's output blob.
@@ -117,15 +154,32 @@ type SuiteOutput struct {
 	Tests []TestResult `json:"tests"`
 }
 
-// SuiteStep is one step's outcome.
+// SuiteStep is one step's outcome; a sharded step's (validate.yml
+// shards:) also each shard's, the step's exit the first failing
+// shard's and its duration the longest shard's.
 type SuiteStep struct {
-	Name        string `json:"name"`
-	Command     string `json:"command"`
-	Exit        int    `json:"exit"`
-	DurationMs  int64  `json:"duration_ms"`
-	TestsRun    int    `json:"tests_run"`
-	TestsPassed int    `json:"tests_passed"`
-	TestsFailed int    `json:"tests_failed"`
+	Name        string       `json:"name"`
+	Command     string       `json:"command"`
+	Exit        int          `json:"exit"`
+	DurationMs  int64        `json:"duration_ms"`
+	TestsRun    int          `json:"tests_run"`
+	TestsPassed int          `json:"tests_passed"`
+	TestsFailed int          `json:"tests_failed"`
+	Shards      []SuiteShard `json:"shards,omitempty"`
+}
+
+// SuiteShard is one shard of a sharded step: its index (0-based, as
+// MESH_SHARD_INDEX) of total, and how it ended — or that it never ran
+// (not_run: a fail-fast run stopped first, or its lane did not open).
+type SuiteShard struct {
+	Index       int   `json:"index"`
+	Total       int   `json:"total"`
+	Exit        int   `json:"exit"`
+	DurationMs  int64 `json:"duration_ms"`
+	TestsRun    int   `json:"tests_run"`
+	TestsPassed int   `json:"tests_passed"`
+	TestsFailed int   `json:"tests_failed"`
+	NotRun      bool  `json:"not_run,omitempty"`
 }
 
 // TestResult is one test's (or, Test empty, one package's) final event.
@@ -144,9 +198,12 @@ func (s *RunSuite) Tool() mcptool.Tool {
 	return mcptool.Tool{
 		Name: RunSuiteTool,
 		Description: "Run the repository's declared validation (.runsheet/validate.yml) on your checkout as it stands, " +
-			"every suite or the one you name, whole or only the targets and tests you name. Answers each step's exit and test counts, the failing tests, " +
+			"every suite or the one you name, whole or only the targets and tests you name. A sharded suite's shards run at once, each beside its own services. " +
+			"Answers each step's exit and test counts, the failing tests, " +
 			"and the evidence id of the node's signed record of the run: pass that id on, never your own account of it. " +
-			"A run of named targets or tests is recorded as that selection, never as the suite's full run.",
+			"A run of named targets or tests is recorded as that selection, never as the suite's full run. " +
+			"A run still going after a while answers {run_id, status: running} instead: call run_suite {run_id} again to wait for it, as often as it takes; " +
+			"never start the same suites again while it runs. A run past the repository's budget is stopped and answered red with out_of_time: finish red, saying it ran out of time.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -156,6 +213,10 @@ func (s *RunSuite) Tool() mcptool.Tool {
 					SuiteTargetsEnv + " (space separated); the suite's whole set when absent"),
 				"tests": list("the test names to run, exported to the suite's command as " + SuiteTestsEnv +
 					" (space separated); every test when absent"),
+				"fail_fast": map[string]any{"type": "boolean", "description": "stop the run at its first failing suite or shard, the others cancelled and named not run"},
+				"run_id":    map[string]any{"type": "string", "description": "a running run's id, as an earlier call answered it: wait for that run instead of starting one"},
+				"wait_seconds": map[string]any{"type": "integer", "minimum": 0,
+					"description": "with run_id, how long to wait for the run before answering it is still running; at most the node's own wait, which is the default"},
 			},
 		},
 		Call: s.call,
@@ -215,6 +276,13 @@ func selectionArg(args map[string]any) (*Selection, error) {
 }
 
 func (s *RunSuite) call(ctx context.Context, args map[string]any) (string, error) {
+	if id, _ := args["run_id"].(string); strings.TrimSpace(id) != "" {
+		wait, err := s.waitArg(args)
+		if err != nil {
+			return "", err
+		}
+		return s.poll(ctx, strings.TrimSpace(id), wait)
+	}
 	run := s.Run
 	if run == nil {
 		if !s.OnHost {
@@ -232,6 +300,12 @@ func (s *RunSuite) call(ctx context.Context, args map[string]any) (string, error
 	sel, err := selectionArg(args)
 	if err != nil {
 		return "", err
+	}
+	failFast := false
+	if v, ok := args["fail_fast"]; ok && v != nil {
+		if failFast, ok = v.(bool); !ok {
+			return "", errors.New("fail_fast is true or false")
+		}
 	}
 	cfg, err := validate.Load(s.Workspace)
 	if errors.Is(err, validate.ErrNoValidation) {
@@ -254,14 +328,139 @@ func (s *RunSuite) call(ctx context.Context, args map[string]any) (string, error
 	if len(steps) == 0 {
 		return "", errors.New("validate.yml declares no suites")
 	}
-	head, _ := git(ctx, s.Workspace, "rev-parse", "--verify", "-q", "HEAD^{commit}")
-	tree, _ := git(ctx, s.Workspace, "rev-parse", "--verify", "-q", "HEAD^{tree}")
+	r := s.start(steps)
+	go func() {
+		defer close(r.done)
+		r.answer, r.err = s.execute(r, run, steps, sel, failFast)
+	}()
+	return s.await(ctx, r, s.wait())
+}
+
+// wait is how long a call waits on its run.
+func (s *RunSuite) wait() time.Duration {
+	if s.Wait > 0 {
+		return s.Wait
+	}
+	return DefaultSuiteWait
+}
+
+// waitArg is a poll's wait_seconds, at most the node's wait.
+func (s *RunSuite) waitArg(args map[string]any) (time.Duration, error) {
+	v, ok := args["wait_seconds"]
+	if !ok || v == nil {
+		return s.wait(), nil
+	}
+	var n float64
+	switch x := v.(type) {
+	case float64:
+		n = x
+	case int:
+		n = float64(x)
+	default:
+		n = -1
+	}
+	if n < 0 {
+		return 0, errors.New("wait_seconds is a number of seconds, 0 or more")
+	}
+	return min(time.Duration(n*float64(time.Second)), s.wait()), nil
+}
+
+// start registers a run of steps under a new id.
+func (s *RunSuite) start(steps []validate.Step) *suiteRun {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.runs == nil {
+		s.runs = map[string]*suiteRun{}
+	}
+	s.n++
+	r := &suiteRun{id: "run-" + strconv.Itoa(s.n), suites: stepNames(steps), started: time.Now(), done: make(chan struct{})}
+	s.runs[r.id] = r
+	return r
+}
+
+// poll waits up to wait for the run id names.
+func (s *RunSuite) poll(ctx context.Context, id string, wait time.Duration) (string, error) {
+	s.mu.Lock()
+	r := s.runs[id]
+	s.mu.Unlock()
+	if r == nil {
+		return "", fmt.Errorf("no run %q on this lease: run_suite answers a run's id when it starts one", id)
+	}
+	return s.await(ctx, r, wait)
+}
+
+// await is the run's answer once it has ended, or its handle when it
+// is still going after wait. A call given up on by its caller leaves
+// the run going.
+func (s *RunSuite) await(ctx context.Context, r *suiteRun, wait time.Duration) (string, error) {
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case <-r.done:
+		return r.answer, r.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-t.C:
+	}
+	select {
+	case <-r.done:
+		return r.answer, r.err
+	default:
+	}
+	handle := map[string]any{"run_id": r.id, "status": "running", "suites": r.suites,
+		"started_at": r.started.UTC().Format(time.RFC3339), "elapsed_s": int(time.Since(r.started).Seconds()),
+		"next": "the run goes on: call run_suite {\"run_id\": \"" + r.id + "\"} to wait for it again"}
+	if d := s.deadline(); !d.IsZero() {
+		handle["budget_left_s"] = max(int(time.Until(d).Seconds()), 0)
+	}
+	b, _ := json.Marshal(handle)
+	return string(b), nil
+}
+
+// deadline is when the lease's budget runs out; zero for none.
+func (s *RunSuite) deadline() time.Time {
+	if s.Budget <= 0 || s.Began.IsZero() {
+		return time.Time{}
+	}
+	return s.Began.Add(s.Budget)
+}
+
+// execute runs the steps to their end — or to the lease's budget — and
+// records the run: its answer, as the call that sees it end returns it.
+func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, sel *Selection, failFast bool) (string, error) {
+	base := s.Context
+	if base == nil {
+		base = context.Background()
+	}
+	// reads of the checkout are not bounded by the budget
+	readCtx := context.WithoutCancel(base)
+	ctx, cancel := context.WithCancel(base)
+	defer cancel()
+	deadline := s.deadline()
+	if !deadline.IsZero() {
+		var stop context.CancelFunc
+		ctx, stop = context.WithDeadline(ctx, deadline)
+		defer stop()
+	}
+	if failFast {
+		ctx = validate.WithFailFast(ctx)
+	}
+	head, _ := git(readCtx, s.Workspace, "rev-parse", "--verify", "-q", "HEAD^{commit}")
+	tree, _ := git(readCtx, s.Workspace, "rev-parse", "--verify", "-q", "HEAD^{tree}")
 	// what the checkout holds beyond HEAD is part of what was run
-	status, _ := git(ctx, s.Workspace, "status", "--porcelain=v1", "-uall")
+	status, _ := git(readCtx, s.Workspace, "status", "--porcelain=v1", "-uall")
 	start := time.Now()
-	results, runErr := run(ctx, s.Workspace, steps, SelectionEnv(sel))
+	var results []validate.StepResult
+	var runErr error
+	if deadline.IsZero() || start.Before(deadline) {
+		results, runErr = run(ctx, s.Workspace, steps, SelectionEnv(sel))
+	}
 	ended := time.Now()
-	if runErr != nil && len(results) == 0 {
+	// out of time: the budget's deadline stopped a run that had not
+	// passed whole, and not the lease's own end
+	complete := len(results) == len(steps) && !slices.ContainsFunc(results, func(r validate.StepResult) bool { return r.ExitCode != 0 })
+	outOfTime := !deadline.IsZero() && errors.Is(ctx.Err(), context.DeadlineExceeded) && base.Err() == nil && !complete
+	if runErr != nil && len(results) == 0 && !outOfTime {
 		return "", fmt.Errorf("the suites could not run: %v", runErr)
 	}
 	out := Normalise(results)
@@ -276,7 +475,7 @@ func (s *RunSuite) call(ctx context.Context, args map[string]any) (string, error
 			exit = 1
 		}
 	}
-	if len(results) < len(steps) {
+	if len(results) < len(steps) || outOfTime {
 		exit = 1
 	}
 	for _, t := range out.Tests {
@@ -297,6 +496,10 @@ func (s *RunSuite) call(ctx context.Context, args map[string]any) (string, error
 	if sel != nil {
 		summary += fmt.Sprintf(" (a selection: %d targets, %d tests)", len(sel.Targets), len(sel.Tests))
 	}
+	if outOfTime {
+		summary = fmt.Sprintf("ran out of time: the lease ran past the repository's validation budget of %s (validate.yml budget:) and the run was stopped; ",
+			s.Budget) + summary
+	}
 	input := map[string]any{"suites": stepNames(steps), "head": strings.TrimSpace(head), "tree": strings.TrimSpace(tree), "status": Digest([]byte(status))}
 	if sel != nil {
 		// two selections of one suite are two inputs
@@ -304,13 +507,16 @@ func (s *RunSuite) call(ctx context.Context, args map[string]any) (string, error
 	}
 	rec := Record{Tool: RunSuiteTool, StartedAt: start, EndedAt: ended, Exit: exit, Summary: summary,
 		InputDigest: InputDigest(input), Selection: sel}
-	id, recErr := s.Recorder.Record(context.WithoutCancel(ctx), rec, blob)
-	answer := map[string]any{"exit": exit, "summary": summary, "steps": out.Steps, "failing_tests": failing,
+	id, recErr := s.Recorder.Record(readCtx, rec, blob)
+	answer := map[string]any{"run_id": r.id, "status": "finished", "exit": exit, "summary": summary, "steps": out.Steps, "failing_tests": failing,
 		"head": strings.TrimSpace(head), "tree": strings.TrimSpace(tree), "uncommitted": strings.TrimSpace(status) != "", "output_digest": Digest(blob)}
 	if sel != nil {
 		answer["selection"] = sel
 	}
-	if runErr != nil {
+	if outOfTime {
+		answer["out_of_time"] = true
+		answer["budget"] = s.Budget.String()
+	} else if runErr != nil {
 		answer["error"] = runErr.Error()
 	}
 	if recErr != nil {
@@ -318,7 +524,7 @@ func (s *RunSuite) call(ctx context.Context, args map[string]any) (string, error
 	} else {
 		answer["evidence_id"] = id
 	}
-	if exit != 0 && s.Escalate != nil {
+	if exit != 0 && !outOfTime && s.Escalate != nil {
 		if to := s.Escalate("run_suite went red: " + summary); to != "" {
 			answer["escalated_to"] = to
 		}
@@ -334,8 +540,29 @@ func Normalise(results []validate.StepResult) SuiteOutput {
 	out := SuiteOutput{Steps: []SuiteStep{}, Tests: []TestResult{}}
 	for _, r := range results {
 		out.Steps = append(out.Steps, SuiteStep{Name: r.Name, Command: r.Command, Exit: r.ExitCode, DurationMs: r.DurationMs,
-			TestsRun: r.TestsRun, TestsPassed: r.TestsPassed, TestsFailed: r.TestsFailed})
+			TestsRun: r.TestsRun, TestsPassed: r.TestsPassed, TestsFailed: r.TestsFailed, Shards: shardsOf(r.Shards)})
 		out.Tests = append(out.Tests, goTestEvents(r.Report)...)
+	}
+	return out
+}
+
+// shardsOf are a sharded step's shards in index order, each one that
+// never ran named not_run; nil for a step with no shards.
+func shardsOf(shards []validate.ShardResult) []SuiteShard {
+	if len(shards) == 0 || shards[0].Total <= 1 {
+		return nil
+	}
+	total := shards[0].Total
+	out := make([]SuiteShard, total)
+	for k := range out {
+		out[k] = SuiteShard{Index: k, Total: total, Exit: -1, NotRun: true}
+	}
+	for _, sh := range shards {
+		if sh.Index < 0 || sh.Index >= total {
+			continue
+		}
+		out[sh.Index] = SuiteShard{Index: sh.Index, Total: total, Exit: sh.ExitCode, DurationMs: sh.DurationMs,
+			TestsRun: sh.TestsRun, TestsPassed: sh.TestsPassed, TestsFailed: sh.TestsFailed}
 	}
 	return out
 }
