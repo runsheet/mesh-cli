@@ -128,8 +128,20 @@ func (s *podSession) Run(ctx context.Context, spec SessionSpec) (SessionResult, 
 		return SessionResult{}, err
 	}
 	s.started <- agent
-	<-ctx.Done()
-	return SessionResult{SessionID: "sess-pod"}, ctx.Err()
+	var mail <-chan Message
+	if spec.Mailbox != nil {
+		mail = spec.Mailbox.C()
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return SessionResult{SessionID: "sess-pod"}, ctx.Err()
+		case m := <-mail:
+			if m.Sent != nil {
+				m.Sent(nil)
+			}
+		}
+	}
 }
 
 // A pod killed mid-run — its agent exits 137, its sidecar left standing —

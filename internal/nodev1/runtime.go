@@ -270,6 +270,15 @@ type running struct {
 	// relay hook holds it from its making, so a relay closing after the
 	// record has gone still reports, until the release's flush.
 	security *secreport.Reporter
+	// brief is the lease's own brief; intercepts whether its tunnel
+	// terminates TLS on a CA this process minted and holds nowhere but
+	// memory; pushHeads where its job found its push_to; sock its own
+	// sessionproxy socket. An upgrade hands an intercepting lease back
+	// rather than writing these to its hand-off file (handoff.go).
+	brief      *meshapi.Brief
+	intercepts bool
+	pushHeads  map[string]string
+	sock       string
 }
 
 // touch is the lease's session showing progress: its progress_at in the
