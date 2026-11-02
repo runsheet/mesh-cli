@@ -23,6 +23,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/nodetools"
 	"projectmesh.io/mesh-cli/internal/sandbox"
+	"projectmesh.io/mesh-cli/internal/sessionunit"
 	"projectmesh.io/mesh-cli/internal/validate"
 )
 
@@ -187,6 +188,80 @@ func TestASandboxedLeaseRunsItsSessionAndServicesInItsPod(t *testing.T) {
 		t.Errorf("the pod was not removed: %v", sb.Removed)
 	}
 	assertReleased(t, g, job)
+}
+
+// adr-044's closing paragraph: a lease's agent's real stdin and stdout
+// are files under the lease's own directory, not the node's own pipes
+// — a named pipe for stdin, a plain file for stdout — so the node
+// reaches the agent's output by tailing a file from a saved offset,
+// not by a pipe that dies with the node.
+func TestLeaseAgentStdioThroughNamedPipe(t *testing.T) {
+	g, sb, _ := podRig(t)
+	out := filepath.Join(t.TempDir(), "claude")
+	agent := hostAgent(t, out, "")
+	var job string
+	var dir, stdinPath, stdoutPath string
+	var stdinMode os.FileMode
+	var tailed []byte
+	sb.Agent = func(ctx context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
+		exit, err := agent(ctx, spec)
+
+		f, ok := spec.Stdin.(*os.File)
+		if !ok {
+			t.Fatalf("the agent's stdin is not a file: %T", spec.Stdin)
+		}
+		stdinPath = f.Name()
+		info, statErr := os.Stat(stdinPath)
+		if statErr != nil {
+			t.Fatal(statErr)
+		}
+		stdinMode = info.Mode()
+		dir = g.rt.leaseDir(g.fake.LeaseOf(job))
+
+		of, ok := spec.Stdout.(*os.File)
+		if !ok {
+			t.Fatalf("the agent's stdout is not a file: %T", spec.Stdout)
+		}
+		stdoutPath = of.Name()
+		// read every event the agent produced by tailing its output file
+		// from offset 0, as the node does, rather than from the process
+		// itself: the agent is already gone (agent(ctx, spec) above has
+		// returned), so this is the only way left to recover what it said.
+		fl, flErr := sessionunit.Follow(ctx, stdoutPath, 0, nil)
+		if flErr != nil {
+			t.Fatal(flErr)
+		}
+		defer fl.Close()
+		if tailed, statErr = io.ReadAll(fl); statErr != nil {
+			t.Fatal(statErr)
+		}
+		return exit, err
+	}
+	job = g.offer(t, func(b *meshapi.Brief) {
+		// the fake claude calls no finish tool: a kind with none finishes
+		// on the session's end (finish enforcement is its own test)
+		b.FinishTool, b.FinishSchema = "", nil
+	})
+	run(t, g, context.Background())
+
+	if n := len(g.fake.Calls("finish")); n != 1 {
+		t.Fatalf("%d finishes; hand-backs %+v", n, g.fake.Calls("hand-back"))
+	}
+	if stdinMode&os.ModeNamedPipe == 0 {
+		t.Fatalf("the agent's stdin %s (mode %v) is not a named pipe", stdinPath, stdinMode)
+	}
+	if filepath.Dir(stdinPath) != dir {
+		t.Fatalf("the agent's stdin %s is not under the lease's own directory %s", stdinPath, dir)
+	}
+	if filepath.Dir(stdoutPath) != dir {
+		t.Fatalf("the agent's stdout %s is not under the lease's own directory %s", stdoutPath, dir)
+	}
+	if !bytes.Contains(tailed, []byte(`"type":"result"`)) {
+		t.Fatalf("tailing the output file from offset 0 did not reconstruct the session's result event:\n%s", tailed)
+	}
+	if !bytes.Contains(tailed, []byte(`"type":"system"`)) {
+		t.Fatalf("tailing the output file from offset 0 did not reconstruct the session's init event:\n%s", tailed)
+	}
 }
 
 func harnessShim() string { return "mcp-proxy-shim.js" }
