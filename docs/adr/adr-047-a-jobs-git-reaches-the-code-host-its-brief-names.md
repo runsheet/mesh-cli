@@ -99,3 +99,22 @@ nor watched the git token as gap 28 does an injected value.
   the vendor's ref, so such offers work on GitLab and Bitbucket too.
 - Fetching a Bitbucket head by sha needs the host to serve the sha. A
   brief that names the member's branch avoids relying on it.
+
+## Gap 29 proven, node half, over GitLab and Bitbucket
+
+2026-11-02. `internal/nodev1/codehost_test.go`'s
+`TestARepoOutsideTheTenantsConnectionIsRefused` proves the refusal side
+of item 2: a repository the tenant's connection does not cover for the
+brief's vendor is refused at Latchkey's for-job source mint, for a
+GitLab and a Bitbucket brief alike, before the checkout dials the code
+host — the lease ends handed back `credential_timeout`, no session
+starts, no token is minted, and the fake code host sees no request at
+all, never a request that fails on its auth. Beside it,
+`TestALeasedPushWorksOverGitLabAndBitbucket` proves the push-lease
+mechanism (gaps 35/36, ADR 001's amendment "push lease") over both
+vendors: a plain push to a moved `push_to` is refused naming the lease
+hint, a leased push replaces it from where the job found it, and a
+further leased push naming a now-stale commit is refused naming the
+branch's actual position, never overwriting it. Together with
+`TestAJobsGitReachesTheCodeHostItsBriefNames`, gap 29's node half is
+proven over GitLab and Bitbucket, not only GitHub.

@@ -365,6 +365,60 @@ func TestALeasedPushWorksOverGitLabAndBitbucket(t *testing.T) {
 	}
 }
 
+// A repo outside the tenant's connection is refused for GitLab and
+// Bitbucket exactly as a GitHub one is (mesh-specs gap 29, node half):
+// Latchkey's for-job source mint, scoped to the tenant's connection for
+// the brief's vendor, refuses a repository that connection does not
+// cover before the checkout ever dials the code host. The lease ends
+// handed back credential_timeout, no session starts, no token is
+// minted, and the fake code host the brief names sees nothing — the
+// refusal is caught at the mint, never discovered by trying the host
+// and failing its auth.
+func TestARepoOutsideTheTenantsConnectionIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name, vendor, baseURL, repo string
+	}{
+		{name: "GitLab", vendor: "gitlab", baseURL: "https://gitlab.acme.test/api/v4", repo: "acme/platform/web"},
+		{name: "Bitbucket", vendor: "bitbucket", baseURL: "https://api.bitbucket.org", repo: "acme/web"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host := newFakeCodeHost(t, tc.repo, "refs/heads/change")
+			sess := &stubSession{}
+			g := newRig(t, sess)
+			logs := &logSink{t: t}
+			g.rt.Logf = logs.logf
+			g.rt.GitUpstream, g.rt.GitHTTP = "", host.client()
+			g.latchkey.refuseSource = "repository " + tc.repo + " is outside the tenant's connection for " + tc.vendor
+			job := g.offer(t, func(b *meshapi.Brief) {
+				b.Git = &meshapi.Git{Vendor: tc.vendor, BaseURL: tc.baseURL, Repo: tc.repo, Access: "write"}
+			})
+			run(t, g, context.Background())
+			hb := onlyHandBack(t, g, job)
+			if hb.Cause != meshapi.CauseCredentialTimeout || !strings.Contains(hb.Reason, "not minted") || !strings.Contains(hb.Reason, "connection") {
+				t.Fatalf("hand-back %+v", hb)
+			}
+			if len(sess.specs) != 0 {
+				t.Fatal("a session ran with no git token")
+			}
+			minted, _, failures := g.latchkey.snapshot()
+			if len(minted) != 0 {
+				t.Fatalf("a token was minted for a repo outside the connection: %v", minted)
+			}
+			if len(failures) == 0 || !strings.Contains(failures[0], "connection") {
+				t.Fatalf("Latchkey's refusal is not recorded: %v", failures)
+			}
+			if reqs := host.requests(); len(reqs) != 0 {
+				t.Fatalf("the code host saw %v; want nothing fetched once the mint was refused", reqs)
+			}
+			for _, tok := range minted {
+				if strings.Contains(logs.String(), tok) {
+					t.Fatal("a git token reached the node's log")
+				}
+			}
+		})
+	}
+}
+
 // A brief naming no vendor or base_url reaches github.com, as before
 // vendors were named; a self-managed host's origin is its host or its
 // base_url's, never the API root; and a lease's relay sidecar may dial
