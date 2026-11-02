@@ -106,8 +106,11 @@ func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take, room *schedule
 	r.mu.Unlock()
 	r.publishStatus()
 	// the values the relay injects stay redacted until the lease is
-	// reported (canary.go)
-	defer r.closeInjected(r.openInjected(id))
+	// reported (canary.go); a well-known secret shape that is not one of
+	// them is reported as it is seen, never an exposure
+	vals := r.openInjected(id)
+	vals.onSecretSeen(func(kind, host string) { r.reportSecretSeen(id, kind, host) })
+	defer r.closeInjected(vals)
 	defer func() {
 		r.mu.Lock()
 		r.leases.Delete(id)
