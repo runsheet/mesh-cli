@@ -55,6 +55,48 @@ func TestTheSchedulerOwnsTheNodesCapacity(t *testing.T) {
 	}
 }
 
+// A node with no slot limit (--slots 0, ADR-044 amendment 2026-11-02)
+// registers Slots 0, says nothing of slots on its takes, and runs as
+// many leases side by side as its CPUs and memory hold.
+func TestNoSlotLimitSchedulesOnCPUsAndMemory(t *testing.T) {
+	sess := &stubSession{calls: []string{"conform/submit"}, hold: make(chan struct{})}
+	g := newRig(t, sess)
+	g.rt.Once = false
+	g.rt.Node.CapacityTotal = meshapi.Capacity{CPUs: 8, MemGB: 16}
+	g.rt.Scheduler = scheduler.New(scheduler.Capacity{CPUs: 8, MemGB: 16})
+	for range 3 {
+		g.offer(t, func(b *meshapi.Brief) { b.Resources = meshapi.Resources{CPUs: 2, MemGB: 4} })
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- g.rt.Run(ctx) }()
+	waitFor(t, "three sessions at once", func() bool { return len(sess.specsSoFar()) == 3 })
+	var reg meshapi.RegisterRequest
+	json.Unmarshal(g.fake.Calls("register")[0].Body, &reg)
+	if reg.CapacityTotal.Slots != 0 || reg.CapacityTotal.CPUs != 8 {
+		t.Fatalf("registered %+v, want no slot limit", reg.CapacityTotal)
+	}
+	takes := g.fake.Calls("take")
+	var third meshapi.TakeRequest
+	json.Unmarshal(takes[2].Body, &third)
+	if f := third.Free; f == nil || f.CPUs != 4 || f.MemGB != 8 || f.Slots != 0 {
+		t.Fatalf("the third take's free %+v, want two leases' room taken and no slots", f)
+	}
+	if held := g.rt.Scheduler.Leases(); len(held) != 3 {
+		t.Fatalf("the scheduler holds %d leases, want 3", len(held))
+	}
+	close(sess.hold)
+	waitFor(t, "three finishes", func() bool { return len(g.fake.Calls("finish")) == 3 })
+	waitFor(t, "every room back", func() bool { return len(g.rt.Scheduler.Leases()) == 0 })
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the runtime did not stop")
+	}
+}
+
 // A lease Mesh gave the node that the scheduler has no room for (Mesh's
 // ledger and the node's disagreeing) is handed back cannot_run, naming
 // why, and spends no attempt.
@@ -79,5 +121,17 @@ func TestALeaseWithNoRoomHandsBack(t *testing.T) {
 	json.Unmarshal(calls[0].Body, &hb)
 	if hb.Cause != meshapi.CauseCannotRun || hb.Reason == "" {
 		t.Fatalf("hand-back %+v", hb)
+	}
+}
+
+// Without a scheduler the node runs one lease at a time: its takes say
+// one slot free even when its total has no slot limit.
+func TestNoSchedulerTakesOneSlotWithNoSlotLimit(t *testing.T) {
+	r := &Runtime{Node: meshapi.RegisterRequest{CapacityTotal: meshapi.Capacity{CPUs: 8, MemGB: 16}}}
+	if f := r.free(); f.Slots != 1 || f.CPUs != 8 || f.MemGB != 16 {
+		t.Fatalf("free %+v, want the whole node and one slot", f)
+	}
+	if r.Node.CapacityTotal.Slots != 0 {
+		t.Fatal("free changed the node's total")
 	}
 }

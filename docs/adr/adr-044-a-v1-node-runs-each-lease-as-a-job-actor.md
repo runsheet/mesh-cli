@@ -117,3 +117,28 @@ services' budget, registries, service timeout, tmpfs).
 The real-pod path is validated on dl360 (podman 5, rootless); the
 laptop's tests drive it through `sandbox.Fake`, with the agent's command
 — the git bridge and the fake claude — run on the host.
+
+## Amendment, 2026-11-02: no slot limit (`--slots 0`)
+
+A v1 node may be scheduled on CPUs and memory alone. Until now
+`mesh node run --slots N` registered `max(N, 1)`, so `--slots 0` meant
+one session at a time.
+
+1. **`--slots 0` is no slot limit.** The node registers
+   `capacity_total.slots` 0 (omitted on the wire), which Mesh's take
+   already reads as no slot limit (projectmesh-io/api `queue/fit.go`):
+   a lease fits on CPUs and memory.
+2. **The scheduler agrees.** With `--actors-scheduler`, a total of
+   Slots 0 holds no job slot against any lease: the node takes again at
+   once, a lease is admitted while its brief's CPUs and memory fit
+   beside the live leases, and the take's `free` carries no slots (a
+   hint of 0 says nothing of slots to Mesh). `--account-slots` still
+   bounds sessions per model account.
+3. **Without the scheduler** the node still runs one lease at a time and
+   says one slot free on each take, whatever its total.
+4. **The default stays 1.** A node not passing `--slots` behaves as
+   before; any N above 0 is reported and enforced as given. The v0 node
+   (`mesh node start`) has no `--slots` and is unchanged.
+
+A node with no slot limit should say its memory (`--mem-gb`): with
+memory 0 Mesh fits only jobs that ask none, as before.

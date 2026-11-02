@@ -454,7 +454,8 @@ func (r *Runtime) sleep(ctx context.Context, d time.Duration) {
 }
 
 // free is what the node can take now: what its scheduler's leases leave
-// free, else its whole capacity, since it runs one lease at a time.
+// free, else its whole capacity, since it runs one lease at a time — one
+// slot even when its total has no slot limit (Slots 0).
 func (r *Runtime) free() *meshapi.Capacity {
 	if r.Scheduler != nil {
 		return freeOf(r.Scheduler)
