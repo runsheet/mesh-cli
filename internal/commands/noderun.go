@@ -110,7 +110,7 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 			API: &meshapi.Client{BaseURL: meshAPIURL(), Token: src.Token},
 			Node: meshapi.RegisterRequest{
 				Name: name, Version: version.Resolved(), Harnesses: []string{"claude-code"},
-				CapacityTotal: meshapi.Capacity{CPUs: cpus, MemGB: nodeRunMemGB, Slots: max(nodeRunSlots, 1)},
+				CapacityTotal: nodeRunCapacity(cpus, nodeRunMemGB, nodeRunSlots),
 				SigningKey:    nodev1.PublicKey(key),
 			},
 			SigningKey:  key,
@@ -279,6 +279,13 @@ func connectionsOf(pairs []string) ([]meshapi.ConnectRequest, error) {
 	return out, nil
 }
 
+// nodeRunCapacity is the capacity the node registers with Mesh. Slots 0
+// is no slot limit (ADR-044 amendment, 2026-11-02): Mesh's take fits
+// such a node on CPUs and memory alone, and so does its scheduler.
+func nodeRunCapacity(cpus, memGB float64, slots int) meshapi.Capacity {
+	return meshapi.Capacity{CPUs: cpus, MemGB: memGB, Slots: max(slots, 0)}
+}
+
 func init() {
 	f := nodeRunCmd.Flags()
 	f.StringVar(&nodeRunAPI, "api", "", "the API the node speaks: v1 (required)")
@@ -289,13 +296,13 @@ func init() {
 	f.BoolVar(&nodeRunUnattended, "unattended", false, "run sessions with --dangerously-skip-permissions (trusted machines only)")
 	f.Float64Var(&nodeRunCPUs, "cpus", 0, "CPUs offered (default all)")
 	f.Float64Var(&nodeRunMemGB, "mem-gb", 0, "memory offered, in GB")
-	f.IntVar(&nodeRunSlots, "slots", 1, "sessions at once")
+	f.IntVar(&nodeRunSlots, "slots", 1, "sessions at once; 0 is no slot limit, the node scheduled on CPUs and memory alone (with --actors-scheduler; without it the node still runs one lease at a time)")
 	f.StringVar(&nodeRunGitHost, "git-upstream", "", "a test override: the git host every lease's relay reaches, whatever its brief's vendor and base_url name (default $MESH_GIT_UPSTREAM)")
 	f.BoolVar(&nodeRunNoMirrors, "no-mirrors", false, "clone each lease's repository whole, keeping no per-tenant mirror under the work root")
 	f.StringSliceVar(&nodeRunConnect, "connect", nil, "offer the node to a tenant for a product, tenant/product (repeatable); Mesh offers a node only its connections' jobs")
 	f.StringVar(&nodeRunFulcioURL, "fulcio-url", "", "the Fulcio node tools' records are certified by (default $MESH_FULCIO_URL, else node.yaml's sigstore.fulcio_url)")
 	f.StringVar(&nodeRunRekorURL, "rekor-url", "", "the Rekor node tools' records are logged in (default $MESH_REKOR_URL, else node.yaml's sigstore.rekor_url)")
-	f.BoolVar(&nodeRunScheduler, "actors-scheduler", false, "the scheduler owns the node's capacity (ADR-044): leases hold their resources as scheduler leases, the node reports what is free on each take and runs up to --slots leases side by side")
+	f.BoolVar(&nodeRunScheduler, "actors-scheduler", false, "the scheduler owns the node's capacity (ADR-044): leases hold their resources as scheduler leases, the node reports what is free on each take and runs up to --slots leases side by side (--slots 0: as many as its CPUs and memory hold)")
 	f.IntVar(&nodeRunAccountSlots, "account-slots", 0, "with --actors-scheduler, sessions at once per model account (0 is unbounded)")
 	f.BoolVar(&nodeRunActors, "actors", false, "run each lease as a job actor (ADR-044): it owns the lease's directory, room, grant and proxy, writes actor.json before each state change, releases everything however the lease ends, and hands back pod_killed a session killed from outside; a restarted node releases the actors it left")
 	f.StringVar(&nodeRunSupervisor, "supervisor", "off", "with --actors, the supervisor (ADR-044): off; warn (or report) logs quiet sessions and what the minute's reconcile finds; cancel escalates a quiet session, then hands it back stalled, and removes pods, job directories and grants no actor holds")

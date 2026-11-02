@@ -35,7 +35,8 @@ const eps = 1e-6
 type Capacity struct {
 	CPUs  float64
 	MemGB float64
-	// Slots are jobs at once.
+	// Slots are jobs at once; 0 in a total is no slot limit, jobs
+	// fitted on CPUs and memory alone (and 0 in Free says nothing).
 	Slots int
 	// Accounts are sessions at once per model account (an account_ref);
 	// an account not named has AccountSlots.

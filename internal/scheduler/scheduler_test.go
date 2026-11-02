@@ -80,6 +80,29 @@ func TestFit(t *testing.T) {
 	}
 }
 
+// A total of Slots 0 is no slot limit: jobs fit on CPUs and memory
+// alone, and Free says nothing of slots (ADR-044 amendment 2026-11-02).
+func TestNoSlotLimit(t *testing.T) {
+	s, _ := newTest(Capacity{CPUs: 4, MemGB: 8})
+	for i := range 4 {
+		if _, err := s.TryTake(Ask{CPUs: 1, MemGB: 2, Slot: true}); err != nil {
+			t.Fatalf("job %d: %v", i+1, err)
+		}
+	}
+	if _, err := s.TryTake(Ask{CPUs: 1, Slot: true}); err == nil || !strings.Contains(err.Error(), "cpus asked") {
+		t.Fatalf("a fifth job = %v, want refused on CPUs", err)
+	}
+	if _, err := s.TryTake(Ask{MemGB: 1, Slot: true}); err == nil || !strings.Contains(err.Error(), "GB asked") {
+		t.Fatalf("a job past memory = %v, want refused on memory", err)
+	}
+	if _, err := s.TryTake(Ask{Slot: true}); err != nil {
+		t.Fatalf("a job asking no CPUs or memory: %v", err)
+	}
+	if f := s.Free(); f.Slots != 0 || f.CPUs != 0 || f.MemGB != 0 {
+		t.Fatalf("Free = %+v", f)
+	}
+}
+
 // Free is the total less what the live leases hold: the node's `free`
 // on a take.
 func TestFree(t *testing.T) {
