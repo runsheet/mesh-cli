@@ -95,6 +95,26 @@ type Options struct {
 	// and Tail); nil keeps it as it is. Token shapes are masked either
 	// way (RedactTokens).
 	Redact func(string) string
+	// FailFast stops the run at its first failing command: the lanes
+	// still running are cancelled and their commands left out of the
+	// results, as if never run (a sharded step's missing shards are
+	// named "not run"). WithFailFast on Run's ctx asks the same.
+	FailFast bool
+}
+
+type failFastKey struct{}
+
+// WithFailFast is ctx asking Run to stop at the first failing command
+// (Options.FailFast): how a caller asks it through a runner whose
+// Options it does not build (run_suite's fail_fast, ADR-049).
+func WithFailFast(ctx context.Context) context.Context {
+	return context.WithValue(ctx, failFastKey{}, true)
+}
+
+// FailFastAsked says whether ctx asks for fail fast (WithFailFast).
+func FailFastAsked(ctx context.Context) bool {
+	v, _ := ctx.Value(failFastKey{}).(bool)
+	return v
 }
 
 // outputCap is the total bytes of a step's combined stdout+stderr kept
@@ -264,20 +284,46 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 	if len(ls) <= 1 {
 		split = false
 	}
+	failFast := opts.FailFast || FailFastAsked(ctx)
+	// rctx is what the units run on: cancelled, with fail fast, at the
+	// first failing command, the rest of the run's lanes with it
+	rctx, stop := context.WithCancel(ctx)
+	defer stop()
+	stopped := false
 	done := make(map[unit]*ran)
 	var mu sync.Mutex
 	var laneErr error
+	// cancelled says the run was stopped by fail fast, not by ctx: what
+	// a unit or lane then answers is no result of its own
+	cancelled := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return stopped && ctx.Err() == nil
+	}
 	runLane := func(r Runner, l lane) {
 		for _, u := range l.units {
+			if cancelled() {
+				return
+			}
 			st := steps[u.step]
 			out := &ran{}
 			start := time.Now()
-			out.exitCode, out.runErr = r.Run(ctx, shardCommand(st.Command, u), st.Timeout, &out.stdout, &out.stderr)
+			out.exitCode, out.runErr = r.Run(rctx, shardCommand(st.Command, u), st.Timeout, &out.stdout, &out.stderr)
 			out.duration = time.Since(start)
+			failed := out.runErr != nil || out.exitCode != 0
 			mu.Lock()
+			if stopped && ctx.Err() == nil && rctx.Err() != nil && (out.runErr != nil || out.exitCode < 0) {
+				// stopped by another lane's failure: not run
+				mu.Unlock()
+				return
+			}
 			done[u] = out
+			if failed && failFast && !stopped {
+				stopped = true
+				stop()
+			}
 			mu.Unlock()
-			if out.runErr != nil || (out.exitCode != 0 && !opts.ContinueOnFailure) {
+			if out.runErr != nil || (out.exitCode != 0 && (!opts.ContinueOnFailure || failFast)) {
 				return
 			}
 		}
@@ -298,8 +344,11 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 					}
 					return
 				}
-				r, release, err := lr.Lane(ctx, l.name)
+				r, release, err := lr.Lane(rctx, l.name)
 				if err != nil {
+					if cancelled() {
+						return
+					}
 					mu.Lock()
 					laneErr = cmp.Or(laneErr, fmt.Errorf("lane %s: %w", l.name, err))
 					mu.Unlock()
@@ -420,6 +469,11 @@ func merge(shards []ShardResult, concurrent bool) StepResult {
 		report.WriteString(s.Report)
 		if s.ExitCode != 0 && failed < 0 {
 			failed = i
+		}
+	}
+	for k := range shards[0].Total {
+		if !slices.ContainsFunc(shards, func(s ShardResult) bool { return s.Index == k }) {
+			fmt.Fprintf(&lines, "shard %d/%d: not run\n", k+1, shards[0].Total)
 		}
 	}
 	out.Report = report.String()

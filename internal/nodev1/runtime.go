@@ -155,6 +155,10 @@ type Runtime struct {
 	// without --sandbox). A node with a Sandbox never does, whatever this
 	// says; the zero value never does (podsuites.go).
 	HostSuites bool
+	// SuiteWait is how long a run_suite call waits on its run before it
+	// answers the run's handle for the session to poll
+	// (nodetools.DefaultSuiteWait when zero; ADR-049).
+	SuiteWait time.Duration
 	// Pods, when set, runs each lease's session and its services in a
 	// rootless pod of the lease's own (`--sandbox`, podsession.go): the
 	// checkout's .mesh/services.yml and the brief's pods as sidecars, the

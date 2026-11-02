@@ -87,6 +87,10 @@ type leasePod struct {
 	// registryEnv names the relay's registry, MESH_REGISTRY, when the
 	// brief names one (registry.go).
 	registryEnv []string
+	// lanes, set, opens a pod beside this one for a suite group or shard
+	// that run_suite runs at once with the others (lanes.go); nil runs
+	// every step here, one after another.
+	lanes func(ctx context.Context, name string) (*leasePod, func(), error)
 }
 
 // openLeasePod opens the lease's sandbox session, pinned to its pod name
@@ -133,34 +137,45 @@ func (r *Runtime) openLeasePod(ctx context.Context, b *meshapi.Brief, workspace 
 	} else {
 		keep("pod "+p.name, closeSess)
 	}
-	svcs, err := r.leaseServices(b, workspace)
-	if err != nil {
+	if err := r.startServices(ctx, b, p, workspace, "the lease's"); err != nil {
 		return p, err
 	}
+	p.lanes = r.suiteLanes(b, workspace, p)
+	return p, nil
+}
+
+// startServices starts the checkout's services and the brief's pods in
+// p's pod and lists them in its HOME; a required one that is not ready
+// is the error. whose names the pod in errors: "the lease's".
+func (r *Runtime) startServices(ctx context.Context, b *meshapi.Brief, p *leasePod, workspace, whose string) error {
+	svcs, err := r.leaseServices(b, workspace)
+	if err != nil {
+		return err
+	}
 	timeout := r.Pods.Config.ServiceTimeout
-	if p.statuses, err = sess.Start(ctx, svcs, timeout); err != nil {
-		return p, fmt.Errorf("starting the lease's pod: %w", err)
+	if p.statuses, err = p.sess.Start(ctx, svcs, timeout); err != nil {
+		return fmt.Errorf("starting %s pod: %w", whose, err)
 	}
 	var missing []string
 	for _, st := range p.statuses {
 		if st.Ready {
-			r.logf("nodev1: lease %s: service %s ready at %s", b.LeaseID, st.Describe(), st.Addrs())
+			r.logf("nodev1: lease %s: service %s ready at %s (pod %s)", b.LeaseID, st.Describe(), st.Addrs(), p.name)
 			continue
 		}
-		r.logf("nodev1: lease %s: service %s: %s", b.LeaseID, st.Describe(), st.Why)
+		r.logf("nodev1: lease %s: service %s: %s (pod %s)", b.LeaseID, st.Describe(), st.Why, p.name)
 		if st.Required {
 			missing = append(missing, st.Name+" ("+st.Why+")")
 		}
 	}
 	if len(missing) > 0 {
-		return p, fmt.Errorf("the lease's required services are not ready: %s", strings.Join(missing, "; "))
+		return fmt.Errorf("%s required services are not ready: %s", whose, strings.Join(missing, "; "))
 	}
 	if list := sandbox.ServicesListing(p.statuses); len(list) > 0 {
-		if _, err := sess.WriteFile(sandbox.ServicesFileName, list); err != nil {
-			return p, err
+		if _, err := p.sess.WriteFile(sandbox.ServicesFileName, list); err != nil {
+			return err
 		}
 	}
-	return p, nil
+	return nil
 }
 
 // leaseServices are the checkout's declared services and the brief's
@@ -382,7 +397,11 @@ func bridgeGitConfig(base string, port int) []string {
 // in the checkout. A limit's kill is the step failing, 124 for the
 // runtime's timeout and 137 otherwise, as the legacy node's pod runner.
 func (p *leasePod) suites(ctx context.Context, workspace string, steps []validate.Step, env []string) ([]validate.StepResult, error) {
-	return validate.Run(ctx, steps, podSteps{p: p, dir: workspace, env: env}, validate.Options{Dir: workspace, ContinueOnFailure: true})
+	var run validate.Runner = podSteps{p: p, dir: workspace, env: env}
+	if p.lanes != nil {
+		run = laneSteps{podSteps: podSteps{p: p, dir: workspace, env: env}}
+	}
+	return validate.Run(ctx, steps, run, validate.Options{Dir: workspace, ContinueOnFailure: true})
 }
 
 // podSteps is validate.Runner in the lease's pod; env is the run's

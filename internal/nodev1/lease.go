@@ -171,6 +171,7 @@ func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take, room *schedule
 // enters running as the session starts and runs it in the lease's pod
 // when the actor opened one. Without, work closes them as it leaves.
 func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *actor.Actor, pod string) outcome {
+	began := time.Now()
 	var closers []func()
 	keep := func(name string, release func() error) {
 		if a != nil {
@@ -397,7 +398,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	if rs != nil {
 		pusher = rs.pusher()
 	}
-	tools, rec := r.nodeTools(b, grant, workspace, tokens, ladder, mb, suites, pusher)
+	tools, rec := r.nodeTools(b, grant, workspace, tokens, ladder, mb, suites, pusher, leaseClock{ctx: ctx, began: began})
 	hb := &sessionHandBack{}
 	tools = sl.nodeTools(append(tools, r.endTools(b, fin, hb, mb)...))
 	var (

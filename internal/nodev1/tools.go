@@ -1,6 +1,7 @@
 package nodev1
 
 import (
+	"context"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/escalate"
@@ -8,6 +9,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/mcptool"
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/nodetools"
+	"projectmesh.io/mesh-cli/internal/validate"
 )
 
 // nodeTools are the node tools the brief's kind names (Mesh v1 spec,
@@ -27,7 +29,11 @@ import (
 //
 // pusher, set, is how push pushes: through the lease's relay sidecar
 // (relaypod.go), never the node's own grant.
-func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace string, tokens *sessionTokens, ladder *escalate.Ladder, mb *Mailbox, suites nodetools.SuiteRunner, pusher nodetools.Pusher) ([]mcptool.Tool, *nodetools.Recorder) {
+//
+// clock is the lease's: its ctx, in which a run_suite run goes on past
+// the call that started it, and when it began, from which a validation
+// is held to its repository's budget (ADR-049).
+func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace string, tokens *sessionTokens, ladder *escalate.Ladder, mb *Mailbox, suites nodetools.SuiteRunner, pusher nodetools.Pusher, clock leaseClock) ([]mcptool.Tool, *nodetools.Recorder) {
 	if len(b.NodeTools) == 0 {
 		return nil, nil
 	}
@@ -61,7 +67,8 @@ func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace s
 			out = append(out, p.Tool())
 		case nodetools.RunSuiteTool:
 			out = append(out, (&nodetools.RunSuite{Workspace: workspace, Recorder: rec, Run: suites,
-				OnHost: suites == nil && r.hostSuites(), Escalate: escalateOn(ladder, mb, escalate.OnRed)}).Tool())
+				OnHost: suites == nil && r.hostSuites(), Escalate: escalateOn(ladder, mb, escalate.OnRed),
+				Wait: r.SuiteWait, Context: clock.ctx, Began: clock.began, Budget: r.suiteBudget(b, workspace)}).Tool())
 		case nodetools.ApplyOntoTool:
 			var vendor string
 			if b.Git != nil {
@@ -100,4 +107,28 @@ func escalateOn(ladder *escalate.Ladder, mb *Mailbox, on string) func(string) st
 		}
 		return to
 	}
+}
+
+// leaseClock is a lease's ctx and when its work began.
+type leaseClock struct {
+	ctx   context.Context
+	began time.Time
+}
+
+// suiteBudget is the validation budget run_suite holds the lease to:
+// the checkout's validate.yml budget, as the lease's work found it, on a
+// validation kind (validationKind); zero otherwise, or when the file
+// states none or cannot be read.
+func (r *Runtime) suiteBudget(b *meshapi.Brief, workspace string) time.Duration {
+	if !validationKind(b) {
+		return 0
+	}
+	cfg, err := validate.Load(workspace)
+	if err != nil {
+		return 0
+	}
+	if cfg.Budget > 0 {
+		r.logf("nodev1: lease %s: held to the repository's validation budget of %s", b.LeaseID, cfg.Budget)
+	}
+	return cfg.Budget
 }

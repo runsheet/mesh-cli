@@ -26,6 +26,11 @@ const DefaultTimeout = 10 * time.Minute
 type Config struct {
 	Steps     []Step
 	Generated Generated
+	// Budget is the repository's bound on a validation's wall time
+	// (`budget:`, runsheet ADR 057): a v1 validate lease past it ends red,
+	// out of time (ADR-049). Zero when the file states none. It is not
+	// part of the suite hash.
+	Budget time.Duration
 }
 
 // Generated is a repository's declared generated paths and how to
@@ -147,6 +152,7 @@ type rawConfig struct {
 	Suites    []rawStep    `yaml:"suites"`
 	Steps     []rawStep    `yaml:"steps"`
 	Generated rawGenerated `yaml:"generated"`
+	Budget    string       `yaml:"budget"`
 }
 
 type rawGenerated struct {
@@ -258,6 +264,13 @@ func Parse(data []byte) (Config, error) {
 		return Config{}, err
 	}
 	cfg.Generated = generated
+	if b := strings.TrimSpace(raw.Budget); b != "" {
+		d, err := time.ParseDuration(b)
+		if err != nil || d <= 0 {
+			return Config{}, fmt.Errorf("budget %q is not a positive duration", b)
+		}
+		cfg.Budget = d
+	}
 	return cfg, nil
 }
 
