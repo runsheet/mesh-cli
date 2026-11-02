@@ -102,7 +102,7 @@ func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take, room *schedule
 	mb := NewMailbox()
 	mb.turns = newTurnLedger(b)
 	r.mu.Lock()
-	r.leases.Put(id, &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: turnToolFor(b), jobID: b.JobID, kind: b.Kind, started: time.Now()})
+	r.leases.Put(id, &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: turnToolFor(b), jobID: b.JobID, kind: b.Kind, started: time.Now(), brief: b})
 	r.mu.Unlock()
 	r.publishStatus()
 	// the values the relay injects stay redacted until the lease is
@@ -310,6 +310,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 			grant.SetScan(vals.Scan)
 		}
 	}
+	r.setPushHeads(b.LeaseID, pushHeads)
 	// the lease's pod, with --sandbox: its services start once the
 	// checkout declares them, before the session (podsession.go)
 	var lp *leasePod
@@ -355,6 +356,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	if err != nil {
 		return outcome{err: err, cause: context.Cause(ctx)}
 	}
+	r.setIntercepts(b.LeaseID, ic != nil && ic.ca != nil)
 	if ic != nil && lp != nil {
 		if err := lp.trust(ic.ca, r.logf, b.LeaseID); err != nil {
 			return outcome{err: fmt.Errorf("the lease's pod: trusting its relay: %w", err), cause: context.Cause(ctx)}
@@ -440,6 +442,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 			keep("the stop gate", func() error { gate.close(); return nil })
 		}
 	}
+	r.setSock(b.LeaseID, sock)
 	env := []string{"GIT_TERMINAL_PROMPT=0"}
 	if len(apiRules(b)) > 0 && rs == nil {
 		env = append(env, RelaySocketEnv+"="+sock)

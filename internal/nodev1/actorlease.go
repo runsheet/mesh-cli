@@ -80,7 +80,7 @@ func (r *Runtime) runActor(ctx context.Context, tk *meshapi.Take, room *schedule
 	mb := NewMailbox()
 	mb.turns = newTurnLedger(b)
 	r.mu.Lock()
-	r.leases.Put(id, &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: turnToolFor(b), jobID: b.JobID, kind: b.Kind, started: time.Now(), actor: a})
+	r.leases.Put(id, &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: turnToolFor(b), jobID: b.JobID, kind: b.Kind, started: time.Now(), actor: a, brief: b})
 	r.mu.Unlock()
 	r.publishStatus()
 	sec = r.openSecurity(id)
@@ -217,6 +217,38 @@ func (r *Runtime) setPod(id, pod string) {
 	defer r.mu.Unlock()
 	if l := r.lease(id); l != nil {
 		l.pod = pod
+	}
+}
+
+// setIntercepts records whether the lease's tunnel terminates TLS: such
+// a lease is handed back node_update on an upgrade, never left running
+// past it with its CA held nowhere but this process's memory
+// (handoff.go).
+func (r *Runtime) setIntercepts(id string, v bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if l := r.lease(id); l != nil {
+		l.intercepts = v
+	}
+}
+
+// setPushHeads records where the lease's job found its push_to, for its
+// hand-off file (handoff.go).
+func (r *Runtime) setPushHeads(id string, heads map[string]string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if l := r.lease(id); l != nil {
+		l.pushHeads = heads
+	}
+}
+
+// setSock records the lease's own sessionproxy socket, for its hand-off
+// file (handoff.go).
+func (r *Runtime) setSock(id, sock string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if l := r.lease(id); l != nil {
+		l.sock = sock
 	}
 }
 
