@@ -10,8 +10,10 @@ import (
 	"math"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/actor"
@@ -91,6 +93,36 @@ type leasePod struct {
 	// that run_suite runs at once with the others (lanes.go); nil runs
 	// every step here, one after another.
 	lanes func(ctx context.Context, name string) (*leasePod, func(), error)
+	// lane is a lane's pod (lanes.go), on the lease's HOME, which
+	// writes nothing there of its own.
+	lane bool
+	// bridge, set in a lane, is what each of its steps runs behind: the
+	// bridge to the lease's relay on the lane's loopback (lanes.go).
+	bridge []string
+	// logf takes the node's lines about the pod's steps, the lease's
+	// prefix on them (logFailedStep); nil drops them.
+	logf func(format string, args ...any)
+
+	// laneSock is the socket a lane's bridge pipes to: the lease's
+	// relay, as the lease's pod reaches it (setLaneSocket).
+	mu       sync.Mutex
+	laneSock string
+}
+
+// setLaneSocket names the socket a lane reaches the lease's relay on:
+// the relay sidecar's lane tunnel, or the lease's sessionproxy socket.
+func (p *leasePod) setLaneSocket(sock string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.laneSock = sock
+}
+
+// laneSocket is setLaneSocket's socket: "" before the relay is up, or
+// for a lease without one.
+func (p *leasePod) laneSocket() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.laneSock
 }
 
 // openLeasePod opens the lease's sandbox session, pinned to its pod name
@@ -100,16 +132,11 @@ type leasePod struct {
 func (r *Runtime) openLeasePod(ctx context.Context, b *meshapi.Brief, workspace string, a *actor.Actor, keep func(string, func() error)) (*leasePod, error) {
 	sb := r.Pods.WithReserve(nil) // the scheduler holds the lease's CPUs
 	sb.TempDir = r.leaseDir(b.LeaseID)
-	switch {
-	case r.sidecarMode():
-		// the relay is a sidecar in the pod, reached on its loopback,
-		// and reaches the node by a socket: the pod needs no network
-		// at all (relaypod.go)
-		sb.Config.Network = sandbox.Isolated()
-	case b.Egress != nil:
-		// the relay is the pod's only exit: no port out, no DNS
-		sb.Config.Network = sb.Config.Network.RelayOnly()
-	}
+	// with a relay sidecar, the relay is in the pod, reached on its
+	// loopback, and reaches the node by a socket: the pod needs no
+	// network at all (relaypod.go); with a kind's egress the relay is
+	// the pod's only exit: no port out, no DNS (lanes.go)
+	sb.Config.Network = r.leaseNetwork(b)
 	if err := os.MkdirAll(sb.TempDir, 0o700); err != nil {
 		return nil, err
 	}
@@ -120,6 +147,9 @@ func (r *Runtime) openLeasePod(ctx context.Context, b *meshapi.Brief, workspace 
 	}
 	p := &leasePod{sess: sess, name: PodName(b.LeaseID), gitPort: cmp.Or(r.gitBridgePort, podGitPort),
 		denied: r.sandboxReporter(b.LeaseID)}
+	p.logf = func(format string, args ...any) {
+		r.logf("nodev1: lease %s: "+format, append([]any{b.LeaseID}, args...)...)
+	}
 	if b.Egress != nil || r.sidecarMode() {
 		p.proxyEnv = proxyEnv(p.bridgeBase())
 	}
@@ -170,7 +200,10 @@ func (r *Runtime) startServices(ctx context.Context, b *meshapi.Brief, p *leaseP
 	if len(missing) > 0 {
 		return fmt.Errorf("%s required services are not ready: %s", whose, strings.Join(missing, "; "))
 	}
-	if list := sandbox.ServicesListing(p.statuses); len(list) > 0 {
+	// a lane's services answer where the lease's do (127.0.0.1, its
+	// own pod's loopback): the lease's listing in the HOME they share
+	// already names them
+	if list := sandbox.ServicesListing(p.statuses); len(list) > 0 && !p.lane {
 		if _, err := p.sess.WriteFile(sandbox.ServicesFileName, list); err != nil {
 			return err
 		}
@@ -397,9 +430,9 @@ func bridgeGitConfig(base string, port int) []string {
 // in the checkout. A limit's kill is the step failing, 124 for the
 // runtime's timeout and 137 otherwise, as the legacy node's pod runner.
 func (p *leasePod) suites(ctx context.Context, workspace string, steps []validate.Step, env []string) ([]validate.StepResult, error) {
-	var run validate.Runner = podSteps{p: p, dir: workspace, env: env}
+	var run validate.Runner = podSteps{p: p, dir: workspace, env: env, logf: p.logf}
 	if p.lanes != nil {
-		run = laneSteps{podSteps: podSteps{p: p, dir: workspace, env: env}}
+		run = laneSteps{podSteps: podSteps{p: p, dir: workspace, env: env, logf: p.logf}}
 	}
 	return validate.Run(ctx, steps, run, validate.Options{Dir: workspace, ContinueOnFailure: true})
 }
@@ -410,10 +443,25 @@ type podSteps struct {
 	p   *leasePod
 	dir string
 	env []string
+	// lane names the lane the steps run in, "" for the lease's own pod;
+	// logf, set, hears a step that failed (logFailedStep).
+	lane string
+	logf func(format string, args ...any)
 }
 
 func (s podSteps) Run(ctx context.Context, cmd string, timeout time.Duration, stdout, stderr io.Writer) (int, error) {
-	err := s.p.sess.Exec(ctx, sandbox.RunSpec{Workspace: s.dir, Command: []string{"sh", "-c", cmd}, Timeout: timeout, Stdout: stdout, Stderr: stderr, Vars: append(append(append([]string{"GIT_TERMINAL_PROMPT=0"}, s.p.proxyEnv...), s.p.registryEnv...), s.env...)})
+	tail := &stepTail{max: stepTailBytes}
+	start := time.Now()
+	code, err := s.run(ctx, cmd, timeout, stdout, io.MultiWriter(stderr, tail))
+	if (code != 0 || err != nil) && ctx.Err() == nil {
+		s.logFailedStep(cmd, code, err, time.Since(start), tail.String())
+	}
+	return code, err
+}
+
+func (s podSteps) run(ctx context.Context, cmd string, timeout time.Duration, stdout, stderr io.Writer) (int, error) {
+	command := append(slices.Clone(s.p.bridge), "sh", "-c", cmd)
+	err := s.p.sess.Exec(ctx, sandbox.RunSpec{Workspace: s.dir, Command: command, Timeout: timeout, Stdout: stdout, Stderr: stderr, Vars: append(append(append([]string{"GIT_TERMINAL_PROMPT=0"}, s.p.proxyEnv...), s.p.registryEnv...), s.env...)})
 	var ee *sandbox.ExitError
 	var le *sandbox.LimitError
 	switch {
@@ -432,6 +480,67 @@ func (s podSteps) Run(ctx context.Context, cmd string, timeout time.Duration, st
 		return 137, nil
 	}
 	return -1, err
+}
+
+// stepTailBytes bounds what of a failed step's stderr the log keeps.
+const stepTailBytes = 4 << 10
+
+// stepTailLines is how many of its last lines the log shows.
+const stepTailLines = 8
+
+// logFailedStep puts a run_suite step that failed in the node's log —
+// where it ran (its lane, or the lease's pod), its exit, how long it
+// took and the last lines of its stderr, each redacted of tokens — so a
+// red shard is read off the log, never guessed at.
+func (s podSteps) logFailedStep(cmd string, code int, err error, took time.Duration, tail string) {
+	if s.logf == nil {
+		return
+	}
+	where := "the lease's pod " + s.p.name
+	if s.lane != "" {
+		where = "lane " + s.lane + " (pod " + s.p.name + ")"
+	}
+	exit := "exited " + strconv.Itoa(code)
+	if err != nil {
+		exit = "did not run: " + strings.ReplaceAll(err.Error(), "\n", "; ")
+	}
+	shard := ""
+	if i := strings.Index(cmd, validate.ShardIndexEnv+"="); i >= 0 {
+		shard = " " + strings.Fields(cmd[i:])[0]
+	}
+	lines := strings.Split(strings.TrimRight(validate.RedactTokens(tail), "\n"), "\n")
+	if len(lines) > stepTailLines {
+		lines = lines[len(lines)-stepTailLines:]
+	}
+	for i, l := range lines {
+		if len(l) > 300 {
+			lines[i] = l[:300] + "…"
+		}
+	}
+	s.logf("run_suite's step%s in %s %s after %s; its stderr ends: %s", shard, where, exit, took.Round(time.Millisecond), strings.Join(lines, " ⏎ "))
+}
+
+// stepTail keeps the last max bytes written to it.
+type stepTail struct {
+	mu  sync.Mutex
+	max int
+	b   []byte
+}
+
+func (t *stepTail) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.b = append(t.b, p...)
+	if over := len(t.b) - t.max; over > 0 {
+		t.b = append(t.b[:0], t.b[over:]...)
+	}
+	return len(p), nil
+}
+
+func (t *stepTail) String() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return string(t.b)
 }
 
 // gitBridgeScript is the git bridge (node, in the node image): it

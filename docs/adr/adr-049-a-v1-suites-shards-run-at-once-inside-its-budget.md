@@ -1,5 +1,5 @@
 ---
-summary: On a v1 node run_suite runs a sharded suite's shards (and its groups) at once, the first in the lease's pod and each other in a pod of its own beside it with its own copy of the lease's services, no network, on the lease's resources held of the node's scheduler; a run longer than the call's wait (10 minutes) answers {run_id, status: running}, which the session polls with run_suite {run_id}, never an MCP timeout; fail_fast stops the other shards at the first failure; a validate lease is held to its validate.yml budget from the lease's start, past which the run is stopped and answered red, out_of_time, with its signed record; the record stays one per run, its output blob naming each shard.
+summary: On a v1 node run_suite runs a sharded suite's shards (and its groups) at once, the first in the lease's pod and each other in a pod of its own beside it with its own copy of the lease's services, on the lease's HOME, network and egress (amended 2026-11-02: a lane sees what its lease's pod sees), on the lease's resources held of the node's scheduler; a run longer than the call's wait (10 minutes) answers {run_id, status: running}, which the session polls with run_suite {run_id}, never an MCP timeout; fail_fast stops the other shards at the first failure; a validate lease is held to its validate.yml budget from the lease's start, past which the run is stopped and answered red, out_of_time, with its signed record; the record stays one per run, its output blob naming each shard.
 status: accepted
 ---
 
@@ -122,12 +122,74 @@ the suite's full run to a product that does not know shards, which gap
 - A validation past its budget ends red with the reason instead of
   holding its lease for hours; a slow red change costs at most its
   budget.
-- A lane has no network: a sharded suite that downloads at run time
-  fails in its lanes until the lease's pod has the dependencies. A
-  lane's relay is a later change if one is needed.
+- ~~A lane has no network: a sharded suite that downloads at run time
+  fails in its lanes until the lease's pod has the dependencies.~~
+  Wrong, and it broke every runsheet validation: see the amendment
+  below.
 - The non-pod runners (a node with `--sandbox` off but a sandbox
   runtime, and the host runner) still run shards one after another; they
   get the handle and the budget all the same.
 - Mesh's API, the kind's brief and the evidence contract are unchanged:
   run_suite's schema is the node's own (`run_id`, `wait_seconds` and
   `fail_fast` added), so no projectmesh-io/api amendment.
+
+## Amendment 2026-11-02: a lane sees what its lease's pod sees
+
+**What broke.** Deployed to dl360-v1 at 14:22 AEDT, every runsheet
+validation's integration shards 1–3 failed in 1–3 s with 0 tests, on
+each of three attempts, while shard 0 ran its 879; 23 validations were
+handed back cannot_run, and the node was rolled back at about 15:45.
+A lane was opened as a fresh sandbox session (`sandbox.Open`): an
+**empty HOME** of its own and **no network**. On a v1 node Go's module
+cache (`~/go/pkg/mod`), build cache (`~/.cache/go-build`) and
+`~/go/bin` are in the session's HOME — no node store holds them — and
+the lease's pod fills them through its relay (lease 30bcf23f's HOME:
+985 MB of modules, 2.3 GB of build cache). A lane saw none of it and
+could fetch nothing, so `go test ./e2e` failed at setup:
+`dial tcp: lookup proxy.golang.org: ... network is unreachable`,
+`FAIL e2e [setup failed]`, exit 1 (reproduced with runsheet's
+integration command in a `--network none` container on an empty HOME).
+The node's log said only that each lane opened. The Consequences'
+"fetches them in the lease's pod first" never held: what the lease's
+pod fetched was in a HOME the lanes did not mount.
+
+**Decision.** A lane sees exactly what a step in the lease's pod sees,
+but for its pod, its own services and its scheduler hold:
+
+- **the lease's HOME** (`sandbox.Sandbox.OpenBeside`), mounted
+  read-write at its own path and named `HOME`: Go's module and build
+  caches, `~/go/bin`, tools a step installed, the relay's CA and every
+  file the session or a step wrote there. Go's caches are safe for
+  several processes at once. A lane's end removes its pod, never the
+  HOME, which is the lease's. A lane writes no services listing of its
+  own: its services answer where the lease's do, on its own loopback.
+- **the same checkout, image, `MESH_ITEM`, kind, hooks, environment and
+  PATH**, and the lease's `proxyEnv` (with the relay CA's trust
+  variables) and `registryEnv`.
+- **the lease's network and egress, never a raw network.** A lane's pod
+  is on the lease's pod's network (`leaseNetwork`): none but its
+  loopback with a relay sidecar, relay-only with a kind's egress, the
+  sandbox's otherwise. Where the relay is the only exit, each lane step
+  runs behind the git bridge (`node <HOME>/mesh-lane-bridge.js <socket>
+  <port> -- sh -c <command>`), listening on the lane's loopback at the
+  port the lease's `HTTPS_PROXY` names and piping to a socket mounted
+  into the lane: with a relay sidecar, the node's **lane tunnel**
+  (`relaySidecar.openLaneTunnel`, `<lease socket dir>/l/s`), which
+  answers CONNECT alone on the lease's egress tunnel (its policy, its
+  interception, its audit, as the session's CONNECT through the sidecar
+  is) and refuses every other route of the node's side: no renewal, no
+  credentials, no node tools, no model; without one, the lease's
+  sessionproxy socket, as the lease's pod's bridge reaches it. The lane
+  tunnel closes with the lease. The sidecar's plain-HTTP routes
+  (`/git/`, the registry) are not served to lanes; a step needing them
+  runs in a group of the lease's pod.
+- **a failed step is in the node's log** (`podSteps.logFailedStep`),
+  in a lane or the lease's own pod: where it ran, its shard, its exit
+  (or why it did not run), how long it took and the last eight lines of
+  its stderr, redacted of tokens. Each lane's open line names its HOME
+  and its egress.
+
+`TestEveryShardSeesTheLeasesGoModuleCache` fails on the change before
+this one exactly as dl360 did (shard 1: exit 1, 0 tests);
+`TestALaneReachesTheLeasesRelay`, `TestTheLanesTunnelServesTheLeasesEgressAlone`
+and `TestALanesFailedStepIsInTheNodesLog` hold the rest.

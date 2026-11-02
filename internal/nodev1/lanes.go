@@ -4,6 +4,10 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -21,6 +25,15 @@ import (
 // runs in the lease's own pod, beside its services, and every other in
 // a pod of its own beside the lease's —
 //
+//   - seeing what a step in the lease's pod sees (ADR-049 amendment, a
+//     lane sees its lease; 2026-11-02, every runsheet shard but the
+//     first failed at once, 0 tests, on a lane's empty HOME with no
+//     network: "go: ... dial tcp: lookup proxy.golang.org ... network is
+//     unreachable", [setup failed]): the same checkout, the lease's own
+//     HOME (sandbox.OpenBeside) — Go's module and build caches, ~/go/bin,
+//     the tools and files a step or the session put there, the relay's
+//     CA — the same image, environment and PATH, and the lease's
+//     proxyEnv and registryEnv;
 //   - with its own copy of the lease's services (the checkout's
 //     .mesh/services.yml and the brief's pods), so every shard has a
 //     Postgres of its own on 127.0.0.1, as the lease's pod has, and a
@@ -29,13 +42,24 @@ import (
 //   - on the lease's resources (the brief's CPUs and memory), held of
 //     the node's scheduler as any lease's are, so a lane waits for room
 //     on a busy node rather than over-commit it;
-//   - with no network: the lease's relay is a sidecar of the lease's
-//     own pod (or a bridge in its agent's container), which a lane
-//     cannot reach, so a lane reaches its own services and the node's
-//     package stores and nothing else;
+//   - on the lease's network and through the lease's egress, never a
+//     raw network of its own: a lease whose relay is its pod's only exit
+//     (a sidecar, or a kind's egress) has lanes with no network but
+//     their loopback, where each step's own bridge (gitBridgeScript)
+//     pipes to the lease's relay on a socket mounted into the lane —
+//     with a relay sidecar, the node's lane socket (relaySidecar.
+//     openLaneTunnel), which serves the lease's egress tunnel alone
+//     (CONNECT on its policy, its interception and its audit) and none
+//     of the sidecar's credentials or routes; otherwise the lease's
+//     sessionproxy socket, which the lease's pod reaches the same way.
+//     A lease whose pod has the public network gives its lanes the same;
 //   - named <lease pod>-lane-<n> and labelled as the lease's pod, so the
 //     supervisor's reconcile removes one a dead node left behind; and
-//     removed, its scheduler hold given back, when its steps have run.
+//     removed, its scheduler hold given back, when its steps have run;
+//     the HOME stays, the lease's;
+//   - and a step that fails in it, or in the lease's own pod, is in the
+//     node's log: the lane, the step's exit and the last lines it wrote
+//     (logFailedStep).
 
 // laneSteps is podSteps that can open a lane (validate.LaneRunner).
 type laneSteps struct{ podSteps }
@@ -46,11 +70,28 @@ func (s laneSteps) Lane(ctx context.Context, name string) (validate.Runner, func
 	if err != nil {
 		return nil, nil, err
 	}
-	return podSteps{p: lp, dir: s.dir, env: s.env}, release, nil
+	return podSteps{p: lp, dir: s.dir, env: s.env, lane: name, logf: s.logf}, release, nil
 }
 
 // laneRenewEvery is how often a lane renews its scheduler hold.
 const laneRenewEvery = 30 * time.Second
+
+// laneBridgeName is the lanes' bridge script in the lease's HOME: the
+// git bridge's, written once per lease for every lane to run.
+const laneBridgeName = "mesh-lane-bridge.js"
+
+// leaseNetwork is the network a lease's pod, and each of its lanes, is
+// on: none but its loopback when its relay is a sidecar, the relay as
+// its only exit when its kind declares egress, else the sandbox's.
+func (r *Runtime) leaseNetwork(b *meshapi.Brief) sandbox.NetworkPolicy {
+	switch {
+	case r.sidecarMode():
+		return sandbox.Isolated()
+	case b.Egress != nil:
+		return r.Pods.Config.Network.RelayOnly()
+	}
+	return r.Pods.Config.Network
+}
 
 // suiteLanes opens lanes beside parent, the lease's pod: nil on a node
 // without the sandbox's pods.
@@ -59,6 +100,9 @@ func (r *Runtime) suiteLanes(b *meshapi.Brief, workspace string, parent *leasePo
 		return nil
 	}
 	var n atomic.Int64
+	var bridgeOnce sync.Once
+	var bridge string
+	var bridgeErr error
 	return func(ctx context.Context, name string) (*leasePod, func(), error) {
 		k := n.Add(1)
 		hold, err := r.holdLane(ctx, b, k)
@@ -67,14 +111,16 @@ func (r *Runtime) suiteLanes(b *meshapi.Brief, workspace string, parent *leasePo
 		}
 		sb := r.Pods.WithReserve(nil) // the scheduler holds the lane's CPUs
 		sb.TempDir = r.leaseDir(b.LeaseID)
-		sb.Config.Network = sandbox.Isolated()
-		gn, ge := podIdentity(b, r.Node.Name)
-		sess, err := sb.Open(fmt.Sprintf("%s-lane-%d", b.LeaseID, k), b.Kind, sandbox.GitIdentity{Name: gn, Email: ge})
+		sb.Config.Network = r.leaseNetwork(b)
+		// the lease's HOME, image and socket dirs: what a step in the
+		// lease's pod sees (sandbox.OpenBeside)
+		sess, err := sb.OpenBeside(parent.sess, fmt.Sprintf("%s-lane-%d", b.LeaseID, k))
 		if err != nil {
 			hold.release()
 			return nil, nil, err
 		}
-		lp := &leasePod{sess: sess, name: fmt.Sprintf("%s-lane-%d", parent.name, k), denied: parent.denied}
+		lp := &leasePod{sess: sess, name: fmt.Sprintf("%s-lane-%d", parent.name, k), denied: parent.denied, lane: true,
+			gitPort: parent.gitPort, proxyEnv: slices.Clone(parent.proxyEnv), registryEnv: slices.Clone(parent.registryEnv)}
 		sess.Pin(lp.name, map[string]string{PodLeaseLabel: b.LeaseID, PodJobLabel: b.JobID, PodNodeLabel: r.NodeID()})
 		sess.SetLimits(limitsOf(b.Resources))
 		start := time.Now()
@@ -84,13 +130,39 @@ func (r *Runtime) suiteLanes(b *meshapi.Brief, workspace string, parent *leasePo
 			}
 			hold.release()
 		}
+		// the lease's egress: its relay's socket mounted, each step
+		// run behind a bridge to it on the lane's loopback, where the
+		// lease's proxyEnv points
+		if sock := parent.laneSocket(); sock != "" && (lp.proxyEnv != nil || lp.registryEnv != nil) {
+			bridgeOnce.Do(func() { bridge, bridgeErr = sess.WriteFile(laneBridgeName, gitBridgeScript()) })
+			if bridgeErr != nil {
+				release()
+				return nil, nil, fmt.Errorf("the lane's bridge: %w", bridgeErr)
+			}
+			sess.ShareProxyDir(filepath.Dir(sock))
+			lp.bridge = []string{"node", bridge, sock, strconv.Itoa(lp.gitPort), "--"}
+		} else if lp.proxyEnv != nil {
+			r.logf("nodev1: lease %s: lane %s has no way to the lease's relay; its steps reach nothing beyond the pod", b.LeaseID, name)
+		}
 		if err := r.startServices(ctx, b, lp, workspace, "the lane "+name+"'s"); err != nil {
 			release()
 			return nil, nil, err
 		}
-		r.logf("nodev1: lease %s: run_suite's lane %s runs in pod %s (opened in %s)", b.LeaseID, name, lp.name, time.Since(start).Round(time.Second))
+		r.logf("nodev1: lease %s: run_suite's lane %s runs in pod %s (opened in %s; HOME %s, egress %s)", b.LeaseID, name, lp.name,
+			time.Since(start).Round(time.Second), sess.Home, laneEgressLine(lp, sb.Config.Network))
 		return lp, release, nil
 	}
+}
+
+// laneEgressLine says how a lane reaches out, for the log.
+func laneEgressLine(lp *leasePod, net sandbox.NetworkPolicy) string {
+	switch {
+	case lp.bridge != nil:
+		return "the lease's relay at " + lp.bridge[2]
+	case net.None || net.NoDNS:
+		return "none"
+	}
+	return "the pod's network"
 }
 
 // laneHold is a lane's hold on the node's scheduler, renewed until

@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/egress"
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/relaysidecar"
 	"projectmesh.io/mesh-cli/internal/sandbox"
@@ -305,5 +306,59 @@ func TestASidecarIsHandedItsFilledSlots(t *testing.T) {
 	want := []relaysidecar.Slot{{Name: "web_search", Description: "Search the web.", Binding: "bind-1"}}
 	if !slices.Equal(c.Slots, want) || c.Latchkey == "" {
 		t.Fatalf("the sidecar's slots %+v (latchkey %q), want %+v", c.Slots, c.Latchkey, want)
+	}
+}
+
+// A relay sidecar's lanes reach the lease's egress on a socket of their
+// own (lanes.go): CONNECT alone, on the lease's tunnel and its policy,
+// never the node side's other routes (renewal, node tools, the model),
+// and gone with the lease.
+func TestTheLanesTunnelServesTheLeasesEgressAlone(t *testing.T) {
+	dir, err := os.MkdirTemp("", "lt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	tunnel := &egress.Tunnel{Policy: egress.NewPolicy([]string{"proxy.golang.org"}, nil, nil),
+		Dial: func(_ context.Context, _, _ string) (net.Conn, error) {
+			c, s := net.Pipe()
+			go func() { io.Copy(io.Discard, s); s.Close() }()
+			return c, nil
+		}}
+	rs := &relaySidecar{r: &Runtime{Logf: t.Logf}, b: &meshapi.Brief{LeaseID: "lease-1"}, dir: dir, tunnel: tunnel}
+	sock, err := rs.openLaneTunnel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(sock) != filepath.Join(dir, relayLaneDir) {
+		t.Fatalf("the lanes' socket %s is not in a directory of its own", sock)
+	}
+	ask := func(req string) string {
+		c, err := net.Dial("unix", sock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		c.SetDeadline(time.Now().Add(5 * time.Second))
+		io.WriteString(c, req)
+		line := make([]byte, 64)
+		n, _ := c.Read(line)
+		return string(line[:n])
+	}
+	for _, req := range []string{"POST " + relaysidecar.RenewPath + " HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n",
+		"GET /mcp/mesh-node HTTP/1.1\r\nHost: x\r\n\r\n"} {
+		if got := ask(req); !strings.Contains(got, " 403 ") {
+			t.Fatalf("%q answered %q, want 403", req, got)
+		}
+	}
+	if got := ask("CONNECT evil.example:443 HTTP/1.1\r\nHost: evil.example:443\r\n\r\n"); strings.Contains(got, " 200 ") {
+		t.Fatalf("a host the lease's policy refuses was tunnelled: %q", got)
+	}
+	if got := ask("CONNECT proxy.golang.org:443 HTTP/1.1\r\nHost: proxy.golang.org:443\r\n\r\n"); !strings.Contains(got, " 200 ") {
+		t.Fatalf("the lease's allowed host answered %q, want 200", got)
+	}
+	rs.close()
+	if _, err := net.Dial("unix", sock); err == nil {
+		t.Fatal("the lanes' tunnel outlived the lease")
 	}
 }

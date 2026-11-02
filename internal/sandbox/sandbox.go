@@ -415,6 +415,9 @@ type Session struct {
 	// (SetLimits). Both are a v1 node's, per lease (leasepod.go).
 	pin         *podPin
 	agentLimits *Limits
+	// sharedHome is a session opened beside another (OpenBeside) on its
+	// HOME, which its Close leaves.
+	sharedHome bool
 }
 
 // ShareProxyDir mounts dir, the directory of the session's sessionproxy
@@ -1269,6 +1272,9 @@ func (s *Session) Close() error {
 		if err := s.removePod(context.Background(), p); err != nil {
 			errs = append(errs, err)
 		}
+	}
+	if s.sharedHome {
+		return errors.Join(errs...)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
