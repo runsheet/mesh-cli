@@ -28,8 +28,9 @@
 // codex-cli 0.157.1) has the same live input in its protocol schema —
 // thread/start, then turn/start per turn (whose model overrides that
 // turn and the ones after), turn/steer to add input to the turn in
-// flight, turn/interrupt — but it is not built here: Claude Code is the
-// streaming harness until it is.
+// flight, turn/interrupt — built as its own transport in
+// internal/harness/codexsession, not here: Claude Code is this
+// package's one harness.
 package session
 
 import (
