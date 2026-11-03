@@ -142,6 +142,33 @@ func TestModelRouteSwapsTheCredential(t *testing.T) {
 	}
 }
 
+// A credential's Extra headers reach the upstream on every call,
+// alongside its primary credential header.
+func TestModelRouteSendsExtraHeaders(t *testing.T) {
+	var got *http.Request
+	g := newModelRig(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Clone(context.Background())
+		io.WriteString(w, "ok")
+	}), func(bool) ModelCredential {
+		return ModelCredential{
+			Header: "Authorization",
+			Value:  "Bearer " + realModelToken,
+			Extra:  map[string]string{"Anthropic-Organization": "org_real_secret"},
+		}
+	})
+	resp, err := http.Post(g.base+"/model/anthropic/v1/messages", "application/json", strings.NewReader("hello"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got == nil || got.Header.Get("Authorization") != "Bearer "+realModelToken {
+		t.Fatalf("upstream saw %v", got)
+	}
+	if got.Header.Get("Anthropic-Organization") != "org_real_secret" {
+		t.Fatalf("the extra header did not reach the upstream: %v", got.Header)
+	}
+}
+
 // An event stream reaches the session a piece at a time, as the
 // upstream writes it: the first event arrives while the upstream still
 // holds the second.
