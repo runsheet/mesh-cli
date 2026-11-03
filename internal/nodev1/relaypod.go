@@ -183,7 +183,9 @@ func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe 
 	if models == nil {
 		models = modelUpstreams()
 	}
-	account.forward(np, models, r.logf, b.LeaseID, rs.base())
+	if err := account.forward(np, models, r.logf, b.LeaseID, rs.base()); err != nil {
+		return nil, err
+	}
 	// egress.model never closes the harness's own model route (#1700)
 	fixed, err := rs.fixedUpstreams()
 	if err != nil {

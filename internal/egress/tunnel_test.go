@@ -170,12 +170,12 @@ func TestPolicyIsTheKindsHostsNarrowedByTheTenantPlusFixed(t *testing.T) {
 // publicDial never reaches a private, loopback or link-local address.
 func TestPublicIPRefusesPrivateRanges(t *testing.T) {
 	for _, a := range []string{"10.0.0.1", "192.168.1.1", "172.16.0.1", "127.0.0.1", "169.254.1.1", "100.64.0.1", "::1", "fe80::1", "fd00::1", "0.0.0.0"} {
-		if publicIP(net.ParseIP(a)) {
+		if PublicIP(net.ParseIP(a)) {
 			t.Errorf("%s is taken as public", a)
 		}
 	}
 	for _, a := range []string{"8.8.8.8", "2606:4700::1111"} {
-		if !publicIP(net.ParseIP(a)) {
+		if !PublicIP(net.ParseIP(a)) {
 			t.Errorf("%s is not taken as public", a)
 		}
 	}
