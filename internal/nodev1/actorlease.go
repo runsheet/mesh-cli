@@ -322,7 +322,7 @@ func podKilled(o outcome) (string, int, bool) {
 // actor.json not done is a lease the node no longer runs. One not yet
 // reported is handed back node_restart (or with the cause it had
 // decided), its pods are removed and its job directory with them.
-func (r *Runtime) releaseLeftovers() {
+func (r *Runtime) releaseLeftovers(adopting map[string]bool) {
 	left, err := actor.Leftovers(filepath.Join(r.WorkRoot, "leases"))
 	if err != nil {
 		r.logf("nodev1: reading leftover actors: %v", err)
@@ -333,6 +333,14 @@ func (r *Runtime) releaseLeftovers() {
 		if _, ok := r.leases.Get(rec.LeaseID); ok {
 			// an earlier pass of this same start-up already adopted it
 			// (adopt.go): it is not a leftover.
+			continue
+		}
+		if adopting[rec.LeaseID] {
+			// adoptHandoffs is adopting it right now, on its own
+			// goroutine (adopt.go): its hand-off is still unread by
+			// releaseLeftovers's eyes -- actor.json names it Running,
+			// Reported: false, same as a lease the node truly lost --
+			// but it is not a leftover either.
 			continue
 		}
 		r.logf("nodev1: lease %s was %s when the node stopped; releasing it", rec.LeaseID, rec.State)

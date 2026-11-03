@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/actor"
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/relaysidecar"
 	"projectmesh.io/mesh-cli/internal/scheduler"
@@ -26,8 +27,13 @@ type fakeSidecarControl struct {
 	mu     sync.Mutex
 	calls  []relaysidecar.ReplaceCredentialsRequest
 	refuse string
-	ln     net.Listener
-	srv    *http.Server
+	// block, set, is read (under mu) and waited on before the handler
+	// answers a request: a test can hold adoptOne in flight, past the
+	// point it recorded its call, to drive the window releaseLeftovers
+	// must not race.
+	block chan struct{}
+	ln    net.Listener
+	srv   *http.Server
 }
 
 func startFakeSidecarControl(t *testing.T, dir string) *fakeSidecarControl {
@@ -51,7 +57,11 @@ func startFakeSidecarControl(t *testing.T, dir string) *fakeSidecarControl {
 		f.mu.Lock()
 		f.calls = append(f.calls, req)
 		refuse := f.refuse
+		block := f.block
 		f.mu.Unlock()
+		if block != nil {
+			<-block
+		}
 		res := relaysidecar.ReplaceCredentialsResult{Replaced: refuse == ""}
 		if refuse != "" {
 			res.Refused = refuse
@@ -310,5 +320,115 @@ func TestNodeHandsBackUnadoptableHandoff(t *testing.T) {
 			_, err := os.Stat(g.rt.leaseDir(leaseID))
 			return os.IsNotExist(err)
 		})
+	})
+}
+
+// A lease adoptHandoffs is adopting survives releaseLeftovers, which
+// Run calls right behind it, even while adoptOne is still waiting on
+// the sidecar's control socket -- still short of r.leases.Put -- the
+// exact on-disk state and ordering Upgrade and Run leave: actor.json
+// unchanged (Running, never reported) beside a fresh handoff.json.
+// Before the fix, adoptHandoffs gave releaseLeftovers nothing to tell
+// an adopting lease apart from a truly abandoned one, and
+// releaseLeftovers -- a synchronous, local-filesystem-only pass with
+// no reason to wait on anything -- read that same actor.json first and
+// handed the lease back node_restart, deleting its directory out from
+// under the goroutine still adopting it.
+func TestAdoptedLeaseSurvivesReleaseLeftovers(t *testing.T) {
+	// never taken through Run's own take loop -- mintLease bypasses it --
+	// so this stub's Run is never called; Run still needs a non-nil
+	// Session to start at all.
+	g, _ := actorRig(t, &stubSession{})
+
+	leaseID, brief := mintLease(t, g, func(b *meshapi.Brief) { b.FinishTool = "submit" })
+
+	sidecarDir := filepath.Join(t.TempDir(), "sidecar")
+	sidecar := startFakeSidecarControl(t, sidecarDir)
+	block := make(chan struct{})
+	sidecar.mu.Lock()
+	sidecar.block = block
+	sidecar.mu.Unlock()
+
+	dir := g.rt.leaseDir(leaseID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("making the lease directory: %v", err)
+	}
+	// the state Upgrade leaves a non-intercepting lease in: actor.json
+	// unchanged, still Running and not yet reported, its pod, sidecar
+	// and agent never stopped.
+	rec := actor.Record{LeaseID: leaseID, JobID: brief.JobID, Kind: brief.Kind, State: actor.Running, Since: time.Now(), Taken: time.Now(), PID: 1}
+	data, err := json.MarshalIndent(rec, "", "  ")
+	if err != nil {
+		t.Fatalf("marshalling actor.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, actor.FileName), data, 0o600); err != nil {
+		t.Fatalf("writing actor.json: %v", err)
+	}
+
+	writeHandoffFixture(t, g, leaseID, &handoffState{Brief: brief, SidecarDir: sidecarDir})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- g.rt.Run(ctx) }()
+
+	// adoptOne is now blocked inside the sidecar's control handler, past
+	// the point it recorded its call to the fake: releaseLeftovers, run
+	// synchronously by Run right behind adoptHandoffs, has already had
+	// its one chance to race it by now.
+	waitFor(t, "adoptOne's credential replacement to reach the sidecar", func() bool {
+		return len(sidecar.replacements()) > 0
+	})
+
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("releaseLeftovers removed the adopted lease's directory while adoption was still in flight: %v", err)
+	}
+	if n := len(g.fake.Calls("hand-back")); n != 0 {
+		t.Fatalf("releaseLeftovers handed the adopted lease back while it was still being adopted: %d hand-back(s)", n)
+	}
+
+	close(block)
+
+	nodeSocket := filepath.Join(sidecarDir, relayNodeSocket)
+	waitFor(t, "the adopted lease's node socket", func() bool {
+		_, err := os.Stat(nodeSocket)
+		return err == nil
+	})
+	waitFor(t, "the scheduler to hold the adopted lease's room", func() bool {
+		for _, h := range g.rt.Scheduler.Leases() {
+			if h.Owner == leaseID {
+				return true
+			}
+		}
+		return false
+	})
+
+	driveObserve(t, nodeSocket, "conform", `{"id":1,"method":"tools/call","params":{"name":"submit"}}`,
+		`{"id":1,"result":{"content":[{"type":"text","text":"{\"ok\":true}"}]}}`)
+
+	waitFor(t, "the adopted lease to finish", func() bool {
+		return len(g.fake.Calls("finish")) > 0
+	})
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not stop once its context was cancelled")
+	}
+
+	if n := len(g.fake.Calls("finish")); n != 1 {
+		t.Fatalf("%d finishes", n)
+	}
+	if n := len(g.fake.Calls("hand-back")) + len(g.fake.Calls("fail")); n != 0 {
+		t.Fatalf("%d hand-backs/fails beside the one finish", n)
+	}
+	if g.fake.Ended(leaseID) != "finish" {
+		t.Fatalf("lease ended %q, not finish", g.fake.Ended(leaseID))
+	}
+
+	waitFor(t, "the job directory to be removed once the adopted lease released", func() bool {
+		_, err := os.Stat(dir)
+		return os.IsNotExist(err)
 	})
 }

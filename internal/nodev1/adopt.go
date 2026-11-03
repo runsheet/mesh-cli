@@ -37,15 +37,23 @@ import (
 
 // adoptHandoffs picks up every hand-off a prior process left under the
 // node's leases directory, each on its own goroutine so one lease's
-// adoption never waits on another's.
-func (r *Runtime) adoptHandoffs(ctx context.Context) {
+// adoption never waits on another's. It returns the lease ids it is
+// adopting, built synchronously before any adoptOne goroutine is
+// spawned, so the caller can keep releaseLeftovers -- which runs right
+// after, on the local filesystem alone -- from treating one of them as
+// abandoned before adoptOne has had the chance to register it in
+// r.leases: adoptOne's first network call (openSession) can take long
+// enough for releaseLeftovers to run and read the same actor.json
+// first.
+func (r *Runtime) adoptHandoffs(ctx context.Context) map[string]bool {
+	adopting := map[string]bool{}
 	root := filepath.Join(r.WorkRoot, "leases")
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			r.logf("nodev1: reading %s for hand-offs to adopt: %v", root, err)
 		}
-		return
+		return adopting
 	}
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -68,8 +76,10 @@ func (r *Runtime) adoptHandoffs(ctx context.Context) {
 			_ = os.RemoveAll(dir)
 			continue
 		}
+		adopting[id] = true
 		go r.adoptOne(ctx, id, dir, &st)
 	}
+	return adopting
 }
 
 // cannotAdopt hands a hand-off back node_update and removes its job

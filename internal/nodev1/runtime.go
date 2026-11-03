@@ -415,8 +415,8 @@ func (r *Runtime) Run(ctx context.Context) error {
 		return err
 	}
 	if r.Actors {
-		r.adoptHandoffs(ctx)
-		r.releaseLeftovers()
+		adopting := r.adoptHandoffs(ctx)
+		r.releaseLeftovers(adopting)
 	}
 	// parked threads past their keep, and threads a stopped node left
 	r.sweepThreads(time.Now())
