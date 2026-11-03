@@ -93,6 +93,62 @@ func TestAnUnpinnedSessionIsAsBefore(t *testing.T) {
 	}
 }
 
+// A live SetAgentLimits change — node.yaml's sandbox.memory edited and
+// the watcher reapplying it — never reaches a session whose pod already
+// runs: SetLimits read the sandbox's limits once, at the pod's own
+// creation, and keeps that snapshot. A session opened afterwards, as a
+// new pod's creation, reads the new limits (ADR-007 amendment, a node's
+// pod limits live).
+func TestALiveLimitsChangeKeepsARunningPodButGivesTheNextOneTheNew(t *testing.T) {
+	f := &Fake{}
+	sb := testSandbox(t, f)
+
+	running, err := sb.Open("lease-1", "build", GitIdentity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer running.Close()
+	// pod creation: the session reads the sandbox's limits as they are now
+	running.SetLimits(sb.AgentLimits())
+	ws := t.TempDir()
+	if err := running.Run(context.Background(), RunSpec{Workspace: ws, Command: []string{"true"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.AgentSpecs()[0].Limits; got.Memory != DefaultMemory {
+		t.Fatalf("the running pod's own limits: %+v, want memory %s", got, DefaultMemory)
+	}
+
+	// node.yaml's sandbox.memory changes while the pod above still runs
+	sb.SetAgentLimits(Limits{CPUs: DefaultCPUs, Memory: "9999m", Pids: DefaultPids})
+
+	if got := running.limits(); got.Memory != DefaultMemory {
+		t.Fatalf("the running pod's session after the change: %+v, want memory %s (its original)", got, DefaultMemory)
+	}
+	if err := running.Exec(context.Background(), RunSpec{Workspace: ws, Command: []string{"true"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range f.AgentSpecs() {
+		if a.Limits.Memory != DefaultMemory {
+			t.Fatalf("the running pod's own container %s: memory %s, want its original %s", a.Name, a.Limits.Memory, DefaultMemory)
+		}
+	}
+
+	// the next pod created — a new session — is given the new limit
+	next, err := sb.Open("lease-2", "build", GitIdentity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.Close()
+	next.SetLimits(sb.AgentLimits())
+	if err := next.Run(context.Background(), RunSpec{Workspace: t.TempDir(), Command: []string{"true"}}); err != nil {
+		t.Fatal(err)
+	}
+	specs := f.AgentSpecs()
+	if got := specs[len(specs)-1].Limits.Memory; got != "9999m" {
+		t.Fatalf("the next pod's limits: memory %s, want 9999m (the new one)", got)
+	}
+}
+
 func asExit(err error, target **ExitError) bool {
 	e, ok := err.(*ExitError)
 	if ok {

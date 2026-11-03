@@ -218,6 +218,20 @@ type Runtime struct {
 	// (SIGHUP); nil runs the poll alone.
 	CapacityReload <-chan struct{}
 
+	// SandboxLimitsConfigPath, when set and Pods is set, is node.yaml's
+	// path: the sandbox-limits watcher (ADR-007 amendment, 2026-11-03)
+	// rereads its top-level `sandbox` section every SandboxLimitsPoll
+	// and on SandboxLimitsReload, and calls Pods.SetAgentLimits on what
+	// it reads when it differs from Pods' current AgentLimits — a pod
+	// already running keeps its own. Off (no watcher) when empty.
+	SandboxLimitsConfigPath string
+	// SandboxLimitsPoll is how often the watcher rereads
+	// SandboxLimitsConfigPath; a minute when zero.
+	SandboxLimitsPoll time.Duration
+	// SandboxLimitsReload, when set, wakes the watcher for an immediate
+	// reread, as CapacityReload does; nil runs the poll alone.
+	SandboxLimitsReload <-chan struct{}
+
 	// gitBridgePort, set, is a lease pod's git bridge port in place of
 	// podGitPort: tests, whose fake pods share the host's loopback.
 	gitBridgePort int
@@ -448,6 +462,10 @@ func (r *Runtime) Run(ctx context.Context) error {
 	if r.CapacityConfigPath != "" {
 		path := r.CapacityConfigPath
 		go r.WatchCapacity(hbCtx, func() (meshapi.Capacity, bool, error) { return ReadCapacityConfig(path) }, r.CapacityPoll, r.CapacityReload)
+	}
+	if r.SandboxLimitsConfigPath != "" && r.Pods != nil {
+		path := r.SandboxLimitsConfigPath
+		go r.WatchSandboxLimits(hbCtx, func() (sandbox.Limits, bool, error) { return ReadSandboxLimitsConfig(path) }, r.SandboxLimitsPoll, r.SandboxLimitsReload)
 	}
 
 	var leases sync.WaitGroup
