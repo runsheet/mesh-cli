@@ -11,6 +11,10 @@
 // and SCRAM-SHA-256 password authentication (whichever the upstream
 // asks for) and nothing else; an upstream that asks for another method
 // fails the connection.
+//
+// Upstream, the relay's own leg is TLS: StartTLS asks the server for
+// it (SSLRequest) and verifies its certificate before any credential is
+// sent, refusing a server that will not speak TLS.
 package pgrelay
 
 import (
@@ -19,6 +23,7 @@ import (
 	"crypto/md5"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -28,6 +33,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Credentials are what the relay presents to the upstream server. The
@@ -94,6 +100,50 @@ func Serve(ctx context.Context, client, upstream net.Conn, cred Credentials) err
 	}
 
 	return splice(ctx, client, upstream)
+}
+
+// ErrNoTLS is an upstream that answered the SSLRequest with anything
+// but 'S': it will not speak TLS, so no credential is sent to it.
+var ErrNoTLS = errors.New("pgrelay: the upstream does not offer TLS")
+
+// StartTLS asks upstream for TLS (an SSLRequest) and, when it agrees,
+// completes a TLS handshake on it with cfg, which must verify the
+// server's certificate and name (a nil RootCAs is the system's roots;
+// ServerName the host dialled). It answers the TLS connection to pass
+// to Serve, or ErrNoTLS, or the handshake's error; on any error the
+// caller closes upstream.
+func StartTLS(ctx context.Context, upstream net.Conn, cfg *tls.Config) (net.Conn, error) {
+	if cfg == nil || cfg.InsecureSkipVerify || cfg.ServerName == "" {
+		return nil, errors.New("pgrelay: StartTLS needs a verifying TLS config naming the server")
+	}
+	if dl, ok := ctx.Deadline(); ok {
+		_ = upstream.SetDeadline(dl)
+		defer upstream.SetDeadline(time.Time{})
+	}
+	req := make([]byte, 8)
+	binary.BigEndian.PutUint32(req[0:4], 8)
+	binary.BigEndian.PutUint32(req[4:8], sslRequestCode)
+	if _, err := upstream.Write(req); err != nil {
+		return nil, fmt.Errorf("pgrelay: upstream SSLRequest: %w", err)
+	}
+	// exactly one byte: anything read past it would be plaintext a
+	// man in the middle injected ahead of the handshake
+	ans := make([]byte, 1)
+	if _, err := io.ReadFull(upstream, ans); err != nil {
+		return nil, fmt.Errorf("pgrelay: upstream SSLRequest answer: %w", err)
+	}
+	if ans[0] != 'S' {
+		return nil, ErrNoTLS
+	}
+	c := cfg.Clone()
+	if c.MinVersion < tls.VersionTLS12 {
+		c.MinVersion = tls.VersionTLS12
+	}
+	tc := tls.Client(upstream, c)
+	if err := tc.HandshakeContext(ctx); err != nil {
+		return nil, fmt.Errorf("pgrelay: upstream TLS: %w", err)
+	}
+	return tc, nil
 }
 
 // readClientStartup reads the client's StartupMessage, answering any

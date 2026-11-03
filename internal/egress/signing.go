@@ -131,8 +131,18 @@ func (s InjectSpec) signedHeaders() []string {
 
 // NotSecret says field is one a signing spec writes in the clear — the
 // AWS access key id names the key in every request's Authorization — so
-// it is neither redacted nor a canary.
+// it is neither redacted nor a canary; nor are a tcp_auth login's role,
+// database and TLS settings.
 func (s InjectSpec) NotSecret(field string) bool {
+	if s.FormOf() == FormTCPAuth {
+		// a database login's role, database and TLS settings are names,
+		// not secrets: only its password is watched for
+		switch field {
+		case "user", "username", "database", "dbname", "sslmode", "sslrootcert":
+			return true
+		}
+		return false
+	}
 	return s.FormOf() == FormSigning && strings.EqualFold(s.Scheme, SchemeSigV4) && field == "access_key_id"
 }
 

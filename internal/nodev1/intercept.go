@@ -76,6 +76,10 @@ func (w watchRule) Terminates(host string) bool { return slices.Contains(w.hosts
 
 func (w watchRule) Apply(*http.Request) (*egress.Applied, error) { return nil, nil }
 
+func holdsTCPAuth(held []*heldCredential) bool {
+	return slices.ContainsFunc(held, func(h *heldCredential) bool { return h.Spec().FormOf() == egress.FormTCPAuth })
+}
+
 // signsRegistries says the brief names registries to sign.
 func signsRegistries(b *meshapi.Brief) bool {
 	return b.Egress != nil && len(b.Egress.Registries) > 0
@@ -156,7 +160,9 @@ func (r *Runtime) leaseInterception(ctx context.Context, b *meshapi.Brief, token
 		}
 		ic.rules, ic.env = append(ic.rules, rules...), append(ic.env, env...)
 	}
-	if len(ic.fed)+len(ic.held) > 0 && len(ic.rules) > signed && vals != nil {
+	// a tcp_auth credential has no rule of its own, but its value is held
+	// for the pod's Postgres bridge all the same, so it is watched for
+	if len(ic.fed)+len(ic.held) > 0 && (len(ic.rules) > signed || holdsTCPAuth(ic.held)) && vals != nil {
 		// every host the egress allows is read for the lease's canaries,
 		// not only the injected ones
 		var watched []string

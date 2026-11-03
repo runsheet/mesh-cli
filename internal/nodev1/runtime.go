@@ -204,6 +204,20 @@ type Runtime struct {
 	SuperviseEvery time.Duration
 	ReconcileEvery time.Duration
 
+	// CapacityConfigPath, when set, is node.yaml's path: the capacity
+	// watcher (ADR-044 amendment, 2026-11-03) rereads its `v1.capacity`
+	// section every CapacityPoll and on CapacityReload, and calls
+	// SetCapacity on what it reads when it differs from the node's
+	// current total. Off (no watcher) when empty.
+	CapacityConfigPath string
+	// CapacityPoll is how often the watcher rereads CapacityConfigPath;
+	// a minute when zero.
+	CapacityPoll time.Duration
+	// CapacityReload, when set, wakes the watcher for an immediate
+	// reread — the command that starts the node wires it to a signal
+	// (SIGHUP); nil runs the poll alone.
+	CapacityReload <-chan struct{}
+
 	// gitBridgePort, set, is a lease pod's git bridge port in place of
 	// podGitPort: tests, whose fake pods share the host's loopback.
 	gitBridgePort int
@@ -431,6 +445,10 @@ func (r *Runtime) Run(ctx context.Context) error {
 	}
 	r.startResources(hbCtx)
 	go r.handBackWhenWaitIsUp(hbCtx)
+	if r.CapacityConfigPath != "" {
+		path := r.CapacityConfigPath
+		go r.WatchCapacity(hbCtx, func() (meshapi.Capacity, bool, error) { return ReadCapacityConfig(path) }, r.CapacityPoll, r.CapacityReload)
+	}
 
 	var leases sync.WaitGroup
 	defer leases.Wait()
@@ -519,11 +537,20 @@ func (r *Runtime) free() *meshapi.Capacity {
 	if r.Scheduler != nil {
 		return freeOf(r.Scheduler)
 	}
-	c := r.Node.CapacityTotal
+	c := r.capacityTotal()
 	if c.Slots == 0 {
 		c.Slots = 1
 	}
 	return &c
+}
+
+// capacityTotal is the node's registered capacity, read under its lock
+// since SetCapacity (ADR-044 amendment, 2026-11-03) may change it while
+// the node runs.
+func (r *Runtime) capacityTotal() meshapi.Capacity {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.Node.CapacityTotal
 }
 
 func (r *Runtime) draining() bool {
@@ -558,7 +585,7 @@ func (r *Runtime) heartbeat(ctx context.Context) {
 	r.mu.Unlock()
 	accounts := r.unsentAccounts()
 	resp, err := r.API.Heartbeat(ctx, nodeID, meshapi.HeartbeatRequest{
-		Version: r.Node.Version, CapacityTotal: r.Node.CapacityTotal, Leases: beats, Accounts: accounts,
+		Version: r.Node.Version, CapacityTotal: r.capacityTotal(), Leases: beats, Accounts: accounts,
 	})
 	if err != nil {
 		if ctx.Err() == nil {
