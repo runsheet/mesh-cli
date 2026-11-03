@@ -229,6 +229,11 @@ func agentArgs(mode string, pod Pod, spec AgentSpec, mounts []Mount) []string {
 	mounts = append([]Mount(nil), mounts...)
 	sort.SliceStable(mounts, func(i, j int) bool { return mountDepth(mounts[i]) < mountDepth(mounts[j]) })
 	for _, m := range mounts {
+		if m.Overlay {
+			args = append(args, "--mount", fmt.Sprintf("type=overlay,source=%s,destination=%s,upperdir=%s,workdir=%s",
+				m.Source, m.Target, m.Upper, m.Work))
+			continue
+		}
 		opt := "rw"
 		if m.ReadOnly {
 			opt = "ro"

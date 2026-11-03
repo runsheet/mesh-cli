@@ -17,11 +17,23 @@ import (
 	"projectmesh.io/mesh-cli/internal/validate"
 )
 
-// Mount is one host path bound into a container.
+// Mount is one host path bound into a container: a plain bind mount of
+// Source at Target (read-write, unless ReadOnly), or, with Overlay set,
+// an overlay whose read-only lower layer is Source: a write under
+// Target lands in Upper (and Work, overlayfs's own scratch dir beside
+// it), Source itself never written to, so several mounts of one Source
+// — a lease's tenant cache, read from but never raced on by another
+// lease of the same tenant running at once — each get their own
+// private Upper and Work (mesh-cli goal
+// a-v1-lease-starts-from-a-warm-cache, item 2). ReadOnly is meaningless
+// when Overlay is set.
 type Mount struct {
 	Source   string
 	Target   string
 	ReadOnly bool
+	Overlay  bool
+	Upper    string
+	Work     string
 }
 
 // Limits cap one container: CPUs (podman --cpus), Memory (--memory, a
