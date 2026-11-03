@@ -100,6 +100,15 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 		if cpus <= 0 {
 			cpus = float64(runtime.NumCPU())
 		}
+		capPath, err := node.ConfigPath()
+		if err != nil {
+			return err
+		}
+		capOverride, err := nodev1.ReadCapacityOverride(capPath)
+		if err != nil {
+			return err
+		}
+		capacity := capOverride.Apply(nodeRunCapacity(cpus, nodeRunMemGB, nodeRunSlots))
 		connect, err := connectionsOf(nodeRunConnect)
 		if err != nil {
 			return err
@@ -109,21 +118,30 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 		if err != nil {
 			return err
 		}
+		capacityReload := make(chan struct{}, 1)
+		sandboxLimitsReload := make(chan struct{}, 1)
 		rt := &nodev1.Runtime{
 			API: &meshapi.Client{BaseURL: meshAPIURL(), Token: src.Token},
 			Node: meshapi.RegisterRequest{
 				Name: name, Version: version.Resolved(), Harnesses: harnesses,
-				CapacityTotal: nodeRunCapacity(cpus, nodeRunMemGB, nodeRunSlots),
+				CapacityTotal: capacity,
 				SigningKey:    nodev1.PublicKey(key),
 			},
-			SigningKey:  key,
-			Sigstore:    nodeRunSigstore(logger),
-			Connect:     connect,
-			WorkRoot:    root,
-			MeshBinary:  meshBinary(),
-			GitUpstream: gitUpstream(),
-			NoMirrors:   nodeRunNoMirrors,
-			Session:     sess,
+			CapacityConfigPath: capPath,
+			CapacityReload:     capacityReload,
+			// SandboxLimitsConfigPath names the same node.yaml; the
+			// watcher itself (runtime.go) only starts once Pods is set
+			// below, under --sandbox.
+			SandboxLimitsConfigPath: capPath,
+			SandboxLimitsReload:     sandboxLimitsReload,
+			SigningKey:              key,
+			Sigstore:                nodeRunSigstore(logger),
+			Connect:                 connect,
+			WorkRoot:                root,
+			MeshBinary:              meshBinary(),
+			GitUpstream:             gitUpstream(),
+			NoMirrors:               nodeRunNoMirrors,
+			Session:                 sess,
 			// the session runs on the host here, so run_suite's steps
 			// may too; a sandboxed node never runs them there
 			HostSuites: true,
@@ -207,6 +225,16 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 			}
 			stateMu.Unlock()
 			rt.Drain("`mesh node drain` asked", wait)
+		})()
+		defer onRestartSignal(func() {
+			select {
+			case capacityReload <- struct{}{}:
+			default:
+			}
+			select {
+			case sandboxLimitsReload <- struct{}{}:
+			default:
+			}
 		})()
 		if nodeRunSandbox {
 			if !nodeRunActors {

@@ -15,35 +15,66 @@ import (
 // on its own, never through the legacy internal/node.Config, which
 // nodev1 may not import (guard_test.go); a v1 node run beside a legacy
 // one on the same file reads only its own section. Its own yaml tags,
-// never meshapi.Capacity's json ones, which yaml.v3 does not read.
+// never meshapi.Capacity's json ones, which yaml.v3 does not read. Each
+// field is a pointer so a partial block (as `mesh node set` writes, and
+// as the flags-become-defaults startup rule reads, ADR-044 amendment,
+// 2026-11-03) is told apart from one that names zero.
 type nodeYAMLCapacity struct {
 	V1 struct {
-		Capacity *struct {
-			CPUs  float64 `yaml:"cpus"`
-			MemGB float64 `yaml:"mem_gb"`
-			Slots int     `yaml:"slots"`
-		} `yaml:"capacity"`
+		Capacity *nodeYAMLCapacityFields `yaml:"capacity"`
 	} `yaml:"v1"`
 }
 
+type nodeYAMLCapacityFields struct {
+	CPUs  *float64 `yaml:"cpus"`
+	MemGB *float64 `yaml:"mem_gb"`
+	Slots *int     `yaml:"slots"`
+}
+
 // ReadCapacityConfig reads node.yaml's `v1.capacity`: false with no
-// error when the file does not exist or names no capacity.
+// error when the file does not exist or names no capacity. A field the
+// block does not set reads as zero, as it always has.
 func ReadCapacityConfig(path string) (meshapi.Capacity, bool, error) {
+	cfg, ok, err := readCapacityYAML(path)
+	if err != nil || !ok {
+		return meshapi.Capacity{}, ok, err
+	}
+	return meshapi.Capacity{CPUs: floatOr(cfg.CPUs, 0), MemGB: floatOr(cfg.MemGB, 0), Slots: intOr(cfg.Slots, 0)}, true, nil
+}
+
+// readCapacityYAML is node.yaml's `v1.capacity` block as the file names
+// it, pointers left nil for a field the block leaves out; false with no
+// error when the file does not exist or names no capacity block at all.
+func readCapacityYAML(path string) (nodeYAMLCapacityFields, bool, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return meshapi.Capacity{}, false, nil
+			return nodeYAMLCapacityFields{}, false, nil
 		}
-		return meshapi.Capacity{}, false, err
+		return nodeYAMLCapacityFields{}, false, err
 	}
 	var cfg nodeYAMLCapacity
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
-		return meshapi.Capacity{}, false, err
+		return nodeYAMLCapacityFields{}, false, err
 	}
 	if cfg.V1.Capacity == nil {
-		return meshapi.Capacity{}, false, nil
+		return nodeYAMLCapacityFields{}, false, nil
 	}
-	return meshapi.Capacity{CPUs: cfg.V1.Capacity.CPUs, MemGB: cfg.V1.Capacity.MemGB, Slots: cfg.V1.Capacity.Slots}, true, nil
+	return *cfg.V1.Capacity, true, nil
+}
+
+func floatOr(p *float64, def float64) float64 {
+	if p == nil {
+		return def
+	}
+	return *p
+}
+
+func intOr(p *int, def int) int {
+	if p == nil {
+		return def
+	}
+	return *p
 }
 
 // WatchCapacity is the node.yaml watcher (ADR-044 amendment,

@@ -217,3 +217,45 @@ in memory too. Adopting it takes a detached agent, a sidecar that can
 reload its credentials, and the lease's state on disk, so it is staged
 separately. Until then, a deploy that should not restart work is a
 drain.
+
+## Amendment, 2026-11-03: `mesh node set` signals the running node
+
+Changing a v1 node's capacity meant editing node.yaml and restarting
+it — every lease in flight handed back `node_restart`, as the drain
+amendment's SIGTERM path does. An operator who only wants to raise
+`--cpus` on a busy node should not have to drain it first.
+
+1. **`mesh node set --cpus N [--mem-gb N] [--slots N]`.** It rewrites
+   node.yaml's own `v1.capacity` block — `cpus`, `mem_gb`, `slots` —
+   with only the fields passed; one left out keeps node.yaml's own
+   value for it (or none, if it never named one). This is never done
+   through the legacy node's `internal/node.Config`: that type's
+   `Save` marshals its own struct whole, which has no field for the
+   top-level `v1:` key, and would silently drop it from node.yaml on
+   write. `mesh node set` edits a generic YAML tree instead, touching
+   only `v1.capacity.*` and leaving every other key — the legacy
+   node's own included — exactly as it was.
+2. **The signal.** With a v1 node running on this machine (its pid in
+   `~/.mesh/node-v1/node.pid`, as the drain amendment left it), `mesh
+   node set` sends it SIGHUP — the same signal the self-update's
+   restart-and-adopt path reserved, free here because a v1 node has no
+   self-update of its own yet. The node's capacity watcher rereads
+   node.yaml at once and, when the total changed, calls the scheduler's
+   `SetTotal`: `free` on the next take reflects it, no lease in flight
+   is touched, and the process does not restart. With no v1 node
+   running, `mesh node set` only rewrites node.yaml and says so; the
+   change takes effect at the next start.
+3. **Flags become defaults.** Once node.yaml names a capacity field —
+   by `mesh node set`, or by hand — `mesh node run`'s matching flag
+   (`--cpus`, `--mem-gb`, `--slots`) stops being read at startup for
+   that field: node.yaml wins. A field node.yaml leaves out still takes
+   the flag (or the flag's own default) as before. This is why `mesh
+   node set` edits node.yaml rather than signalling a flag change
+   directly: the running node and every later start agree on the same
+   number without the operator having to edit a unit file too.
+4. **Sandbox limits watch the same way.** `sandbox: {cpus, memory,
+   pids}` in node.yaml (ADR-007) is reread on the same SIGHUP, live, at
+   each pod's creation from then on; a pod already running keeps the
+   limits it was given. `mesh node set` does not write this block today
+   — only `v1.capacity` — but an operator hand-editing `sandbox:` and
+   signalling the node (`kill -HUP`) sees it taken up the same way.
