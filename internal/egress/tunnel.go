@@ -13,7 +13,10 @@
 // exception is a raw host:port the Policy names explicitly (AddRaw): no
 // ClientHello is asked for, since what rides the tunnel is not TLS — a
 // relay sidecar's own dial to a credential's upstream (a database,
-// tcp_auth), never a session's, since no InjectRule ever names it. A
+// tcp_auth), never a session's: the tunnel pipes it only for a CONNECT
+// marked SpliceOnly (the sidecar's Mesh-Relay-Dial: own), and refuses
+// it to anyone else, so nothing in the pod reaches the database but
+// through the sidecar's login. A
 // Tunnel is an http.Handler, so it serves on a relay's
 // socket beside other routes, or on a unix socket of its own per lease
 // (Listen), which a relay sidecar in the lease's pod can reach.
@@ -125,7 +128,9 @@ func NewPolicy(kind []string, tenant []string, fixed []string) *Policy {
 // dial to a credential's upstream (a tcp_auth database) alone — no
 // InjectRule ever names it, so a session cannot reach it any other way
 // — and must be called on the Policy a Tunnel actually uses, since Open
-// does not copy it.
+// does not copy it. Allow never admits it by host:port alone: the
+// Tunnel pipes it only for a CONNECT marked SpliceOnly, the sidecar's
+// own, and refuses it to the session's or a lane's.
 func (p *Policy) AddRaw(hostport string) error {
 	host, port, err := net.SplitHostPort(strings.TrimSpace(hostport))
 	if err != nil {
@@ -186,11 +191,11 @@ func (p *Policy) rule(host, port string) string {
 func norm(h string) string { return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(h)), ".") }
 
 // Allow says whether a tunnel to host:port is allowed, and when not, a
-// short code and why.
+// short code and why. A raw host:port (AddRaw) is not allowed here: it
+// is the relay sidecar's own dial alone, which the Tunnel admits by
+// the CONNECT's mark (SpliceOnly), never by host:port.
 func (p *Policy) Allow(host, port string) (ok bool, code, why string) {
 	switch {
-	case p != nil && p.raw[norm(host)][port]:
-		return true, "", ""
 	case p != nil && port != Port && p.ports[norm(host)][port]:
 		return true, "", ""
 	case port != Port:
@@ -310,7 +315,17 @@ func (t *Tunnel) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		Refuse(w, "not_https", call.Refused)
 		return
 	}
-	if ok, code, why := t.Policy.Allow(host, port); !ok {
+	// a raw host:port is the relay sidecar's own dial to a credential's
+	// upstream alone: a CONNECT without its mark (the session's, a
+	// lane's) is refused it, never piped past the sidecar's login
+	raw := t.Policy.isRaw(host, port)
+	if raw && !spliceOnly(req.Context()) {
+		why := net.JoinHostPort(host, port) + " is the relay's own upstream; only the relay sidecar's own dial reaches it"
+		refused(RuleRaw, why)
+		Refuse(w, "raw", why)
+		return
+	}
+	if ok, code, why := t.Policy.Allow(host, port); !raw && !ok {
 		rule := RuleHosts
 		if code == "port" {
 			rule = RulePort
@@ -336,8 +351,9 @@ func (t *Tunnel) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if _, err := io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
 		return
 	}
-	if t.Policy.isRaw(host, port) {
-		// a raw TCP dial the Policy names explicitly (AddRaw): what
+	if raw {
+		// a raw TCP dial the Policy names explicitly (AddRaw), by the
+		// relay sidecar's own CONNECT (checked above): what
 		// rides the tunnel is not TLS, so no ClientHello is read.
 		dial := t.Dial
 		if dial == nil {

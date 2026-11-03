@@ -220,8 +220,10 @@ func TestPolicyAddRaw(t *testing.T) {
 	if err := p.AddRaw("db.example.internal:5432"); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _, _ := p.Allow("db.example.internal", "5432"); !ok {
-		t.Error("a raw host:port was refused")
+	// by host:port alone a raw upstream is never allowed: only the
+	// Tunnel, for the relay sidecar's own marked CONNECT, pipes it
+	if ok, _, _ := p.Allow("db.example.internal", "5432"); ok {
+		t.Error("a raw host:port was allowed by host:port alone")
 	}
 	if got := p.rule("db.example.internal", "5432"); got != RuleRaw {
 		t.Errorf("rule = %s, want %s", got, RuleRaw)
@@ -237,10 +239,13 @@ func TestPolicyAddRaw(t *testing.T) {
 	}
 }
 
-// A raw host:port never asks its connection for a TLS ClientHello: a
-// Postgres-shaped handshake, or any other plain bytes, are piped
-// straight through to the dialled upstream and back.
-func TestTunnelPipesARawDialWithNoClientHello(t *testing.T) {
+// A raw host:port is the relay sidecar's own dial alone. A CONNECT
+// carrying its mark (SpliceOnly, as relaysidecar.Node sets for
+// Mesh-Relay-Dial: own) never asks for a TLS ClientHello: Postgres-shaped
+// bytes are piped straight to the upstream and back. The same CONNECT
+// without the mark (the session's, a lane's) is refused before any dial,
+// so nothing in the pod reaches the database past the sidecar's login.
+func TestTunnelPipesARawDialOnlyForTheSidecarsOwnConnect(t *testing.T) {
 	p := NewPolicy(nil, nil, nil)
 	if err := p.AddRaw("db.example.internal:5432"); err != nil {
 		t.Fatal(err)
@@ -262,23 +267,72 @@ func TestTunnelPipesARawDialWithNoClientHello(t *testing.T) {
 			}(c)
 		}
 	}()
-	tun := &Tunnel{Policy: p, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-		return (&net.Dialer{}).DialContext(ctx, network, echo.Addr().String())
-	}}
-	sock := filepath.Join(sockettest.Dir(t, "raw"), "raw.sock")
-	if err := tun.Listen(sock); err != nil {
-		t.Fatal(err)
+	var mu sync.Mutex
+	var dials int
+	var calls []Call
+	tun := &Tunnel{Policy: p, Logf: t.Logf,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			mu.Lock()
+			dials++
+			mu.Unlock()
+			return (&net.Dialer{}).DialContext(ctx, network, echo.Addr().String())
+		},
+		Audit: func(c Call) {
+			mu.Lock()
+			calls = append(calls, c)
+			mu.Unlock()
+		},
 	}
-	defer tun.Close()
-	conn, err := net.Dial("unix", sock)
+	sock := filepath.Join(sockettest.Dir(t, "raw"), "raw.sock")
+	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)
 	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Mesh-Relay-Dial") != "" {
+			r = r.WithContext(SpliceOnly(r.Context()))
+		}
+		tun.ServeHTTP(w, r)
+	})}
+	go srv.Serve(ln)
+	defer srv.Close()
+	defer tun.Close()
+	connect := func(mark string) (net.Conn, *bufio.Reader, *http.Response) {
+		t.Helper()
+		conn, err := net.Dial("unix", sock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.WriteString(conn, "CONNECT db.example.internal:5432 HTTP/1.1\r\nHost: db.example.internal:5432\r\n"+mark+"\r\n")
+		br := bufio.NewReader(conn)
+		resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
+		if err != nil {
+			conn.Close()
+			t.Fatal(err)
+		}
+		return conn, br, resp
+	}
+
+	// the session's CONNECT, unmarked: refused, never dialled
+	conn, _, resp := connect("")
+	conn.Close()
+	if resp.StatusCode != http.StatusForbidden || resp.Header.Get(RefusedHeader) != "raw" {
+		t.Fatalf("an unmarked CONNECT to a raw upstream answered %d %q, want 403 raw", resp.StatusCode, resp.Header.Get(RefusedHeader))
+	}
+	mu.Lock()
+	if dials != 0 {
+		t.Fatalf("an unmarked CONNECT to a raw upstream was dialled %d times", dials)
+	}
+	if len(calls) != 1 || calls[0].Allowed || calls[0].Rule != RuleRaw {
+		t.Fatalf("the refusal was audited as %+v, want one refused %s", calls, RuleRaw)
+	}
+	mu.Unlock()
+
+	// the sidecar's own CONNECT, marked: spliced with no ClientHello
+	conn, br, resp := connect("Mesh-Relay-Dial: own\r\n")
 	defer conn.Close()
-	_, _ = io.WriteString(conn, "CONNECT db.example.internal:5432 HTTP/1.1\r\nHost: db.example.internal:5432\r\n\r\n")
-	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
-	if err != nil || resp.StatusCode != 200 {
-		t.Fatalf("CONNECT answered %+v %v", resp, err)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the sidecar's own CONNECT answered %d", resp.StatusCode)
 	}
 	msg := []byte("a Postgres StartupMessage, not a TLS ClientHello")
 	if _, err := conn.Write(msg); err != nil {
@@ -286,7 +340,7 @@ func TestTunnelPipesARawDialWithNoClientHello(t *testing.T) {
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	got := make([]byte, len(msg))
-	if _, err := io.ReadFull(conn, got); err != nil {
+	if _, err := io.ReadFull(br, got); err != nil {
 		t.Fatalf("raw bytes were not piped straight through: %v", err)
 	}
 	if string(got) != string(msg) {
