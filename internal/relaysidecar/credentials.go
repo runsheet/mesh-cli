@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -117,6 +118,27 @@ type Postgres struct {
 	User     string `json:"user"`
 	Password string `json:"password"`
 	Database string `json:"database,omitempty"`
+	// RootCA is the PEM of the CA the upstream's certificate must chain
+	// to; "" is the system's roots. Either way the upstream leg is TLS
+	// (an SSLRequest), its certificate verified against Host, before the
+	// password is sent.
+	RootCA string `json:"root_ca,omitempty"`
+	// Plaintext lets the upstream leg go without TLS: only when the
+	// credential says so (sslmode disable) and only to a loopback Host
+	// (PlaintextAllowed), never across a network.
+	Plaintext bool `json:"plaintext,omitempty"`
+}
+
+// PlaintextAllowed says host is one a Postgres credential may be sent
+// to without TLS: a loopback address or localhost, which no network
+// lies between.
+func PlaintextAllowed(host string) bool {
+	h := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(h, "[]"))
+	return ip != nil && ip.IsLoopback()
 }
 
 // String never prints the password.

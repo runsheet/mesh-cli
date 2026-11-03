@@ -307,6 +307,15 @@ func (c *Credential) TCPAuth() (user, pass, database string, err error) {
 	return user, pass, database, nil
 }
 
+// TCPAuthTLS is how the tcp_auth form's upstream leg is secured, libpq's
+// way: its sslmode field "disable" asks for plaintext (which the relay
+// allows to a loopback upstream alone); any other sslmode, or none, is
+// verify-full TLS, against its sslrootcert field's PEM when it has one,
+// else the system's roots. No mode falls back to plaintext.
+func (c *Credential) TCPAuthTLS() (plaintext bool, rootCA string) {
+	return strings.EqualFold(strings.TrimSpace(c.Fields["sslmode"]), "disable"), c.Fields["sslrootcert"]
+}
+
 // Writes is what the credential's rule writes on a request: its headers
 // (canonical) and its query parameters, each with its value. Never
 // logged.

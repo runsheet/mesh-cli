@@ -3,6 +3,8 @@ package relaysidecar
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -596,17 +598,49 @@ func (s *Sidecar) ServePostgres(p Postgres) error {
 // to it (pgrelay), which closes both ends itself.
 func (s *Sidecar) bridgePostgres(client net.Conn, p Postgres) {
 	dctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	up, err := s.dialer.DialContext(dctx, "tcp", fmt.Sprintf("%s:%d", p.Host, p.Port))
-	cancel()
 	if err != nil {
 		s.logf("relaysidecar: postgres %d: dialing %s:%d: %v", p.Listen, p.Host, p.Port, err)
 		client.Close()
 		return
 	}
+	secured, err := postgresUpstream(dctx, up, p)
+	if err != nil {
+		// refused before the credential is sent anywhere
+		s.logf("relaysidecar: postgres %d: %s:%d: %v", p.Listen, p.Host, p.Port, err)
+		up.Close()
+		client.Close()
+		return
+	}
+	cancel()
 	cred := pgrelay.Credentials{User: p.User, Password: p.Password, Database: p.Database}
-	if err := pgrelay.Serve(context.Background(), client, up, cred); err != nil {
+	if err := pgrelay.Serve(context.Background(), client, secured, cred); err != nil {
 		s.logf("relaysidecar: postgres %d: %v", p.Listen, err)
 	}
+}
+
+// postgresUpstream is up made fit to carry p's password: TLS (an
+// SSLRequest), the server's certificate verified against p.RootCA or the
+// system's roots and its name against p.Host, refusing an upstream that
+// will not speak TLS; or, only when p says plaintext and its host is a
+// loopback one, up as it is.
+func postgresUpstream(ctx context.Context, up net.Conn, p Postgres) (net.Conn, error) {
+	if p.Plaintext {
+		if !PlaintextAllowed(p.Host) {
+			return nil, fmt.Errorf("a credential is sent without TLS only to a loopback upstream, not %s", p.Host)
+		}
+		return up, nil
+	}
+	cfg := &tls.Config{ServerName: strings.Trim(p.Host, "[]"), MinVersion: tls.VersionTLS12}
+	if p.RootCA != "" {
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM([]byte(p.RootCA)) {
+			return nil, errors.New("the credential's root CA is not a PEM certificate")
+		}
+		cfg.RootCAs = pool
+	}
+	return pgrelay.StartTLS(ctx, up, cfg)
 }
 
 // Close stops serving and sends what AccessRecords remain.

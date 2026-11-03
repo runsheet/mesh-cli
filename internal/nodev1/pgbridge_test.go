@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -163,8 +164,10 @@ func TestASidecarsPostgresBridgeUsesAndCanariesTheRealCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.latchkey.setCarried("sec_pg", forJobCredential{
-		Inject:    egress.InjectSpec{Form: egress.FormTCPAuth, Host: pgHost, Port: pgPort},
-		Fields:    map[string]string{"user": pgCredUser, "pass": pgCredPassword, "database": pgCredDatabase},
+		Inject: egress.InjectSpec{Form: egress.FormTCPAuth, Host: pgHost, Port: pgPort},
+		// the fake upstream speaks plaintext on loopback, which only an
+		// explicit sslmode disable allows (relaysidecar.PlaintextAllowed)
+		Fields:    map[string]string{"user": pgCredUser, "pass": pgCredPassword, "database": pgCredDatabase, "sslmode": "disable"},
 		Version:   json.RawMessage("1"),
 		ExpiresAt: time.Now().Add(time.Hour).UTC(),
 	})
@@ -266,6 +269,39 @@ setTimeout(() => { process.exit(1); }, 5000);
 
 func pgBrief(b *meshapi.Brief) {
 	b.FinishTool, b.FinishSchema = "", nil
-	b.Egress = &meshapi.Egress{Hosts: []string{"elsewhere.test"}, MCP: []string{"conform"}, Model: true}
+	// the database's host is in the kind's egress, as a tcp_auth
+	// credential's must be (rawUpstreams)
+	b.Egress = &meshapi.Egress{Hosts: []string{"elsewhere.test", "127.0.0.1"}, MCP: []string{"conform"}, Model: true}
 	b.Access = &meshapi.Access{Repo: true, MCP: []string{"conform"}, Model: true, Secrets: []string{"sec_pg"}}
+}
+
+// A tcp_auth credential's host:port is opened raw only when its host is
+// in the kind's egress: Latchkey's answer never widens where a lease
+// reaches, so a credential naming another host, or a kind with no
+// egress, fails the lease as a credential failure.
+func TestATCPAuthUpstreamMustBeInTheKindsEgress(t *testing.T) {
+	held := func(host string) *interception {
+		return &interception{held: []*heldCredential{{ref: "sec_pg",
+			spec: egress.InjectSpec{Form: egress.FormTCPAuth, Host: host, Port: 5432}}}}
+	}
+	brief := func(hosts ...string) *meshapi.Brief {
+		return &meshapi.Brief{LeaseID: "lse_1", Egress: &meshapi.Egress{Hosts: hosts}}
+	}
+
+	rs := &relaySidecar{b: brief("api.example.test", "db.example.test"), ic: held("DB.example.test")}
+	got, err := rs.rawUpstreams()
+	if err != nil || len(got) != 1 || got[0] != "DB.example.test:5432" {
+		t.Fatalf("a host in the kind's egress: %v, %v", got, err)
+	}
+
+	for name, rs := range map[string]*relaySidecar{
+		"a host outside the kind's egress": {b: brief("api.example.test"), ic: held("db.internal.example")},
+		"a kind with no egress":            {b: &meshapi.Brief{LeaseID: "lse_1"}, ic: held("db.example.test")},
+	} {
+		got, err := rs.rawUpstreams()
+		var ce *credentialError
+		if err == nil || !errors.As(err, &ce) || len(got) != 0 {
+			t.Errorf("%s: %v, %v; want a credential failure and nothing raw", name, got, err)
+		}
+	}
 }

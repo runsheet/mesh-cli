@@ -204,7 +204,11 @@ func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe 
 		// now only through the tunnel
 		policy = policy.Open()
 	}
-	for _, hp := range rs.rawUpstreams() {
+	rawUps, err := rs.rawUpstreams()
+	if err != nil {
+		return nil, err
+	}
+	for _, hp := range rawUps {
 		if err := policy.AddRaw(hp); err != nil {
 			return nil, err
 		}
@@ -371,9 +375,14 @@ func (rs *relaySidecar) credentials(ctx context.Context, sl *slots) (relaysideca
 				return c, credentialFailed(fmt.Errorf("the relay sidecar's postgres credential: %w", err))
 			}
 			spec := h.Spec()
+			plaintext, rootCA := cred.TCPAuthTLS()
+			if plaintext && !relaysidecar.PlaintextAllowed(spec.Host) {
+				return c, credentialFailed(fmt.Errorf("the relay sidecar's postgres credential %s: sslmode disable sends its password without TLS, which only a loopback upstream may have, not %s", h.ref, spec.Host))
+			}
 			c.Postgres = append(c.Postgres, relaysidecar.Postgres{
 				Listen: port, Host: spec.Host, Port: spec.Port,
 				User: user, Password: pass, Database: database,
+				RootCA: rootCA, Plaintext: plaintext,
 			})
 			port++
 		}
@@ -497,19 +506,33 @@ func (rs *relaySidecar) fixedUpstreams() ([]string, error) {
 
 // rawUpstreams are a tcp_auth credential's own host:port — the
 // sidecar's own dial to the real database, never the session's: no
-// InjectRule names it, so the tunnel pipes it (Policy.AddRaw) by
-// host:port alone, with no TLS ClientHello asked for, since what rides
-// it is the Postgres wire protocol, not TLS.
-func (rs *relaySidecar) rawUpstreams() []string {
+// InjectRule names it, so the tunnel pipes it (Policy.AddRaw) for the
+// sidecar's own CONNECT alone, with no TLS ClientHello asked for, since
+// what rides it is the Postgres wire protocol (its TLS the sidecar's).
+// Its host must be one of the kind's egress hosts (narrowed by the
+// tenant's): Latchkey's answer never widens where a lease reaches, so a
+// credential naming any other host, or a kind with no egress, fails the
+// lease.
+func (rs *relaySidecar) rawUpstreams() ([]string, error) {
 	var out []string
-	if rs.ic != nil {
-		for _, h := range rs.ic.held {
-			if spec := h.Spec(); spec.FormOf() == egress.FormTCPAuth {
-				out = append(out, fmt.Sprintf("%s:%d", spec.Host, spec.Port))
-			}
-		}
+	if rs.ic == nil {
+		return nil, nil
 	}
-	return out
+	for _, h := range rs.ic.held {
+		spec := h.Spec()
+		if spec.FormOf() != egress.FormTCPAuth {
+			continue
+		}
+		if rs.b.Egress == nil {
+			return nil, credentialFailed(fmt.Errorf("the tcp_auth credential %s names %s, but the kind declares no egress", h.ref, spec.Host))
+		}
+		allowed := egress.NewPolicy(rs.b.Egress.Hosts, tenantHosts(rs.b), nil)
+		if ok, _, _ := allowed.Allow(spec.Host, egress.Port); !ok {
+			return nil, credentialFailed(fmt.Errorf("the tcp_auth credential %s names %s, which is not in the kind's egress", h.ref, spec.Host))
+		}
+		out = append(out, net.JoinHostPort(spec.Host, strconv.Itoa(spec.Port)))
+	}
+	return out, nil
 }
 
 // openOwn serves the node's own product proxy on a socket of a
