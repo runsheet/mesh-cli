@@ -47,18 +47,45 @@ func podRig(t *testing.T) (*rig, *sandbox.Fake, *ClaudeSession) {
 		Registries:     sandbox.DefaultRegistries,
 		ServiceTimeout: 5 * time.Second,
 	}}
-	g.rt.gitBridgePort = freePort(t)
+	ln := freeListener(t)
+	g.rt.gitBridgePort = ln.Addr().(*net.TCPAddr).Port
 	return g, sb, sess
 }
 
-func freePort(t *testing.T) int {
+// gitBridgeReservations holds, per test, the listener freeListener
+// opened for it: still open until takeGitBridgeListener hands it to
+// whichever consumer — hostAgent's host subprocess, or a relay
+// sidecar (sidecarRig) — is about to bind (or reuse) its port, so the
+// port is never free long enough for something else on the host to
+// take it first.
+var gitBridgeReservations sync.Map // *testing.T -> net.Listener
+
+// freeListener reserves a loopback port and keeps it open: the
+// reservation is released only by takeGitBridgeListener, as late as
+// its real consumer can manage, never picked and closed far ahead of
+// the rebind.
+func freeListener(t *testing.T) net.Listener {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
-	return ln.Addr().(*net.TCPAddr).Port
+	gitBridgeReservations.Store(t, ln)
+	t.Cleanup(func() { ln.Close() })
+	return ln
+}
+
+// takeGitBridgeListener pops t's reservation, if still held, so its
+// caller is the one that closes it (to rebind the same port) or
+// reuses it directly — never both podRig and a later consumer holding
+// it at once.
+func takeGitBridgeListener(t *testing.T) net.Listener {
+	t.Helper()
+	v, ok := gitBridgeReservations.LoadAndDelete(t)
+	if !ok {
+		return nil
+	}
+	return v.(net.Listener)
 }
 
 // hostAgent runs a fake pod's agent on the host: its command, with the
@@ -84,6 +111,9 @@ func hostAgent(t *testing.T, out, pre string) func(context.Context, sandbox.Agen
 		cmd.Dir = spec.Workdir
 		cmd.Env = append(slices.Clone(spec.Env), sessiontest.Env+"=1", "FAKE_CLAUDE_OUT="+out, "PATH="+filepath.Dir(nodeBin)+":"+sandbox.DefaultPath)
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = spec.Stdin, spec.Stdout, spec.Stderr
+		if ln := takeGitBridgeListener(t); ln != nil {
+			ln.Close()
+		}
 		err := cmd.Run()
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
@@ -375,12 +405,14 @@ func TestTheGitBridge(t *testing.T) {
 	defer srv.Close()
 	script := filepath.Join(dir, gitBridgeName)
 	os.WriteFile(script, gitBridgeScript(), 0o600)
-	port := strconv.Itoa(freePort(t))
+	gln := freeListener(t)
+	port := strconv.Itoa(gln.Addr().(*net.TCPAddr).Port)
 
 	fetch := `fetch("http://127.0.0.1:` + port + `/git/acme/fixture.git/info/refs").then(r => r.text()).then(t => { process.stdout.write(t); process.exit(3) })`
 	var stdout bytes.Buffer
 	cmd := exec.Command(nodeBin, script, sock, port, "--", nodeBin, "-e", fetch)
 	cmd.Stdout = &stdout
+	takeGitBridgeListener(t).Close()
 	err = cmd.Run()
 	var ee *exec.ExitError
 	if !errors.As(err, &ee) || ee.ExitCode() != 3 {
@@ -390,7 +422,9 @@ func TestTheGitBridge(t *testing.T) {
 		t.Fatalf("stdout %q, paths %v", stdout.String(), paths)
 	}
 
-	cmd = exec.Command(nodeBin, script, sock, strconv.Itoa(freePort(t)), "--", "sh", "-c", "kill -KILL $$")
+	gln2 := freeListener(t)
+	cmd = exec.Command(nodeBin, script, sock, strconv.Itoa(gln2.Addr().(*net.TCPAddr).Port), "--", "sh", "-c", "kill -KILL $$")
+	takeGitBridgeListener(t).Close()
 	err = cmd.Run()
 	if !errors.As(err, &ee) || ee.ExitCode() != 128+int(syscall.SIGKILL) {
 		t.Fatalf("a killed command is not 137 through the bridge: %v", err)

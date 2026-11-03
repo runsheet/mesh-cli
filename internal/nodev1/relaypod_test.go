@@ -69,7 +69,7 @@ func sidecarRig(t *testing.T) (*rig, *sandbox.Fake, *[][]byte) {
 				CredentialsDir: dir,
 				NodeSocket:     filepath.Join(spec.SocketDir, relayNodeSocket),
 				ControlSocket:  filepath.Join(spec.SocketDir, relayControlDir, relayControlSocket),
-				Listen:         "127.0.0.1:" + strconv.Itoa(g.rt.gitBridgePort),
+				Listener:       takeGitBridgeListener(t),
 				Logf:           t.Logf,
 				Ready:          func(string) { close(ready) },
 				RootCAs:        g.sidecarRoots,
