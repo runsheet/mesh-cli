@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -35,6 +36,7 @@ var (
 	nodeRunURL        string
 	nodeRunName       string
 	nodeRunWorkRoot   string
+	nodeRunHarness    string
 	nodeRunOnce       bool
 	nodeRunUnattended bool
 	nodeRunCPUs       float64
@@ -103,14 +105,14 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 			return err
 		}
 		logger := log.New(os.Stderr, "mesh node v1: ", log.LstdFlags)
-		sess := &nodev1.ClaudeSession{Stderr: os.Stderr, Logf: logger.Printf}
-		if nodeRunUnattended {
-			sess.ExtraArgs = []string{"--dangerously-skip-permissions"}
+		harnesses, sess, err := nodeRunSessionOf(nodeRunHarness, nodeRunUnattended, os.Stderr, logger.Printf)
+		if err != nil {
+			return err
 		}
 		rt := &nodev1.Runtime{
 			API: &meshapi.Client{BaseURL: meshAPIURL(), Token: src.Token},
 			Node: meshapi.RegisterRequest{
-				Name: name, Version: version.Resolved(), Harnesses: []string{"claude-code"},
+				Name: name, Version: version.Resolved(), Harnesses: harnesses,
 				CapacityTotal: nodeRunCapacity(cpus, nodeRunMemGB, nodeRunSlots),
 				SigningKey:    nodev1.PublicKey(key),
 			},
@@ -285,6 +287,27 @@ func nodeRunSigstore(logger *log.Logger) *sigstore.Signer {
 	return s
 }
 
+// nodeRunSessionOf is --harness: the session a lease runs and the
+// Harnesses the node registers with Mesh (ADR-044's amendment,
+// "--harness codex"). claude-code, the default, is unchanged
+// (internal/nodev1.ClaudeSession); codex is internal/nodev1.CodexSession,
+// a streaming `codex app-server` session. An unrecognised value is
+// refused here, before the registration or any session runs.
+func nodeRunSessionOf(kind string, unattended bool, stderr io.Writer, logf func(string, ...any)) ([]string, nodev1.Session, error) {
+	switch kind {
+	case "", "claude-code":
+		sess := &nodev1.ClaudeSession{Stderr: stderr, Logf: logf}
+		if unattended {
+			sess.ExtraArgs = []string{"--dangerously-skip-permissions"}
+		}
+		return []string{"claude-code"}, sess, nil
+	case "codex":
+		return []string{"codex"}, &nodev1.CodexSession{Stderr: stderr, Logf: logf}, nil
+	default:
+		return nil, nil, fmt.Errorf("mesh node run: --harness must be claude-code or codex, not %q", kind)
+	}
+}
+
 // nodeRunPods is the sandbox each lease's session and services run in
 // with --sandbox: rootless podman, as the legacy node's (mesh-specs ADR
 // 007), on node.yaml's `sandbox:` settings — image, cpus, memory, pids,
@@ -336,6 +359,7 @@ func init() {
 	f.StringVar(&nodeRunURL, "url", "", "Mesh's API (default $MESH_API_URL, else "+meshapi.DefaultURL+")")
 	f.StringVar(&nodeRunName, "name", "", "the node's name (default the hostname)")
 	f.StringVar(&nodeRunWorkRoot, "work-root", "", "where leases run (default ~/.mesh/v1)")
+	f.StringVar(&nodeRunHarness, "harness", "", "the session each lease runs and the harness the node registers: claude-code (default) or codex")
 	f.BoolVar(&nodeRunOnce, "once", false, "stop after the first lease ends")
 	f.BoolVar(&nodeRunUnattended, "unattended", false, "run sessions with --dangerously-skip-permissions (trusted machines only)")
 	f.Float64Var(&nodeRunCPUs, "cpus", 0, "CPUs offered (default all)")
