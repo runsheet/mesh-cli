@@ -38,18 +38,44 @@ func TestTenantCacheDirsCreatedPerTenant(t *testing.T) {
 	}
 }
 
+func TestTenantCacheDirsDistinctForDegenerateIds(t *testing.T) {
+	root := t.TempDir()
+	c := &TenantCache{Root: root}
+
+	// Both ids are non-empty but sanitize away to nothing under
+	// cacheSegment's rules; they must still land in different
+	// directories rather than colliding on a shared fallback name.
+	dots, err := c.Dirs("..")
+	if err != nil {
+		t.Fatalf(`Dirs(".."): %v`, err)
+	}
+	bangs, err := c.Dirs("!!!")
+	if err != nil {
+		t.Fatalf(`Dirs("!!!"): %v`, err)
+	}
+
+	if dots.GoMod == bangs.GoMod || dots.Npm == bangs.Npm || dots.Pnpm == bangs.Pnpm {
+		t.Fatalf("degenerate tenant ids share a cache dir: %+v vs %+v", dots, bangs)
+	}
+}
+
 func TestCacheTrimRemovesLeastRecentlyUsed(t *testing.T) {
 	dir := t.TempDir()
 
+	// Access order, oldest to newest: a, b, c, d. Modification order is
+	// the reverse (d, c, b, a) so a Trim that evicted by ModTime instead
+	// of access time would remove d and c, the opposite of what this
+	// test asserts, and fail.
 	names := []string{"a", "b", "c", "d"}
-	base := time.Now().Add(-time.Hour)
+	base := time.Now().Add(-4 * time.Hour)
 	for i, name := range names {
 		path := filepath.Join(dir, name)
 		if err := os.WriteFile(path, make([]byte, 10), 0o600); err != nil {
 			t.Fatalf("seed %s: %v", name, err)
 		}
-		mtime := base.Add(time.Duration(i) * time.Minute)
-		if err := os.Chtimes(path, mtime, mtime); err != nil {
+		atime := base.Add(time.Duration(i) * time.Hour)
+		mtime := base.Add(time.Duration(len(names)-1-i) * time.Hour)
+		if err := os.Chtimes(path, atime, mtime); err != nil {
 			t.Fatalf("chtimes %s: %v", name, err)
 		}
 	}

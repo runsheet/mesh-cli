@@ -10,6 +10,8 @@ package nodev1
 // (internal/resources/mirrors.go), but by size rather than by age.
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"os"
@@ -40,18 +42,25 @@ type TenantCache struct {
 
 var unsafeCacheSegment = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
-// cacheSegment is tenant made a safe single path component: a run of
-// unsafe characters becomes one underscore, and a leading or trailing
-// "." or "_" (which `..` or a dotfile could abuse) is trimmed; "tenant"
-// when that leaves nothing, so a blank or all-unsafe id never collapses
-// two different tenants onto one directory silently.
+// cacheSegment is tenant made a safe single path component, collision-free
+// the way resources.segment is (internal/resources/mirrors.go): a run of
+// unsafe characters becomes one underscore, and a leading or trailing "."
+// or "_" (which `..` or a dotfile could abuse) is trimmed; what is left is
+// kept readable only when sanitizing changed nothing, since two distinct
+// ids that both sanitize away to "" or to the same string must still land
+// in different directories. Anything sanitizing changed — including every
+// id that sanitizes to "" — is suffixed with a hash of the original id, so
+// no two distinct tenant ids ever share one cache directory.
 func cacheSegment(tenant string) string {
-	clean := unsafeCacheSegment.ReplaceAllString(tenant, "_")
-	clean = strings.Trim(clean, "._")
-	if clean == "" {
-		return "tenant"
+	clean := strings.Trim(unsafeCacheSegment.ReplaceAllString(tenant, "_"), "._")
+	if clean == tenant && clean != "" {
+		return clean
 	}
-	return clean
+	sum := sha256.Sum256([]byte(tenant))
+	if clean == "" {
+		clean = "tenant"
+	}
+	return clean + "-" + hex.EncodeToString(sum[:4])
 }
 
 // Dirs makes, if needed, and answers tenant's cache directories.
@@ -97,20 +106,24 @@ func (c *TenantCache) TrimAll(tenant string) (map[string]TrimResult, error) {
 // TrimResult is what Trim did to one directory.
 type TrimResult struct {
 	Before, After int64
-	// Removed is each file Trim removed, oldest (by modification time)
-	// first.
+	// Removed is each file Trim removed, least recently used first.
 	Removed []string
 }
 
 // Trim holds dir under maxBytes, removing its least recently used
-// regular files first (by modification time) until it is back at or
-// under the cap. maxBytes <= 0, or a dir already at or under it, is
-// left untouched.
+// regular files first until it is back at or under the cap. maxBytes <=
+// 0, or a dir already at or under it, is left untouched.
+//
+// "Recently used" is lastUsed, the file's access time on a platform that
+// has one, since a GOMODCACHE, npm cache or pnpm store entry is written
+// once and only ever read afterward — its modification time is its
+// download time, never its last use, so evicting by ModTime would be
+// FIFO-by-download-order rather than LRU.
 func Trim(dir string, maxBytes int64) (TrimResult, error) {
 	type seen struct {
-		path    string
-		size    int64
-		modTime time.Time
+		path   string
+		size   int64
+		usedAt time.Time
 	}
 	var files []seen
 	var total int64
@@ -126,7 +139,7 @@ func Trim(dir string, maxBytes int64) (TrimResult, error) {
 			if err != nil {
 				return err
 			}
-			files = append(files, seen{path, info.Size(), info.ModTime()})
+			files = append(files, seen{path, info.Size(), lastUsed(info)})
 			total += info.Size()
 		}
 		return nil
@@ -138,7 +151,7 @@ func Trim(dir string, maxBytes int64) (TrimResult, error) {
 	if maxBytes <= 0 || total <= maxBytes {
 		return res, nil
 	}
-	sort.Slice(files, func(i, j int) bool { return files[i].modTime.Before(files[j].modTime) })
+	sort.Slice(files, func(i, j int) bool { return files[i].usedAt.Before(files[j].usedAt) })
 	for _, f := range files {
 		if res.After <= maxBytes {
 			break
