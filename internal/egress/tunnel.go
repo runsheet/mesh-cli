@@ -507,7 +507,7 @@ func publicDial(ctx context.Context, network, addr string) (net.Conn, error) {
 	var d net.Dialer
 	var last error = fmt.Errorf("%s resolves to no public address", host)
 	for _, ip := range ips {
-		if !publicIP(ip.IP) {
+		if !PublicIP(ip.IP) {
 			continue
 		}
 		c, err := d.DialContext(ctx, network, net.JoinHostPort(ip.IP.String(), port))
@@ -522,7 +522,9 @@ func publicDial(ctx context.Context, network, addr string) (net.Conn, error) {
 // cgnat is 100.64.0.0/10, which a tailnet uses.
 var cgnat = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
 
-// publicIP says ip is a global unicast address in no private range.
-func publicIP(ip net.IP) bool {
+// PublicIP says ip is a global unicast address in no private range:
+// not private, loopback, link-local, CGNAT, multicast or unspecified.
+// The model relay holds an account's own base_url to it (modelrelay.go).
+func PublicIP(ip net.IP) bool {
 	return ip.IsGlobalUnicast() && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !cgnat.Contains(ip)
 }

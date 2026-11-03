@@ -3,12 +3,15 @@ package nodev1
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/egress"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
 )
@@ -122,6 +125,9 @@ type sessionAccount struct {
 	// base is the relay's address as the session reaches it, once
 	// served.
 	base string
+	// resolve looks up an account base_url's host (upstreamsWith); nil
+	// is net.DefaultResolver. A test's own answers.
+	resolve func(ctx context.Context, host string) ([]net.IPAddr, error)
 
 	// inspect sees each model request's body: the lease's canaries
 	// (canary.go); nil sees none
@@ -217,7 +223,13 @@ func (a *sessionAccount) credential(ctx context.Context, provider string, fresh 
 			if auth.provider != a.auth.provider {
 				return sessionproxy.ModelCredential{}, fmt.Errorf("the job's account is now a %s account", auth.provider)
 			}
-			a.cred, a.auth, a.upstream = cred, auth, auth.baseURL
+			// the route was checked and fixed on the base_url the lease
+			// opened with (upstreamsWith); a reread naming another is
+			// never sent the credential
+			if auth.baseURL != a.auth.baseURL {
+				return sessionproxy.ModelCredential{}, fmt.Errorf("the job's %s now names another base_url, which the lease's model route was not checked for", cred)
+			}
+			a.cred, a.auth = cred, auth
 		}
 		secret = a.cred.Secret
 	}
@@ -237,7 +249,11 @@ func (a *sessionAccount) serve(p *sessionproxy.Proxy, upstreams map[string]strin
 	if !a.relays() {
 		return nil
 	}
-	p.Model = a.model(a.upstreamsWith(upstreams), logf, lease)
+	ups, err := a.upstreamsWith(upstreams)
+	if err != nil {
+		return fmt.Errorf("the lease's model relay: %w", err)
+	}
+	p.Model = a.model(ups, logf, lease)
 	base, err := p.ListenModel()
 	if err != nil {
 		return fmt.Errorf("the lease's model relay: %w", err)
@@ -251,21 +267,28 @@ func (a *sessionAccount) serve(p *sessionproxy.Proxy, upstreams map[string]strin
 // alone (sessionproxy.ForwarderPaths): the one place the node reads HTTP
 // a pod sent, since no lease-scoped model token exists to hand the
 // sidecar. base is where the session reaches it: the sidecar's loopback.
-func (a *sessionAccount) forward(p *sessionproxy.Proxy, upstreams map[string]string, logf func(string, ...any), lease, base string) {
+func (a *sessionAccount) forward(p *sessionproxy.Proxy, upstreams map[string]string, logf func(string, ...any), lease, base string) error {
 	if !a.relays() {
-		return
+		return nil
 	}
-	m := a.model(a.upstreamsWith(upstreams), logf, lease)
+	ups, err := a.upstreamsWith(upstreams)
+	if err != nil {
+		return fmt.Errorf("the lease's model relay: %w", err)
+	}
+	m := a.model(ups, logf, lease)
 	m.Paths = sessionproxy.ForwarderPaths
 	p.Model = m
 	a.base = base
+	return nil
 }
 
 // upstreamsWith are each provider's origin: sessionproxy's defaults, the
 // node's own base for its own key, then upstreams (which stand in for
 // each provider's API), then the job's account's own base_url (ADR-050):
 // an account naming its upstream is never sent to the provider's API.
-func (a *sessionAccount) upstreamsWith(upstreams map[string]string) map[string]string {
+// That base_url is Latchkey's answer, not the operator's, so it is held
+// to accountUpstream before the credential is sent there.
+func (a *sessionAccount) upstreamsWith(upstreams map[string]string) (map[string]string, error) {
 	ups := map[string]string{}
 	for k, v := range sessionproxy.DefaultModelUpstreams {
 		ups[k] = v
@@ -278,9 +301,66 @@ func (a *sessionAccount) upstreamsWith(upstreams map[string]string) map[string]s
 		ups[k] = v
 	}
 	if a.upstream != "" && !own {
+		if err := a.accountUpstream(upstreams); err != nil {
+			return nil, err
+		}
 		ups[a.auth.provider] = a.upstream
 	}
-	return ups
+	return ups, nil
+}
+
+// accountUpstreamWait bounds the lookup of an account base_url's host.
+const accountUpstreamWait = 10 * time.Second
+
+// accountUpstream is whether the job's account's own base_url may carry
+// its credential: an https URL with a host and no userinfo whose host
+// resolves only to public addresses (egress.PublicIP: no loopback,
+// private, link-local, CGNAT, multicast or unspecified range), so a bad
+// or tampered base_url cannot send the account's secret into the node's
+// LAN or host. A base_url on the origin of one of the operator's own
+// upstreams (Runtime.ModelUpstreams, $MESH_MODEL_UPSTREAM_<PROVIDER>) is
+// the operator's choice and allowed as it is.
+func (a *sessionAccount) accountUpstream(operator map[string]string) error {
+	refuse := func(why string) error {
+		return fmt.Errorf("the job's %s names base_url %q, which %s; the relay does not send its credential there", a.cred, a.upstream, why)
+	}
+	u, err := url.Parse(a.upstream)
+	if err != nil || u.Host == "" || u.User != nil {
+		return refuse("is not a URL with a host")
+	}
+	for _, v := range operator {
+		if o, err := url.Parse(v); err == nil && o.Host != "" && strings.EqualFold(o.Scheme, u.Scheme) && strings.EqualFold(o.Host, u.Host) {
+			return nil
+		}
+	}
+	if u.Scheme != "https" {
+		return refuse("is not https")
+	}
+	host := u.Hostname()
+	var ips []net.IPAddr
+	if ip := net.ParseIP(host); ip != nil {
+		ips = []net.IPAddr{{IP: ip}}
+	} else {
+		resolve := a.resolve
+		if resolve == nil {
+			resolve = net.DefaultResolver.LookupIPAddr
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), accountUpstreamWait)
+		defer cancel()
+		ips, err = resolve(ctx, host)
+		if err != nil {
+			return refuse("does not resolve: " + err.Error())
+		}
+	}
+	if len(ips) == 0 {
+		return refuse("resolves to no address")
+	}
+	for _, ip := range ips {
+		if !egress.PublicIP(ip.IP) {
+			return refuse(fmt.Sprintf("reaches %s, not a public address", ip.IP))
+		}
+	}
+	return nil
 }
 
 // model is the account's model route to ups, logging each call against
