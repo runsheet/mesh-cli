@@ -2,6 +2,7 @@ package nodev1
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"projectmesh.io/mesh-cli/internal/harness/session/sessiontest"
@@ -484,5 +486,105 @@ func TestARereadNamingAnotherBaseURLIsRefused(t *testing.T) {
 		}}
 	if _, err := a.credential(context.Background(), "openai", true); err == nil || !strings.Contains(err.Error(), "another base_url") {
 		t.Fatalf("a reread naming another base_url: %v", err)
+	}
+}
+
+// A base_url that passes its check and then rebinds — public when the
+// lease opens, the node's loopback at the dial — is never dialled on the
+// private address: the relay's transport resolves the host again at the
+// dial, checks every answer, and dials only those it checked.
+func TestARebindingBaseURLNeverReachesAPrivateAddress(t *testing.T) {
+	var conns atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.Config.ConnState = func(net.Conn, http.ConnState) { conns.Add(1) }
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+
+	var lookups atomic.Int32
+	var dialled []string
+	var mu sync.Mutex
+	base := "https://rebind.example:" + port + "/v1"
+	a := &sessionAccount{
+		auth:     modelAuth{provider: "openai", header: "Authorization", bearer: true, baseURL: base},
+		cred:     &modelCredential{Secret: "s", Vendor: "openai", Kind: "api_key", AccountRef: "acct-1", BaseURL: base},
+		upstream: base,
+		resolve: func(_ context.Context, host string) ([]net.IPAddr, error) {
+			if lookups.Add(1) == 1 {
+				return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
+			}
+			return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+		},
+		dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			mu.Lock()
+			dialled = append(dialled, addr)
+			mu.Unlock()
+			var d net.Dialer
+			return d.DialContext(ctx, network, addr)
+		},
+	}
+	if _, err := a.upstreamsWith(nil); err != nil {
+		t.Fatalf("the public answer at the check was refused: %v", err)
+	}
+	m := a.model(map[string]string{"openai": base}, t.Logf, "lse_1")
+	tr, ok := m.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("the account's route has no pinned transport: %T", m.Transport)
+	}
+	tr.TLSClientConfig = &tls.Config{RootCAs: srv.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs}
+	resp, err := (&http.Client{Transport: tr}).Get(base + "/chat/completions")
+	if err == nil {
+		resp.Body.Close()
+		t.Fatalf("the rebound base_url answered %d", resp.StatusCode)
+	}
+	if !strings.Contains(err.Error(), "not a public address") {
+		t.Fatalf("the dial's refusal: %v", err)
+	}
+	if lookups.Load() < 2 {
+		t.Fatalf("the dial did not resolve the host again (%d lookups)", lookups.Load())
+	}
+	if len(dialled) != 0 || conns.Load() != 0 {
+		t.Fatalf("the relay dialled %v; the private server saw %d connections", dialled, conns.Load())
+	}
+}
+
+// A pinned base_url is dialled on the address checked at the dial, and
+// TLS still names and verifies its hostname, not the address.
+func TestAPinnedBaseURLKeepsItsHostnameForTLS(t *testing.T) {
+	var sni string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sni = r.TLS.ServerName
+	}))
+	t.Cleanup(srv.Close)
+	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	// httptest's certificate names example.com
+	base := "https://example.com:" + port + "/v1"
+	var dialled []string
+	a := &sessionAccount{
+		auth:     modelAuth{provider: "openai", header: "Authorization", bearer: true, baseURL: base},
+		cred:     &modelCredential{Secret: "s", Vendor: "openai", Kind: "api_key", AccountRef: "acct-1", BaseURL: base},
+		upstream: base,
+		resolve: func(context.Context, string) ([]net.IPAddr, error) {
+			return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
+		},
+		// the checked public address stands in for the fake's loopback
+		dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			dialled = append(dialled, addr)
+			var d net.Dialer
+			return d.DialContext(ctx, network, srv.Listener.Addr().String())
+		},
+	}
+	if _, err := a.upstreamsWith(nil); err != nil {
+		t.Fatal(err)
+	}
+	tr := a.model(nil, t.Logf, "lse_1").Transport.(*http.Transport)
+	tr.TLSClientConfig = &tls.Config{RootCAs: srv.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs}
+	resp, err := (&http.Client{Transport: tr}).Get(base + "/chat/completions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(dialled) != 1 || dialled[0] != "93.184.216.34:"+port || sni != "example.com" {
+		t.Fatalf("dialled %v, SNI %q", dialled, sni)
 	}
 }

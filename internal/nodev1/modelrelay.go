@@ -2,8 +2,10 @@ package nodev1
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"slices"
@@ -125,9 +127,16 @@ type sessionAccount struct {
 	// base is the relay's address as the session reaches it, once
 	// served.
 	base string
-	// resolve looks up an account base_url's host (upstreamsWith); nil
-	// is net.DefaultResolver. A test's own answers.
+	// resolve looks up an account base_url's host (upstreamsWith, and
+	// again at each dial); nil is net.DefaultResolver. A test's own
+	// answers.
 	resolve func(ctx context.Context, host string) ([]net.IPAddr, error)
+	// dial dials an address the relay's transport chose (pinnedDial);
+	// nil is a net.Dialer. A test's own sees each address dialled.
+	dial func(ctx context.Context, network, addr string) (net.Conn, error)
+	// pinned is the account base_url's host:port that accountUpstream
+	// checked; its dials are pinned to checked addresses (transport).
+	pinned string
 
 	// inspect sees each model request's body: the lease's canaries
 	// (canary.go); nil sees none
@@ -319,7 +328,10 @@ const accountUpstreamWait = 10 * time.Second
 // or tampered base_url cannot send the account's secret into the node's
 // LAN or host. A base_url on the origin of one of the operator's own
 // upstreams (Runtime.ModelUpstreams, $MESH_MODEL_UPSTREAM_<PROVIDER>) is
-// the operator's choice and allowed as it is.
+// the operator's choice and allowed as it is. A base_url it passes is
+// pinned (a.pinned): the relay's transport dials that host only on the
+// addresses it checks at the dial itself (pinnedDial), so a name that
+// rebinds after this check reaches nothing private.
 func (a *sessionAccount) accountUpstream(operator map[string]string) error {
 	refuse := func(why string) error {
 		return fmt.Errorf("the job's %s names base_url %q, which %s; the relay does not send its credential there", a.cred, a.upstream, why)
@@ -336,7 +348,22 @@ func (a *sessionAccount) accountUpstream(operator map[string]string) error {
 	if u.Scheme != "https" {
 		return refuse("is not https")
 	}
-	host := u.Hostname()
+	ctx, cancel := context.WithTimeout(context.Background(), accountUpstreamWait)
+	defer cancel()
+	if _, err := a.publicAddrs(ctx, u.Hostname()); err != nil {
+		return refuse(err.Error())
+	}
+	port := u.Port()
+	if port == "" {
+		port = "443"
+	}
+	a.pinned = net.JoinHostPort(strings.ToLower(u.Hostname()), port)
+	return nil
+}
+
+// publicAddrs are host's addresses, every one of them public
+// (egress.PublicIP); an error says why not, naming the address.
+func (a *sessionAccount) publicAddrs(ctx context.Context, host string) ([]net.IPAddr, error) {
 	var ips []net.IPAddr
 	if ip := net.ParseIP(host); ip != nil {
 		ips = []net.IPAddr{{IP: ip}}
@@ -345,22 +372,67 @@ func (a *sessionAccount) accountUpstream(operator map[string]string) error {
 		if resolve == nil {
 			resolve = net.DefaultResolver.LookupIPAddr
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), accountUpstreamWait)
-		defer cancel()
-		ips, err = resolve(ctx, host)
-		if err != nil {
-			return refuse("does not resolve: " + err.Error())
+		var err error
+		if ips, err = resolve(ctx, host); err != nil {
+			return nil, errors.New("does not resolve: " + err.Error())
 		}
 	}
 	if len(ips) == 0 {
-		return refuse("resolves to no address")
+		return nil, errors.New("resolves to no address")
 	}
 	for _, ip := range ips {
 		if !egress.PublicIP(ip.IP) {
-			return refuse(fmt.Sprintf("reaches %s, not a public address", ip.IP))
+			return nil, fmt.Errorf("reaches %s, not a public address", ip.IP)
 		}
 	}
-	return nil
+	return ips, nil
+}
+
+// transport is the relay's transport for the account's model calls:
+// nil (http.DefaultTransport) unless its base_url was pinned. Pinned, the
+// base_url's host is resolved again at each dial, every answer checked
+// (publicAddrs), and only those checked addresses dialled; TLS is the
+// transport's own over that connection, so SNI and certificate
+// verification stay on the base_url's hostname. No proxy is used: one
+// would resolve the name itself, out of the check's reach.
+func (a *sessionAccount) transport() http.RoundTripper {
+	if a.pinned == "" {
+		return nil
+	}
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.Proxy = nil
+	t.DialContext = a.pinnedDial
+	return t
+}
+
+// pinnedDial dials addr: the pinned base_url's host only on addresses
+// publicAddrs checks at this dial, anything else (a provider's default
+// API) as it is.
+func (a *sessionAccount) pinnedDial(ctx context.Context, network, addr string) (net.Conn, error) {
+	dial := a.dial
+	if dial == nil {
+		dial = (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	if !strings.EqualFold(net.JoinHostPort(host, port), a.pinned) {
+		return dial(ctx, network, addr)
+	}
+	ips, err := a.publicAddrs(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("the account's base_url host %s %s; the relay does not dial it", host, err)
+	}
+	var last error
+	for _, ip := range ips {
+		c, err := dial(ctx, network, net.JoinHostPort(ip.IP.String(), port))
+		if err == nil {
+			return c, nil
+		}
+		last = err
+	}
+	return nil, last
 }
 
 // model is the account's model route to ups, logging each call against
@@ -369,6 +441,9 @@ func (a *sessionAccount) model(ups map[string]string, logf func(string, ...any),
 	return &sessionproxy.Model{
 		Upstreams:  ups,
 		Credential: a.credential,
+		// an account base_url's host is dialled only on addresses
+		// checked at the dial (pinnedDial)
+		Transport: a.transport(),
 		// the lease's injected values are canaries in every model
 		// request (canary.go)
 		Inspect: a.inspect,
