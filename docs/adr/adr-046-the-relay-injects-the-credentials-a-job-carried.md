@@ -518,12 +518,16 @@ speaks the wire protocol on.
    itself with the credential's real user and password — cleartext, MD5
    or SCRAM-SHA-256, whichever the upstream asks for — dialed as a raw
    TCP upstream through the node's egress tunnel (`egress.Policy.AddRaw`,
-   audited as `egress.raw`), and only once the upstream reaches
+   audited as `egress.raw`, its host one of the kind's egress hosts), over
+   TLS it asks for first and verifies (`pgrelay.StartTLS`: the system's
+   roots or the credential's `sslrootcert`, plaintext only for `sslmode
+   disable` on a loopback host), and only once the upstream reaches
    `ReadyForQuery` does it answer the pod's own client with an
    unconditional `AuthenticationOk`. The pod is never asked for a
    password, so none is ever in a position to leak from its side of the
-   connection. The credential's fields are canaries like any other a
-   lease holds (Decision 9): a value the pod's own script, not the wire
+   connection. The credential's password is a canary like any other
+   value a lease holds (Decision 9; its user, database and TLS fields are
+   names, not secrets): a value the pod's own script, not the wire
    protocol, carries elsewhere is still caught and fails the lease
    `credential_exposed`, because that detection is on the value alone,
    wherever it is found outbound, not on this protocol's shape.

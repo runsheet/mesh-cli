@@ -107,8 +107,10 @@ func TestTCPAuthReachesARealDatabaseThroughTheRelay(t *testing.T) {
 	}
 
 	g.latchkey.setCarried("sec_pg", forJobCredential{
-		Inject:    egress.InjectSpec{Form: egress.FormTCPAuth, Host: "127.0.0.1", Port: pgPort},
-		Fields:    map[string]string{"user": tcpAuthPGUser, "pass": tcpAuthPGPassword, "database": tcpAuthPGDatabase},
+		Inject: egress.InjectSpec{Form: egress.FormTCPAuth, Host: "127.0.0.1", Port: pgPort},
+		// the cluster speaks plaintext on loopback, which only an explicit
+		// sslmode disable allows (relaysidecar.PlaintextAllowed)
+		Fields:    map[string]string{"user": tcpAuthPGUser, "pass": tcpAuthPGPassword, "database": tcpAuthPGDatabase, "sslmode": "disable"},
 		Version:   json.RawMessage("1"),
 		ExpiresAt: time.Now().Add(time.Hour).UTC(),
 	})
