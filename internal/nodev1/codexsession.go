@@ -200,6 +200,33 @@ func (c *CodexSession) loop(ctx context.Context, s *codexsession.Session, spec S
 		busy()
 		return nil
 	}
+	handle := func(m Message) {
+		switch m.Kind {
+		case MsgTurn:
+			// an interrupt turn stops the turn in flight, then goes in
+			// at once: the interrupted turn's result then leaves this
+			// one in flight
+			if m.Interrupt && inFlight > 0 {
+				if err := c.control(ctx, func(ctx context.Context) error { return s.Interrupt(ctx) }); err != nil {
+					c.logf("nodev1: lease %s: interrupting for a turn: %v", spec.Label, err)
+				}
+			}
+			err := send(m.Text)
+			if m.Sent != nil {
+				m.Sent(err)
+			}
+		case MsgInterrupt:
+			// with no turn in flight there is nothing to stop
+			if inFlight == 0 {
+				return
+			}
+			if err := c.control(ctx, func(ctx context.Context) error { return s.Interrupt(ctx) }); err != nil {
+				c.logf("nodev1: lease %s: interrupt: %v", spec.Label, err)
+			}
+		case MsgEscalate:
+			c.logf("nodev1: lease %s: codex sessions have no model ladder; escalation on %s left alone", spec.Label, m.On)
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -207,6 +234,10 @@ func (c *CodexSession) loop(ctx context.Context, s *codexsession.Session, spec S
 		case <-s.Done():
 			return false
 		case <-finished:
+			// select picks at random among ready cases: what was posted
+			// before Finish (an interrupt, a last turn) is handled before
+			// the input closes, never dropped because Finish won the race
+			drainMailbox(mail, handle)
 			s.CloseInput()
 			return false
 		case <-park:
@@ -231,31 +262,7 @@ func (c *CodexSession) loop(ctx context.Context, s *codexsession.Session, spec S
 			busy()
 			quiet()
 		case m := <-mail:
-			switch m.Kind {
-			case MsgTurn:
-				// an interrupt turn stops the turn in flight, then goes in
-				// at once: the interrupted turn's result then leaves this
-				// one in flight
-				if m.Interrupt && inFlight > 0 {
-					if err := c.control(ctx, func(ctx context.Context) error { return s.Interrupt(ctx) }); err != nil {
-						c.logf("nodev1: lease %s: interrupting for a turn: %v", spec.Label, err)
-					}
-				}
-				err := send(m.Text)
-				if m.Sent != nil {
-					m.Sent(err)
-				}
-			case MsgInterrupt:
-				// with no turn in flight there is nothing to stop
-				if inFlight == 0 {
-					continue
-				}
-				if err := c.control(ctx, func(ctx context.Context) error { return s.Interrupt(ctx) }); err != nil {
-					c.logf("nodev1: lease %s: interrupt: %v", spec.Label, err)
-				}
-			case MsgEscalate:
-				c.logf("nodev1: lease %s: codex sessions have no model ladder; escalation on %s left alone", spec.Label, m.On)
-			}
+			handle(m)
 		case <-stall.C:
 			stall.Reset(stallAfter)
 		}

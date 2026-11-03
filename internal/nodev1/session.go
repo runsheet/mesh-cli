@@ -297,6 +297,10 @@ func (c *ClaudeSession) loop(ctx context.Context, s *session.Session, spec Sessi
 		case <-s.Done():
 			return false
 		case <-finished:
+			// select picks at random among ready cases: what was posted
+			// before Finish (an interrupt, a last turn) is handled before
+			// the input closes, never dropped because Finish won the race
+			drainMailbox(mail, func(m Message) { c.handleMail(ctx, s, spec, m, &inFlight, &carryOn, send) })
 			s.CloseInput()
 			return false
 		case <-park:
@@ -326,33 +330,7 @@ func (c *ClaudeSession) loop(ctx context.Context, s *session.Session, spec Sessi
 				quiet()
 			}
 		case m := <-mail:
-			switch m.Kind {
-			case MsgTurn:
-				// an interrupt turn stops the turn in flight, then goes in
-				// at once: the interrupted turn's result then leaves this
-				// one in flight
-				if m.Interrupt && inFlight > 0 {
-					if err := c.control(ctx, func(ctx context.Context) error { return s.Interrupt(ctx) }); err != nil {
-						c.logf("nodev1: lease %s: interrupting for a turn: %v", spec.Label, err)
-					}
-				}
-				err := send(m.Text)
-				if m.Sent != nil {
-					m.Sent(err)
-				}
-			case MsgInterrupt:
-				// with no turn in flight there is nothing to stop
-				if inFlight == 0 {
-					continue
-				}
-				if err := c.control(ctx, func(ctx context.Context) error { return s.Interrupt(ctx) }); err != nil {
-					c.logf("nodev1: lease %s: interrupt: %v", spec.Label, err)
-				}
-			case MsgEscalate:
-				if c.escalate(ctx, s, spec, m.On, m.Text, m.Interrupt) && inFlight > 0 {
-					carryOn = true
-				}
-			}
+			c.handleMail(ctx, s, spec, m, &inFlight, &carryOn, send)
 		case <-stall.C:
 			stall.Reset(stallAfter)
 			if inFlight == 0 || spec.Ladder == nil {
@@ -459,4 +437,38 @@ func lastLines(s string, n int) string {
 func (spec SessionSpec) redact(s string) string {
 	s = spec.Injected.Redact(s)
 	return harness.Redact(s, spec.Secrets...)
+}
+
+// handleMail acts on one mailbox message for a Claude session: a turn
+// (an interrupt turn stops the one in flight first), a bare interrupt,
+// or an escalation. The loop calls it for each message it reads, and
+// for what is still queued when the product finishes the job.
+func (c *ClaudeSession) handleMail(ctx context.Context, s *session.Session, spec SessionSpec, m Message, inFlight *int, carryOn *bool, send func(string) error) {
+	switch m.Kind {
+	case MsgTurn:
+		// an interrupt turn stops the turn in flight, then goes in
+		// at once: the interrupted turn's result then leaves this
+		// one in flight
+		if m.Interrupt && *inFlight > 0 {
+			if err := c.control(ctx, func(ctx context.Context) error { return s.Interrupt(ctx) }); err != nil {
+				c.logf("nodev1: lease %s: interrupting for a turn: %v", spec.Label, err)
+			}
+		}
+		err := send(m.Text)
+		if m.Sent != nil {
+			m.Sent(err)
+		}
+	case MsgInterrupt:
+		// with no turn in flight there is nothing to stop
+		if *inFlight == 0 {
+			return
+		}
+		if err := c.control(ctx, func(ctx context.Context) error { return s.Interrupt(ctx) }); err != nil {
+			c.logf("nodev1: lease %s: interrupt: %v", spec.Label, err)
+		}
+	case MsgEscalate:
+		if c.escalate(ctx, s, spec, m.On, m.Text, m.Interrupt) && *inFlight > 0 {
+			*carryOn = true
+		}
+	}
 }

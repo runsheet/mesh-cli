@@ -153,3 +153,24 @@ func TestUsageCarriesEscalations(t *testing.T) {
 		t.Fatalf("usage %s", g.fake.Calls("usage")[0].Body)
 	}
 }
+
+// What was posted before Finish is still handed to the session loop:
+// drainMailbox takes every waiting message, in order, and returns at
+// once when none waits (TestCodexSessionSteersThenInterrupts lost its
+// interrupt about one run in two when Finish won select's random pick).
+func TestDrainMailboxHandsOverWhatWasPostedBeforeFinish(t *testing.T) {
+	mb := NewMailbox()
+	if err := mb.Post(Message{Kind: MsgTurn, Text: "last"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mb.Post(Message{Kind: MsgInterrupt}); err != nil {
+		t.Fatal(err)
+	}
+	mb.Finish()
+	var got []MessageKind
+	drainMailbox(mb.C(), func(m Message) { got = append(got, m.Kind) })
+	if len(got) != 2 || got[0] != MsgTurn || got[1] != MsgInterrupt {
+		t.Fatalf("drained %v, want [turn interrupt]", got)
+	}
+	drainMailbox(mb.C(), func(Message) { t.Fatal("an empty mailbox handed a message") })
+}
