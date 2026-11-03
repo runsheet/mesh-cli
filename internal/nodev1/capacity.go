@@ -79,3 +79,27 @@ func (r *Runtime) waitForSlot(ctx context.Context) {
 		t.Stop()
 	}
 }
+
+// SetCapacity changes what the node offers, without ending any lease
+// already held (ADR-044 amendment, 2026-11-03): it is the node's
+// capacity setter. It updates the node's own registered total — what
+// every heartbeat reports and, with no scheduler, what every take reads
+// — and, with a scheduler, calls Scheduler.SetTotal, keeping the
+// scheduler's own Accounts and AccountSlots as they stood. SetTotal
+// wakes every waiter but touches no lease the scheduler already holds:
+// a lease that no longer fits the new total stays held until it ends;
+// the scheduler simply takes nothing new while what is held is at or
+// over the new total. Logged once per call, so node.log records the
+// change.
+func (r *Runtime) SetCapacity(c meshapi.Capacity) {
+	old := r.capacityTotal()
+	r.mu.Lock()
+	r.Node.CapacityTotal = c
+	r.mu.Unlock()
+	if r.Scheduler != nil {
+		t := r.Scheduler.Total()
+		t.CPUs, t.MemGB, t.Slots = c.CPUs, c.MemGB, c.Slots
+		r.Scheduler.SetTotal(t)
+	}
+	r.logf("nodev1: capacity: cpus %g -> %g, mem_gb %g -> %g, slots %d -> %d", old.CPUs, c.CPUs, old.MemGB, c.MemGB, old.Slots, c.Slots)
+}
