@@ -62,9 +62,12 @@ func authOf(vendor, kind string) (modelAuth, bool) {
 			return modelAuth{provider: "anthropic", header: "X-Api-Key", envVar: "ANTHROPIC_API_KEY"}, true
 		}
 	case "openai":
-		// Codex's API key; not yet run by a v1 node, whose harness is
-		// claude-code
-		if strings.EqualFold(kind, "api_key") {
+		// Codex's account: a ChatGPT Pro subscription's OAuth token or
+		// an API key, both a bearer on OpenAI's API. Not yet run by a
+		// v1 node, whose harness is claude-code, but carried by the
+		// relay all the same.
+		switch strings.ToLower(kind) {
+		case "subscription", "personal_subscription", "oauth_token", "api_key":
 			return modelAuth{provider: "openai", header: "Authorization", bearer: true, envVar: "OPENAI_API_KEY"}, true
 		}
 	}

@@ -68,10 +68,13 @@ var ErrModelRefused = errors.New("refused")
 
 // ModelCredential is how one request carries the lease's credential:
 // Header set to Value (Authorization: Bearer <token>, or X-Api-Key:
-// <key>).
+// <key>), plus Extra, static headers the account wants on every
+// request beside its credential (e.g. an org header a provider ties
+// to the account), set the same way and masked the same way.
 type ModelCredential struct {
 	Header string
 	Value  string
+	Extra  map[string]string
 }
 
 // Model is the lease's model route.
@@ -222,6 +225,9 @@ func (p *Proxy) serveModel(w http.ResponseWriter, req *http.Request) {
 			return nil, errors.New("the lease's model credential is empty")
 		}
 		p.remember(secretParts(cred.Value))
+		for _, v := range cred.Extra {
+			p.remember(secretParts(v))
+		}
 		out, err := http.NewRequestWithContext(req.Context(), req.Method, target, bytes.NewReader(held))
 		if err != nil {
 			return nil, err
@@ -241,6 +247,9 @@ func (p *Proxy) serveModel(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 		out.Header.Set(cred.Header, cred.Value)
+		for k, v := range cred.Extra {
+			out.Header.Set(k, v)
+		}
 		return rt.RoundTrip(out)
 	}
 	resp, err := send(false)
