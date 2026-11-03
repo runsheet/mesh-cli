@@ -63,14 +63,12 @@ func (m *modelCredential) apiKey() bool {
 }
 
 // auth is how the account's secret travels: the relay's header and the
-// variable the session's harness holds the dummy in. Any other vendor
-// or kind is an account this node's claude-code harness cannot run.
+// variable the session's harness holds the dummy in, by authOf's table
+// of what the relay carries. A vendor or kind authOf does not know is
+// an account this node does not run.
 func (m *modelCredential) auth() (modelAuth, error) {
 	if m.Secret == "" {
 		return modelAuth{}, errors.New("Latchkey answered the job's model credential with no secret")
-	}
-	if !strings.EqualFold(m.Vendor, "anthropic") {
-		return modelAuth{}, fmt.Errorf("the job's %s is a %q account, which the node's claude-code harness cannot run", m, m.Vendor)
 	}
 	a, ok := authOf(m.Vendor, m.Kind)
 	if !ok {

@@ -245,3 +245,24 @@ func TestRelayEnv(t *testing.T) {
 		}
 	}
 }
+
+// A ChatGPT Pro subscription travels the relay's OpenAI route the same
+// way an OpenAI API key does: OPENAI_BASE_URL at the relay and the
+// dummy in OPENAI_API_KEY and CODEX_API_KEY. modelCredential.auth() no
+// longer refuses the vendor outright, so a job on a ChatGPT Pro account
+// reaches the relay's upstream rather than being refused before any
+// session runs.
+func TestModelRelayChatGPTPro(t *testing.T) {
+	a, ok := authOf("openai", "oauth_token")
+	if !ok {
+		t.Fatal("authOf(openai, oauth_token) refused")
+	}
+	want := []string{"OPENAI_BASE_URL=http://r/model/openai/v1", "OPENAI_API_KEY=" + ModelDummy, "CODEX_API_KEY=" + ModelDummy}
+	if got := a.relayEnv("http://r"); !slices.Equal(got, want) {
+		t.Fatalf("relayEnv = %v, want %v", got, want)
+	}
+	m := &modelCredential{Secret: "s", Vendor: "openai", Kind: "oauth_token", AccountRef: "acct-1"}
+	if _, err := m.auth(); err != nil {
+		t.Fatalf("modelCredential.auth() refused a ChatGPT Pro account: %v", err)
+	}
+}
