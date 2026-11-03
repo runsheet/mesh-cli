@@ -23,11 +23,11 @@ import (
 // records every ReplaceCredentialsRequest it is asked to take and
 // answers Replaced true, unless refuse names why it should not.
 type fakeSidecarControl struct {
-	mu      sync.Mutex
-	calls   []relaysidecar.ReplaceCredentialsRequest
-	refuse  string
-	ln      net.Listener
-	srv     *http.Server
+	mu     sync.Mutex
+	calls  []relaysidecar.ReplaceCredentialsRequest
+	refuse string
+	ln     net.Listener
+	srv    *http.Server
 }
 
 func startFakeSidecarControl(t *testing.T, dir string) *fakeSidecarControl {
