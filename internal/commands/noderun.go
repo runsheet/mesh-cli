@@ -119,6 +119,7 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 			return err
 		}
 		capacityReload := make(chan struct{}, 1)
+		sandboxLimitsReload := make(chan struct{}, 1)
 		rt := &nodev1.Runtime{
 			API: &meshapi.Client{BaseURL: meshAPIURL(), Token: src.Token},
 			Node: meshapi.RegisterRequest{
@@ -128,14 +129,19 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 			},
 			CapacityConfigPath: capPath,
 			CapacityReload:     capacityReload,
-			SigningKey:         key,
-			Sigstore:           nodeRunSigstore(logger),
-			Connect:            connect,
-			WorkRoot:           root,
-			MeshBinary:         meshBinary(),
-			GitUpstream:        gitUpstream(),
-			NoMirrors:          nodeRunNoMirrors,
-			Session:            sess,
+			// SandboxLimitsConfigPath names the same node.yaml; the
+			// watcher itself (runtime.go) only starts once Pods is set
+			// below, under --sandbox.
+			SandboxLimitsConfigPath: capPath,
+			SandboxLimitsReload:     sandboxLimitsReload,
+			SigningKey:              key,
+			Sigstore:                nodeRunSigstore(logger),
+			Connect:                 connect,
+			WorkRoot:                root,
+			MeshBinary:              meshBinary(),
+			GitUpstream:             gitUpstream(),
+			NoMirrors:               nodeRunNoMirrors,
+			Session:                 sess,
 			// the session runs on the host here, so run_suite's steps
 			// may too; a sandboxed node never runs them there
 			HostSuites: true,
@@ -223,6 +229,10 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 		defer onRestartSignal(func() {
 			select {
 			case capacityReload <- struct{}{}:
+			default:
+			}
+			select {
+			case sandboxLimitsReload <- struct{}{}:
 			default:
 			}
 		})()
