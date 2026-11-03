@@ -159,10 +159,9 @@ func pgLogin(t *testing.T, port int) bool {
 
 func itoa(n int) string { return strconv.Itoa(n) }
 
-// freeListener reserves a loopback port and keeps it open: it is
-// closed only by its caller, as late as it can manage — right before
-// whatever rebinds the same port number — never here far ahead of
-// that rebind.
+// freeListener reserves a loopback port and keeps it open: its caller
+// hands the listener itself straight to whatever serves on it, never
+// closing it to let something else rebind the same number.
 func freeListener(t *testing.T) net.Listener {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -189,10 +188,8 @@ func TestThePostgresBridgeLogsInOverVerifiedTLSAlone(t *testing.T) {
 	bridge := func(p Postgres) int {
 		t.Helper()
 		ln := freeListener(t)
-		port := ln.Addr().(*net.TCPAddr).Port
-		ln.Close()
-		p.Listen, p.Port, p.User, p.Password = port, 5432, "app", "pg-secret-value"
-		if err := g.sidecar.ServePostgres(p); err != nil {
+		p.Listen, p.Port, p.User, p.Password = ln.Addr().(*net.TCPAddr).Port, 5432, "app", "pg-secret-value"
+		if err := g.sidecar.servePostgresOn(ln, p); err != nil {
 			t.Fatal(err)
 		}
 		return p.Listen

@@ -574,6 +574,14 @@ func (s *Sidecar) ServePostgres(p Postgres) error {
 	if err != nil {
 		return err
 	}
+	return s.servePostgresOn(ln, p)
+}
+
+// servePostgresOn is ServePostgres over a listener its caller already
+// holds open, so a test that must know the port before it can build p
+// hands that same listener straight through instead of closing it for
+// ServePostgres to reopen.
+func (s *Sidecar) servePostgresOn(ln net.Listener, p Postgres) error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()

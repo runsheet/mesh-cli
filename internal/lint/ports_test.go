@@ -153,6 +153,19 @@ func freeListener() net.Listener {
 	return ln
 }
 `, nil},
+			{"a helper opens the listener, its caller closes it and reuses the port: the Listen and the Close are one function apart", `package p
+import "net"
+func freeListener() net.Listener {
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	return ln
+}
+func rebind() int {
+	ln := freeListener()
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+	return port
+}
+`, []string{"closed-port-reused"}},
 			{"closed only at test cleanup, after the port is used while open", `package p
 import "net"
 func f(t T) net.Listener {
@@ -242,6 +255,7 @@ func checkSource(fset *token.FileSet, filename string, src []byte) ([]violation,
 	if err != nil {
 		return nil, err
 	}
+	factories := listenerFactories(f)
 	var vs []violation
 	ast.Inspect(f, func(n ast.Node) bool {
 		switch node := n.(type) {
@@ -251,14 +265,49 @@ func checkSource(fset *token.FileSet, filename string, src []byte) ([]violation,
 			}
 		case *ast.FuncDecl:
 			if node.Body != nil {
-				vs = append(vs, raceViolations(fset, funcLabel(node), node.Body)...)
+				vs = append(vs, raceViolations(fset, funcLabel(node), node.Body, factories)...)
 			}
 		case *ast.FuncLit:
-			vs = append(vs, raceViolations(fset, "func literal", node.Body)...)
+			vs = append(vs, raceViolations(fset, "func literal", node.Body, factories)...)
 		}
 		return true
 	})
 	return vs, nil
+}
+
+// listenerFactories is every top-level function in the file whose
+// declared return includes net.Listener: a helper like freeListener
+// that opens one and hands it back. A call to one of these is, for
+// race purposes, the same as calling net.Listen directly — the port
+// it reserves is exactly as live, whichever function opened it — so
+// raceViolations must treat "ln := freeListener()" the way it treats
+// "ln, _ := net.Listen(...)", not miss the race just because the
+// Listen and the Close sit one function apart.
+func listenerFactories(f *ast.File) map[string]bool {
+	factories := map[string]bool{}
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Type.Results == nil {
+			continue
+		}
+		for _, res := range fn.Type.Results.List {
+			if isNetListenerType(res.Type) {
+				factories[fn.Name.Name] = true
+				break
+			}
+		}
+	}
+	return factories
+}
+
+// isNetListenerType says whether t is the qualified type net.Listener.
+func isNetListenerType(t ast.Expr) bool {
+	sel, ok := t.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == "net" && sel.Sel.Name == "Listener"
 }
 
 // funcLabel is how a FuncDecl names itself in a violation's detail: a
@@ -358,8 +407,13 @@ func addrPort(addr string) string {
 }
 
 // isListenCall says whether call opens a listener whose port a caller
-// could probe: net.Listen, net.ListenTCP, net.ListenUDP or tls.Listen.
-func isListenCall(call *ast.CallExpr) bool {
+// could probe: net.Listen, net.ListenTCP, net.ListenUDP or tls.Listen,
+// or a call to one of the file's own listenerFactories — a local
+// helper that does the same thing one function away.
+func isListenCall(call *ast.CallExpr, factories map[string]bool) bool {
+	if id, ok := call.Fun.(*ast.Ident); ok {
+		return factories[id.Name]
+	}
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
 		return false
@@ -398,7 +452,7 @@ func closeTarget(call *ast.CallExpr) (string, bool) {
 // itself. Closing it only inside a closure passed elsewhere (a
 // t.Cleanup, run at the test's end, well after whatever reuses the
 // port has already bound it) is not this: nothing here races.
-func raceViolations(fset *token.FileSet, label string, body *ast.BlockStmt) []violation {
+func raceViolations(fset *token.FileSet, label string, body *ast.BlockStmt, factories map[string]bool) []violation {
 	listened := map[string]bool{}
 	closedAt := map[string]token.Pos{}
 	for _, stmt := range body.List {
@@ -408,7 +462,7 @@ func raceViolations(fset *token.FileSet, label string, body *ast.BlockStmt) []vi
 				continue
 			}
 			call, ok := s.Rhs[0].(*ast.CallExpr)
-			if !ok || !isListenCall(call) {
+			if !ok || !isListenCall(call, factories) {
 				continue
 			}
 			if id, ok := s.Lhs[0].(*ast.Ident); ok && id.Name != "_" {
