@@ -3,6 +3,8 @@ package relaysidecar
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +22,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/egress"
 	"projectmesh.io/mesh-cli/internal/gitrelay"
 	"projectmesh.io/mesh-cli/internal/meshapi"
+	"projectmesh.io/mesh-cli/internal/pgrelay"
 	"projectmesh.io/mesh-cli/internal/registryrelay"
 	"projectmesh.io/mesh-cli/internal/secreport"
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
@@ -69,6 +72,7 @@ type Sidecar struct {
 	addr    string // the loopback address served, once Serve runs
 	refused []refusal
 	srvs    []*http.Server
+	pgLns   []net.Listener // postgres bridges' listeners, closed by Close
 	closed  bool
 }
 
@@ -559,6 +563,86 @@ func (s *Sidecar) ServeControl(path string) error {
 	return nil
 }
 
+// ServePostgres serves one tcp_auth credential's bridge on its own
+// loopback port in the pod until Close: each accepted connection is
+// proxied (pgrelay) to the real upstream, dialed through the node's
+// tunnel on the sidecar's own dial (Dialer.DialContext, never the
+// session's CONNECT), using the credential. The pod gets a port, never
+// the password.
+func (s *Sidecar) ServePostgres(p Postgres) error {
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p.Listen))
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		ln.Close()
+		return http.ErrServerClosed
+	}
+	s.pgLns = append(s.pgLns, ln)
+	s.mu.Unlock()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go s.bridgePostgres(conn, p)
+		}
+	}()
+	return nil
+}
+
+// bridgePostgres dials the credential's real upstream and splices client
+// to it (pgrelay), which closes both ends itself.
+func (s *Sidecar) bridgePostgres(client net.Conn, p Postgres) {
+	dctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	up, err := s.dialer.DialContext(dctx, "tcp", fmt.Sprintf("%s:%d", p.Host, p.Port))
+	if err != nil {
+		s.logf("relaysidecar: postgres %d: dialing %s:%d: %v", p.Listen, p.Host, p.Port, err)
+		client.Close()
+		return
+	}
+	secured, err := postgresUpstream(dctx, up, p)
+	if err != nil {
+		// refused before the credential is sent anywhere
+		s.logf("relaysidecar: postgres %d: %s:%d: %v", p.Listen, p.Host, p.Port, err)
+		up.Close()
+		client.Close()
+		return
+	}
+	cancel()
+	cred := pgrelay.Credentials{User: p.User, Password: p.Password, Database: p.Database}
+	if err := pgrelay.Serve(context.Background(), client, secured, cred); err != nil {
+		s.logf("relaysidecar: postgres %d: %v", p.Listen, err)
+	}
+}
+
+// postgresUpstream is up made fit to carry p's password: TLS (an
+// SSLRequest), the server's certificate verified against p.RootCA or the
+// system's roots and its name against p.Host, refusing an upstream that
+// will not speak TLS; or, only when p says plaintext and its host is a
+// loopback one, up as it is.
+func postgresUpstream(ctx context.Context, up net.Conn, p Postgres) (net.Conn, error) {
+	if p.Plaintext {
+		if !PlaintextAllowed(p.Host) {
+			return nil, fmt.Errorf("a credential is sent without TLS only to a loopback upstream, not %s", p.Host)
+		}
+		return up, nil
+	}
+	cfg := &tls.Config{ServerName: strings.Trim(p.Host, "[]"), MinVersion: tls.VersionTLS12}
+	if p.RootCA != "" {
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM([]byte(p.RootCA)) {
+			return nil, errors.New("the credential's root CA is not a PEM certificate")
+		}
+		cfg.RootCAs = pool
+	}
+	return pgrelay.StartTLS(ctx, up, cfg)
+}
+
 // Close stops serving and sends what AccessRecords remain.
 func (s *Sidecar) Close() error {
 	s.mu.Lock()
@@ -568,9 +652,13 @@ func (s *Sidecar) Close() error {
 	}
 	s.closed = true
 	srvs := s.srvs
+	pgLns := s.pgLns
 	s.mu.Unlock()
 	for _, srv := range srvs {
 		_ = srv.Close()
+	}
+	for _, ln := range pgLns {
+		_ = ln.Close()
 	}
 	close(s.done)
 	s.Flush()

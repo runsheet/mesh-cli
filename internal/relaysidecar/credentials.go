@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -89,11 +90,67 @@ type Credentials struct {
 	// session token: a name, a description and a ref, never a
 	// connection's credential.
 	Slots []Slot `json:"slots,omitempty"`
+	// Postgres are the lease's tcp_auth credentials, each a raw
+	// Postgres wire-protocol bridge the sidecar listens for in the pod,
+	// on its own loopback port, and proxies (pgrelay) to the real
+	// upstream using the credential: the pod gets a port, never the
+	// password. The agent's own container never holds one of these.
+	Postgres []Postgres `json:"postgres,omitempty"`
 	// Canary has the sidecar hand its MCP and vendor API calls to the
 	// node to scan, and their answers to redact (canary.go): the lease's
 	// injected values, which the sidecar never holds.
 	Canary bool `json:"canary,omitempty"`
 }
+
+// Postgres is one tcp_auth credential, bridged to a pod-local port.
+type Postgres struct {
+	// Listen is the loopback port the sidecar serves the bridge on,
+	// inside the pod.
+	Listen int `json:"listen"`
+	// Host and Port are the real upstream Postgres's, reached through
+	// the node's tunnel (Dialer, own-style: the sidecar's own dial, not
+	// the session's).
+	Host string `json:"host"`
+	Port int    `json:"port"`
+	// User, Password and Database are the credential's, sent to the
+	// upstream by pgrelay on the client's behalf; never written to the
+	// pod.
+	User     string `json:"user"`
+	Password string `json:"password"`
+	Database string `json:"database,omitempty"`
+	// RootCA is the PEM of the CA the upstream's certificate must chain
+	// to; "" is the system's roots. Either way the upstream leg is TLS
+	// (an SSLRequest), its certificate verified against Host, before the
+	// password is sent.
+	RootCA string `json:"root_ca,omitempty"`
+	// Plaintext lets the upstream leg go without TLS: only when the
+	// credential says so (sslmode disable) and only to a loopback Host
+	// (PlaintextAllowed), never across a network.
+	Plaintext bool `json:"plaintext,omitempty"`
+}
+
+// PlaintextAllowed says host is one a Postgres credential may be sent
+// to without TLS: a loopback address or localhost, which no network
+// lies between.
+func PlaintextAllowed(host string) bool {
+	h := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(h, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
+// String never prints the password.
+func (p Postgres) String() string {
+	return fmt.Sprintf("Postgres(listen %d, %s:%d, user %s)", p.Listen, p.Host, p.Port, p.User)
+}
+
+// GoString is String.
+func (p Postgres) GoString() string { return p.String() }
+
+// Format prints String for every verb.
+func (p Postgres) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(p.String())) }
 
 // Slot is one filled connection slot: the name its server and tool are
 // served under, the kind's description, and the binding Latchkey's
@@ -189,6 +246,22 @@ func (c Credentials) Validate() error {
 	}
 	if c.Git != nil && c.Git.Policy.Repo == "" {
 		return errors.New("relaysidecar: git without a repository")
+	}
+	seen := map[int]bool{}
+	for _, p := range c.Postgres {
+		if p.Listen <= 0 {
+			return fmt.Errorf("relaysidecar: a postgres credential names no listen port (%s:%d)", p.Host, p.Port)
+		}
+		if seen[p.Listen] {
+			return fmt.Errorf("relaysidecar: two postgres credentials listen on %d", p.Listen)
+		}
+		seen[p.Listen] = true
+		if p.Host == "" || p.Port <= 0 {
+			return fmt.Errorf("relaysidecar: a postgres credential on %d names no host or port", p.Listen)
+		}
+		if p.User == "" {
+			return fmt.Errorf("relaysidecar: a postgres credential on %d names no user", p.Listen)
+		}
 	}
 	if c.Registry != "" {
 		if u, err := url.Parse(c.Registry); err != nil || u.Scheme != "https" || u.Host == "" {
