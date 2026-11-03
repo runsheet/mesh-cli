@@ -228,6 +228,99 @@ func TestTheNodesOwnKeyIsRelayed(t *testing.T) {
 	}
 }
 
+// A job account naming openai and a base_url of its own — an
+// OpenAI-compatible gateway (ADR-050) — has the relay carry the
+// account's real key, as a bearer, and its static header there, never
+// to api.openai.com; the session's own environment holds neither.
+func TestAnOpenAICompatibleAccountReachesItsOwnBaseURL(t *testing.T) {
+	clearModelEnv(t)
+	const secret = "sk-fake-openai-compatible-secret"
+	var authHdr, orgHdr string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		authHdr, orgHdr = r.Header.Get("Authorization"), r.Header.Get("X-Org")
+		if r.URL.Path != "/v1/chat/completions" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"x","choices":[]}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	var code int
+	var spec SessionSpec
+	sess := &stubSession{calls: []string{"conform/brief", "conform/submit"}, result: SessionResult{SessionID: "s"}}
+	sess.inspect = func(s SessionSpec) {
+		spec = s
+		base := envValue(s.Env, "OPENAI_BASE_URL")
+		code = callModel(base, "/chat/completions", "Bearer "+ModelDummy)
+	}
+	g := newRig(t, sess)
+	g.latchkey.model = modelCredential{
+		Secret: secret, Vendor: "openai", Kind: "api_key", AccountRef: "acct-fake",
+		BaseURL: upstream.URL, Headers: map[string]string{"X-Org": "acme-org"},
+	}
+	g.offer(t, nil)
+	if err := run(t, g, context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if code != 200 {
+		t.Fatalf("the model call answered %d", code)
+	}
+	if authHdr != "Bearer "+secret || orgHdr != "acme-org" {
+		t.Fatalf("the upstream saw Authorization %q X-Org %q", authHdr, orgHdr)
+	}
+	for _, kv := range spec.Env {
+		if strings.Contains(kv, secret) {
+			t.Fatalf("the session's env holds the account's secret: %s", kv)
+		}
+	}
+	if envValue(spec.Env, "OPENAI_API_KEY") != ModelDummy {
+		t.Fatalf("the session's OPENAI_API_KEY is %q, not the dummy", envValue(spec.Env, "OPENAI_API_KEY"))
+	}
+}
+
+// A job account naming anthropic and a base_url of its own — an
+// Anthropic Messages-compatible gateway, such as OpenRouter, which needs
+// no relay-side translation (ADR-050) — has the relay carry the
+// account's key as X-Api-Key there, never to api.anthropic.com.
+func TestAnAnthropicCompatibleAccountReachesItsOwnBaseURL(t *testing.T) {
+	clearModelEnv(t)
+	const secret = "sk-fake-anthropic-compatible-secret"
+	var apiKey string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		apiKey = r.Header.Get("X-Api-Key")
+		if r.URL.Path != "/v1/messages" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"type":"message","content":[]}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	var code int
+	sess := &stubSession{calls: []string{"conform/brief", "conform/submit"}, result: SessionResult{SessionID: "s"}}
+	sess.inspect = func(s SessionSpec) {
+		base := envValue(s.Env, "ANTHROPIC_BASE_URL")
+		code = callModel(base, "/v1/messages", "Bearer "+ModelDummy)
+	}
+	g := newRig(t, sess)
+	g.latchkey.model = modelCredential{
+		Secret: secret, Vendor: "anthropic", Kind: "api_key", AccountRef: "acct-fake",
+		BaseURL: upstream.URL,
+	}
+	g.offer(t, nil)
+	if err := run(t, g, context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if code != 200 || apiKey != secret {
+		t.Fatalf("answered %d, X-Api-Key %q", code, apiKey)
+	}
+}
+
 // The relay's environment for each kind it carries: the harness's base
 // URL on the relay and the dummy in the variable it reads.
 func TestRelayEnv(t *testing.T) {

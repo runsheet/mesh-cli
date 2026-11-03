@@ -40,12 +40,26 @@ const refreshSkew = 30 * time.Second
 // modelAuth is how a credential travels: the provider whose route it
 // serves, the header the relay sets upstream (Authorization as a bearer,
 // or X-Api-Key), and the variable the session's harness holds the dummy
-// in.
+// in. baseURL and headers are the account's own, when it names them: an
+// account behind a gateway of its own, or one that wants a static header
+// (an org id) on every call (ADR-050, ADR-046).
 type modelAuth struct {
 	provider string
 	header   string
 	bearer   bool
 	envVar   string
+	baseURL  string
+	headers  map[string]string
+}
+
+// modelVendor is whether authOf recognizes vendor, so a vendor it does
+// not run at all is told apart from a known vendor's unsupported kind.
+func modelVendor(vendor string) bool {
+	switch strings.ToLower(vendor) {
+	case "anthropic", "openai":
+		return true
+	}
+	return false
 }
 
 // authOf is the travel of a vendor's credential of a kind; false when
@@ -63,9 +77,10 @@ func authOf(vendor, kind string) (modelAuth, bool) {
 		}
 	case "openai":
 		// Codex's account: a ChatGPT Pro subscription's OAuth token or
-		// an API key, both a bearer on OpenAI's API. Not yet run by a
-		// v1 node, whose harness is claude-code, but carried by the
-		// relay all the same.
+		// an API key, both a bearer on OpenAI's API. The harness is
+		// claude-code, so a v1 node runs one only behind an account's
+		// own base_url (an OpenAI-compatible gateway), but the relay
+		// carries it all the same.
 		switch strings.ToLower(kind) {
 		case "subscription", "personal_subscription", "oauth_token", "api_key":
 			return modelAuth{provider: "openai", header: "Authorization", bearer: true, envVar: "OPENAI_API_KEY"}, true
@@ -100,8 +115,9 @@ type sessionAccount struct {
 	// reread reads the job's account again (Latchkey's for-job route);
 	// nil for the node's own key, which does not change under a lease.
 	reread func(ctx context.Context) (*modelCredential, error)
-	// upstream is the node's own ANTHROPIC_BASE_URL, when its key is for
-	// a gateway of its own; "" is the provider's.
+	// upstream is where the account's calls go: the node's own
+	// ANTHROPIC_BASE_URL for its own key, or the job's account's own
+	// base_url (ADR-050); "" is the provider's default.
 	upstream string
 	// base is the relay's address as the session reaches it, once
 	// served.
@@ -201,7 +217,7 @@ func (a *sessionAccount) credential(ctx context.Context, provider string, fresh 
 			if auth.provider != a.auth.provider {
 				return sessionproxy.ModelCredential{}, fmt.Errorf("the job's account is now a %s account", auth.provider)
 			}
-			a.cred, a.auth = cred, auth
+			a.cred, a.auth, a.upstream = cred, auth, auth.baseURL
 		}
 		secret = a.cred.Secret
 	}
@@ -209,7 +225,7 @@ func (a *sessionAccount) credential(ctx context.Context, provider string, fresh 
 	if a.auth.bearer {
 		v = "Bearer " + secret
 	}
-	return sessionproxy.ModelCredential{Header: a.auth.header, Value: v}, nil
+	return sessionproxy.ModelCredential{Header: a.auth.header, Value: v, Extra: a.auth.headers}, nil
 }
 
 // serve has p carry the account's model calls, reaching upstreams
@@ -246,17 +262,23 @@ func (a *sessionAccount) forward(p *sessionproxy.Proxy, upstreams map[string]str
 }
 
 // upstreamsWith are each provider's origin: sessionproxy's defaults, the
-// node's own base for its own key, then upstreams.
+// node's own base for its own key, then upstreams (which stand in for
+// each provider's API), then the job's account's own base_url (ADR-050):
+// an account naming its upstream is never sent to the provider's API.
 func (a *sessionAccount) upstreamsWith(upstreams map[string]string) map[string]string {
 	ups := map[string]string{}
 	for k, v := range sessionproxy.DefaultModelUpstreams {
 		ups[k] = v
 	}
-	if a.upstream != "" {
+	own := a.cred == nil
+	if a.upstream != "" && own {
 		ups[a.auth.provider] = a.upstream
 	}
 	for k, v := range upstreams {
 		ups[k] = v
+	}
+	if a.upstream != "" && !own {
+		ups[a.auth.provider] = a.upstream
 	}
 	return ups
 }
