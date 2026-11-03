@@ -252,6 +252,17 @@ func (r *Runtime) setSock(id, sock string) {
 	}
 }
 
+// setSidecarDir records the lease's relay sidecar's socket directory,
+// for its hand-off file (handoff.go) and a later node's adoption of it
+// (adopt.go).
+func (r *Runtime) setSidecarDir(id, dir string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if l := r.lease(id); l != nil {
+		l.sidecarDir = dir
+	}
+}
+
 // watchPod reads the lease's pod's agent until ctx ends: an agent that
 // exited 137 or 143 while the actor still ran it was killed from
 // outside, and the lease ends pod_killed.
@@ -319,6 +330,11 @@ func (r *Runtime) releaseLeftovers() {
 	}
 	for _, l := range left {
 		rec := l.Record
+		if _, ok := r.leases.Get(rec.LeaseID); ok {
+			// an earlier pass of this same start-up already adopted it
+			// (adopt.go): it is not a leftover.
+			continue
+		}
 		r.logf("nodev1: lease %s was %s when the node stopped; releasing it", rec.LeaseID, rec.State)
 		if !rec.Reported {
 			cause, reason := meshapi.CauseNodeRestart, fmt.Sprintf("the node restarted while the lease was %s", rec.State)

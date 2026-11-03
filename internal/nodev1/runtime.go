@@ -279,6 +279,11 @@ type running struct {
 	intercepts bool
 	pushHeads  map[string]string
 	sock       string
+	// sidecarDir is the lease's relay sidecar's socket directory
+	// (relaypod.go), "" without a sidecar; a start-up adoption
+	// (handoff.go, adopt.go) needs it to reach the sidecar's control
+	// socket again.
+	sidecarDir string
 }
 
 // touch is the lease's session showing progress: its progress_at in the
@@ -410,6 +415,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 		return err
 	}
 	if r.Actors {
+		r.adoptHandoffs(ctx)
 		r.releaseLeftovers()
 	}
 	// parked threads past their keep, and threads a stopped node left
