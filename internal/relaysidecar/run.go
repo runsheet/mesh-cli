@@ -34,8 +34,13 @@ type Options struct {
 	NodeSocket string
 	// ControlSocket is where the sidecar serves the push tool.
 	ControlSocket string
-	// Listen is the loopback address the session reaches it at.
+	// Listen is the loopback address the session reaches it at. Unused
+	// when Listener is set.
 	Listen string
+	// Listener, set, is the socket the sidecar serves on in place of
+	// its own net.Listen(Listen): the caller's own reservation, so a
+	// port it picked is never closed and reopened to hand it over.
+	Listener net.Listener
 	// Logf takes its lines; never a credential.
 	Logf func(format string, args ...any)
 	// Ready, when set, hears the address served once it serves.
@@ -47,11 +52,13 @@ type Options struct {
 
 // Run waits for the credentials, then serves until ctx ends.
 func Run(ctx context.Context, o Options) error {
-	if o.Listen == "" {
-		o.Listen = fmt.Sprintf("127.0.0.1:%d", DefaultPort)
-	}
-	if host, _, err := net.SplitHostPort(o.Listen); err != nil || !net.ParseIP(host).IsLoopback() {
-		return fmt.Errorf("relaysidecar: %q is not a loopback address", o.Listen)
+	if o.Listener == nil {
+		if o.Listen == "" {
+			o.Listen = fmt.Sprintf("127.0.0.1:%d", DefaultPort)
+		}
+		if host, _, err := net.SplitHostPort(o.Listen); err != nil || !net.ParseIP(host).IsLoopback() {
+			return fmt.Errorf("relaysidecar: %q is not a loopback address", o.Listen)
+		}
 	}
 	path := filepath.Join(o.CredentialsDir, CredentialsFile)
 	creds, err := waitCredentials(ctx, path)
@@ -69,9 +76,12 @@ func Run(ctx context.Context, o Options) error {
 		}
 	}
 	defer s.Close()
-	ln, err := net.Listen("tcp", o.Listen)
-	if err != nil {
-		return err
+	ln := o.Listener
+	if ln == nil {
+		ln, err = net.Listen("tcp", o.Listen)
+		if err != nil {
+			return err
+		}
 	}
 	if o.ControlSocket != "" {
 		if err := s.ServeControl(o.ControlSocket); err != nil {
