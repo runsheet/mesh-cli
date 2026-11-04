@@ -372,6 +372,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		}
 		rs.ic = ic
 		rs.pushHeads = pushHeads
+		r.setSidecarDir(b.LeaseID, rs.dir)
 		keep("the relay sidecar", rs.close)
 	}
 
