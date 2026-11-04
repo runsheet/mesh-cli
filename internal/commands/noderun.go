@@ -226,7 +226,21 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 			stateMu.Unlock()
 			rt.Drain("`mesh node drain` asked", wait)
 		})()
+		// SIGHUP is shared: `mesh node set` sends it for a live reload,
+		// `mesh node upgrade --api v1` sends it to hand every lease off
+		// and restart. node.upgrade-ask, written only by the latter
+		// right before it signals, is what tells them apart (adr-044,
+		// both amendments).
 		defer onRestartSignal(func() {
+			if takeV1UpgradeAsk(state) {
+				// leaves every running lease where it is: UpgradeSignal
+				// writes each one's hand-off for the new process
+				// (already swapped onto disk) to adopt, then exits --
+				// never by cancelling ctx, which would end every lease
+				// (adr-009's restart).
+				rt.UpgradeSignal("`mesh node upgrade` asked")
+				return
+			}
 			select {
 			case capacityReload <- struct{}{}:
 			default:

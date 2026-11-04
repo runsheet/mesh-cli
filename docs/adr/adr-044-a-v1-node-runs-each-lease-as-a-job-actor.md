@@ -203,20 +203,8 @@ self-update and Mesh ask for.
    its wait hands back; and each live lease with its job, kind and age.
    With no legacy node beside it, nothing else is printed.
 
-Sessions that outlive a restart (`mesh node upgrade` for v1, the
-legacy node's ADR-009 adoption) are not part of this amendment. Today a
-lease's agent is a `podman run -i` child whose real stdin is a named
-pipe and whose real stdout is a plain file, both under the lease's own
-directory (`leases/<lease id>/`): the node writes to the pipe and
-reads the agent's output by tailing the file from a saved offset,
-rather than holding either end in an in-memory pipe of its own that a
-restart would drop. Its credentials are in the node's memory: the DPoP
-key, the session token, the interception CA, the canary values. Its
-end state (the result held, the turn ledger, the access records) is
-in memory too. Adopting it takes a detached agent, a sidecar that can
-reload its credentials, and the lease's state on disk, so it is staged
-separately. Until then, a deploy that should not restart work is a
-drain.
+A deploy that should not restart work is still a drain; `mesh node
+upgrade` and `mesh node set` are the amendments below.
 
 ## Amendment, 2026-11-03: `mesh node set` signals the running node
 
@@ -237,10 +225,13 @@ amendment's SIGTERM path does. An operator who only wants to raise
    node's own included — exactly as it was.
 2. **The signal.** With a v1 node running on this machine (its pid in
    `~/.mesh/node-v1/node.pid`, as the drain amendment left it), `mesh
-   node set` sends it SIGHUP — the same signal the self-update's
-   restart-and-adopt path reserved, free here because a v1 node has no
-   self-update of its own yet. The node's capacity watcher rereads
-   node.yaml at once and, when the total changed, calls the scheduler's
+   node set` sends it SIGHUP — the same signal `mesh node upgrade`
+   sends for its restart-and-adopt (the amendment below).
+   `node.upgrade-ask`, written only by that command right before it
+   signals, is what tells the two apart; `mesh node set` writes
+   nothing there, so the running node's restart handler finds no
+   marker and takes the signal as a reload. It rereads node.yaml at
+   once and, when the total changed, calls the scheduler's
    `SetTotal`: `free` on the next take reflects it, no lease in flight
    is touched, and the process does not restart. With no v1 node
    running, `mesh node set` only rewrites node.yaml and says so; the
@@ -258,4 +249,65 @@ amendment's SIGTERM path does. An operator who only wants to raise
    each pod's creation from then on; a pod already running keeps the
    limits it was given. `mesh node set` does not write this block today
    — only `v1.capacity` — but an operator hand-editing `sandbox:` and
-   signalling the node (`kill -HUP`) sees it taken up the same way.
+   signalling the node (`kill -HUP`) sees it taken up the same way,
+   provided no `node.upgrade-ask` is sitting there from an upgrade
+   whose handler never ran.
+
+## Amendment, 2026-11-04: `mesh node upgrade` for v1 (sessions survive a restart)
+
+Unlike a drain, `mesh node upgrade --api v1` does not wait for a v1
+node's leases to end: it leaves every one running, under the agent
+that is already running it, and restarts the node process at once so
+the binary already swapped onto disk (adr-009's restart, which carries
+the legacy node the same way) picks them back up.
+
+1. **The signal is SIGHUP, marked.** `v1Service.Restart`
+   (`internal/commands/nodeupgrade.go`) reads the v1 node's pidfile the
+   same way `drainV1Node` does, writes `node.upgrade-ask` (empty,
+   `0o600`, beside the pidfile) and only then sends SIGHUP — the same
+   signal `mesh node set` sends for its live reload (the amendment
+   above), so SIGHUP alone no longer says which is meant. `mesh node
+   run --api v1`'s restart handler reads and removes
+   `node.upgrade-ask` first (`takeV1UpgradeAsk`, the same
+   read-once-and-clear shape as the drain wait's `node.drain-wait`):
+   found, it calls `rt.UpgradeSignal(...)`; not found, it is `mesh node
+   set`'s reload and the handler pushes to the capacity and
+   sandbox-limits reload channels instead. `v1Started` and `v1Stopped`
+   remove the marker the same way they remove `node.drain-wait` and
+   `node.status`, so one left over from a run that never reached its
+   handler is never read by the next.
+2. **The hand-off, not a wait.** `Runtime.UpgradeSignal` (
+   `internal/nodev1/upgrade_signal.go`) calls `Upgrade(why)` then exits
+   the process (`UpgradeExit`, `os.Exit`, swapped in tests) --- never by
+   cancelling the root context every lease's own descends from, which
+   would end every lease the upgrade means to leave running. `Upgrade`
+   (`internal/nodev1/handoff.go`) locks the lease table and, for each
+   live lease, writes `handoff.json` under the lease's own directory
+   atomically: its brief, its sessionproxy socket directory, its push
+   heads, its sidecar directory and its turn ledger. On success nothing
+   about the lease is touched --- its pod, sidecar and agent keep
+   running exactly as they were, and nothing is yet reported to Mesh. A
+   lease that intercepts, or whose hand-off cannot be written, is handed
+   back `node_update` instead (the drain wait's cause), same as before.
+3. **Start-up adoption picks it back up.** The process that starts next
+   (`adoptHandoffs`, `internal/nodev1/adopt.go`) reads every hand-off
+   left under the leases directory, each on its own goroutine, and
+   replumbs the node's own side of it from nothing: a fresh session (a
+   new DPoP key, never the hand-off's old one, so a process that no
+   longer exists is never again mistaken for this one), the sidecar
+   pushed that key as the lease's credential from now on, its room in
+   the scheduler taken again, and its agent's output tailed from the
+   hand-off's saved offset. The lease's egress tunnel, sessionproxy,
+   token renewal and Stop gate are not reattached -- rebuilding those
+   means rebuilding the pod session itself, which adoption does not do
+   -- so adoption only goes far enough to observe the finish, carry
+   security reports and scan for the lease's injected values. A
+   hand-off that cannot be adopted this way is handed back `node_update`
+   the same way, its job directory removed; `adoptHandoffs` reserves
+   each hand-off's lease id synchronously, before any adoption's
+   network-bound work starts, so the start-up sweep that removes
+   leftover job directories never races one still being adopted.
+4. **The lease finishes on its own, under either process.** Once the
+   agent answers, the lease that adopted it reports and releases exactly
+   as `runActor`'s own tail does, so Mesh sees one finish (or hand-back)
+   for the job, never one from each process.
