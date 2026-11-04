@@ -2,6 +2,7 @@ package nodev1
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -26,6 +27,15 @@ type handoffState struct {
 	SocketDir string            `json:"socketDir"`
 	PushHeads map[string]string `json:"pushHeads,omitempty"`
 	Turns     *handoffTurns     `json:"turns,omitempty"`
+	// SidecarDir is the lease's relay sidecar's socket directory
+	// (relaypod.go's relaySidecar.dir), "" for a lease with no sidecar
+	// (plain sessionproxy mode): such a lease cannot be adopted
+	// (adopt.go) and is handed back node_update at start instead.
+	SidecarDir string `json:"sidecarDir,omitempty"`
+	// AgentStdoutOffset is how far into the lease's agent output the
+	// node had already read, so an adopting node resumes the tail from
+	// there rather than from the top (adopt.go).
+	AgentStdoutOffset int64 `json:"agentStdoutOffset,omitempty"`
 }
 
 // handoffTurns is the lease's turnLedger as written to disk: seen, and
@@ -61,9 +71,12 @@ func turnsForHandoff(l *turnLedger) *handoffTurns {
 // writeHandoff leaves l's hand-off state under its own lease directory,
 // atomically: a reader never sees a half-written file.
 func (r *Runtime) writeHandoff(id string, l *running) error {
-	st := &handoffState{Brief: l.brief, SocketDir: filepath.Dir(l.sock), PushHeads: l.pushHeads}
+	st := &handoffState{Brief: l.brief, SocketDir: filepath.Dir(l.sock), PushHeads: l.pushHeads, SidecarDir: l.sidecarDir}
 	if l.mailbox != nil {
 		st.Turns = turnsForHandoff(l.mailbox.turns)
+	}
+	if fi, err := os.Stat(r.agentOutputPath(id)); err == nil {
+		st.AgentStdoutOffset = fi.Size()
 	}
 	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
@@ -78,6 +91,35 @@ func (r *Runtime) writeHandoff(id string, l *running) error {
 		return err
 	}
 	return os.Rename(tmp, filepath.Join(dir, handoffFile))
+}
+
+// agentOutputPath is where a sidecar-mode lease keeps its agent's
+// output for an adopting node to resume tailing from, rather than from
+// the top (adopt.go); a lease that never wrote one adopts from offset
+// 0.
+func (r *Runtime) agentOutputPath(id string) string {
+	return filepath.Join(r.leaseDir(id), "agent-output.log")
+}
+
+// tailAgentOutput is whatever the lease's agent output file holds past
+// offset: what an adopting node had not already seen before the node
+// stopped. A file that does not exist, or one no longer than offset,
+// has nothing new.
+func (r *Runtime) tailAgentOutput(id string, offset int64) ([]byte, error) {
+	f, err := os.Open(r.agentOutputPath(id))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+	if offset > 0 {
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			return nil, err
+		}
+	}
+	return io.ReadAll(f)
 }
 
 // Upgrade is the node choosing, per live lease, between a hand-off and a

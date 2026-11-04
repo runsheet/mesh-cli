@@ -83,6 +83,21 @@ type refusal struct {
 	reason string
 }
 
+// keyRef is a Signer that defers to the sidecar's own key, read fresh
+// each time under its lock: every upstream built in New holds a keyRef
+// rather than the *dpop.Key of the moment, so a credential replacement
+// (control.go, ReplaceCredentials) reaches them by swapping s.key
+// alone, the same way s.sessionToken and s.gitToken already let a
+// renewal reach them through Bearer.
+type keyRef struct{ s *Sidecar }
+
+func (k keyRef) Proof(method, rawURL, token string) (string, error) {
+	k.s.mu.Lock()
+	key := k.s.key
+	k.s.mu.Unlock()
+	return key.Proof(method, rawURL, token)
+}
+
 // New is the sidecar for creds, reaching the node on nodeSocket.
 func New(creds Credentials, nodeSocket string) (*Sidecar, error) {
 	if err := creds.Validate(); err != nil {
@@ -117,12 +132,12 @@ func New(creds Credentials, nodeSocket string) (*Sidecar, error) {
 	s.upstream = &http.Client{Transport: s.dialer.Transport()}
 	ups := map[string]sessionproxy.Upstream{}
 	for _, srv := range creds.Servers {
-		ups[srv.Name] = sessionproxy.Product{URL: srv.URL, Bearer: s.sessionToken, Key: key}
+		ups[srv.Name] = sessionproxy.Product{URL: srv.URL, Bearer: s.sessionToken, Key: keyRef{s}}
 	}
 	// each filled tool slot is Latchkey's proxy for its binding, through
 	// the node's tunnel on the session token, held to its one tool
 	for _, sl := range creds.Slots {
-		ups[sl.Name] = sessionproxy.Slot{URL: strings.TrimRight(creds.Latchkey, "/") + SlotPath(sl.Binding), Bearer: s.sessionToken, Key: key,
+		ups[sl.Name] = sessionproxy.Slot{URL: strings.TrimRight(creds.Latchkey, "/") + SlotPath(sl.Binding), Bearer: s.sessionToken, Key: keyRef{s},
 			Tool: sl.Name, Description: sl.Description}
 	}
 	s.proxy = sessionproxy.New(ups)
@@ -142,7 +157,7 @@ func New(creds Credentials, nodeSocket string) (*Sidecar, error) {
 	}
 	if len(creds.API) > 0 {
 		s.proxy.Latchkey = &sessionproxy.Latchkey{
-			URL: creds.Latchkey, Token: s.sessionToken, Key: key,
+			URL: creds.Latchkey, Token: s.sessionToken, Key: keyRef{s},
 			Allow: APIAllows(creds.API),
 			Audit: func(c sessionproxy.APICall) {
 				s.record(meshapi.AccessRecord{Kind: "api", Vendor: c.Vendor, Method: c.Method, Path: c.Path, Outcome: c.Outcome, Reason: c.Reason, Bytes: c.Bytes, At: c.At.UTC()})
@@ -152,7 +167,7 @@ func New(creds Credentials, nodeSocket string) (*Sidecar, error) {
 	if creds.Registry != "" {
 		// the lease's registry, reached through the node's tunnel on the
 		// lease's session token
-		s.registry = &registryrelay.Relay{Upstream: creds.Registry, HTTP: s.upstream, Token: s.sessionToken, Key: key, Logf: s.logf}
+		s.registry = &registryrelay.Relay{Upstream: creds.Registry, HTTP: s.upstream, Token: s.sessionToken, Key: keyRef{s}, Logf: s.logf}
 		s.proxy.Registry = s.registry
 	}
 	if g := creds.Git; g != nil {
@@ -546,6 +561,7 @@ func (s *Sidecar) ServeControl(path string) error {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST "+PushPath, s.servePush)
+	mux.HandleFunc("POST "+ReplaceCredentialsPath, s.serveReplaceCredentials)
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 30 * time.Second}
 	s.mu.Lock()
 	if s.closed {
