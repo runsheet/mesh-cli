@@ -25,6 +25,7 @@ var (
 	nodeUpgradeVersion string
 	nodeUpgradeBinary  string
 	nodeUpgradeForce   bool
+	nodeUpgradeAPI     string
 )
 
 var nodeUpgradeCmd = &cobra.Command{
@@ -61,16 +62,117 @@ session's agent runs detached in its pod. The pods' conmon processes run
 in the service's cgroup, so the unit must say KillMode=process (` + "`mesh node install`" + `
 writes it); upgrade refuses a sandboxed node whose unit says otherwise,
 unless --force, and names the fix. Drain (` + "`mesh node drain`" + `) stays for
-taking a machine out of service.`,
+taking a machine out of service.
+
+A Mesh v1 node (` + "`mesh node run --api v1`" + `) is restarted the same way, by
+SIGHUP to its own pidfile: every lease it holds is left running untouched,
+its brief, sidecar, push heads and turn ledger written to
+leases/<id>/handoff.json for the new process to adopt (adr-044); nothing
+is drained. With both a legacy and a v1 node running as this user, --api
+says which.`,
 	Args:         cobra.NoArgs,
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		u, err := defaultNodeUpgrade(cmd.OutOrStdout())
+		state, err := node.DefaultRunState()
 		if err != nil {
 			return err
 		}
-		return u.run(cmd.Context(), nodeUpgradeVersion, nodeUpgradeBinary, nodeUpgradeForce)
+		v1, err := v1RunState()
+		if err != nil {
+			return err
+		}
+		return upgradeEither(cmd.Context(), cmd.OutOrStdout(), state, v1, nodeUpgradeAPI, nodeUpgradeVersion, nodeUpgradeBinary, nodeUpgradeForce)
 	},
+}
+
+// upgradeEither upgrades the legacy node (state) or the Mesh v1 node
+// (v1): the one api names, else the one running, else the legacy node
+// as before (drainEither's own rule, nodecmd.go).
+func upgradeEither(ctx context.Context, out io.Writer, state, v1 node.RunState, api, want, binary string, force bool) error {
+	switch api {
+	case "v1":
+		return upgradeV1(ctx, out, v1, want, binary, force)
+	case "v0", "legacy":
+	case "":
+		_, legacy := liveNode(state)
+		_, isV1 := liveNode(v1)
+		switch {
+		case legacy && isV1:
+			return errors.New("a legacy node and a Mesh v1 node both run as this user: say which with --api v0 or --api v1")
+		case isV1:
+			return upgradeV1(ctx, out, v1, want, binary, force)
+		}
+	default:
+		return fmt.Errorf("--api is v0 or v1, not %q", api)
+	}
+	u, err := defaultNodeUpgrade(out)
+	if err != nil {
+		return err
+	}
+	return u.run(ctx, want, binary, force)
+}
+
+// upgradeV1 upgrades the Mesh v1 node: the same binary-swap path as the
+// legacy node's (nodeUpgrade.run, unchanged), restarted by v1Service
+// instead of hostService -- every lease it holds is left running, its
+// hand-off written for the new process to adopt (adr-044; adr-009's
+// restart, carried to a v1 node with no drain).
+func upgradeV1(ctx context.Context, out io.Writer, run node.RunState, want, binary string, force bool) error {
+	u, err := defaultNodeUpgradeV1(out, run)
+	if err != nil {
+		return err
+	}
+	return u.run(ctx, want, binary, force)
+}
+
+// defaultNodeUpgradeV1 builds a nodeUpgrade for the Mesh v1 node: the
+// same binary-swap mechanics as defaultNodeUpgrade (shared, since they
+// are API-independent), restarted by v1Service against run's pidfile
+// instead of hostService; v0's sandboxed-KillMode safety check does
+// not apply, since a v1 node's restart never calls `systemctl restart`
+// or `launchctl kickstart` -- only SIGHUP -- so the cgroup-wide-kill
+// concern that check guards against is moot.
+func defaultNodeUpgradeV1(out io.Writer, run node.RunState) (*nodeUpgrade, error) {
+	u, err := defaultNodeUpgrade(out)
+	if err != nil {
+		return nil, err
+	}
+	u.Run = run
+	u.Service = v1Service{}
+	u.Sandboxed = nil
+	u.KillMode = nil
+	return u, nil
+}
+
+// v1Service restarts a Mesh v1 node (`mesh node run --api v1`) by its
+// pidfile alone: unlike the legacy node's hostService, it tries no
+// systemd or launchd unit -- drainV1Node (nodev1state.go) is the
+// drain's own precedent for the same directness, and a v1 node has no
+// unit of its own yet. Its restart leaves every lease it holds running,
+// their hand-off written for the new process to adopt (adr-044); it
+// signals SIGHUP, not SIGUSR1 (drain's), so the node's restart handler
+// (not its drain handler) runs.
+type v1Service struct{}
+
+// Restart implements nodeRestarter.
+func (v1Service) Restart(ctx context.Context, state node.RunState, out io.Writer) error {
+	pid, err := state.PID()
+	if errors.Is(err, node.ErrNoNode) {
+		fmt.Fprintf(out, "No Mesh v1 node is running on this machine: the next `mesh node run --api v1` runs the new binary.\n")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !processAlive(pid) {
+		fmt.Fprintf(out, "No Mesh v1 node is running on this machine (pid %d is gone): the next `mesh node run --api v1` runs the new binary.\n", pid)
+		return nil
+	}
+	if err := signalRestart(pid); err != nil {
+		return fmt.Errorf("signal node (pid %d): %w", pid, err)
+	}
+	fmt.Fprintf(out, "Mesh v1 node (pid %d) is upgrading: every lease it holds is left running, its hand-off written for the new process to adopt (adr-044); nothing is drained.\n", pid)
+	return nil
 }
 
 // nodeRestarter restarts the node running on this machine; a node the
@@ -387,5 +489,6 @@ func init() {
 	nodeUpgradeCmd.Flags().StringVar(&nodeUpgradeVersion, "version", "", "the release to install (vX.Y.Z); the latest when neither this nor --binary is given")
 	nodeUpgradeCmd.Flags().StringVar(&nodeUpgradeBinary, "binary", "", "install this local build instead of a release, once `<path> version` answers")
 	nodeUpgradeCmd.Flags().BoolVar(&nodeUpgradeForce, "force", false, "restart a sandboxed node too, ending its sessions")
+	nodeUpgradeCmd.Flags().StringVar(&nodeUpgradeAPI, "api", "", "the node to upgrade when a legacy and a v1 node both run as this user: v0 or v1 (default the one running)")
 	rootCmd.AddCommand(versionCmd)
 }

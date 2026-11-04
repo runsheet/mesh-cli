@@ -355,3 +355,61 @@ func TestBinaryVersion(t *testing.T) {
 		t.Fatal("a binary that is not mesh was read")
 	}
 }
+
+// v1Service signals the Mesh v1 node's own pidfile SIGHUP, as hostService
+// does with no service running: here the test's own restart handler (the
+// one `mesh node run --api v1` installs) is called. No drain is signalled.
+func TestV1ServiceSignalsANodeNoServiceRuns(t *testing.T) {
+	noDrain(t)
+	state := node.RunState{Dir: t.TempDir()}
+	if err := v1Started(state, os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	restarted := make(chan struct{}, 1)
+	stop := onRestartSignal(func() { restarted <- struct{}{} })
+	defer stop()
+	var out bytes.Buffer
+	if err := (v1Service{}).Restart(context.Background(), state, &out); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-restarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("SIGHUP never reached the restart handler")
+	}
+	if !strings.Contains(out.String(), "is upgrading") {
+		t.Fatalf("said %q", out.String())
+	}
+	v1Stopped(state, os.Getpid())
+	out.Reset()
+	if err := (v1Service{}).Restart(context.Background(), state, &out); err != nil || !strings.Contains(out.String(), "No Mesh v1 node is running") {
+		t.Fatalf("no node: %v, %q", err, out.String())
+	}
+}
+
+// upgrade picks the node: --api names it; with none, the one running; a
+// legacy and a v1 node both running need --api; a v1 node restarts
+// through v1Service.
+func TestUpgradeEitherPicksTheNode(t *testing.T) {
+	noDrain(t)
+	legacy := node.RunState{Dir: t.TempDir()}
+	v1 := node.RunState{Dir: t.TempDir()}
+	ctx := context.Background()
+	if err := upgradeEither(ctx, io.Discard, legacy, v1, "v2", "", "", false); err == nil || !strings.Contains(err.Error(), "v0 or v1") {
+		t.Fatalf("--api v2: %v", err)
+	}
+	pid := os.Getpid()
+	if err := legacy.Started(pid); err != nil {
+		t.Fatal(err)
+	}
+	if err := v1Started(v1, pid); err != nil {
+		t.Fatal(err)
+	}
+	if err := upgradeEither(ctx, io.Discard, legacy, v1, "", "", "", false); err == nil || !strings.Contains(err.Error(), "both run") {
+		t.Fatalf("both running: %v", err)
+	}
+	legacy.Stopped(pid)
+	if err := upgradeEither(ctx, io.Discard, legacy, v1, "", "", "nonexistent-binary", false); err == nil || !strings.Contains(err.Error(), "refused") {
+		t.Fatalf("v1 implied, bad binary: %v", err)
+	}
+}

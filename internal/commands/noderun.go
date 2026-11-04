@@ -206,6 +206,14 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 			stateMu.Unlock()
 			rt.Drain("`mesh node drain` asked", wait)
 		})()
+		// SIGHUP (`mesh node upgrade --api v1`) leaves every running lease
+		// where it is: UpgradeSignal writes each one's hand-off for the
+		// new process (already swapped onto disk) to adopt, then exits --
+		// never by cancelling ctx, which would end every lease (adr-044,
+		// the upgrade amendment; adr-009's restart).
+		defer onRestartSignal(func() {
+			rt.UpgradeSignal("`mesh node upgrade` asked")
+		})()
 		if nodeRunSandbox {
 			if !nodeRunActors {
 				return errors.New("mesh node run: --sandbox runs each lease's pod as its job actor's: it needs --actors")
