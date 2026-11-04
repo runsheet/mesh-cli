@@ -53,14 +53,17 @@ func (s *stubUpgradeSession) started() int {
 // upgrade --api v1` end to end against a real v1 node process: a real
 // pidfile (the test's own pid, node.RunState.Started as `mesh node run
 // --api v1` leaves it), the real restart handler noderun.go registers
-// (onRestartSignal calling rt.UpgradeSignal, wired by hand here since
-// nodeRunCmd.RunE builds its own nodev1.ClaudeSession with no seam for
-// a fake one), and v1Service{}.Restart -- the same SIGHUP `mesh node
-// upgrade --api v1` sends -- run against that pid, never
-// rt.UpgradeSignal called directly. The lease in flight is left
-// running (adr-044's hand-off): no finish or hand-back is recorded
-// until the held session is let go, at which point Mesh gets exactly
-// one finish and no hand-back for the job.
+// (onRestartSignal checking node.upgrade-ask before calling
+// rt.UpgradeSignal, wired by hand here since nodeRunCmd.RunE builds its
+// own nodev1.ClaudeSession with no seam for a fake one, but reading the
+// same marker the real handler does), and v1Service{}.Restart -- the
+// same SIGHUP `mesh node upgrade --api v1` sends, marked
+// node.upgrade-ask first so it is told apart from `mesh node set`'s
+// reload of the same signal (adr-044's amendment) -- run against that
+// pid, never rt.UpgradeSignal called directly. The lease in flight is
+// left running (adr-044's hand-off): no finish or hand-back is
+// recorded until the held session is let go, at which point Mesh gets
+// exactly one finish and no hand-back for the job.
 func TestMeshNodeUpgradeV1SignalLeavesLeaseRunningToFinish(t *testing.T) {
 	fake := meshapitest.NewFake(t)
 	mesh := httptest.NewServer(fake)
@@ -124,8 +127,15 @@ func TestMeshNodeUpgradeV1SignalLeavesLeaseRunningToFinish(t *testing.T) {
 	defer func() { nodev1.UpgradeExit = origExit }()
 	exitCount := func() int { mu.Lock(); defer mu.Unlock(); return len(exits) }
 
+	// mirrors noderun.go's own restart handler: SIGHUP alone does not
+	// say which command meant it (`mesh node set`'s reload sends it
+	// too, adr-044's amendment), so the handler reads and clears
+	// node.upgrade-ask -- written by v1Service.Restart below, before it
+	// signals -- to tell this SIGHUP was the upgrade's.
 	stop := onRestartSignal(func() {
-		rt.UpgradeSignal("`mesh node upgrade` asked")
+		if takeV1UpgradeAsk(state) {
+			rt.UpgradeSignal("`mesh node upgrade` asked")
+		}
 	})
 	defer stop()
 

@@ -21,9 +21,12 @@ append_paths:
 # has, a red one ejects only its own member, and no batch is bisected.
 # mesh-cli is the first repository on chains (2026-10-30); RUNSHEET_CHAINS_OFF
 # on the platform, or removing this block, puts it back on batches.
+# max 8 (2026-11-03, Chris): dl360-v1 went to 64 CPUs, so up to eight
+# queued pull requests validate ahead at once; the window still shrinks
+# to floor on reds and grows back on greens.
 merge_queue:
   mode: chains
   window:
     start: 2
     floor: 1
-    max: 4
+    max: 8

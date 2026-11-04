@@ -19,7 +19,14 @@ import (
 //
 //	POST <Latchkey>/v1/credentials/for-job
 //	Authorization: DPoP <mesh-session token>, DPoP: <proof>
-//	→ {secret, vendor, kind, plan, account_ref, expires_at}
+//	→ {secret, vendor, kind, plan, account_ref, expires_at,
+//	   base_url?, headers?}
+//
+// base_url and headers (ADR-050) name the account's own upstream and any
+// static header it wants on every call — an account behind a gateway of
+// its own, or one OpenRouter serves on its native, Anthropic
+// Messages-compatible endpoint. They stand in for a Latchkey schema not
+// yet landed.
 //
 // Latchkey reads the job from Mesh, checks the lease is live and the
 // grant is the job's product's, and answers the account's secret. The
@@ -43,12 +50,14 @@ var modelAuthEnv = harness.ModelEnv
 // modelCredential is Latchkey's answer: the account's secret and what
 // it is. Its String never names the secret.
 type modelCredential struct {
-	Secret     string    `json:"secret"`
-	Vendor     string    `json:"vendor"`
-	Kind       string    `json:"kind"`
-	Plan       string    `json:"plan"`
-	AccountRef string    `json:"account_ref"`
-	ExpiresAt  time.Time `json:"expires_at"`
+	Secret     string            `json:"secret"`
+	Vendor     string            `json:"vendor"`
+	Kind       string            `json:"kind"`
+	Plan       string            `json:"plan"`
+	AccountRef string            `json:"account_ref"`
+	ExpiresAt  time.Time         `json:"expires_at"`
+	BaseURL    string            `json:"base_url,omitempty"`
+	Headers    map[string]string `json:"headers,omitempty"`
 }
 
 func (m *modelCredential) String() string {
@@ -63,19 +72,22 @@ func (m *modelCredential) apiKey() bool {
 }
 
 // auth is how the account's secret travels: the relay's header and the
-// variable the session's harness holds the dummy in. Any other vendor
-// or kind is an account this node's claude-code harness cannot run.
+// variable the session's harness holds the dummy in, with the account's
+// own base_url and headers (ADR-050) carried through unchanged. A vendor
+// the relay does not run at all, or a kind it does not run for a known
+// vendor, is an account this node cannot run.
 func (m *modelCredential) auth() (modelAuth, error) {
 	if m.Secret == "" {
 		return modelAuth{}, errors.New("Latchkey answered the job's model credential with no secret")
 	}
-	if !strings.EqualFold(m.Vendor, "anthropic") {
-		return modelAuth{}, fmt.Errorf("the job's %s is a %q account, which the node's claude-code harness cannot run", m, m.Vendor)
-	}
 	a, ok := authOf(m.Vendor, m.Kind)
 	if !ok {
+		if !modelVendor(m.Vendor) {
+			return modelAuth{}, fmt.Errorf("the job's %s is a %q account, which the node does not run", m, m.Vendor)
+		}
 		return modelAuth{}, fmt.Errorf("the job's %s is of kind %q, which the node does not run", m, m.Kind)
 	}
+	a.baseURL, a.headers = m.BaseURL, m.Headers
 	return a, nil
 }
 
@@ -109,5 +121,5 @@ func openAccount(ctx context.Context, credentialRef string, tokens *sessionToken
 	if err != nil {
 		return nil, err
 	}
-	return &sessionAccount{cred: cred, auth: a, reread: tokens.ModelCredential}, nil
+	return &sessionAccount{cred: cred, auth: a, reread: tokens.ModelCredential, upstream: a.baseURL}, nil
 }

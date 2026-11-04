@@ -69,11 +69,14 @@ func (s *Session) PodName() string {
 }
 
 // SetLimits replaces the sandbox's agent Limits for this session's
-// agent, Runs and Execs: a field left zero keeps the sandbox's own.
+// agent, Runs and Execs: a field left zero keeps the sandbox's own, as
+// AgentLimits reads it right now — a live SetAgentLimits after this
+// call never reaches this session, whose pod already has its limits
+// (ADR-007 amendment, a node's pod limits live).
 func (s *Session) SetLimits(l Limits) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	base := s.sb.Config.Limits
+	base := s.sb.AgentLimits()
 	if l.CPUs > 0 {
 		base.CPUs = l.CPUs
 	}
@@ -87,14 +90,14 @@ func (s *Session) SetLimits(l Limits) {
 }
 
 // limits are the session's agent limits: SetLimits', else the
-// sandbox's.
+// sandbox's current AgentLimits.
 func (s *Session) limits() Limits {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.agentLimits != nil {
 		return *s.agentLimits
 	}
-	return s.sb.Config.Limits
+	return s.sb.AgentLimits()
 }
 
 // RunAgent runs the session's agent to its end, streaming, in the

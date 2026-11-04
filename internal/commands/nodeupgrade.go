@@ -149,9 +149,14 @@ func defaultNodeUpgradeV1(out io.Writer, run node.RunState) (*nodeUpgrade, error
 // systemd or launchd unit -- drainV1Node (nodev1state.go) is the
 // drain's own precedent for the same directness, and a v1 node has no
 // unit of its own yet. Its restart leaves every lease it holds running,
-// their hand-off written for the new process to adopt (adr-044); it
-// signals SIGHUP, not SIGUSR1 (drain's), so the node's restart handler
-// (not its drain handler) runs.
+// their hand-off written for the new process to adopt (adr-044). It
+// signals SIGHUP -- the same signal `mesh node set` sends the running
+// node for its own, lease-untouched live reload (adr-044's amendment),
+// so SIGHUP alone no longer says which is meant: Restart writes
+// node.upgrade-ask (writeV1UpgradeAsk, nodev1state.go) right before it
+// signals, and the node's restart handler reads and clears that marker
+// (takeV1UpgradeAsk) to tell its own SIGHUP apart from `mesh node
+// set`'s.
 type v1Service struct{}
 
 // Restart implements nodeRestarter.
@@ -167,6 +172,9 @@ func (v1Service) Restart(ctx context.Context, state node.RunState, out io.Writer
 	if !processAlive(pid) {
 		fmt.Fprintf(out, "No Mesh v1 node is running on this machine (pid %d is gone): the next `mesh node run --api v1` runs the new binary.\n", pid)
 		return nil
+	}
+	if err := writeV1UpgradeAsk(state); err != nil {
+		return fmt.Errorf("mark the upgrade for node (pid %d): %w", pid, err)
 	}
 	if err := signalRestart(pid); err != nil {
 		return fmt.Errorf("signal node (pid %d): %w", pid, err)

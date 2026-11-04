@@ -312,6 +312,13 @@ func (r *Runtime) injectRules(ctx context.Context, b *meshapi.Brief, tokens *ses
 		}
 		all = append(all, h)
 		spec := h.Spec()
+		if spec.FormOf() == egress.FormTCPAuth {
+			// a raw TCP credential: held for whatever dials its host and
+			// port directly (the relay sidecar's Postgres bridge), never
+			// matched against the lease's egress hosts or injected onto a
+			// request.
+			continue
+		}
 		var hosts []string
 		for _, host := range b.Egress.Hosts {
 			if ok, _, _ := allowed.Allow(host, egress.Port); ok && spec.MatchesHost(host) {

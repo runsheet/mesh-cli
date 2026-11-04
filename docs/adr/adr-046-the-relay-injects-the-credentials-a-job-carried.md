@@ -498,3 +498,45 @@ generic OIDC": every `exchange` names `hosts`, an aws exchange its
 Not yet: sovereign Azure clouds' authorities; a presigned URL the
 sandbox made on the placeholder (refused `credential_preset`, as for a
 Secret).
+
+## Amendment 2026-11-02: tcp_auth, a Postgres bridge in the pod
+
+A `tcp_auth` credential (`egress.FormTCPAuth`) carries no HTTP rule:
+instead of an `InjectRule` the pod's traffic is matched against, it is
+bridged into the pod as a loopback TCP listener the relay sidecar itself
+speaks the wire protocol on.
+
+1. **The pod-local listener.** Each tcp_auth credential a lease holds
+   gets its own port in the pod, starting at `postgresBasePort` (47420)
+   and incrementing per additional one (`relaysidecar.Sidecar.ServePostgres`,
+   wired from the pod's held credentials in `relaypod.go`). The pod is
+   handed the port alone; its agent's env, files and command line never
+   carry the user, password or database the credential names.
+2. **The node-side Postgres login.** The sidecar, not the pod, is the
+   wire protocol's client to the real server: `internal/pgrelay` reads
+   the pod's own StartupMessage and discards it, authenticates upstream
+   itself with the credential's real user and password — cleartext, MD5
+   or SCRAM-SHA-256, whichever the upstream asks for — dialed as a raw
+   TCP upstream through the node's egress tunnel (`egress.Policy.AddRaw`,
+   audited as `egress.raw`, its host one of the kind's egress hosts), over
+   TLS it asks for first and verifies (`pgrelay.StartTLS`: the system's
+   roots or the credential's `sslrootcert`, plaintext only for `sslmode
+   disable` on a loopback host), and only once the upstream reaches
+   `ReadyForQuery` does it answer the pod's own client with an
+   unconditional `AuthenticationOk`. The pod is never asked for a
+   password, so none is ever in a position to leak from its side of the
+   connection. The credential's password is a canary like any other
+   value a lease holds (Decision 9; its user, database and TLS fields are
+   names, not secrets): a value the pod's own script, not the wire
+   protocol, carries elsewhere is still caught and fails the lease
+   `credential_exposed`, because that detection is on the value alone,
+   wherever it is found outbound, not on this protocol's shape.
+3. **Two non-goals.** Postgres only: the bridge speaks Postgres's own
+   wire protocol, not a generic TCP proxy for every form a database or
+   service might take. And no TLS interception of the stream: unlike
+   ADR-045's HTTP TLS termination, `pgrelay` never offers or terminates
+   TLS for the Postgres connection itself — it refuses the pod's own
+   SSLRequest or GSSENCRequest with a single `N`, as a server built
+   with no TLS support would, so the wire protocol's bytes are never
+   decrypted and re-encrypted by the relay; only the login step is its
+   own.

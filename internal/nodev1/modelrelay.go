@@ -2,13 +2,18 @@ package nodev1
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/egress"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/sessionproxy"
 )
@@ -40,12 +45,26 @@ const refreshSkew = 30 * time.Second
 // modelAuth is how a credential travels: the provider whose route it
 // serves, the header the relay sets upstream (Authorization as a bearer,
 // or X-Api-Key), and the variable the session's harness holds the dummy
-// in.
+// in. baseURL and headers are the account's own, when it names them: an
+// account behind a gateway of its own, or one that wants a static header
+// (an org id) on every call (ADR-050, ADR-046).
 type modelAuth struct {
 	provider string
 	header   string
 	bearer   bool
 	envVar   string
+	baseURL  string
+	headers  map[string]string
+}
+
+// modelVendor is whether authOf recognizes vendor, so a vendor it does
+// not run at all is told apart from a known vendor's unsupported kind.
+func modelVendor(vendor string) bool {
+	switch strings.ToLower(vendor) {
+	case "anthropic", "openai":
+		return true
+	}
+	return false
 }
 
 // authOf is the travel of a vendor's credential of a kind; false when
@@ -62,9 +81,13 @@ func authOf(vendor, kind string) (modelAuth, bool) {
 			return modelAuth{provider: "anthropic", header: "X-Api-Key", envVar: "ANTHROPIC_API_KEY"}, true
 		}
 	case "openai":
-		// Codex's API key; not yet run by a v1 node, whose harness is
-		// claude-code
-		if strings.EqualFold(kind, "api_key") {
+		// Codex's account: a ChatGPT Pro subscription's OAuth token or
+		// an API key, both a bearer on OpenAI's API. The harness is
+		// claude-code, so a v1 node runs one only behind an account's
+		// own base_url (an OpenAI-compatible gateway), but the relay
+		// carries it all the same.
+		switch strings.ToLower(kind) {
+		case "subscription", "personal_subscription", "oauth_token", "api_key":
 			return modelAuth{provider: "openai", header: "Authorization", bearer: true, envVar: "OPENAI_API_KEY"}, true
 		}
 	}
@@ -97,12 +120,23 @@ type sessionAccount struct {
 	// reread reads the job's account again (Latchkey's for-job route);
 	// nil for the node's own key, which does not change under a lease.
 	reread func(ctx context.Context) (*modelCredential, error)
-	// upstream is the node's own ANTHROPIC_BASE_URL, when its key is for
-	// a gateway of its own; "" is the provider's.
+	// upstream is where the account's calls go: the node's own
+	// ANTHROPIC_BASE_URL for its own key, or the job's account's own
+	// base_url (ADR-050); "" is the provider's default.
 	upstream string
 	// base is the relay's address as the session reaches it, once
 	// served.
 	base string
+	// resolve looks up an account base_url's host (upstreamsWith, and
+	// again at each dial); nil is net.DefaultResolver. A test's own
+	// answers.
+	resolve func(ctx context.Context, host string) ([]net.IPAddr, error)
+	// dial dials an address the relay's transport chose (pinnedDial);
+	// nil is a net.Dialer. A test's own sees each address dialled.
+	dial func(ctx context.Context, network, addr string) (net.Conn, error)
+	// pinned is the account base_url's host:port that accountUpstream
+	// checked; its dials are pinned to checked addresses (transport).
+	pinned string
 
 	// inspect sees each model request's body: the lease's canaries
 	// (canary.go); nil sees none
@@ -198,6 +232,12 @@ func (a *sessionAccount) credential(ctx context.Context, provider string, fresh 
 			if auth.provider != a.auth.provider {
 				return sessionproxy.ModelCredential{}, fmt.Errorf("the job's account is now a %s account", auth.provider)
 			}
+			// the route was checked and fixed on the base_url the lease
+			// opened with (upstreamsWith); a reread naming another is
+			// never sent the credential
+			if auth.baseURL != a.auth.baseURL {
+				return sessionproxy.ModelCredential{}, fmt.Errorf("the job's %s now names another base_url, which the lease's model route was not checked for", cred)
+			}
 			a.cred, a.auth = cred, auth
 		}
 		secret = a.cred.Secret
@@ -206,7 +246,7 @@ func (a *sessionAccount) credential(ctx context.Context, provider string, fresh 
 	if a.auth.bearer {
 		v = "Bearer " + secret
 	}
-	return sessionproxy.ModelCredential{Header: a.auth.header, Value: v}, nil
+	return sessionproxy.ModelCredential{Header: a.auth.header, Value: v, Extra: a.auth.headers}, nil
 }
 
 // serve has p carry the account's model calls, reaching upstreams
@@ -218,7 +258,11 @@ func (a *sessionAccount) serve(p *sessionproxy.Proxy, upstreams map[string]strin
 	if !a.relays() {
 		return nil
 	}
-	p.Model = a.model(a.upstreamsWith(upstreams), logf, lease)
+	ups, err := a.upstreamsWith(upstreams)
+	if err != nil {
+		return fmt.Errorf("the lease's model relay: %w", err)
+	}
+	p.Model = a.model(ups, logf, lease)
 	base, err := p.ListenModel()
 	if err != nil {
 		return fmt.Errorf("the lease's model relay: %w", err)
@@ -232,30 +276,163 @@ func (a *sessionAccount) serve(p *sessionproxy.Proxy, upstreams map[string]strin
 // alone (sessionproxy.ForwarderPaths): the one place the node reads HTTP
 // a pod sent, since no lease-scoped model token exists to hand the
 // sidecar. base is where the session reaches it: the sidecar's loopback.
-func (a *sessionAccount) forward(p *sessionproxy.Proxy, upstreams map[string]string, logf func(string, ...any), lease, base string) {
+func (a *sessionAccount) forward(p *sessionproxy.Proxy, upstreams map[string]string, logf func(string, ...any), lease, base string) error {
 	if !a.relays() {
-		return
+		return nil
 	}
-	m := a.model(a.upstreamsWith(upstreams), logf, lease)
+	ups, err := a.upstreamsWith(upstreams)
+	if err != nil {
+		return fmt.Errorf("the lease's model relay: %w", err)
+	}
+	m := a.model(ups, logf, lease)
 	m.Paths = sessionproxy.ForwarderPaths
 	p.Model = m
 	a.base = base
+	return nil
 }
 
 // upstreamsWith are each provider's origin: sessionproxy's defaults, the
-// node's own base for its own key, then upstreams.
-func (a *sessionAccount) upstreamsWith(upstreams map[string]string) map[string]string {
+// node's own base for its own key, then upstreams (which stand in for
+// each provider's API), then the job's account's own base_url (ADR-050):
+// an account naming its upstream is never sent to the provider's API.
+// That base_url is Latchkey's answer, not the operator's, so it is held
+// to accountUpstream before the credential is sent there.
+func (a *sessionAccount) upstreamsWith(upstreams map[string]string) (map[string]string, error) {
 	ups := map[string]string{}
 	for k, v := range sessionproxy.DefaultModelUpstreams {
 		ups[k] = v
 	}
-	if a.upstream != "" {
+	own := a.cred == nil
+	if a.upstream != "" && own {
 		ups[a.auth.provider] = a.upstream
 	}
 	for k, v := range upstreams {
 		ups[k] = v
 	}
-	return ups
+	if a.upstream != "" && !own {
+		if err := a.accountUpstream(upstreams); err != nil {
+			return nil, err
+		}
+		ups[a.auth.provider] = a.upstream
+	}
+	return ups, nil
+}
+
+// accountUpstreamWait bounds the lookup of an account base_url's host.
+const accountUpstreamWait = 10 * time.Second
+
+// accountUpstream is whether the job's account's own base_url may carry
+// its credential: an https URL with a host and no userinfo whose host
+// resolves only to public addresses (egress.PublicIP: no loopback,
+// private, link-local, CGNAT, multicast or unspecified range), so a bad
+// or tampered base_url cannot send the account's secret into the node's
+// LAN or host. A base_url on the origin of one of the operator's own
+// upstreams (Runtime.ModelUpstreams, $MESH_MODEL_UPSTREAM_<PROVIDER>) is
+// the operator's choice and allowed as it is. A base_url it passes is
+// pinned (a.pinned): the relay's transport dials that host only on the
+// addresses it checks at the dial itself (pinnedDial), so a name that
+// rebinds after this check reaches nothing private.
+func (a *sessionAccount) accountUpstream(operator map[string]string) error {
+	refuse := func(why string) error {
+		return fmt.Errorf("the job's %s names base_url %q, which %s; the relay does not send its credential there", a.cred, a.upstream, why)
+	}
+	u, err := url.Parse(a.upstream)
+	if err != nil || u.Host == "" || u.User != nil {
+		return refuse("is not a URL with a host")
+	}
+	for _, v := range operator {
+		if o, err := url.Parse(v); err == nil && o.Host != "" && strings.EqualFold(o.Scheme, u.Scheme) && strings.EqualFold(o.Host, u.Host) {
+			return nil
+		}
+	}
+	if u.Scheme != "https" {
+		return refuse("is not https")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), accountUpstreamWait)
+	defer cancel()
+	if _, err := a.publicAddrs(ctx, u.Hostname()); err != nil {
+		return refuse(err.Error())
+	}
+	port := u.Port()
+	if port == "" {
+		port = "443"
+	}
+	a.pinned = net.JoinHostPort(strings.ToLower(u.Hostname()), port)
+	return nil
+}
+
+// publicAddrs are host's addresses, every one of them public
+// (egress.PublicIP); an error says why not, naming the address.
+func (a *sessionAccount) publicAddrs(ctx context.Context, host string) ([]net.IPAddr, error) {
+	var ips []net.IPAddr
+	if ip := net.ParseIP(host); ip != nil {
+		ips = []net.IPAddr{{IP: ip}}
+	} else {
+		resolve := a.resolve
+		if resolve == nil {
+			resolve = net.DefaultResolver.LookupIPAddr
+		}
+		var err error
+		if ips, err = resolve(ctx, host); err != nil {
+			return nil, errors.New("does not resolve: " + err.Error())
+		}
+	}
+	if len(ips) == 0 {
+		return nil, errors.New("resolves to no address")
+	}
+	for _, ip := range ips {
+		if !egress.PublicIP(ip.IP) {
+			return nil, fmt.Errorf("reaches %s, not a public address", ip.IP)
+		}
+	}
+	return ips, nil
+}
+
+// transport is the relay's transport for the account's model calls:
+// nil (http.DefaultTransport) unless its base_url was pinned. Pinned, the
+// base_url's host is resolved again at each dial, every answer checked
+// (publicAddrs), and only those checked addresses dialled; TLS is the
+// transport's own over that connection, so SNI and certificate
+// verification stay on the base_url's hostname. No proxy is used: one
+// would resolve the name itself, out of the check's reach.
+func (a *sessionAccount) transport() http.RoundTripper {
+	if a.pinned == "" {
+		return nil
+	}
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.Proxy = nil
+	t.DialContext = a.pinnedDial
+	return t
+}
+
+// pinnedDial dials addr: the pinned base_url's host only on addresses
+// publicAddrs checks at this dial, anything else (a provider's default
+// API) as it is.
+func (a *sessionAccount) pinnedDial(ctx context.Context, network, addr string) (net.Conn, error) {
+	dial := a.dial
+	if dial == nil {
+		dial = (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	if !strings.EqualFold(net.JoinHostPort(host, port), a.pinned) {
+		return dial(ctx, network, addr)
+	}
+	ips, err := a.publicAddrs(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("the account's base_url host %s %s; the relay does not dial it", host, err)
+	}
+	var last error
+	for _, ip := range ips {
+		c, err := dial(ctx, network, net.JoinHostPort(ip.IP.String(), port))
+		if err == nil {
+			return c, nil
+		}
+		last = err
+	}
+	return nil, last
 }
 
 // model is the account's model route to ups, logging each call against
@@ -264,6 +441,9 @@ func (a *sessionAccount) model(ups map[string]string, logf func(string, ...any),
 	return &sessionproxy.Model{
 		Upstreams:  ups,
 		Credential: a.credential,
+		// an account base_url's host is dialled only on addresses
+		// checked at the dial (pinnedDial)
+		Transport: a.transport(),
 		// the lease's injected values are canaries in every model
 		// request (canary.go)
 		Inspect: a.inspect,

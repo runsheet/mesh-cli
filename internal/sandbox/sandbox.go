@@ -243,6 +243,13 @@ type Sandbox struct {
 	// open is the sessions this process has open, shared with every
 	// WithStores copy (openSet).
 	open *openSet
+	// limits is the sandbox's agent Limits as SetAgentLimits last left
+	// them, shared with every WithReserve and WithStores copy
+	// (limitsBox; ADR-007 amendment, a node's pod limits live): nil
+	// until the first SetAgentLimits or AgentLimits call, when
+	// AgentLimits falls back to Config.Limits, the sandbox's own as it
+	// was opened.
+	limits *limitsBox
 	// Reserve, set, is told the CPUs each session's pod asks for — the
 	// agent's Limits.CPUs at Open, the services' ServicesLimits.CPUs when
 	// Start starts a sidecar — and hands back what gives them back, which
@@ -262,6 +269,7 @@ func (sb *Sandbox) WithReserve(fn ReserveFunc) *Sandbox {
 		return nil
 	}
 	sb.openSessions()
+	sb.limitsBox()
 	c := *sb
 	c.Reserve = fn
 	return &c
@@ -314,6 +322,67 @@ func (sb *Sandbox) openSessions() *openSet {
 		sb.open = &openSet{m: map[*Session]struct{}{}}
 	}
 	return sb.open
+}
+
+// limitsBox holds a sandbox's live agent Limits (ADR-007 amendment, a
+// node's pod limits live): nil (the box's own, not the Sandbox's) means
+// SetAgentLimits has not been called, so AgentLimits falls back to
+// Config.Limits, the sandbox's own as it was opened.
+type limitsBox struct {
+	mu sync.RWMutex
+	l  *Limits
+}
+
+var limitsInit sync.Mutex
+
+// limitsBox is sb's limits box, made on first use under limitsInit so a
+// Sandbox and the WithReserve and WithStores copies made of it
+// afterwards share one: a live SetAgentLimits reaches every copy,
+// whichever one it is called on.
+func (sb *Sandbox) limitsBox() *limitsBox {
+	limitsInit.Lock()
+	defer limitsInit.Unlock()
+	if sb.limits == nil {
+		sb.limits = &limitsBox{}
+	}
+	return sb.limits
+}
+
+// AgentLimits is the sandbox's agent Limits for a session opened right
+// now: SetAgentLimits's last, else Config.Limits as the sandbox was
+// made. A session already open read this once, at its own creation
+// (Session.SetLimits), and keeps it for its own life; only a session
+// opened after a SetAgentLimits call sees the new value (ADR-007
+// amendment, a node's pod limits live).
+func (sb *Sandbox) AgentLimits() Limits {
+	if sb == nil {
+		return Limits{}
+	}
+	b := sb.limitsBox()
+	b.mu.RLock()
+	l := b.l
+	b.mu.RUnlock()
+	if l != nil {
+		return *l
+	}
+	return sb.Config.Limits
+}
+
+// SetAgentLimits replaces the sandbox's agent Limits for every session a
+// session opens from now on, on sb or any of its WithReserve or
+// WithStores copies — never a session already open, whose
+// Session.SetLimits already read AgentLimits once, at its own pod's
+// creation (ADR-007 amendment, a node's pod limits live).
+func (sb *Sandbox) SetAgentLimits(l Limits) {
+	if sb == nil {
+		return
+	}
+	old := sb.AgentLimits()
+	b := sb.limitsBox()
+	b.mu.Lock()
+	b.l = &l
+	b.mu.Unlock()
+	sb.logf("sandbox: agent limits: cpus %g -> %g, memory %s -> %s, pids %d -> %d", old.CPUs, l.CPUs, old.Memory, l.Memory, old.Pids, l.Pids)
 }
 
 // Live is what a sweep run while this node process runs keeps: the pods
@@ -1104,6 +1173,7 @@ func (sb *Sandbox) WithStores(st Stores) *Sandbox {
 		return nil
 	}
 	sb.openSessions()
+	sb.limitsBox()
 	c := *sb
 	c.Config.Stores = st
 	return &c

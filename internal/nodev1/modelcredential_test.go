@@ -13,10 +13,13 @@ import (
 	"projectmesh.io/mesh-cli/internal/meshapi"
 )
 
-// The job's model account travels by its kind: a subscription's OAuth
-// token as a bearer, its dummy in CLAUDE_CODE_OAUTH_TOKEN; an api key as
-// x-api-key, its dummy in ANTHROPIC_API_KEY; another vendor or kind is
-// refused.
+// The job's model account travels by its vendor and kind: an anthropic
+// subscription's OAuth token as a bearer, its dummy in
+// CLAUDE_CODE_OAUTH_TOKEN; an anthropic api key as x-api-key, its dummy
+// in ANTHROPIC_API_KEY; an openai account, a ChatGPT Pro subscription
+// or an api key alike, as a bearer, its dummy in OPENAI_API_KEY; another
+// vendor is refused outright, a known vendor's unsupported kind is
+// refused by name.
 func TestModelCredentialAuth(t *testing.T) {
 	for _, c := range []struct {
 		vendor, kind, secret string
@@ -26,7 +29,9 @@ func TestModelCredentialAuth(t *testing.T) {
 		{"Anthropic", "personal_subscription", "s", "Authorization CLAUDE_CODE_OAUTH_TOKEN", ""},
 		{"anthropic", "oauth_token", "s", "Authorization CLAUDE_CODE_OAUTH_TOKEN", ""},
 		{"anthropic", "api_key", "k", "X-Api-Key ANTHROPIC_API_KEY", ""},
-		{"openai", "api_key", "k", "", `"openai" account`},
+		{"openai", "api_key", "k", "Authorization OPENAI_API_KEY", ""},
+		{"openai", "oauth_token", "k", "Authorization OPENAI_API_KEY", ""},
+		{"azure", "api_key", "k", "", `"azure" account`},
 		{"anthropic", "voucher", "k", "", `kind "voucher"`},
 		{"anthropic", "api_key", "", "", "no secret"},
 	} {
@@ -47,6 +52,24 @@ func TestModelCredentialAuth(t *testing.T) {
 				t.Fatalf("String names the secret: %s", m)
 			}
 		})
+	}
+}
+
+// An account naming its own base_url and a static header (ADR-050 — an
+// account behind a gateway of its own, or one OpenRouter serves on its
+// native Anthropic Messages-compatible endpoint) carries both through to
+// the relay's auth unchanged, whatever its vendor or kind.
+func TestModelCredentialAuthCarriesBaseURLAndHeaders(t *testing.T) {
+	m := &modelCredential{
+		Secret: "k", Vendor: "openai", Kind: "api_key", AccountRef: "acct-1",
+		BaseURL: "https://gateway.example/v1", Headers: map[string]string{"X-Org": "acme"},
+	}
+	a, err := m.auth()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.baseURL != m.BaseURL || a.headers["X-Org"] != "acme" {
+		t.Fatalf("auth %+v, want base_url %q headers %v", a, m.BaseURL, m.Headers)
 	}
 }
 

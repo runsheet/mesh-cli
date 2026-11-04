@@ -41,11 +41,19 @@ func v1DrainWaitPath(s node.RunState) string { return filepath.Join(s.Dir, "node
 // v1StatusPath is the v1 node's status.
 func v1StatusPath(s node.RunState) string { return filepath.Join(s.Dir, "node.status") }
 
+// v1UpgradeAskPath marks that the next SIGHUP is `mesh node upgrade`'s,
+// not `mesh node set`'s: both signal the same running v1 node with
+// SIGHUP (adr-044, both amendments), so `v1Service.Restart` writes this
+// right before it signals and the restart handler reads and clears it
+// (takeV1UpgradeAsk) to tell which was meant.
+func v1UpgradeAskPath(s node.RunState) string { return filepath.Join(s.Dir, "node.upgrade-ask") }
+
 // v1Started records pid as the running v1 node, clearing what a node
 // that died left.
 func v1Started(s node.RunState, pid int) error {
 	_ = os.Remove(v1DrainWaitPath(s))
 	_ = os.Remove(v1StatusPath(s))
+	_ = os.Remove(v1UpgradeAskPath(s))
 	return s.Started(pid)
 }
 
@@ -54,6 +62,7 @@ func v1Stopped(s node.RunState, pid int) {
 	s.Stopped(pid)
 	_ = os.Remove(v1DrainWaitPath(s))
 	_ = os.Remove(v1StatusPath(s))
+	_ = os.Remove(v1UpgradeAskPath(s))
 }
 
 // writeV1Status leaves the node's status for `mesh node status`.
@@ -96,6 +105,23 @@ func takeV1DrainWait(s node.RunState) time.Duration {
 		return 0
 	}
 	return d
+}
+
+// writeV1UpgradeAsk marks that the SIGHUP about to be sent is `mesh node
+// upgrade`'s, written right before the signal (the drain wait's own
+// precedent).
+func writeV1UpgradeAsk(s node.RunState) error {
+	return os.WriteFile(v1UpgradeAskPath(s), []byte("1\n"), 0o600)
+}
+
+// takeV1UpgradeAsk reads and removes the upgrade marker; true when the
+// SIGHUP that just arrived was `mesh node upgrade`'s, false when it was
+// `mesh node set`'s reload.
+func takeV1UpgradeAsk(s node.RunState) bool {
+	_, err := os.Stat(v1UpgradeAskPath(s))
+	asked := err == nil
+	_ = os.Remove(v1UpgradeAskPath(s))
+	return asked
 }
 
 // liveNode is the pid in state's pidfile when that process runs.

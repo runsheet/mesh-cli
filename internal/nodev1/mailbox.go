@@ -159,3 +159,18 @@ func turnMessage(tool string, t meshapi.Turn) string {
 	}
 	return fmt.Sprintf("turn %d arrived%s: read it with %s(%s)", t.Seq, from, tool, t.TurnID)
 }
+
+// drainMailbox hands handle every message already waiting in mail,
+// without blocking: a session loop calls it when the product finishes
+// the job, so a message posted before Finish is acted on rather than
+// lost to select's random choice between two ready cases.
+func drainMailbox(mail <-chan Message, handle func(Message)) {
+	for {
+		select {
+		case m := <-mail:
+			handle(m)
+		default:
+			return
+		}
+	}
+}

@@ -204,6 +204,34 @@ type Runtime struct {
 	SuperviseEvery time.Duration
 	ReconcileEvery time.Duration
 
+	// CapacityConfigPath, when set, is node.yaml's path: the capacity
+	// watcher (ADR-044 amendment, 2026-11-03) rereads its `v1.capacity`
+	// section every CapacityPoll and on CapacityReload, and calls
+	// SetCapacity on what it reads when it differs from the node's
+	// current total. Off (no watcher) when empty.
+	CapacityConfigPath string
+	// CapacityPoll is how often the watcher rereads CapacityConfigPath;
+	// a minute when zero.
+	CapacityPoll time.Duration
+	// CapacityReload, when set, wakes the watcher for an immediate
+	// reread — the command that starts the node wires it to a signal
+	// (SIGHUP); nil runs the poll alone.
+	CapacityReload <-chan struct{}
+
+	// SandboxLimitsConfigPath, when set and Pods is set, is node.yaml's
+	// path: the sandbox-limits watcher (ADR-007 amendment, 2026-11-03)
+	// rereads its top-level `sandbox` section every SandboxLimitsPoll
+	// and on SandboxLimitsReload, and calls Pods.SetAgentLimits on what
+	// it reads when it differs from Pods' current AgentLimits — a pod
+	// already running keeps its own. Off (no watcher) when empty.
+	SandboxLimitsConfigPath string
+	// SandboxLimitsPoll is how often the watcher rereads
+	// SandboxLimitsConfigPath; a minute when zero.
+	SandboxLimitsPoll time.Duration
+	// SandboxLimitsReload, when set, wakes the watcher for an immediate
+	// reread, as CapacityReload does; nil runs the poll alone.
+	SandboxLimitsReload <-chan struct{}
+
 	// gitBridgePort, set, is a lease pod's git bridge port in place of
 	// podGitPort: tests, whose fake pods share the host's loopback.
 	gitBridgePort int
@@ -437,6 +465,14 @@ func (r *Runtime) Run(ctx context.Context) error {
 	}
 	r.startResources(hbCtx)
 	go r.handBackWhenWaitIsUp(hbCtx)
+	if r.CapacityConfigPath != "" {
+		path := r.CapacityConfigPath
+		go r.WatchCapacity(hbCtx, func() (meshapi.Capacity, bool, error) { return ReadCapacityConfig(path) }, r.CapacityPoll, r.CapacityReload)
+	}
+	if r.SandboxLimitsConfigPath != "" && r.Pods != nil {
+		path := r.SandboxLimitsConfigPath
+		go r.WatchSandboxLimits(hbCtx, func() (sandbox.Limits, bool, error) { return ReadSandboxLimitsConfig(path) }, r.SandboxLimitsPoll, r.SandboxLimitsReload)
+	}
 
 	var leases sync.WaitGroup
 	defer leases.Wait()
@@ -525,11 +561,20 @@ func (r *Runtime) free() *meshapi.Capacity {
 	if r.Scheduler != nil {
 		return freeOf(r.Scheduler)
 	}
-	c := r.Node.CapacityTotal
+	c := r.capacityTotal()
 	if c.Slots == 0 {
 		c.Slots = 1
 	}
 	return &c
+}
+
+// capacityTotal is the node's registered capacity, read under its lock
+// since SetCapacity (ADR-044 amendment, 2026-11-03) may change it while
+// the node runs.
+func (r *Runtime) capacityTotal() meshapi.Capacity {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.Node.CapacityTotal
 }
 
 func (r *Runtime) draining() bool {
@@ -564,7 +609,7 @@ func (r *Runtime) heartbeat(ctx context.Context) {
 	r.mu.Unlock()
 	accounts := r.unsentAccounts()
 	resp, err := r.API.Heartbeat(ctx, nodeID, meshapi.HeartbeatRequest{
-		Version: r.Node.Version, CapacityTotal: r.Node.CapacityTotal, Leases: beats, Accounts: accounts,
+		Version: r.Node.Version, CapacityTotal: r.capacityTotal(), Leases: beats, Accounts: accounts,
 	})
 	if err != nil {
 		if ctx.Err() == nil {

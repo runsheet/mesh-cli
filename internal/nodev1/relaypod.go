@@ -68,6 +68,11 @@ const (
 	relayControlSocket = "s"
 )
 
+// postgresBasePort is the first loopback port, inside a lease's pod,
+// of its tcp_auth bridges (podGitPort's neighbor); each further
+// tcp_auth credential of the same lease takes the next one.
+const postgresBasePort = 47420
+
 // RelayURLEnv names the relay sidecar's loopback root in the session's
 // environment, where /latchkey/<vendor>/ is reached.
 const RelayURLEnv = "MESH_RELAY_URL"
@@ -183,7 +188,9 @@ func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe 
 	if models == nil {
 		models = modelUpstreams()
 	}
-	account.forward(np, models, r.logf, b.LeaseID, rs.base())
+	if err := account.forward(np, models, r.logf, b.LeaseID, rs.base()); err != nil {
+		return nil, err
+	}
 	// egress.model never closes the harness's own model route (#1700)
 	fixed, err := rs.fixedUpstreams()
 	if err != nil {
@@ -198,6 +205,15 @@ func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe 
 		// a kind that declares no egress keeps the internet by HTTPS,
 		// now only through the tunnel
 		policy = policy.Open()
+	}
+	rawUps, err := rs.rawUpstreams()
+	if err != nil {
+		return nil, err
+	}
+	for _, hp := range rawUps {
+		if err := policy.AddRaw(hp); err != nil {
+			return nil, err
+		}
 	}
 	// every request of the sidecar's tunnel is reported, as the
 	// in-process relay's (security.go)
@@ -346,6 +362,33 @@ func (rs *relaySidecar) credentials(ctx context.Context, sl *slots) (relaysideca
 		c.Git = &relaysidecar.Git{Policy: policy, Upstream: rs.r.GitUpstream, Token: t, Checkout: sandbox.RelayCheckout,
 			Mirror: rs.mirror, ReadMirrors: rs.readMirrors}
 	}
+	if rs.ic != nil {
+		port := postgresBasePort
+		for _, h := range rs.ic.held {
+			if h.Spec().FormOf() != egress.FormTCPAuth {
+				continue
+			}
+			cred, err := h.Credential(ctx)
+			if err != nil {
+				return c, credentialFailed(fmt.Errorf("the relay sidecar's postgres credential: %w", err))
+			}
+			user, pass, database, err := cred.TCPAuth()
+			if err != nil {
+				return c, credentialFailed(fmt.Errorf("the relay sidecar's postgres credential: %w", err))
+			}
+			spec := h.Spec()
+			plaintext, rootCA := cred.TCPAuthTLS()
+			if plaintext && !relaysidecar.PlaintextAllowed(spec.Host) {
+				return c, credentialFailed(fmt.Errorf("the relay sidecar's postgres credential %s: sslmode disable sends its password without TLS, which only a loopback upstream may have, not %s", h.ref, spec.Host))
+			}
+			c.Postgres = append(c.Postgres, relaysidecar.Postgres{
+				Listen: port, Host: spec.Host, Port: spec.Port,
+				User: user, Password: pass, Database: database,
+				RootCA: rootCA, Plaintext: plaintext,
+			})
+			port++
+		}
+	}
 	return c, nil
 }
 
@@ -459,6 +502,37 @@ func (rs *relaySidecar) fixedUpstreams() ([]string, error) {
 		if err := add(origin); err != nil {
 			return nil, err
 		}
+	}
+	return out, nil
+}
+
+// rawUpstreams are a tcp_auth credential's own host:port — the
+// sidecar's own dial to the real database, never the session's: no
+// InjectRule names it, so the tunnel pipes it (Policy.AddRaw) for the
+// sidecar's own CONNECT alone, with no TLS ClientHello asked for, since
+// what rides it is the Postgres wire protocol (its TLS the sidecar's).
+// Its host must be one of the kind's egress hosts (narrowed by the
+// tenant's): Latchkey's answer never widens where a lease reaches, so a
+// credential naming any other host, or a kind with no egress, fails the
+// lease.
+func (rs *relaySidecar) rawUpstreams() ([]string, error) {
+	var out []string
+	if rs.ic == nil {
+		return nil, nil
+	}
+	for _, h := range rs.ic.held {
+		spec := h.Spec()
+		if spec.FormOf() != egress.FormTCPAuth {
+			continue
+		}
+		if rs.b.Egress == nil {
+			return nil, credentialFailed(fmt.Errorf("the tcp_auth credential %s names %s, but the kind declares no egress", h.ref, spec.Host))
+		}
+		allowed := egress.NewPolicy(rs.b.Egress.Hosts, tenantHosts(rs.b), nil)
+		if ok, _, _ := allowed.Allow(spec.Host, egress.Port); !ok {
+			return nil, credentialFailed(fmt.Errorf("the tcp_auth credential %s names %s, which is not in the kind's egress", h.ref, spec.Host))
+		}
+		out = append(out, net.JoinHostPort(spec.Host, strconv.Itoa(spec.Port)))
 	}
 	return out, nil
 }

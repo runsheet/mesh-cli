@@ -203,8 +203,55 @@ self-update and Mesh ask for.
    its wait hands back; and each live lease with its job, kind and age.
    With no legacy node beside it, nothing else is printed.
 
-A deploy that should not restart work is still a drain; the amendment
-below is what `mesh node upgrade` does instead.
+A deploy that should not restart work is still a drain; `mesh node
+upgrade` and `mesh node set` are the amendments below.
+
+## Amendment, 2026-11-03: `mesh node set` signals the running node
+
+Changing a v1 node's capacity meant editing node.yaml and restarting
+it — every lease in flight handed back `node_restart`, as the drain
+amendment's SIGTERM path does. An operator who only wants to raise
+`--cpus` on a busy node should not have to drain it first.
+
+1. **`mesh node set --cpus N [--mem-gb N] [--slots N]`.** It rewrites
+   node.yaml's own `v1.capacity` block — `cpus`, `mem_gb`, `slots` —
+   with only the fields passed; one left out keeps node.yaml's own
+   value for it (or none, if it never named one). This is never done
+   through the legacy node's `internal/node.Config`: that type's
+   `Save` marshals its own struct whole, which has no field for the
+   top-level `v1:` key, and would silently drop it from node.yaml on
+   write. `mesh node set` edits a generic YAML tree instead, touching
+   only `v1.capacity.*` and leaving every other key — the legacy
+   node's own included — exactly as it was.
+2. **The signal.** With a v1 node running on this machine (its pid in
+   `~/.mesh/node-v1/node.pid`, as the drain amendment left it), `mesh
+   node set` sends it SIGHUP — the same signal `mesh node upgrade`
+   sends for its restart-and-adopt (the amendment below).
+   `node.upgrade-ask`, written only by that command right before it
+   signals, is what tells the two apart; `mesh node set` writes
+   nothing there, so the running node's restart handler finds no
+   marker and takes the signal as a reload. It rereads node.yaml at
+   once and, when the total changed, calls the scheduler's
+   `SetTotal`: `free` on the next take reflects it, no lease in flight
+   is touched, and the process does not restart. With no v1 node
+   running, `mesh node set` only rewrites node.yaml and says so; the
+   change takes effect at the next start.
+3. **Flags become defaults.** Once node.yaml names a capacity field —
+   by `mesh node set`, or by hand — `mesh node run`'s matching flag
+   (`--cpus`, `--mem-gb`, `--slots`) stops being read at startup for
+   that field: node.yaml wins. A field node.yaml leaves out still takes
+   the flag (or the flag's own default) as before. This is why `mesh
+   node set` edits node.yaml rather than signalling a flag change
+   directly: the running node and every later start agree on the same
+   number without the operator having to edit a unit file too.
+4. **Sandbox limits watch the same way.** `sandbox: {cpus, memory,
+   pids}` in node.yaml (ADR-007) is reread on the same SIGHUP, live, at
+   each pod's creation from then on; a pod already running keeps the
+   limits it was given. `mesh node set` does not write this block today
+   — only `v1.capacity` — but an operator hand-editing `sandbox:` and
+   signalling the node (`kill -HUP`) sees it taken up the same way,
+   provided no `node.upgrade-ask` is sitting there from an upgrade
+   whose handler never ran.
 
 ## Amendment, 2026-11-04: `mesh node upgrade` for v1 (sessions survive a restart)
 
@@ -214,13 +261,21 @@ that is already running it, and restarts the node process at once so
 the binary already swapped onto disk (adr-009's restart, which carries
 the legacy node the same way) picks them back up.
 
-1. **The signal is SIGHUP, not SIGUSR1.** `v1Service.Restart`
+1. **The signal is SIGHUP, marked.** `v1Service.Restart`
    (`internal/commands/nodeupgrade.go`) reads the v1 node's pidfile the
-   same way `drainV1Node` does and sends it SIGHUP instead of the
-   drain's SIGUSR1, so the node's restart handler runs, not its drain
-   handler. `mesh node run --api v1` registers it the way its drain
-   signal calls `Drain`: `onRestartSignal(func() { rt.UpgradeSignal(...)
-   })` (`internal/commands/noderun.go`).
+   same way `drainV1Node` does, writes `node.upgrade-ask` (empty,
+   `0o600`, beside the pidfile) and only then sends SIGHUP — the same
+   signal `mesh node set` sends for its live reload (the amendment
+   above), so SIGHUP alone no longer says which is meant. `mesh node
+   run --api v1`'s restart handler reads and removes
+   `node.upgrade-ask` first (`takeV1UpgradeAsk`, the same
+   read-once-and-clear shape as the drain wait's `node.drain-wait`):
+   found, it calls `rt.UpgradeSignal(...)`; not found, it is `mesh node
+   set`'s reload and the handler pushes to the capacity and
+   sandbox-limits reload channels instead. `v1Started` and `v1Stopped`
+   remove the marker the same way they remove `node.drain-wait` and
+   `node.status`, so one left over from a run that never reached its
+   handler is never read by the next.
 2. **The hand-off, not a wait.** `Runtime.UpgradeSignal` (
    `internal/nodev1/upgrade_signal.go`) calls `Upgrade(why)` then exits
    the process (`UpgradeExit`, `os.Exit`, swapped in tests) --- never by
