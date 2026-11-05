@@ -74,7 +74,7 @@ func (e *killedError) Unwrap() error { return errPodKilled }
 func unservedTool(b *meshapi.Brief) string {
 	for _, name := range b.NodeTools {
 		switch {
-		case isEndTool(name), slices.Contains([]string{nodetools.PushTool, nodetools.RunSuiteTool, nodetools.ApplyOntoTool, EscalateTool}, name):
+		case isEndTool(name), slices.Contains([]string{nodetools.PushTool, nodetools.RunSuiteTool, nodetools.ApplyOntoTool, EscalateTool, RequestTimeTool}, name):
 		default:
 			return name
 		}

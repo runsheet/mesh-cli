@@ -401,7 +401,15 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	if rs != nil {
 		pusher = rs.pusher()
 	}
-	tools, rec := r.nodeTools(b, grant, workspace, tokens, ladder, mb, suites, pusher, leaseClock{ctx: ctx, began: began})
+	// the lease's own time budget (timebudget.go), built here so
+	// request_time (nodeTools, below) can extend the very context the
+	// session goes on to run under
+	var tb *timeBudget
+	if m := b.Harness.Budget.Minutes; m > 0 {
+		tb = newTimeBudget(ctx, time.Duration(m)*time.Minute, mb)
+		defer tb.Stop()
+	}
+	tools, rec := r.nodeTools(b, grant, workspace, tokens, ladder, mb, suites, pusher, leaseClock{ctx: ctx, began: began}, tb)
 	hb := &sessionHandBack{}
 	tools = sl.nodeTools(append(tools, r.endTools(b, fin, hb, mb)...))
 	var (
@@ -527,10 +535,8 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		spec.Env = account.podEnv(spec.Env, lp.bridgeBase())
 	}
 	sctx := ctx
-	if m := b.Harness.Budget.Minutes; m > 0 {
-		tb := newTimeBudget(ctx, time.Duration(m)*time.Minute, mb)
+	if tb != nil {
 		sctx = tb
-		defer tb.Stop()
 	}
 	if a != nil {
 		if err := a.Enter(actor.Running); err != nil {
