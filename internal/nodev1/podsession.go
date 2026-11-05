@@ -159,6 +159,11 @@ func (r *Runtime) openLeasePod(ctx context.Context, b *meshapi.Brief, workspace 
 	p.registryEnv = registryEnv(b, p.gitPort)
 	sess.Pin(p.name, map[string]string{PodLeaseLabel: b.LeaseID, PodJobLabel: b.JobID, PodNodeLabel: r.NodeID()})
 	sess.SetLimits(limitsOf(b.Resources))
+	cacheMounts, cacheEnv := r.leaseCacheMounts(b, sb.TempDir)
+	for _, m := range cacheMounts {
+		sess.ShareMount("tenant cache", m)
+	}
+	sess.SetExtraEnv(cacheEnv)
 	closeSess := func() error {
 		if err := sess.Close(); err != nil {
 			r.logf("nodev1: lease %s: %s", b.LeaseID, sandbox.CloseLine(b.LeaseID, err))
