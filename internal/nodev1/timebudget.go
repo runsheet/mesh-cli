@@ -193,6 +193,6 @@ func (b *timeBudget) warn() {
 	if minutes < 1 {
 		minutes = 1
 	}
-	text := fmt.Sprintf("[platform] the session's time budget runs out in about %d minute(s); ask for more time if you need it", minutes)
+	text := fmt.Sprintf("[platform nudge] the session's time budget runs out in about %d minute(s); ask for more time if you need it", minutes)
 	_ = b.mb.Post(Message{Kind: MsgTurn, Text: text})
 }
