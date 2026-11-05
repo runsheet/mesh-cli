@@ -209,3 +209,36 @@ func TestNamedValuesReadAsTheirMark(t *testing.T) {
 		t.Fatalf("the upload:\n%s", sent)
 	}
 }
+
+// TestFlushEvery: flush_s clamped to [2s, 15s], 15s when left out, and
+// an explicit Options.Every still wins over it.
+func TestFlushEvery(t *testing.T) {
+	cases := []struct {
+		flushS int
+		every  time.Duration
+		want   time.Duration
+	}{
+		{0, 0, 15 * time.Second},
+		{2, 0, 2 * time.Second},
+		{1, 0, 2 * time.Second},
+		{30, 0, 15 * time.Second},
+		{0, 5 * time.Second, 5 * time.Second},
+	}
+	for _, c := range cases {
+		if got := flushEvery(c.flushS, c.every); got != c.want {
+			t.Errorf("flushEvery(%d, %s) = %s, want %s", c.flushS, c.every, got, c.want)
+		}
+	}
+}
+
+// TestNewUsesBriefFlushS: New reads the brief's flush_s into the
+// Uploader's effective flush interval, clamped as flushEvery does.
+func TestNewUsesBriefFlushS(t *testing.T) {
+	_, loc := start(t, 0)
+	loc.FlushS = 2
+	u := New(loc, "lease-1", nil, Options{})
+	defer u.Close()
+	if u.o.Every != 2*time.Second {
+		t.Fatalf("u.o.Every = %s, want 2s", u.o.Every)
+	}
+}

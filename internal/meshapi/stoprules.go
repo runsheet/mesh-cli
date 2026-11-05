@@ -71,6 +71,10 @@ type Transcript struct {
 	UploadURL string            `json:"upload_url"`
 	Headers   map[string]string `json:"headers,omitempty"`
 	ExpiresAt time.Time         `json:"expires_at"`
+	// FlushS is how often, in seconds, the lease's transcript upload
+	// sends what it holds; clamped to [2, 15] seconds, 15 when left out
+	// or 0 (internal/transcript.flushEvery).
+	FlushS int `json:"flush_s,omitempty"`
 }
 
 // ToolCount is one tool's calls and errors in the lease, by its name
