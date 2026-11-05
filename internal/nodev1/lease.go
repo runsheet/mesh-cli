@@ -528,9 +528,9 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	}
 	sctx := ctx
 	if m := b.Harness.Budget.Minutes; m > 0 {
-		var stop context.CancelFunc
-		sctx, stop = context.WithTimeout(ctx, time.Duration(m)*time.Minute)
-		defer stop()
+		tb := newTimeBudget(ctx, time.Duration(m)*time.Minute, mb)
+		sctx = tb
+		defer tb.Stop()
 	}
 	if a != nil {
 		if err := a.Enter(actor.Running); err != nil {
