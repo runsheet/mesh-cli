@@ -183,6 +183,29 @@ func TestCounts(t *testing.T) {
 	}
 }
 
+// TestCommandExecutionCountsAsAToolCall: a Codex session's
+// command_execution item, normalised into stream-json by
+// nodev1.codexTranslator (tool_use named "command_execution", then a
+// tool_result carrying the item's status as is_error), is counted by
+// Watch exactly as a Claude tool_use/tool_result pair would be — no
+// adapter-specific code needed here.
+func TestCommandExecutionCountsAsAToolCall(t *testing.T) {
+	loop := meshapi.StopRule{Name: "loop", Action: "end", ToolErrorLoop: &meshapi.ToolErrorLoop{Tool: "command_execution", Count: 1}}
+	fired, w := run([]meshapi.StopRule{loop}, "/work",
+		at(time.Second, use("item_1", "command_execution", map[string]any{"command": "go test ./..."})),
+		at(2*time.Second, result("item_1", true)))
+	if want := []string{"end loop: 1 errors of command_execution in the session"}; strings.Join(fired, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("fired %v, want %v", fired, want)
+	}
+	c := w.Counts()
+	if c.ToolCalls != 1 || c.ToolErrors != 1 {
+		t.Fatalf("counts %+v", c)
+	}
+	if len(c.Tools) != 1 || c.Tools[0].Tool != "command_execution" || c.Tools[0].Calls != 1 || c.Tools[0].Errors != 1 {
+		t.Fatalf("tool counts %+v", c.Tools)
+	}
+}
+
 // TestMatch: `**` crosses directories, none included; other segments
 // match as path.Match.
 func TestMatch(t *testing.T) {

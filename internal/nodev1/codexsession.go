@@ -22,9 +22,12 @@ import (
 // shape ClaudeSession's own output carries, so a lease's transcript
 // upload (stoprules.go) and liveness and account tracking (lease.go)
 // read either adapter the same way (specs/mesh-v1-gaps-for-products.md
-// §3, "a product parses one format"). A session's model ladder has no
-// Codex equivalent — app-server has no set_model — so MsgEscalate and
-// a stalled turn are logged and otherwise left alone.
+// §3, "a product parses one format"). A command_execution item's
+// item.started and item.completed become a tool_use and tool_result
+// the same way, so stoprules' tool-call and tool-error counts need no
+// adapter-specific code either. A session's model ladder has no Codex
+// equivalent — app-server has no set_model — so MsgEscalate and a
+// stalled turn are logged and otherwise left alone.
 type CodexSession struct {
 	// Binary is the codex executable; "codex" on PATH when empty.
 	Binary string
@@ -291,10 +294,13 @@ func (c *CodexSession) logf(format string, args ...any) {
 // session's running turns, cost, usage and text so CodexSession.Run
 // can build its SessionResult without reusing harness.ParseStream (its
 // Event.Usage carries an unexported type codexTranslator cannot name
-// from this package; its own fields do not need it). A notification
-// app-server adds with no stream-json equivalent — item.started,
-// item.completed and the rest — answers no line, as ParseStream skips
-// an event type it does not know. Not safe for concurrent use: it is
+// from this package; its own fields do not need it). A command_execution
+// item's item.started and item.completed become a tool_use and
+// tool_result, the shape stoprules' Watch already reads off a Claude
+// session's stream; any other item's item.started/item.completed, and
+// a notification app-server adds with no stream-json equivalent, answer
+// no line, as ParseStream skips an event type it does not know. Not
+// safe for concurrent use: it is
 // only ever called from app-server's own single reading goroutine
 // (codexsession's doc comment), and read back only after Session.Wait
 // has returned, by when that goroutine is done.
@@ -313,7 +319,10 @@ type codexTranslator struct {
 // observe updates tr for notification n and answers its equivalent
 // stream-json line (nil for a notification with none) and whether it
 // ended a turn (turn.completed or turn.failed) — the loop's cue to
-// treat it as ClaudeSession's own "result" event does.
+// treat it as ClaudeSession's own "result" event does. item.started and
+// item.completed of a command_execution item become a tool_use and a
+// tool_result; any other item type answers no line, as agentMessage's
+// own item.started (the fakes' first notification) does.
 func (tr *codexTranslator) observe(n codexsession.Notification) (ended bool, line []byte) {
 	switch n.Method {
 	case "agentMessage":
@@ -323,6 +332,24 @@ func (tr *codexTranslator) observe(n codexsession.Notification) (ended bool, lin
 		_ = json.Unmarshal(n.Params, &p)
 		tr.text += p.Text
 		return false, assistantLine(tr.text)
+	case "item.started", "item.completed":
+		var p struct {
+			Item struct {
+				ID               string `json:"id"`
+				Type             string `json:"type"`
+				Command          string `json:"command"`
+				AggregatedOutput string `json:"aggregated_output"`
+				Status           string `json:"status"`
+			} `json:"item"`
+		}
+		_ = json.Unmarshal(n.Params, &p)
+		if p.Item.Type != "command_execution" {
+			return false, nil
+		}
+		if n.Method == "item.started" {
+			return false, toolUseLine(p.Item.ID, p.Item.Command)
+		}
+		return false, toolResultLine(p.Item.ID, p.Item.Status == "failed", p.Item.AggregatedOutput)
 	case "turn.completed":
 		var p struct {
 			Usage *harness.CodexUsage `json:"usage"`
@@ -381,6 +408,41 @@ func assistantLine(text string) []byte {
 		"message": map[string]any{
 			"role":    "assistant",
 			"content": []map[string]any{{"type": "text", "text": text}},
+		},
+	})
+	return b
+}
+
+// toolUseLine is a command_execution item's item.started as a
+// stream-json tool_use block (an assistant event), the item's id its
+// tool_use id (stoprules.Watch keys its open calls by it) and its
+// command the call's input, the shape a Claude session's own Bash
+// tool_use carries.
+func toolUseLine(id, command string) []byte {
+	b, _ := json.Marshal(map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"role": "assistant",
+			"content": []map[string]any{{
+				"type": "tool_use", "id": id, "name": "command_execution",
+				"input": map[string]any{"command": command},
+			}},
+		},
+	})
+	return b
+}
+
+// toolResultLine is a command_execution item's item.completed as a
+// stream-json tool_result block (a user event): is_error from the
+// item's status ("failed"), its aggregated output the result content.
+func toolResultLine(id string, isError bool, output string) []byte {
+	b, _ := json.Marshal(map[string]any{
+		"type": "user",
+		"message": map[string]any{
+			"role": "user",
+			"content": []map[string]any{{
+				"type": "tool_result", "tool_use_id": id, "is_error": isError, "content": output,
+			}},
 		},
 	})
 	return b
