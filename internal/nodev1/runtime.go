@@ -232,6 +232,16 @@ type Runtime struct {
 	// reread, as CapacityReload does; nil runs the poll alone.
 	SandboxLimitsReload <-chan struct{}
 
+	// Host, with Machine, is the floor the node backs off from (Mesh v1
+	// spec amendment, "A node backs off a hot host"): checked once per
+	// pass through Run's take loop, before every take, never against a
+	// lease already running. LoadPerCoreMax left zero never gates on
+	// load; MinFreeMemory left zero never gates on memory. Reimplemented
+	// here, independent of the legacy node's MachineProbe/HostConfig,
+	// since nodev1 may not import internal/node (guard_test.go).
+	Host    Host
+	Machine MachineProbe
+
 	// gitBridgePort, set, is a lease pod's git bridge port in place of
 	// podGitPort: tests, whose fake pods share the host's loopback.
 	gitBridgePort int
@@ -251,7 +261,10 @@ type Runtime struct {
 	// accounts are the model accounts' latest standing, from their
 	// sessions' rate-limit readings, for the heartbeat (accounts.go)
 	accounts map[string]*accountReading
-	drain    bool
+	// hostGateReason is the host gate's current reason, "" when open, so
+	// noteHostGate logs only a crossing, never the same state twice
+	hostGateReason string
+	drain          bool
 	// drained closes when the node drains, waking a take or a wait for a
 	// slot; drainSince, drainReason and handBackAt are the drain as
 	// `mesh node status` shows it, askedDrain says the operator's drain
@@ -500,6 +513,12 @@ func (r *Runtime) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			break
 		}
+		if reason := r.hostGate(); reason != "" {
+			r.noteHostGate(reason)
+			r.sleep(ctx, r.backoff())
+			continue
+		}
+		r.noteHostGate("")
 		tk, err := r.API.Take(ctx, meshapi.TakeRequest{
 			NodeID: node.NodeID, Free: r.free(), Harnesses: r.Node.Harnesses, WaitS: meshapi.MaxWaitS,
 		})
