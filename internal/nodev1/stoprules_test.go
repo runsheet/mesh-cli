@@ -14,6 +14,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/meshapi"
+	"projectmesh.io/mesh-cli/internal/stoprules"
 )
 
 // streamSession stands in for claude by printing stream-json: each line
@@ -118,6 +119,57 @@ func TestAnEscalateRuleEndsAtTheTopOfTheLadder(t *testing.T) {
 	json.Unmarshal(g.fake.Calls("fail")[0].Body, &f)
 	if g.fake.Ended(g.fake.LeaseOf(job)) != "fail" || f.Cause != meshapi.CauseStoppedByRule || !strings.HasPrefix(f.Reason, "protected: Write wrote to a protected path") {
 		t.Fatalf("fail %+v", f)
+	}
+}
+
+// A nudge rule's first firing posts the session a turn carrying its
+// Nudge text, tagged [platform nudge], and does not stop the session;
+// the same rule's second firing carries no second nudge and falls
+// through to the escalate behaviour — here, with no ladder, straight
+// to ending the session. Both fires land in the underlying watch's
+// counts.
+func TestLeaseWatchNudgesThenEscalates(t *testing.T) {
+	rule := meshapi.StopRule{Name: "quiet", Action: meshapi.StopActionNudge, Nudge: "check in with the team", NoProgress: &meshapi.NoProgress{ForS: 600}}
+	start := time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)
+	w := stoprules.New([]meshapi.StopRule{rule}, "/work", start)
+
+	first := w.Tick(start.Add(10 * time.Minute))
+	if len(first) != 1 {
+		t.Fatalf("first tick fired %v", first)
+	}
+	sctx, stop := context.WithCancelCause(context.Background())
+	mb := NewMailbox()
+	lw := &leaseWatch{r: &Runtime{}, lease: "lease-1", watch: w, stop: stop, mb: mb, done: make(chan struct{}), nudged: map[string]bool{}}
+
+	lw.act(first[0])
+	if sctx.Err() != nil {
+		t.Fatalf("the first firing stopped the session: %v", sctx.Err())
+	}
+	select {
+	case m := <-mb.C():
+		if m.Kind != MsgTurn || !strings.Contains(m.Text, "[platform nudge]") || !strings.Contains(m.Text, "check in with the team") {
+			t.Fatalf("the nudge message %+v", m)
+		}
+	default:
+		t.Fatal("no message posted for the nudge")
+	}
+	if c := w.Counts(); len(c.StopRules) != 1 || c.StopRules[0] != "quiet" {
+		t.Fatalf("stop rules after the first fire: %v", c.StopRules)
+	}
+
+	second := w.Tick(start.Add(20 * time.Minute))
+	if len(second) != 1 {
+		t.Fatalf("second tick fired %v", second)
+	}
+	lw.act(second[0])
+	if sctx.Err() == nil {
+		t.Fatal("the second firing did not end the session")
+	}
+	if fired := stoppedBy(sctx); fired == nil || fired.fired.Rule.Name != "quiet" {
+		t.Fatalf("stopped by %+v", fired)
+	}
+	if c := w.Counts(); len(c.StopRules) != 2 || c.StopRules[0] != "quiet" || c.StopRules[1] != "quiet" {
+		t.Fatalf("stop rules after both fires: %v", c.StopRules)
 	}
 }
 

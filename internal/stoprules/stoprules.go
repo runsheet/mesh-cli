@@ -19,8 +19,10 @@
 //
 // A rule that fires is reported once for each time it fires. An end
 // rule fires once; an escalate rule re-arms — its window starts again —
-// so a session it moved can be caught again. What the node does about
-// a firing is the caller's.
+// so a session it moved can be caught again. A nudge rule re-arms the
+// same way, so a no_progress window it quiets can fire it again once it
+// quiets a second time. What the node does about a firing is the
+// caller's.
 package stoprules
 
 import (
@@ -261,9 +263,10 @@ func (w *Watch) budget() []Fired {
 	return out
 }
 
-// fire records r firing: an end rule is spent.
+// fire records r firing: an end rule is spent, an escalate or nudge
+// rule re-arms.
 func (w *Watch) fire(r meshapi.StopRule, detail string) Fired {
-	if r.Action != meshapi.StopActionEscalate {
+	if r.Action != meshapi.StopActionEscalate && r.Action != meshapi.StopActionNudge {
 		w.spent[r.Name] = true
 	}
 	w.fired = append(w.fired, r.Name)
