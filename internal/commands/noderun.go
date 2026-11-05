@@ -155,6 +155,7 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 			})
 			rt.Scheduler.Logf = logger.Printf
 		}
+		rt.Host, rt.Machine = nodeRunHost(logger)
 		rt.Actors = nodeRunActors
 		mode, err := supervisor.ParseMode(nodeRunSupervisor)
 		if err != nil {
@@ -327,6 +328,56 @@ func nodeRunSigstore(logger *log.Logger) *sigstore.Signer {
 	}
 	logger.Printf("sigstore: node tools sign their records through %s and log them in %s", fulcio, rekor)
 	return s
+}
+
+// nodeRunHost is node.yaml's `host:` block (the legacy node's
+// HostConfig), reimplemented as nodev1.Host and a nodev1.MachineProbe
+// so --api v1 backs off a hot or short-of-memory host too (Mesh v1
+// spec amendment, "A node backs off a hot host"; nodev1 may not import
+// internal/node itself, guard_test.go, so this package bridges the
+// two). LoadPerCoreMax carries straight across; MinFreeMemory, a size
+// or a percentage of total memory, is resolved to bytes by
+// HostConfig.MemoryFloor on the platform probe's one-off read of total
+// memory, when there is one — a size needs no total, and a percentage
+// with none read falls back to HostConfig's own default. No `host:`
+// block, or a failed node.yaml load, is a zero Host; the command still
+// starts. The probe is independent of node.yaml: it is set whenever
+// the platform has one (nil off Linux), since the gate does nothing
+// with zero thresholds.
+func nodeRunHost(logger *log.Logger) (nodev1.Host, nodev1.MachineProbe) {
+	var cfg node.HostConfig
+	if settings, err := node.LoadSettings(); err != nil {
+		logger.Printf("host: %v; no host thresholds from node.yaml", err)
+	} else {
+		cfg = settings.Host
+	}
+	probe := node.HostMachine()
+	host := nodev1.Host{LoadPerCoreMax: cfg.LoadPerCoreMax}
+	if cfg.MinFreeMemory != "" {
+		var total uint64
+		if probe != nil {
+			if reading, err := probe.Read(); err == nil {
+				total = reading.MemTotal
+			}
+		}
+		host.MinFreeMemory = cfg.MemoryFloor(total)
+	}
+	if probe == nil {
+		return host, nil
+	}
+	return host, nodeRunMachineProbe{probe}
+}
+
+// nodeRunMachineProbe adapts the legacy node's MachineProbe (internal/node's
+// own MachineReading, which carries more than the host gate needs) to
+// nodev1.MachineProbe.
+type nodeRunMachineProbe struct {
+	probe node.MachineProbe
+}
+
+func (p nodeRunMachineProbe) Read() (nodev1.MachineReading, error) {
+	r, err := p.probe.Read()
+	return nodev1.MachineReading{Load1: r.Load1, CPUs: r.CPUs, MemAvailable: r.MemAvailable}, err
 }
 
 // nodeRunSessionOf is --harness: the session a lease runs and the
