@@ -33,7 +33,12 @@ import (
 // clock is the lease's: its ctx, in which a run_suite run goes on past
 // the call that started it, and when it began, from which a validation
 // is held to its repository's budget (ADR-049).
-func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace string, tokens *sessionTokens, ladder *escalate.Ladder, mb *Mailbox, suites nodetools.SuiteRunner, pusher nodetools.Pusher, clock leaseClock) ([]mcptool.Tool, *nodetools.Recorder) {
+//
+// tb, set, is the lease's own time budget (timebudget.go), already
+// running by the time its tools are built: request_time extends it,
+// inside the kind's own cap of b.Harness.Budget.Minutes per ask. A
+// kind naming request_time with no budget of its own serves none.
+func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace string, tokens *sessionTokens, ladder *escalate.Ladder, mb *Mailbox, suites nodetools.SuiteRunner, pusher nodetools.Pusher, clock leaseClock, tb *timeBudget) ([]mcptool.Tool, *nodetools.Recorder) {
 	if len(b.NodeTools) == 0 {
 		return nil, nil
 	}
@@ -78,6 +83,12 @@ func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace s
 				Escalate: escalateOn(ladder, mb, escalate.OnConflict)}).Tool())
 		case EscalateTool:
 			out = append(out, escalateTool(ladder, mb))
+		case RequestTimeTool:
+			if tb == nil {
+				r.logf("nodev1: lease %s: the kind names node tool %q, but has no time budget to extend", b.LeaseID, name)
+				continue
+			}
+			out = append(out, requestTimeTool(tb, time.Duration(b.Harness.Budget.Minutes)*time.Minute))
 		default:
 			// result, hand_back and progress are endTools' (endtools.go)
 			if isEndTool(name) {
