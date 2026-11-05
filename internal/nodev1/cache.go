@@ -13,6 +13,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -101,6 +102,124 @@ func (c *TenantCache) TrimAll(tenant string) (map[string]TrimResult, error) {
 		results[name] = res
 	}
 	return results, nil
+}
+
+// PromoteResult is what Promote did merging one lease's overlay upper
+// dir into its tenant's shared lower cache dir, then trimming it.
+type PromoteResult struct {
+	Promoted int // regular files copied from upper into lower
+	Trim     TrimResult
+}
+
+// Promote merges upper — a finished lease's overlay upper dir
+// (cachemount.go's leaseCacheMounts) — into lower, the tenant's shared
+// cache dir, then holds lower under c.MaxBytes by Trim: promoting can
+// push a tenant cache over its budget, so every promotion is trimmed
+// back under it at once rather than left for the next lease to find
+// over cap. A file already present at its relative path under lower is
+// left alone, never overwritten — the same "written once, only ever
+// read afterward" assumption Trim's LRU eviction rests on, so no merge
+// or diff logic is needed for a GOMODCACHE, npm cache or pnpm store
+// entry. upper missing (nothing was written, or no overlay ran) is not
+// an error.
+func (c *TenantCache) Promote(upper, lower string) (PromoteResult, error) {
+	n, err := copyNewFiles(upper, lower)
+	res := PromoteResult{Promoted: n}
+	if err != nil {
+		return res, fmt.Errorf("nodev1: promote %s into %s: %w", upper, lower, err)
+	}
+	trim, err := Trim(lower, c.MaxBytes)
+	res.Trim = trim
+	return res, err
+}
+
+// PromoteAll promotes tenant's lease at leaseDir's three overlay upper
+// dirs (cachemount.go: "gomod", "npm", "pnpm" under
+// leaseDir/cache/<name>/upper) into tenant's shared gomod, npm and
+// pnpm-store cache dirs (Dirs), each then trimmed under MaxBytes. The
+// result is keyed as TrimAll's is.
+func (c *TenantCache) PromoteAll(tenant, leaseDir string) (map[string]PromoteResult, error) {
+	dirs, err := c.Dirs(tenant)
+	if err != nil {
+		return nil, err
+	}
+	overlays := []struct {
+		result, mount, lower string
+	}{
+		{"gomod", "gomod", dirs.GoMod},
+		{"npm", "npm", dirs.Npm},
+		{"pnpm-store", "pnpm", dirs.Pnpm},
+	}
+	results := make(map[string]PromoteResult, len(overlays))
+	for _, o := range overlays {
+		upper := filepath.Join(leaseDir, "cache", o.mount, "upper")
+		res, err := c.Promote(upper, o.lower)
+		results[o.result] = res
+		if err != nil {
+			return results, err
+		}
+	}
+	return results, nil
+}
+
+// copyNewFiles copies every regular file under upper not already
+// present at its relative path under lower, into lower, answering how
+// many it copied. upper missing is not an error.
+func copyNewFiles(upper, lower string) (int, error) {
+	var n int
+	err := filepath.WalkDir(upper, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(upper, path)
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(lower, rel)
+		if _, err := os.Stat(dst); err == nil {
+			return nil
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+			return err
+		}
+		if err := copyFile(path, dst); err != nil {
+			return err
+		}
+		n++
+		return nil
+	})
+	if err != nil && os.IsNotExist(err) {
+		err = nil
+	}
+	return n, err
+}
+
+// copyFile copies src to dst, a plain byte-for-byte copy: these caches'
+// entries are written once and never modified, so no atomic
+// tmp-then-rename dance is needed.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // TrimResult is what Trim did to one directory.

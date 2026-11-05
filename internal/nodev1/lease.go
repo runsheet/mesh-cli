@@ -170,6 +170,31 @@ func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take, room *schedule
 // lease's directory, in its releasing state after the report; work
 // enters running as the session starts and runs it in the lease's pod
 // when the actor opened one. Without, work closes them as it leaves.
+// promoteLeaseCache merges b's finished lease's overlay cache writes
+// (cachemount.go's leaseCacheMounts, upper dirs under leaseDir) into
+// its tenant's shared cache (cache.go), then trims that cache back
+// under budget: so a sibling or later lease of the same tenant starts
+// from what this one downloaded. A tenant with no cache mounted (no
+// overlay ever wrote anything, or the tenant cache could not be made)
+// promotes nothing. Logged, never failed: a lease's directory is
+// removed whether or not promoting its cache succeeds.
+func (r *Runtime) promoteLeaseCache(b *meshapi.Brief, leaseDir string) {
+	tc := r.TenantCache
+	if tc == nil {
+		tc = NewTenantCache(r.WorkRoot, CacheConfig{})
+	}
+	results, err := tc.PromoteAll(b.Tenant, leaseDir)
+	if err != nil {
+		r.logf("nodev1: lease %s: tenant cache: promoting writes: %v", b.LeaseID, err)
+	}
+	for name, res := range results {
+		if res.Promoted > 0 || len(res.Trim.Removed) > 0 {
+			r.logf("nodev1: lease %s: tenant cache %s: promoted %d file(s) (%d removed trimming to %d bytes)",
+				b.LeaseID, name, res.Promoted, len(res.Trim.Removed), res.Trim.After)
+		}
+	}
+}
+
 func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *actor.Actor, pod string) outcome {
 	began := time.Now()
 	var closers []func()
@@ -211,7 +236,10 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		}
 	}
 	if a == nil {
-		keep("the lease's directory", func() error { return os.RemoveAll(dir) })
+		keep("the lease's directory", func() error {
+			r.promoteLeaseCache(b, dir)
+			return os.RemoveAll(dir)
+		})
 	}
 
 	var tokens *sessionTokens
