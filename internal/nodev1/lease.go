@@ -766,7 +766,8 @@ func (r *Runtime) renew(ctx context.Context, lease *meshapi.Lease, cancel contex
 // the writes: Mesh records the lease's pushes from its AccessRecords,
 // and the next lease's checkout starts from the most recent of them (the
 // brief's pushed; checkout).
-func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) actor.End {
+func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) (end actor.End) {
+	defer func() { r.recordAskEnd(b, end) }()
 	writes := landedWrites(o.access)
 	switch {
 	case errors.Is(o.cause, errLeaseGone):

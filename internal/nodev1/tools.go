@@ -88,7 +88,8 @@ func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace s
 				r.logf("nodev1: lease %s: the kind names node tool %q, but has no time budget to extend", b.LeaseID, name)
 				continue
 			}
-			out = append(out, requestTimeTool(tb, time.Duration(b.Harness.Budget.Minutes)*time.Minute))
+			tool := requestTimeTool(tb, time.Duration(b.Harness.Budget.Minutes)*time.Minute)
+			out = append(out, r.recordRequestTime(b, ladderModel(ladder, b), tool))
 		default:
 			// result, hand_back and progress are endTools' (endtools.go)
 			if isEndTool(name) {
