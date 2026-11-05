@@ -24,7 +24,12 @@ import (
 // with cause stopped_by_rule, the rule's name first in the reason. One
 // whose action is escalate interrupts the turn in flight and moves the
 // session up its kind's model ladder with set_model; with no model left
-// to move to, it ends the session as end would.
+// to move to, it ends the session as end would. One whose action is
+// nudge sends the session a turn carrying the rule's Nudge text, tagged
+// [platform nudge] — advice the session may act on or decline, never an
+// order — the first time it fires, without stopping the session; the
+// same rule firing again carries no second nudge and falls through to
+// the escalate behaviour instead.
 
 // ruleTick is how often the no_progress rules are checked.
 const ruleTick = 5 * time.Second
@@ -53,6 +58,9 @@ type leaseWatch struct {
 	mb     *Mailbox
 	ladder *escalate.Ladder
 	done   chan struct{}
+	// nudged is which nudge rules already sent their one nudge, by name:
+	// the rule's next firing escalates instead of nudging again.
+	nudged map[string]bool
 }
 
 // watchLease puts the lease's session under its watch: spec's events
@@ -62,7 +70,7 @@ func (r *Runtime) watchLease(ctx context.Context, b *meshapi.Brief, workspace st
 	spec *SessionSpec, tokens *sessionTokens, grant *gitrelay.Grant, account *sessionAccount, vals *injectedValues) (context.Context, *leaseWatch) {
 	sctx, stop := context.WithCancelCause(ctx)
 	w := &leaseWatch{r: r, lease: b.LeaseID, watch: stoprules.New(b.StopRules, workspace, time.Now()),
-		stop: stop, mb: mb, ladder: ladder, done: make(chan struct{})}
+		stop: stop, mb: mb, ladder: ladder, done: make(chan struct{}), nudged: map[string]bool{}}
 	if t := b.Transcript; t != nil && t.UploadURL != "" {
 		// every chunk goes on the lease's session token, as its relay's
 		// tool calls to the product do (mesh-specs gap 30)
@@ -112,10 +120,29 @@ func (w *leaseWatch) tick() {
 	}
 }
 
-// act does what a rule that fired asks: escalate when the ladder has a
-// model left, else end.
+// act does what a rule that fired asks: nudge the session on a nudge
+// rule's first firing, else escalate when the ladder has a model left,
+// else end. A nudge rule's second firing carries no second nudge and
+// acts as an escalate rule's firing would.
 func (w *leaseWatch) act(f stoprules.Fired) {
-	if f.Rule.Action == meshapi.StopActionEscalate {
+	action := f.Rule.Action
+	if action == meshapi.StopActionNudge {
+		if !w.nudged[f.Rule.Name] {
+			w.nudged[f.Rule.Name] = true
+			text := f.Rule.Nudge
+			if text == "" {
+				text = f.Reason()
+			}
+			if err := w.mb.Post(Message{Kind: MsgTurn, Text: "[platform nudge] " + text}); err != nil {
+				w.r.logf("nodev1: lease %s: the stop rule %s could not nudge (%v)", w.lease, f.Reason(), err)
+			} else {
+				w.r.logf("nodev1: lease %s: the stop rule %s nudges the session", w.lease, f.Reason())
+			}
+			return
+		}
+		action = meshapi.StopActionEscalate
+	}
+	if action == meshapi.StopActionEscalate {
 		if w.ladder != nil {
 			if to, err := w.ladder.Peek(escalate.OnRule); err == nil {
 				err := w.mb.Post(Message{Kind: MsgEscalate, On: escalate.OnRule, Text: f.Reason(), Interrupt: true})

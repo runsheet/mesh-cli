@@ -25,10 +25,17 @@ const CauseCredentialExposed = "credential_exposed"
 const (
 	StopActionEnd      = "end"
 	StopActionEscalate = "escalate"
+	// StopActionNudge sends the session a turn carrying the rule's Nudge
+	// text, tagged [platform nudge], the first time the rule fires —
+	// advice the session may act on or decline, not an order. The rule
+	// re-arms rather than ending the session, as an escalate rule does;
+	// the same rule firing again escalates instead, carrying no second
+	// nudge.
+	StopActionNudge = "nudge"
 )
 
-// StopRule is one of the kind's stop rules: a name, end or escalate, and
-// one condition, times in seconds.
+// StopRule is one of the kind's stop rules: a name, end, escalate or
+// nudge, and one condition, times in seconds.
 type StopRule struct {
 	Name           string          `json:"name"`
 	Action         string          `json:"action"`
@@ -36,6 +43,9 @@ type StopRule struct {
 	ProtectedPaths *ProtectedPaths `json:"protected_paths,omitempty"`
 	Budget         *BudgetRule     `json:"budget,omitempty"`
 	NoProgress     *NoProgress     `json:"no_progress,omitempty"`
+	// Nudge is the text a nudge-action rule's first firing sends to the
+	// session as a turn; unused by any other action.
+	Nudge string `json:"nudge,omitempty"`
 }
 
 // ToolErrorLoop fires on Count tool errors — of Tool alone, when it

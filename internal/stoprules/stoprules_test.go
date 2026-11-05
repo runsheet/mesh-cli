@@ -156,6 +156,22 @@ func TestEscalateRearms(t *testing.T) {
 	}
 }
 
+// A no_progress rule whose action is nudge re-arms like an escalate
+// rule: its quiet window starts again, so it fires again once the
+// session goes quiet for that long a second time.
+func TestNoProgressNudgeRearms(t *testing.T) {
+	r := meshapi.StopRule{Name: "quiet", Action: meshapi.StopActionNudge, Nudge: "check in", NoProgress: &meshapi.NoProgress{ForS: 600}}
+	got, w := run([]meshapi.StopRule{r}, "/work",
+		tickAt(5*time.Minute), tickAt(10*time.Minute), tickAt(15*time.Minute), tickAt(20*time.Minute))
+	want := []string{"nudge quiet: no tool call succeeded for 10m0s", "nudge quiet: no tool call succeeded for 10m0s"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("fired\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if c := w.Counts(); len(c.StopRules) != 2 || c.StopRules[0] != "quiet" || c.StopRules[1] != "quiet" {
+		t.Fatalf("the rules fired %v", c.StopRules)
+	}
+}
+
 // TestCounts: the content-free counts — calls and errors in all and by
 // tool name, files edited (each once), the time to the first tool call
 // and the rules fired — and nothing of any argument or output.
