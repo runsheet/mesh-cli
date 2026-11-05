@@ -185,6 +185,18 @@ type Runtime struct {
 	// take loop, holding it exclusively (PR 3.4; `--cache-trim`); its
 	// Scheduler is the runtime's.
 	CacheTrim *resources.CacheTrim
+	// TenantCache, set, is the node's per-tenant GOMODCACHE/npm/pnpm
+	// cache (cache.go, goal a-v1-lease-starts-from-a-warm-cache item 1):
+	// a lease's pod gets its tenant's as a read-only overlay, this
+	// lease's own writes landing in its own upper dir, never another
+	// lease's (cachemount.go, item 2). Nil defaults to
+	// NewTenantCache(WorkRoot, CacheConfig{}) at first use.
+	TenantCache *TenantCache
+	// BuildCache is the node's one Go build cache (GOCACHE), mounted
+	// read-write and identical across every tenant's leases, since it is
+	// keyed by content and safe to share; "" defaults to
+	// WorkRoot/build-cache at first use (cachemount.go).
+	BuildCache string
 	// Updater, when set, keeps the node on the newest release (PR 3.4;
 	// `--self-update`): every UpdateEvery (10 minutes) it looks, and a
 	// newer release drains the node, waits DrainWait (30 minutes) for

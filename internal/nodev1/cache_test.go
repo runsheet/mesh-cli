@@ -1,6 +1,7 @@
 package nodev1
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -105,6 +106,101 @@ func TestCacheTrimRemovesLeastRecentlyUsed(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, kept)); err != nil {
 			t.Fatalf("%s should have been kept: %v", kept, err)
 		}
+	}
+}
+
+// seedOverlayFile writes content under leaseDir/cache/<mount>/upper/rel,
+// as a lease's sandboxed session would write into its overlay's upper
+// dir (cachemount.go's leaseCacheMounts).
+func seedOverlayFile(t *testing.T, leaseDir, mount, rel string, content []byte) {
+	t.Helper()
+	path := filepath.Join(leaseDir, "cache", mount, "upper", rel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("seed %s: %v", rel, err)
+	}
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("seed %s: %v", rel, err)
+	}
+}
+
+func TestPromoteMergesLeaseWritesIntoTenantCache(t *testing.T) {
+	root := t.TempDir()
+	leaseDir := t.TempDir()
+	tc := &TenantCache{Root: root}
+
+	seedOverlayFile(t, leaseDir, "gomod", "cache/download/example.com/@v/v1.0.0.zip", []byte("a module"))
+	seedOverlayFile(t, leaseDir, "npm", "example-pkg/-/example-pkg-1.0.0.tgz", []byte("an npm tarball"))
+	seedOverlayFile(t, leaseDir, "pnpm", "v3/files/ab/cdef", []byte("a pnpm store entry"))
+
+	if _, err := tc.PromoteAll("acme", leaseDir); err != nil {
+		t.Fatalf("PromoteAll: %v", err)
+	}
+
+	dirs, err := tc.Dirs("acme")
+	if err != nil {
+		t.Fatalf("Dirs(acme): %v", err)
+	}
+	for _, want := range []struct {
+		dir, rel string
+		content  string
+	}{
+		{dirs.GoMod, "cache/download/example.com/@v/v1.0.0.zip", "a module"},
+		{dirs.Npm, "example-pkg/-/example-pkg-1.0.0.tgz", "an npm tarball"},
+		{dirs.Pnpm, "v3/files/ab/cdef", "a pnpm store entry"},
+	} {
+		got, err := os.ReadFile(filepath.Join(want.dir, want.rel))
+		if err != nil {
+			t.Fatalf("promoted file %s/%s not found: %v", want.dir, want.rel, err)
+		}
+		if string(got) != want.content {
+			t.Fatalf("promoted file %s/%s = %q, want %q", want.dir, want.rel, got, want.content)
+		}
+	}
+}
+
+func TestPromoteThenTrimRespectsBudget(t *testing.T) {
+	root := t.TempDir()
+	leaseDir := t.TempDir()
+	const maxBytes = 20
+	tc := &TenantCache{Root: root, MaxBytes: maxBytes}
+
+	// Four 10-byte files, 40 bytes total: well over the 20-byte budget,
+	// so promoting them must leave the tenant's shared npm cache dir
+	// trimmed back to at or under it.
+	for _, name := range []string{"a", "b", "c", "d"} {
+		seedOverlayFile(t, leaseDir, "npm", name, make([]byte, 10))
+	}
+
+	results, err := tc.PromoteAll("acme", leaseDir)
+	if err != nil {
+		t.Fatalf("PromoteAll: %v", err)
+	}
+	if got := results["npm"].Promoted; got != 4 {
+		t.Fatalf("Promoted = %d, want 4", got)
+	}
+
+	dirs, err := tc.Dirs("acme")
+	if err != nil {
+		t.Fatalf("Dirs(acme): %v", err)
+	}
+	var total int64
+	if err := filepath.WalkDir(dirs.Npm, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type().IsRegular() {
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			total += info.Size()
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("walk %s: %v", dirs.Npm, err)
+	}
+	if total > maxBytes {
+		t.Fatalf("tenant npm cache holds %d bytes after promote, want <= %d", total, maxBytes)
 	}
 }
 
