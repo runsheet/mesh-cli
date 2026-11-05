@@ -138,6 +138,98 @@ func TestCodexSessionNormalisesAppServerNotifications(t *testing.T) {
 	}
 }
 
+// A command_execution item's item.started and item.completed become a
+// tool_use line and then a tool_result line, the shape stoprules'
+// Watch reads off a Claude session's own stream, so a Codex session's
+// tool calls and tool errors are counted with no adapter-specific code
+// (internal/stoprules's own TestCommandExecutionCountsAsAToolCall
+// proves Watch itself treats the pair the same way).
+func TestCodexSessionNormalisesCommandExecutionNotifications(t *testing.T) {
+	run := func(_ context.Context, _, _ []string, stdin io.Reader, stdout, _ io.Writer) error {
+		emit := func(v any) {
+			b, _ := json.Marshal(v)
+			fmt.Fprintln(stdout, string(b))
+		}
+		sc := bufio.NewScanner(stdin)
+		sc.Buffer(make([]byte, 0, 64<<10), 16<<20)
+		for sc.Scan() {
+			var m struct {
+				ID     json.RawMessage `json:"id"`
+				Method string          `json:"method"`
+			}
+			if json.Unmarshal(sc.Bytes(), &m) != nil {
+				continue
+			}
+			var id int
+			_ = json.Unmarshal(m.ID, &id)
+			switch m.Method {
+			case "thread/start":
+				emit(map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{"threadId": "fake-thread"}})
+			case "turn/start":
+				emit(map[string]any{"jsonrpc": "2.0", "method": "item.started", "params": map[string]any{"item": map[string]any{
+					"id": "item_1", "type": "command_execution", "command": "go test ./...", "status": "in_progress",
+				}}})
+				emit(map[string]any{"jsonrpc": "2.0", "method": "item.completed", "params": map[string]any{"item": map[string]any{
+					"id": "item_1", "type": "command_execution", "command": "go test ./...",
+					"aggregated_output": "FAIL\n", "exit_code": 1, "status": "failed",
+				}}})
+				emit(map[string]any{"jsonrpc": "2.0", "method": "turn.completed", "params": map[string]any{"usage": map[string]any{"input_tokens": 10, "output_tokens": 5}}})
+			}
+		}
+		return nil
+	}
+	c := &CodexSession{Binary: "codex", Logf: t.Logf}
+
+	var mu sync.Mutex
+	var events []harness.Event
+	spec := SessionSpec{
+		Workspace: t.TempDir(), Prompt: "do the job", Model: "gpt-6-sol",
+		InPod: run,
+		OnEvent: func(ev harness.Event) {
+			mu.Lock()
+			events = append(events, ev)
+			mu.Unlock()
+		},
+	}
+
+	if _, err := c.Run(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 3 {
+		t.Fatalf("events %+v, want tool_use, tool_result, result", events)
+	}
+	use, result := events[0], events[1]
+
+	if use.Type != "assistant" || use.Message == nil || len(use.Message.Content) != 1 {
+		t.Fatalf("tool_use event %+v", use)
+	}
+	useBlock := use.Message.Content[0]
+	if useBlock.Type != "tool_use" || useBlock.ID != "item_1" || useBlock.Name != "command_execution" {
+		t.Fatalf("tool_use block %+v", useBlock)
+	}
+	var input struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(useBlock.Input, &input); err != nil || input.Command != "go test ./..." {
+		t.Fatalf("tool_use input %s, err %v", useBlock.Input, err)
+	}
+
+	if result.Type != "user" || result.Message == nil || len(result.Message.Content) != 1 {
+		t.Fatalf("tool_result event %+v", result)
+	}
+	resultBlock := result.Message.Content[0]
+	if resultBlock.Type != "tool_result" || resultBlock.ToolUseID != "item_1" || !resultBlock.IsError {
+		t.Fatalf("tool_result block %+v", resultBlock)
+	}
+	var content string
+	if err := json.Unmarshal(resultBlock.ResultContent, &content); err != nil || content != "FAIL\n" {
+		t.Fatalf("tool_result content %s, err %v", resultBlock.ResultContent, err)
+	}
+}
+
 // A steer sent while a turn is in flight, then an interrupt, reach the
 // fake app server as turn/steer and turn/interrupt.
 func TestCodexSessionSteersThenInterrupts(t *testing.T) {

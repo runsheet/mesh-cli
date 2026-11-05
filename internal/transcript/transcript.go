@@ -80,7 +80,8 @@ type Options struct {
 	// MaxHeld drops what is held, counted as one failed chunk, once a
 	// slow location lets it grow past this; 8 MiB when 0.
 	MaxHeld int
-	// Every sends what is held this often; 15 s when 0.
+	// Every sends what is held this often: this, when set, else the
+	// location's FlushS clamped to [2s, 15s], else 15 s (flushEvery).
 	Every time.Duration
 	// Tries is how often a chunk is tried; 3 when 0.
 	Tries int
@@ -139,6 +140,35 @@ type Uploader struct {
 	sending sync.Mutex
 }
 
+// minFlushEvery and maxFlushEvery bound a brief's flush_s: a product
+// asking for less than minFlushEvery or more than maxFlushEvery is held
+// to the nearest bound.
+const (
+	minFlushEvery = 2 * time.Second
+	maxFlushEvery = 15 * time.Second
+)
+
+// flushEvery is how often the upload sends what it holds: every, when
+// the caller set one explicitly; else flushS seconds, clamped to
+// [minFlushEvery, maxFlushEvery]; else maxFlushEvery, when flushS is 0
+// too (today's default).
+func flushEvery(flushS int, every time.Duration) time.Duration {
+	if every > 0 {
+		return every
+	}
+	if flushS <= 0 {
+		return maxFlushEvery
+	}
+	d := time.Duration(flushS) * time.Second
+	if d < minFlushEvery {
+		return minFlushEvery
+	}
+	if d > maxFlushEvery {
+		return maxFlushEvery
+	}
+	return d
+}
+
 // New starts the lease's upload to loc.
 func New(loc meshapi.Transcript, lease string, secrets Secrets, o Options) *Uploader {
 	if o.ChunkBytes <= 0 {
@@ -147,9 +177,7 @@ func New(loc meshapi.Transcript, lease string, secrets Secrets, o Options) *Uplo
 	if o.MaxHeld <= 0 {
 		o.MaxHeld = 8 << 20
 	}
-	if o.Every <= 0 {
-		o.Every = 15 * time.Second
-	}
+	o.Every = flushEvery(loc.FlushS, o.Every)
 	if o.Tries <= 0 {
 		o.Tries = 3
 	}
