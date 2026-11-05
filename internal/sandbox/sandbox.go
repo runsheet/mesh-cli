@@ -487,6 +487,35 @@ type Session struct {
 	// sharedHome is a session opened beside another (OpenBeside) on its
 	// HOME, which its Close leaves.
 	sharedHome bool
+	// extraMounts are mounts ShareMount added, beside the ones
+	// namedMounts assembles on its own: a v1 lease's tenant cache
+	// overlays and its shared build cache (internal/nodev1/cachemount.go).
+	extraMounts []namedMount
+	// extraEnv are variables SetExtraEnv added, replacing what Env would
+	// otherwise set for the same name: the cache mounts' own GOMODCACHE,
+	// npm_config_cache, PNPM_HOME and GOCACHE.
+	extraEnv []string
+}
+
+// ShareMount adds m beside the mounts namedMounts assembles on its own,
+// labelled what for a refused mount's words (CheckedMounts) and for
+// node.log; mounted after every other mount, in the order added. A v1
+// lease's tenant cache overlay or its shared build cache
+// (internal/nodev1/cachemount.go).
+func (s *Session) ShareMount(what string, m Mount) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.extraMounts = append(s.extraMounts, namedMount{m, what})
+}
+
+// SetExtraEnv sets vars (KEY=VALUE) on every Env this session renders
+// from now on, each replacing a variable Env would otherwise set
+// (SetEnv): a v1 lease's cache mounts' own GOMODCACHE, npm_config_cache,
+// PNPM_HOME and GOCACHE (internal/nodev1/cachemount.go).
+func (s *Session) SetExtraEnv(vars []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.extraEnv = append(s.extraEnv, vars...)
 }
 
 // ShareProxyDir mounts dir, the directory of the session's sessionproxy
@@ -715,7 +744,10 @@ func (s *Session) Env(jobEnv []string) []string {
 		}
 		out = append(out, kv)
 	}
-	return out
+	s.mu.Lock()
+	extra := append([]string(nil), s.extraEnv...)
+	s.mu.Unlock()
+	return SetEnv(out, extra)
 }
 
 // SetEnv is env with each of vars (KEY=VALUE) set: a variable env has
@@ -826,6 +858,10 @@ func (s *Session) namedMounts(workspace string) []namedMount {
 	for _, d := range dirs {
 		m = append(m, namedMount{Mount{Source: d, Target: d}, "mcp proxy"})
 	}
+	s.mu.Lock()
+	extra := append([]namedMount(nil), s.extraMounts...)
+	s.mu.Unlock()
+	m = append(m, extra...)
 	return m
 }
 
