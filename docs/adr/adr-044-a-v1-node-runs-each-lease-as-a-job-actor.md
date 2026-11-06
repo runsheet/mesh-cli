@@ -311,3 +311,32 @@ the legacy node the same way) picks them back up.
    agent answers, the lease that adopted it reports and releases exactly
    as `runActor`'s own tail does, so Mesh sees one finish (or hand-back)
    for the job, never one from each process.
+
+## Amendment, 2026-11-06: the upgrade refuses an unadoptable lease, and reports what the new process adopted
+
+`mesh node upgrade --api v1` no longer swaps and restarts blind to
+whether the hand-off above can actually pick a lease back up, or to
+whether it did.
+
+1. **A lease the hand-off cannot adopt refuses the upgrade.**
+   `Status`/`LeaseStatus` (`internal/nodev1/drain.go`) now carries
+   `Adoptable` per lease: false for one with no relay sidecar
+   (`sidecarDir == ""`) or one whose tunnel intercepts --- the same two
+   cases `Upgrade` (above) hands back `node_update` rather than
+   writing a hand-off for. Before `(*nodeUpgrade).run`
+   (`internal/commands/nodeupgrade.go`) swaps the binary, it reads the
+   v1 node's status once (`V1Status`, nil for a legacy-node upgrade)
+   and, finding any lease not `Adoptable`, refuses: no binary swapped,
+   no restart sent, the lease(s) named by id and job. `--force` swaps
+   and restarts anyway, ending them, as `Upgrade` already would.
+2. **The swap reports what the restart actually adopted.** When every
+   lease was adoptable (or `--force` overrode a refusal) and at least
+   one lease was running, `run` polls `V1Status` after
+   `Service.Restart` returns until it sees a status from a different
+   pid than the one running before the swap, then prints how many of
+   the leases left running the new process's own status says it
+   adopted. Fewer adopted than were left running is reported as a
+   failure (a non-zero exit), not a quiet success; a new status never
+   appearing within the poll's timeout is the same. This is
+   `mesh node upgrade`'s own account of step 3's adoption, not a
+   change to adoption itself.

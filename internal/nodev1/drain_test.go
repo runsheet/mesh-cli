@@ -226,3 +226,30 @@ func TestStatusDrainLines(t *testing.T) {
 		t.Fatalf("status lines\n%s", got)
 	}
 }
+
+// A lease an upgrade's hand-off could not pick back up -- one with no
+// relay sidecar to adopt (adopt.go's adoptOne, SidecarDir == "") or one
+// whose tunnel terminates TLS on a CA this process alone holds
+// (handoff.go's Upgrade, which hands an intercepting lease back rather
+// than writing it) -- reports Adoptable false; a sidecar-mode,
+// non-intercepting lease reports it true.
+func TestStatusMarksUnadoptableLeases(t *testing.T) {
+	r := &Runtime{}
+	r.leases.Put("no-sidecar", &running{jobID: "j-1", kind: "build", started: time.Now(), sidecarDir: ""})
+	r.leases.Put("intercepting", &running{jobID: "j-2", kind: "build", started: time.Now(), sidecarDir: "/tmp/sidecar-2", intercepts: true})
+	r.leases.Put("adoptable", &running{jobID: "j-3", kind: "build", started: time.Now(), sidecarDir: "/tmp/sidecar-3"})
+
+	byID := map[string]LeaseStatus{}
+	for _, l := range r.Status().Leases {
+		byID[l.LeaseID] = l
+	}
+	if l := byID["no-sidecar"]; l.Adoptable {
+		t.Fatalf("no-sidecar lease %+v, want Adoptable false", l)
+	}
+	if l := byID["intercepting"]; l.Adoptable {
+		t.Fatalf("intercepting lease %+v, want Adoptable false", l)
+	}
+	if l := byID["adoptable"]; !l.Adoptable {
+		t.Fatalf("sidecar-mode lease %+v, want Adoptable true", l)
+	}
+}

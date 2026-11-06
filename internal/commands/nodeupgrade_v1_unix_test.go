@@ -3,9 +3,11 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"io"
 	"net/http/httptest"
 	"os"
 	"strings"
@@ -196,5 +198,135 @@ func TestMeshNodeUpgradeV1SignalLeavesLeaseRunningToFinish(t *testing.T) {
 	}
 	if n := len(fake.Calls("hand-back")); n != 0 {
 		t.Fatalf("%d hand-backs, want none: the upgrade signal should have left the lease running to finish on its own", n)
+	}
+}
+
+// v1UpgradeFixtureService is a fake restart for the nodeUpgrade.run
+// accounting tests below: it records each call and, when newStatus is
+// set, writes it to run's node.status as the restarted process's own
+// publish would -- the stand-in for a real second process adopting
+// the hand-off and calling OnStatus.
+type v1UpgradeFixtureService struct {
+	exe       string
+	calls     []string
+	err       error
+	newStatus *nodev1.Status
+}
+
+func (s *v1UpgradeFixtureService) Restart(_ context.Context, run node.RunState, out io.Writer) error {
+	b, _ := os.ReadFile(s.exe)
+	head, _, _ := strings.Cut(string(b), "\n")
+	s.calls = append(s.calls, "restart with "+head)
+	if s.err != nil {
+		return s.err
+	}
+	if s.newStatus != nil {
+		if err := writeV1Status(run, *s.newStatus); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// v1UpgradeFixture is upgradeFixture's own machine, wired for a Mesh v1
+// node: V1Status reads run's node.status (nodev1state.go), and the poll
+// after the restart is sped up for the test.
+func v1UpgradeFixture(t *testing.T) (*nodeUpgrade, *updateFixture, *v1UpgradeFixtureService) {
+	t.Helper()
+	f := newUpdateFixture(t)
+	svc := &v1UpgradeFixtureService{exe: f.exe}
+	run := f.u.Run
+	u := &nodeUpgrade{
+		Updater:        f.u.Updater,
+		Latest:         f.u.Latest,
+		Running:        f.u.Running,
+		Run:            run,
+		Version:        binaryVersion,
+		Image:          f.u.Image,
+		Service:        svc,
+		Out:            f.out,
+		V1Status:       func() (nodev1.Status, bool) { return readV1Status(run) },
+		V1AdoptPoll:    time.Millisecond,
+		V1AdoptTimeout: 2 * time.Second,
+	}
+	return u, f, svc
+}
+
+// Against a running v1 node whose node.status names a lease the
+// restart's hand-off cannot adopt (no relay sidecar, or a tunnel that
+// intercepts -- drain.go's Adoptable), `mesh node upgrade --api v1`
+// refuses: it names the lease, swaps no binary and restarts nothing.
+// --force proceeds anyway.
+func TestNodeUpgradeV1RefusesUnadoptableLease(t *testing.T) {
+	noDrain(t)
+	u, f, svc := v1UpgradeFixture(t)
+	before := nodev1.Status{PID: 1, Leases: []nodev1.LeaseStatus{
+		{LeaseID: "l-1", JobID: "j-1", Kind: "build", Adoptable: false},
+		{LeaseID: "l-2", JobID: "j-2", Kind: "build", Adoptable: true},
+	}}
+	if err := writeV1Status(f.u.Run, before); err != nil {
+		t.Fatal(err)
+	}
+	bin := fakeBinary(t, "mesh v9.9.9")
+
+	err := u.run(context.Background(), "", bin, false)
+	if err == nil || !strings.Contains(err.Error(), "l-1") {
+		t.Fatalf("err = %v, want it to name the unadoptable lease l-1", err)
+	}
+	f.unchanged(t)
+	if len(svc.calls) != 0 {
+		t.Fatalf("restarted despite the refusal: %q", svc.calls)
+	}
+
+	svc.newStatus = &nodev1.Status{PID: 2, Leases: []nodev1.LeaseStatus{
+		{LeaseID: "l-2", JobID: "j-2", Kind: "build", Adoptable: true},
+	}}
+	if err := u.run(context.Background(), "", bin, true); err != nil {
+		t.Fatalf("upgrade with --force: %v\n%s", err, f.out)
+	}
+	if len(svc.calls) != 1 {
+		t.Fatalf("restarts %q, want one after --force", svc.calls)
+	}
+	want, _ := os.ReadFile(bin)
+	if got, err := os.ReadFile(f.exe); err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("executable = %q, %v; want the new build", got, err)
+	}
+}
+
+// `mesh node upgrade --api v1` prints how many of the leases running
+// before the swap the new process's status says it adopted; fewer than
+// were running is a non-zero exit, not a quiet success.
+func TestNodeUpgradeV1ReportsAdoptedCount(t *testing.T) {
+	noDrain(t)
+	before := nodev1.Status{PID: 1, Leases: []nodev1.LeaseStatus{
+		{LeaseID: "l-1", JobID: "j-1", Kind: "build", Adoptable: true},
+		{LeaseID: "l-2", JobID: "j-2", Kind: "build", Adoptable: true},
+	}}
+
+	u, f, svc := v1UpgradeFixture(t)
+	if err := writeV1Status(f.u.Run, before); err != nil {
+		t.Fatal(err)
+	}
+	svc.newStatus = &nodev1.Status{PID: 2, Leases: []nodev1.LeaseStatus{
+		{LeaseID: "l-1", JobID: "j-1", Kind: "build", Adoptable: true},
+		{LeaseID: "l-2", JobID: "j-2", Kind: "build", Adoptable: true},
+	}}
+	if err := u.run(context.Background(), "", fakeBinary(t, "mesh v9.9.9"), false); err != nil {
+		t.Fatalf("upgrade: %v\n%s", err, f.out)
+	}
+	if !strings.Contains(f.out.String(), "2 of 2") {
+		t.Fatalf("output lacks the adopted count:\n%s", f.out)
+	}
+
+	u2, f2, svc2 := v1UpgradeFixture(t)
+	if err := writeV1Status(f2.u.Run, before); err != nil {
+		t.Fatal(err)
+	}
+	svc2.newStatus = &nodev1.Status{PID: 2, Leases: []nodev1.LeaseStatus{
+		{LeaseID: "l-1", JobID: "j-1", Kind: "build", Adoptable: true},
+	}}
+	err := u2.run(context.Background(), "", fakeBinary(t, "mesh v9.9.9"), false)
+	if err == nil || !strings.Contains(err.Error(), "1 of 2") {
+		t.Fatalf("err = %v, want it to name the shortfall 1 of 2", err)
 	}
 }
