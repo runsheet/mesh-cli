@@ -141,22 +141,41 @@ type resumePoint struct {
 // first brought up to date through the same grant and the clone borrows
 // its objects, then copies them (--dissociate), so the checkout never
 // depends on the mirror; a mirror that cannot be synced is skipped and
-// logged.
+// logged. A mirror that syncs clean but still fails the clone — the
+// fetch tolerates damage a --reference clone does not — is named in the
+// log with the clone's error, set aside (resources.Mirrors.SetAside) so
+// the next lease builds a fresh one, and the clone is retried without it
+// (goal a-bad-mirror-never-stops-a-checkout).
 func checkout(ctx context.Context, grant *gitrelay.Grant, b *meshapi.Brief, workspace string, mirrors *resources.Mirrors, logf func(string, ...any)) (*resumePoint, error) {
 	git := leaseGitRun(ctx)
 	origin := grant.Base() + b.Git.Repo + ".git"
 	clone := []string{"clone", "-q"}
+	var mirrorKey resources.MirrorKey
+	var mirrorDir string
+	usingMirror := false
 	if mirrors != nil {
 		pol := grant.Policy()
-		key := resources.MirrorKey{Tenant: b.Tenant, Vendor: pol.Vendor, Base: pol.Base, Repo: b.Git.Repo}
-		if dir, err := mirrors.Sync(ctx, key, origin); err != nil {
+		mirrorKey = resources.MirrorKey{Tenant: b.Tenant, Vendor: pol.Vendor, Base: pol.Base, Repo: b.Git.Repo}
+		if dir, err := mirrors.Sync(ctx, mirrorKey, origin); err != nil {
 			logf("nodev1: lease %s: the mirror of %s is not used: %v", b.LeaseID, b.Git.Repo, err)
 		} else {
+			mirrorDir = dir
+			usingMirror = true
 			clone = append(clone, "--reference", dir, "--dissociate")
 		}
 	}
 	if _, err := git(workspace, append(clone, origin, ".")...); err != nil {
-		return nil, err
+		if !usingMirror {
+			return nil, err
+		}
+		logf("nodev1: lease %s: the mirror of %s at %s broke the clone: %v", b.LeaseID, b.Git.Repo, mirrorDir, err)
+		if _, asideErr := mirrors.SetAside(mirrorKey); asideErr != nil {
+			logf("nodev1: lease %s: setting aside the mirror of %s at %s: %v", b.LeaseID, b.Git.Repo, mirrorDir, asideErr)
+		}
+		plain := []string{"clone", "-q", origin, "."}
+		if _, err := git(workspace, plain...); err != nil {
+			return nil, err
+		}
 	}
 	if b.Code == nil {
 		return nil, nil
