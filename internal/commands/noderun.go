@@ -59,6 +59,15 @@ var (
 	nodeRunSelfUpdate   bool
 	nodeRunSandbox      bool
 	nodeRunRelaySidecar bool
+	// nodeRunSandboxRuntime is the runtime --sandbox opens its pods on:
+	// rootless podman, substituted for a test double (sandbox.Fake) so a
+	// test can exercise --sandbox with no podman installed.
+	nodeRunSandboxRuntime sandbox.Runtime = &sandbox.Podman{}
+	// nodeRunBeforeRun, when set, is called with the fully-built Runtime
+	// right before RunE calls its Run: a test seam letting a test inspect
+	// what RunE built (which it otherwise never exposes) without ever
+	// reaching the network. Returning true stops RunE there, with nil.
+	nodeRunBeforeRun func(*nodev1.Runtime) bool
 )
 
 // nodeRunCmd is the Mesh v1 node runtime (internal/nodev1), beside the
@@ -262,9 +271,21 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 			// the session runs in the lease's pod, and so do run_suite's
 			// steps: never on the host
 			rt.Pods, rt.HostSuites = sb, false
-			rt.RelaySidecar = nodeRunRelaySidecar
+			// --sandbox with no explicit --relay-sidecar defaults it on:
+			// a sandboxed lease with no sidecar names none to adopt
+			// across a restart (adopt.go), so the sidecar is the one
+			// adoptable shape. An explicit --relay-sidecar=false is
+			// still honoured, never forced on.
+			relaySidecar := nodeRunRelaySidecar
+			if !cmd.Flags().Changed("relay-sidecar") {
+				relaySidecar = true
+			}
+			rt.RelaySidecar = relaySidecar
 		} else if nodeRunRelaySidecar {
 			return errors.New("mesh node run: --relay-sidecar runs each lease's relay in its pod: it needs --sandbox")
+		}
+		if nodeRunBeforeRun != nil && nodeRunBeforeRun(rt) {
+			return nil
 		}
 		err = rt.Run(ctx)
 		if errors.Is(err, nodev1.ErrRestartForUpdate) {
@@ -418,7 +439,7 @@ func nodeRunPods(ctx context.Context, logger *log.Logger) (*sandbox.Sandbox, err
 		c = cfg.Sandbox
 	}
 	c.Mode = node.SandboxOn
-	sb, _, err := node.OpenSandbox(ctx, c, &sandbox.Podman{}, version.Resolved(), logger.Printf)
+	sb, _, err := node.OpenSandbox(ctx, c, nodeRunSandboxRuntime, version.Resolved(), logger.Printf)
 	if err != nil {
 		return nil, fmt.Errorf("mesh node run: --sandbox: %w", err)
 	}
@@ -472,7 +493,7 @@ func init() {
 	f.StringVar(&nodeRunCacheDir, "cache-dir", "", "with --cache-trim, the Go build cache (default `go env GOCACHE`)")
 	f.Float64Var(&nodeRunCacheMaxGB, "cache-max-gb", 50, "with --cache-trim, the build cache's cap in GB")
 	f.BoolVar(&nodeRunSelfUpdate, "self-update", false, "keep the node on the newest release: drain, hand back node_update what still runs after 30 minutes, install the verified release and exit for the service manager to restart it")
-	f.BoolVar(&nodeRunRelaySidecar, "relay-sidecar", false, "with --sandbox, run each lease's relay as a sidecar in its pod on the lease's credentials alone, the pod with no network but its loopback (projectmesh-io/api ADR 001 amendment \"relay sidecar\")")
+	f.BoolVar(&nodeRunRelaySidecar, "relay-sidecar", false, "with --sandbox, run each lease's relay as a sidecar in its pod on the lease's credentials alone, the pod with no network but its loopback (projectmesh-io/api ADR 001 amendment \"relay sidecar\"); defaults on with --sandbox, since a lease with no sidecar cannot be adopted across a restart -- pass --relay-sidecar=false to run one unadoptable")
 	f.BoolVar(&nodeRunSandbox, "sandbox", false, "with --actors, run each lease's session and its services (the checkout's .mesh/services.yml and the brief's pods) in a rootless podman pod of the lease's own, on node.yaml's sandbox settings and the brief's CPUs and memory; the relay is reached only through the lease's socket")
 	_ = nodeRunCmd.MarkFlagRequired("api")
 	nodeCmd.AddCommand(nodeRunCmd)
