@@ -491,13 +491,16 @@ const podmanExitFailedToRun = 125
 // The run's own stderr (its last 8KB, as sandbox.go's own tail) is kept
 // to classify a failure, but only when podman itself is the one that
 // failed: its own exit of 125, or no run at all (no *exec.ExitError).
-// Then, and only then, its words for a rootless store or user namespace
-// it could not open (validate.IsRuntimeBroken) make it the runtime's
-// own failure, a *RuntimeError, never the agent's. An agent command
-// that exits on its own — 125 among them, podman's or not — is read
-// from its exit code alone: its stderr is never searched for runtime
-// words, so an agent's own non-zero exit is never mistaken for the
-// runtime breaking under it.
+// Then, and only then, its words for a cache mount's overlay type the
+// host's kernel or storage driver does not have
+// (IsOverlayMountUnsupported) make it a *CacheMountUnsupportedError,
+// and its words for a rootless store or user namespace it could not
+// open (validate.IsRuntimeBroken) make it the runtime's own failure, a
+// *RuntimeError — neither the agent's. An agent command that exits on
+// its own — 125 among them, podman's or not — is read from its exit
+// code alone: its stderr is never searched for runtime words, so an
+// agent's own non-zero exit is never mistaken for the runtime breaking
+// under it.
 func (p *Podman) RunAgent(ctx context.Context, pod Pod, spec AgentSpec) (Exit, error) {
 	tail := &tailBuffer{max: 8 << 10}
 	stderr := io.Writer(tail)
@@ -515,8 +518,14 @@ func (p *Podman) RunAgent(ctx context.Context, pod Pod, spec AgentSpec) (Exit, e
 		return Exit{}, &RuntimeError{Op: "agent run", Err: err}
 	}
 	exit := Exit{Code: ee.ExitCode()}
-	if exit.Code == podmanExitFailedToRun && validate.IsRuntimeBroken(tail.String()) {
-		return Exit{}, &RuntimeError{Op: "agent run", Err: errors.New(strings.TrimSpace(tail.String()))}
+	if exit.Code == podmanExitFailedToRun {
+		msg := strings.TrimSpace(tail.String())
+		switch {
+		case IsOverlayMountUnsupported(msg):
+			return Exit{}, &CacheMountUnsupportedError{Op: "agent run", Err: errors.New(msg)}
+		case validate.IsRuntimeBroken(msg):
+			return Exit{}, &RuntimeError{Op: "agent run", Err: errors.New(msg)}
+		}
 	}
 	if exit.Code == 137 {
 		if out, ierr := p.output(context.WithoutCancel(ctx), []string{"inspect", "--format", "{{.State.OOMKilled}}", spec.Name}, nil); ierr == nil {
@@ -531,13 +540,18 @@ func (p *Podman) RunAgent(ctx context.Context, pod Pod, spec AgentSpec) (Exit, e
 // the container's values for its `--env NAME`s. It returns once podman
 // has started the container.
 //
-// A refusal for the rootless store or the user namespace
-// (validate.IsRuntimeBroken) is the runtime's own failure, a
-// *RuntimeError, never the agent's.
+// A refusal for a cache mount's overlay type the host's kernel or
+// storage driver does not have (IsOverlayMountUnsupported) is a
+// *CacheMountUnsupportedError; a refusal for the rootless store or the
+// user namespace (validate.IsRuntimeBroken) is the runtime's own
+// failure, a *RuntimeError — neither the agent's.
 func (p *Podman) StartAgent(ctx context.Context, pod Pod, spec AgentSpec) error {
 	var errb bytes.Buffer
 	if err := p.run(ctx, StartAgentArgs(pod, spec), AgentProcessEnv(os.Environ(), spec), nil, io.Discard, &errb); err != nil {
 		msg := strings.TrimSpace(errb.String())
+		if IsOverlayMountUnsupported(msg) {
+			return &CacheMountUnsupportedError{Op: "agent start", Err: errors.New(msg)}
+		}
 		if validate.IsRuntimeBroken(msg) {
 			return &RuntimeError{Op: "agent start", Err: errors.New(msg)}
 		}
