@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"projectmesh.io/mesh-cli/internal/node"
+	"projectmesh.io/mesh-cli/internal/nodev1"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/selfupdate"
 	"projectmesh.io/mesh-cli/internal/version"
@@ -68,8 +69,12 @@ A Mesh v1 node (` + "`mesh node run --api v1`" + `) is restarted the same way, b
 SIGHUP to its own pidfile: every lease it holds is left running untouched,
 its brief, sidecar, push heads and turn ledger written to
 leases/<id>/handoff.json for the new process to adopt (adr-044); nothing
-is drained. With both a legacy and a v1 node running as this user, --api
-says which.`,
+is drained. A lease the hand-off cannot adopt — one with no relay
+sidecar, or one whose tunnel intercepts — refuses the upgrade, naming
+it, unless --force; once restarted, the command reports how many of
+the leases left running the new process's own status says it adopted,
+and exits non-zero if fewer than that arrived. With both a legacy and
+a v1 node running as this user, --api says which.`,
 	Args:         cobra.NoArgs,
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -141,6 +146,7 @@ func defaultNodeUpgradeV1(out io.Writer, run node.RunState) (*nodeUpgrade, error
 	u.Service = v1Service{}
 	u.Sandboxed = nil
 	u.KillMode = nil
+	u.V1Status = func() (nodev1.Status, bool) { return readV1Status(run) }
 	return u, nil
 }
 
@@ -217,8 +223,27 @@ type nodeUpgrade struct {
 	// ConfirmWithin is node.yaml's update.confirm_within, as the output
 	// names it; zero is selfupdate.DefaultConfirmWithin.
 	ConfirmWithin time.Duration
-	Out           io.Writer
+	// V1Status is the Mesh v1 node's own status (nodev1state.go's
+	// readV1Status); nil for a legacy-node upgrade, which has no leases
+	// to ask about. Read once before the swap to refuse an unadoptable
+	// lease (adr-044's hand-off never picks one up) and polled after the
+	// restart to report how many of the adoptable leases the new
+	// process actually adopted.
+	V1Status func() (nodev1.Status, bool)
+	// V1AdoptPoll is how often V1Status is polled after the restart;
+	// zero is defaultV1AdoptPoll.
+	V1AdoptPoll time.Duration
+	// V1AdoptTimeout bounds that poll; zero is defaultV1AdoptTimeout.
+	V1AdoptTimeout time.Duration
+	Out            io.Writer
 }
+
+// defaultV1AdoptPoll and defaultV1AdoptTimeout are run's defaults for
+// polling the new process's status after a v1 node's restart.
+const (
+	defaultV1AdoptPoll    = 200 * time.Millisecond
+	defaultV1AdoptTimeout = 30 * time.Second
+)
 
 func defaultNodeUpgrade(out io.Writer) (*nodeUpgrade, error) {
 	exe, err := node.Executable()
@@ -261,6 +286,25 @@ func (u *nodeUpgrade) run(ctx context.Context, want, binary string, force bool) 
 	}
 	if want != "" && binary != "" {
 		return errors.New("--version and --binary are either-or")
+	}
+	var beforePID int
+	var adoptableBefore int
+	if u.V1Status != nil {
+		if before, ok := u.V1Status(); ok {
+			beforePID = before.PID
+			var unadoptable []string
+			for _, l := range before.Leases {
+				if l.Adoptable {
+					adoptableBefore++
+				} else {
+					unadoptable = append(unadoptable, fmt.Sprintf("%s (job %s)", l.LeaseID, l.JobID))
+				}
+			}
+			if len(unadoptable) > 0 && !force {
+				return fmt.Errorf("the restart's hand-off cannot adopt %d lease(s) with no relay sidecar or whose tunnel intercepts: %s; --force restarts anyway, ending them",
+					len(unadoptable), strings.Join(unadoptable, ", "))
+			}
+		}
 	}
 	if u.Sandboxed != nil && u.Sandboxed() && !force {
 		// a sandboxed session's pod outlives the node when its unit signals
@@ -331,6 +375,11 @@ func (u *nodeUpgrade) run(ctx context.Context, want, binary string, force bool) 
 	if err := u.Service.Restart(ctx, u.Run, u.Out); err != nil {
 		return fmt.Errorf("%s is in place, but the node was not restarted: %w", want, err)
 	}
+	if u.V1Status != nil && adoptableBefore > 0 {
+		if err := u.reportAdoption(ctx, beforePID, adoptableBefore); err != nil {
+			return err
+		}
+	}
 	within := u.ConfirmWithin
 	if within <= 0 {
 		within = selfupdate.DefaultConfirmWithin
@@ -339,6 +388,42 @@ func (u *nodeUpgrade) run(ctx context.Context, want, binary string, force bool) 
 		"A binary that cannot run, or cannot confirm inside the window on %d starts, is rolled back to %s and ~/.mesh/update.json says why.\n",
 		within, node.ServiceLog("~"), selfupdate.MaxStarts, selfupdate.PrevPath(exe))
 	return nil
+}
+
+// reportAdoption polls V1Status until the restarted process has
+// published a status of its own (a different pid than beforePID) or
+// V1AdoptTimeout elapses, then prints how many of the adoptableBefore
+// leases the new process's hand-off adoption actually picked up
+// (adopt.go's adoptOne); fewer than expected, or a timeout with no new
+// status ever seen, is reported as a failure, not silently.
+func (u *nodeUpgrade) reportAdoption(ctx context.Context, beforePID, adoptableBefore int) error {
+	poll := u.V1AdoptPoll
+	if poll <= 0 {
+		poll = defaultV1AdoptPoll
+	}
+	timeout := u.V1AdoptTimeout
+	if timeout <= 0 {
+		timeout = defaultV1AdoptTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		if st, ok := u.V1Status(); ok && st.PID != beforePID {
+			adopted := len(st.Leases)
+			fmt.Fprintf(u.Out, "The new process (pid %d) adopted %d of %d lease(s) left running.\n", st.PID, adopted, adoptableBefore)
+			if adopted < adoptableBefore {
+				return fmt.Errorf("the new process adopted only %d of %d lease(s) left running", adopted, adoptableBefore)
+			}
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("the new process did not report adopting the %d lease(s) left running within %s", adoptableBefore, timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(poll):
+		}
+	}
 }
 
 // killMode is the node's unit's KillMode, when a systemd unit runs it.

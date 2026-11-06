@@ -56,6 +56,13 @@ type LeaseStatus struct {
 	JobID   string    `json:"job_id"`
 	Kind    string    `json:"kind"`
 	Since   time.Time `json:"since"`
+	// Adoptable is whether a restart's hand-off (handoff.go's Upgrade,
+	// adopt.go's adoptOne) could pick this lease back up: false for one
+	// with no relay sidecar to adopt (plain sessionproxy mode,
+	// sidecarDir == "") or one whose tunnel terminates TLS on a CA this
+	// process alone holds (intercepts), both handed back node_update
+	// instead rather than left running for a later process.
+	Adoptable bool `json:"adoptable"`
 }
 
 // Drain is the operator's drain: the node takes no new lease, asks Mesh
@@ -262,7 +269,8 @@ func (r *Runtime) Status() Status {
 		s.HandBackAt = &t
 	}
 	for _, e := range r.leases.All() {
-		s.Leases = append(s.Leases, LeaseStatus{LeaseID: e.ID, JobID: e.Value.jobID, Kind: e.Value.kind, Since: e.Value.started.UTC()})
+		adoptable := e.Value.sidecarDir != "" && !e.Value.intercepts
+		s.Leases = append(s.Leases, LeaseStatus{LeaseID: e.ID, JobID: e.Value.jobID, Kind: e.Value.kind, Since: e.Value.started.UTC(), Adoptable: adoptable})
 	}
 	sort.Slice(s.Leases, func(i, j int) bool { return s.Leases[i].Since.Before(s.Leases[j].Since) })
 	return s
