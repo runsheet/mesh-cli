@@ -137,9 +137,18 @@ func (m *Mirrors) Sync(ctx context.Context, key MirrorKey, origin string) (strin
 			return "", fmt.Errorf("resources: making the mirror: %v: %s", err, out)
 		}
 	}
-	// the URL is named here, never stored: the mirror has no remote
-	if out, err := m.git(ctx, dir, "fetch", "-q", "--prune", "--no-tags", origin, "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"); err != nil {
+	// the URL is named here, never stored: the mirror has no remote. The
+	// -c comes last among any global config (GitArgs' included), so it
+	// wins and the fetch never reads a commit-graph already there to
+	// negotiate with, however it got there; --no-write-commit-graph is
+	// fetch's own flag, since -c fetch.writeCommitGraph=false can still
+	// lose to a later --write-commit-graph were one ever added to
+	// GitArgs. Together the mirror writes none of its own.
+	if out, err := m.git(ctx, dir, "-c", "core.commitGraph=false", "fetch", "-q", "--prune", "--no-tags", "--no-write-commit-graph", origin, "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"); err != nil {
 		return "", fmt.Errorf("resources: syncing the mirror: %v: %s", err, lastLine(out))
+	}
+	if err := shedCommitGraph(dir); err != nil {
+		return "", fmt.Errorf("resources: shedding the mirror's commit-graph: %v", err)
 	}
 	now := time.Now
 	if m.Now != nil {
@@ -147,6 +156,61 @@ func (m *Mirrors) Sync(ctx context.Context, key MirrorKey, origin string) (strin
 	}
 	_ = os.WriteFile(filepath.Join(dir, usedFile), []byte(now().UTC().Format(time.RFC3339)+"\n"), 0o600)
 	return dir, nil
+}
+
+// commitGraphPaths are what git's commit-graph feature can leave in a
+// bare repository: a single file, or — once split — a chain of them
+// under a directory of their own. A mirror is read only by a checkout
+// borrowing its objects through --reference, so a commit-graph there
+// that is corrupt, or merely stale against a history --prune rewrote,
+// can fail every one of those checkouts, not only a read of the mirror
+// itself (goal a-bad-mirror-never-stops-a-checkout).
+func commitGraphPaths(dir string) []string {
+	info := filepath.Join(dir, "objects", "info")
+	return []string{
+		filepath.Join(info, "commit-graph"),
+		filepath.Join(info, "commit-graphs"),
+	}
+}
+
+// shedCommitGraph removes any commit-graph Sync finds in dir — left by
+// a node run before this config existed, or by anything else than the
+// fetch above, which asks for none.
+func shedCommitGraph(dir string) error {
+	for _, p := range commitGraphPaths(dir) {
+		if err := os.RemoveAll(p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SetAside renames key's mirror out of Sync's way and answers where it
+// went, "" when there was none. The next Sync for key finds no HEAD at
+// the original path and makes a fresh mirror there: a mirror Sync or a
+// checkout found untrustworthy is set aside rather than repaired in
+// place, and left for inspection — SetAside removes nothing.
+func (m *Mirrors) SetAside(key MirrorKey) (string, error) {
+	dir, err := m.Dir(key)
+	if err != nil {
+		return "", err
+	}
+	defer m.lock(dir)()
+	if _, err := os.Stat(dir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", err
+	}
+	now := time.Now
+	if m.Now != nil {
+		now = m.Now
+	}
+	aside := dir + ".bad-" + now().UTC().Format("20060102T150405.000000000Z")
+	if err := os.Rename(dir, aside); err != nil {
+		return "", err
+	}
+	return aside, nil
 }
 
 // Trim removes every mirror no lease has used for unusedFor and answers
