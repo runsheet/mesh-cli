@@ -123,6 +123,92 @@ func TestPodMountsScopeCacheByTenant(t *testing.T) {
 	}
 }
 
+// TestCacheMountProbeRefusedTurnsOffTenantOverlays proves goal
+// the-warm-cache-mounts-on-the-nodes-podman, item 2: a refused probe
+// runs once, logs "cache mount off" once, and from then on every
+// lease's pod gets no tenant cache overlay (and no tenant cache env)
+// while still keeping its GOCACHE mount — never held back for it.
+func TestCacheMountProbeRefusedTurnsOffTenantOverlays(t *testing.T) {
+	rt := testRuntime(t)
+	var logs []string
+	rt.Logf = func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+		t.Logf(format, args...)
+	}
+	calls := 0
+	rt.CacheMountProbe = func(context.Context) (bool, error) {
+		calls++
+		return true, nil
+	}
+
+	rt.probeCacheMountOnce(context.Background())
+	rt.probeCacheMountOnce(context.Background())
+	rt.probeCacheMountOnce(context.Background())
+
+	if calls != 1 {
+		t.Fatalf("CacheMountProbe called %d times, want exactly once", calls)
+	}
+	if !rt.cacheMountIsOff() {
+		t.Fatal("cacheMountIsOff() is false after a refused probe")
+	}
+	var off int
+	for _, l := range logs {
+		if l == "nodev1: cache mount off" {
+			off++
+		}
+	}
+	if off != 1 {
+		t.Fatalf(`"cache mount off" logged %d times, want exactly once; logs: %v`, off, logs)
+	}
+
+	ws := t.TempDir()
+	if out, err := exec.Command("git", "-C", ws, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
+	}
+	for i, leaseID := range []string{"lease-1", "lease-2"} {
+		lp := openTestLeasePod(t, rt, "acme", leaseID, ws)
+		for _, m := range lp.sess.Mounts(ws) {
+			if m.Overlay {
+				t.Fatalf("lease %d still got an overlay mount with cache mount off: %+v", i, m)
+			}
+		}
+		var gocache string
+		for _, e := range lp.sess.Env(nil) {
+			if strings.HasPrefix(e, "GOMODCACHE=") || strings.HasPrefix(e, "npm_config_cache=") || strings.HasPrefix(e, "pnpm_config_store_dir=") {
+				t.Fatalf("lease %d still got tenant cache env with cache mount off: %q", i, e)
+			}
+			if strings.HasPrefix(e, "GOCACHE=") {
+				gocache = e
+			}
+		}
+		if gocache == "" {
+			t.Fatalf("lease %d lost its GOCACHE mount when cache mount went off", i)
+		}
+	}
+}
+
+// TestCacheMountProbeErrorLeavesCacheMountOn proves a probe error that
+// is not the overlay refusal changes nothing: it is logged, run once,
+// and tenant cache overlays stay on for leases to attempt themselves.
+func TestCacheMountProbeErrorLeavesCacheMountOn(t *testing.T) {
+	rt := testRuntime(t)
+	calls := 0
+	rt.CacheMountProbe = func(context.Context) (bool, error) {
+		calls++
+		return false, fmt.Errorf("boom")
+	}
+
+	rt.probeCacheMountOnce(context.Background())
+	rt.probeCacheMountOnce(context.Background())
+
+	if calls != 1 {
+		t.Fatalf("CacheMountProbe called %d times, want exactly once", calls)
+	}
+	if rt.cacheMountIsOff() {
+		t.Fatal("cacheMountIsOff() is true after a probe error that was not a refusal")
+	}
+}
+
 func TestBuildCacheMountSharedAcrossTenants(t *testing.T) {
 	rt := testRuntime(t)
 	wsA := t.TempDir()

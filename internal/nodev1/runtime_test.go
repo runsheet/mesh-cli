@@ -313,6 +313,31 @@ func TestRunTakesALeaseRunsOneSessionAndFinishes(t *testing.T) {
 	}
 }
 
+// A node whose runtime refuses a cache's overlay mount still finishes
+// its leases: probeCacheMountOnce (cachemount.go) turns tenant cache
+// overlays off for the rest of the process rather than holding any
+// lease back for it (goal the-warm-cache-mounts-on-the-nodes-podman,
+// item 2).
+func TestARefusedCacheMountNeverHoldsALeaseBack(t *testing.T) {
+	sess := &stubSession{
+		calls:  []string{"conform/brief", "conform/submit"},
+		result: SessionResult{SessionID: "sess-cache", Text: "submitted"},
+	}
+	g := newRig(t, sess)
+	g.rt.CacheMountProbe = func(context.Context) (bool, error) { return true, nil }
+	job := g.offer(t, nil)
+	if err := run(t, g, context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	lease := g.fake.LeaseOf(job)
+	if g.fake.Ended(lease) != "finish" {
+		t.Fatalf("lease %s ended %q; hand-backs %v", lease, g.fake.Ended(lease), g.fake.Calls("hand-back"))
+	}
+	if !g.rt.cacheMountIsOff() {
+		t.Fatal("cacheMountIsOff() is false after the refused probe")
+	}
+}
+
 func basicAuth(tok string) string {
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+tok))
 }

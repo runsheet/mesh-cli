@@ -197,6 +197,13 @@ type Runtime struct {
 	// keyed by content and safe to share; "" defaults to
 	// WorkRoot/build-cache at first use (cachemount.go).
 	BuildCache string
+	// CacheMountProbe, set, replaces probeCacheMountOnce's own check of
+	// whether the runtime's `--mount type=overlay` is refused
+	// (*sandbox.CacheMountUnsupportedError, cachemount.go) — for tests.
+	// refused true turns off every tenant cache overlay for the rest of
+	// this process's leases; nil runs the real probe against Sandbox,
+	// or none at all with no Sandbox.
+	CacheMountProbe func(ctx context.Context) (refused bool, err error)
 	// Updater, when set, keeps the node on the newest release (PR 3.4;
 	// `--self-update`): every UpdateEvery (10 minutes) it looks, and a
 	// newer release drains the node, waits DrainWait (30 minutes) for
@@ -277,6 +284,14 @@ type Runtime struct {
 	// noteHostGate logs only a crossing, never the same state twice
 	hostGateReason string
 	drain          bool
+	// cacheMountProbed and cacheMountOff are probeCacheMountOnce's own
+	// state (cachemount.go): probed guards the one-time check, off is
+	// true once the runtime's `--mount type=overlay` is found refused,
+	// after which leaseCacheMounts builds no tenant cache overlay for
+	// any lease of this process (goal
+	// the-warm-cache-mounts-on-the-nodes-podman).
+	cacheMountProbed bool
+	cacheMountOff    bool
 	// drained closes when the node drains, waking a take or a wait for a
 	// slot; drainSince, drainReason and handBackAt are the drain as
 	// `mesh node status` shows it, askedDrain says the operator's drain
@@ -498,6 +513,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 		path := r.SandboxLimitsConfigPath
 		go r.WatchSandboxLimits(hbCtx, func() (sandbox.Limits, bool, error) { return ReadSandboxLimitsConfig(path) }, r.SandboxLimitsPoll, r.SandboxLimitsReload)
 	}
+	r.probeCacheMountOnce(ctx)
 
 	var leases sync.WaitGroup
 	defer leases.Wait()
