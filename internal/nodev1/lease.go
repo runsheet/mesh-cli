@@ -996,11 +996,17 @@ func (r *Runtime) handBack(id, cause, reason, sessionRef string) {
 }
 
 // handBackExit is handBack carrying the exit code (137, 143) the
-// session, its pod or a step was killed with; 0 is none.
+// session, its pod or a step was killed with; 0 is none. Not every
+// hand-back path logs its reason before calling this (a cause the
+// code does not otherwise classify, like cannot_run found while
+// preparing the lease, names it nowhere else): the success line below
+// always carries it, so the node's own log never has a hand-back with
+// no reason to show for it.
 func (r *Runtime) handBackExit(id, cause, reason, sessionRef string, exitCode int) {
 	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
 	defer cancel()
-	st, err := r.API.HandBack(ctx, id, meshapi.HandBackRequest{Cause: cause, Reason: clip(r.redact(reason), maxReason), SessionRef: sessionRef, ExitCode: exitCode})
+	clipped := clip(r.redact(reason), maxReason)
+	st, err := r.API.HandBack(ctx, id, meshapi.HandBackRequest{Cause: cause, Reason: clipped, SessionRef: sessionRef, ExitCode: exitCode})
 	if err != nil && meshapi.LeaseGone(err) {
 		r.logf("nodev1: lease %s was no longer the node's to hand back (%s)", id, cause)
 		return
@@ -1009,7 +1015,7 @@ func (r *Runtime) handBackExit(id, cause, reason, sessionRef string, exitCode in
 		r.logf("nodev1: lease %s: hand-back (%s): %v", id, cause, err)
 		return
 	}
-	r.logf("nodev1: lease %s handed back (%s); job %s is %s", id, cause, st.JobID, st.Status)
+	r.logf("nodev1: lease %s handed back (%s): %s; job %s is %s", id, cause, clip(clipped, 200), st.JobID, st.Status)
 }
 
 // usageOf is what the session spent — summed, by model, and the
