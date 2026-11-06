@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/actor"
@@ -197,6 +198,16 @@ type Runtime struct {
 	// keyed by content and safe to share; "" defaults to
 	// WorkRoot/build-cache at first use (cachemount.go).
 	BuildCache string
+	// cacheMountOff is set, once probeCacheMountOnce finds the node's
+	// cache mount refused, so every lease after skips leaseCacheMounts'
+	// overlays and GOCACHE mount rather than retrying per lease; "cache
+	// mount off" logs exactly once (CompareAndSwap, cachemount.go).
+	cacheMountOff atomic.Bool
+	// probeCacheMount, when set, replaces probeCacheMountOnce's real
+	// sandbox.ProbeCacheMount call — only this package's tests point it
+	// at a deterministic fake; no build or configuration can
+	// (cachemount.go, as federationHTTP/federationCheck above).
+	probeCacheMount func(ctx context.Context) error
 	// Updater, when set, keeps the node on the newest release (PR 3.4;
 	// `--self-update`): every UpdateEvery (10 minutes) it looks, and a
 	// newer release drains the node, waits DrainWait (30 minutes) for
@@ -435,6 +446,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	if r.Pods != nil && r.Sandbox == nil {
 		r.Sandbox = r.Pods.Runtime
 	}
+	r.probeCacheMountOnce(ctx)
 	r.relay = &gitrelay.Server{Upstream: r.GitUpstream, HTTP: r.GitHTTP, Audit: r.audit}
 	if err := r.relay.Start(ctx); err != nil {
 		return fmt.Errorf("nodev1: the git relay: %w", err)

@@ -220,6 +220,51 @@ func TestASandboxedLeaseRunsItsSessionAndServicesInItsPod(t *testing.T) {
 	assertReleased(t, g, job)
 }
 
+// TestCacheMountRefusalDoesNotHoldBackALease is acceptance check 2
+// (goal a-v1-lease-starts-from-a-warm-cache, item 2): a full lease run
+// end to end on a fake sandbox runtime whose cache mount probe is
+// refused is not held back by it — it starts with no tenant cache
+// mount and no cache env var, and reaches a normal finish, never a
+// hand-back or cannot_run.
+func TestCacheMountRefusalDoesNotHoldBackALease(t *testing.T) {
+	g, sb, _ := podRig(t)
+	g.rt.probeCacheMount = func(context.Context) error {
+		return errors.New(`invalid filesystem type "overlay"`)
+	}
+	out := filepath.Join(t.TempDir(), "claude")
+	sb.Agent = hostAgent(t, out, "")
+	job := g.offer(t, func(b *meshapi.Brief) {
+		// a kind with no finish tool finishes on the session's end, as
+		// TestASandboxedLeaseRunsItsSessionAndServicesInItsPod's does
+		b.FinishTool, b.FinishSchema = "", nil
+	})
+	run(t, g, context.Background())
+
+	if n := len(g.fake.Calls("finish")); n != 1 {
+		t.Fatalf("%d finishes; hand-backs %+v", n, g.fake.Calls("hand-back"))
+	}
+	if !g.rt.cacheMountOff.Load() {
+		t.Fatalf("the probe's refusal did not turn the cache mount off")
+	}
+
+	agents := sb.AgentSpecs()
+	if len(agents) != 1 {
+		t.Fatalf("agents %+v", agents)
+	}
+	for _, m := range agents[0].Mounts {
+		if m.Overlay {
+			t.Errorf("a tenant cache overlay mount reached the pod after the probe refused: %+v", m)
+		}
+	}
+	env := strings.Join(agents[0].Env, "\n")
+	for _, want := range []string{"GOMODCACHE=", "npm_config_cache=", "pnpm_config_store_dir=", "GOCACHE="} {
+		if strings.Contains(env, want) {
+			t.Errorf("cache env var %q reached the pod after the probe refused:\n%s", want, env)
+		}
+	}
+	assertReleased(t, g, job)
+}
+
 // adr-044's closing paragraph: a lease's agent's real stdin and stdout
 // are files under the lease's own directory, not the node's own pipes
 // — a named pipe for stdin, a plain file for stdout — so the node

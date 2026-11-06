@@ -12,6 +12,7 @@ package nodev1
 // whose source is the same for every tenant's every lease.
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,6 +28,10 @@ import (
 // made is logged and left out — a cold cache, never a reason to refuse
 // the lease.
 func (r *Runtime) leaseCacheMounts(b *meshapi.Brief, leaseDir string) ([]sandbox.Mount, []string) {
+	if r.cacheMountOff.Load() {
+		return nil, nil
+	}
+
 	var mounts []sandbox.Mount
 	var env []string
 
@@ -83,4 +88,51 @@ func (r *Runtime) overlayMount(leaseDir, name, source string) (sandbox.Mount, er
 		}
 	}
 	return sandbox.Mount{Source: source, Target: source, Overlay: true, Upper: upper, Work: work}, nil
+}
+
+// probeCacheMountOnce checks, once per runtime, whether the node's
+// cache mount actually works (ProbeCacheMount): never per lease, and
+// never a reason to hold a lease back, only to decide what
+// leaseCacheMounts offers every lease after. r.Sandbox nil (no pods)
+// skips it, there being no pod to mount into. A refusal is logged once
+// ("cache mount off", cacheMountOff sticky for the runtime's life) and
+// turns leaseCacheMounts into a no-op from then on; a pass leaves the
+// cache mounts in force.
+func (r *Runtime) probeCacheMountOnce(ctx context.Context) {
+	if r.Sandbox == nil || r.cacheMountOff.Load() {
+		return
+	}
+	probe := r.probeCacheMount
+	if probe == nil {
+		probe = r.realProbeCacheMount
+	}
+	if err := probe(ctx); err != nil {
+		if r.cacheMountOff.CompareAndSwap(false, true) {
+			r.logf("nodev1: cache mount off: %v", err)
+		}
+	}
+}
+
+// realProbeCacheMount is probeCacheMountOnce's default: a throwaway
+// lower/upper/work/merged under WorkRoot, removed after, through
+// sandbox.ProbeCacheMount against r.Sandbox and r.PodImage.
+func (r *Runtime) realProbeCacheMount(ctx context.Context) error {
+	base, err := os.MkdirTemp(r.WorkRoot, "cache-probe-*")
+	if err != nil {
+		return fmt.Errorf("nodev1: cache mount probe: %w", err)
+	}
+	defer os.RemoveAll(base)
+	lower := filepath.Join(base, "lower")
+	upper := filepath.Join(base, "upper")
+	work := filepath.Join(base, "work")
+	merged := filepath.Join(base, "merged")
+	for _, dir := range []string{lower, upper, work, merged} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("nodev1: cache mount probe: %w", err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(lower, "lower.txt"), []byte("probe"), 0o600); err != nil {
+		return fmt.Errorf("nodev1: cache mount probe: %w", err)
+	}
+	return sandbox.ProbeCacheMount(ctx, r.Sandbox, r.PodImage, lower, upper, work, merged)
 }

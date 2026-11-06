@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -181,5 +182,78 @@ func TestBuildCacheMountSharedAcrossTenants(t *testing.T) {
 	}
 	if envA != envB {
 		t.Fatalf("GOCACHE differs across tenants: %q vs %q", envA, envB)
+	}
+}
+
+// TestCacheMountProbedOnceAndDisabledOnRefusal is acceptance check 1:
+// a fake runtime whose cache mount is refused is probed exactly once
+// across several leases, the refusal logged exactly once, and every
+// lease after it gets no cache mount and no cache env var.
+func TestCacheMountProbedOnceAndDisabledOnRefusal(t *testing.T) {
+	rt := testRuntime(t)
+	rt.Sandbox = rt.Pods.Runtime
+
+	var calls int
+	refusal := fmt.Errorf("invalid filesystem type \"overlay\"")
+	rt.probeCacheMount = func(context.Context) error {
+		calls++
+		return refusal
+	}
+
+	var logsMu sync.Mutex
+	var logs []string
+	rt.Logf = func(format string, args ...any) {
+		logsMu.Lock()
+		defer logsMu.Unlock()
+		logs = append(logs, fmt.Sprintf(format, args...))
+	}
+
+	ctx := context.Background()
+	leases := []struct{ tenant, lease string }{
+		{"acme", "lease-1"},
+		{"acme", "lease-2"},
+		{"globex", "lease-3"},
+	}
+	for range leases {
+		rt.probeCacheMountOnce(ctx)
+	}
+
+	if calls != 1 {
+		t.Fatalf("probeCacheMount called %d times across %d leases, want exactly 1", calls, len(leases))
+	}
+
+	logsMu.Lock()
+	var offLines int
+	for _, l := range logs {
+		if strings.Contains(l, "cache mount off") {
+			offLines++
+		}
+	}
+	logsMu.Unlock()
+	if offLines != 1 {
+		t.Fatalf("\"cache mount off\" logged %d times, want exactly 1 (logs: %v)", offLines, logs)
+	}
+
+	if !rt.cacheMountOff.Load() {
+		t.Fatalf("cacheMountOff not set after a refused probe")
+	}
+
+	for _, l := range leases {
+		leaseDir := rt.leaseDir(l.lease)
+		mounts, env := rt.leaseCacheMounts(&meshapi.Brief{Tenant: l.tenant, LeaseID: l.lease}, leaseDir)
+		if len(mounts) != 0 {
+			t.Fatalf("lease %s/%s got %d cache mount(s) after the probe refused: %+v", l.tenant, l.lease, len(mounts), mounts)
+		}
+		if len(env) != 0 {
+			t.Fatalf("lease %s/%s got %d cache env var(s) after the probe refused: %+v", l.tenant, l.lease, len(env), env)
+		}
+	}
+
+	// A second probe after the first finds the runtime already off:
+	// still exactly one call, since the first already answered for the
+	// runtime's life.
+	rt.probeCacheMountOnce(ctx)
+	if calls != 1 {
+		t.Fatalf("probeCacheMount called again (%d) once the runtime was already off", calls)
 	}
 }
