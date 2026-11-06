@@ -161,7 +161,11 @@ func (r *Runtime) openLeasePod(ctx context.Context, b *meshapi.Brief, workspace 
 	sess.SetLimits(limitsOf(b.Resources))
 	cacheMounts, cacheEnv := r.leaseCacheMounts(b, sb.TempDir)
 	for _, m := range cacheMounts {
-		sess.ShareMount("tenant cache", m)
+		label := tenantCacheMount
+		if !m.Overlay {
+			label = buildCacheMount
+		}
+		sess.ShareMount(label, m)
 	}
 	sess.SetExtraEnv(cacheEnv)
 	closeSess := func() error {
@@ -311,6 +315,46 @@ func (p *leasePod) podServers(servers map[string]any, sockDir string) (map[strin
 	return out, nil
 }
 
+// tenantCacheMount and buildCacheMount are openLeasePod's ShareMount
+// labels for a lease's cache mounts (cachemount.go): tenantCacheMount
+// the tenant's gomod, npm and pnpm overlays, buildCacheMount the one
+// plain GOCACHE mount every tenant's every lease shares. Split so
+// runAgentRetryingCache can drop the tenant cache alone on its retry,
+// never the build cache, which no runtime refuses an overlay for.
+const (
+	tenantCacheMount = "tenant cache"
+	buildCacheMount  = "build cache"
+)
+
+// tenantCacheEnv are the environment variables leaseCacheMounts sets
+// for the tenant cache alone (cachemount.go's overlays' envVar), never
+// GOCACHE: dropped together with tenantCacheMount on the one retry
+// runAgentRetryingCache makes.
+var tenantCacheEnv = []string{"GOMODCACHE", "npm_config_cache", "pnpm_config_store_dir"}
+
+// runAgentRetryingCache runs the pod's agent (sess.RunAgent) and, when
+// the runtime refuses the tenant cache's overlay mount
+// (*sandbox.CacheMountUnsupportedError — never a *sandbox.RuntimeError,
+// which already stops the node claiming on its own), retries exactly
+// once with the tenant cache's mounts and environment dropped, the
+// lease's shared build cache mount left in place: a refusal specific to
+// this lease's mount content, or a race with the node's own start-up
+// probe (cachemount.go, probeCacheMountOnce), costs this one lease a
+// retry rather than a hand-back as though it could not run at all
+// (goal the-warm-cache-mounts-on-the-nodes-podman, item 3). A second
+// failure, of any kind, is returned exactly as RunAgent gave it: no new
+// cause, no further retry.
+func (p *leasePod) runAgentRetryingCache(ctx context.Context, spec sandbox.RunSpec) error {
+	err := p.sess.RunAgent(ctx, spec)
+	var unsupported *sandbox.CacheMountUnsupportedError
+	if !errors.As(err, &unsupported) {
+		return err
+	}
+	p.sess.DropMounts(tenantCacheMount)
+	p.sess.DropEnv(tenantCacheEnv...)
+	return p.sess.RunAgent(ctx, spec)
+}
+
 // run is the lease's PodRun: the session's process in the pod, as its
 // agent. The session's variables the pod's allow-list admits (the
 // model's credential, the commit identity) go in as the job's; the rest
@@ -349,7 +393,7 @@ func (p *leasePod) run(workspace, gitBase, sock string, model bool) (PodRun, err
 			vars = append(vars, p.registryEnv...)
 		}
 		return runWithAgentIO(ctx, p.dir, stdin, stdout, func(stdin, stdout *os.File) error {
-			return p.sess.RunAgent(ctx, sandbox.RunSpec{Workspace: workspace, Env: jobEnv, Vars: vars, Command: cmd, Stdin: stdin, Stdout: stdout, Stderr: stderr})
+			return p.runAgentRetryingCache(ctx, sandbox.RunSpec{Workspace: workspace, Env: jobEnv, Vars: vars, Command: cmd, Stdin: stdin, Stdout: stdout, Stderr: stderr})
 		})
 	}, nil
 }
@@ -625,7 +669,7 @@ func (p *leasePod) runSidecar(workspace, gitBase string) PodRun {
 		vars = append(vars, p.registryEnv...)
 		vars = append(vars, RelayURLEnv+"="+p.bridgeBase())
 		return runWithAgentIO(ctx, p.dir, stdin, stdout, func(stdin, stdout *os.File) error {
-			return p.sess.RunAgent(ctx, sandbox.RunSpec{Workspace: workspace, Env: jobEnv, Vars: vars, Command: argv, Stdin: stdin, Stdout: stdout, Stderr: stderr})
+			return p.runAgentRetryingCache(ctx, sandbox.RunSpec{Workspace: workspace, Env: jobEnv, Vars: vars, Command: argv, Stdin: stdin, Stdout: stdout, Stderr: stderr})
 		})
 	}
 }

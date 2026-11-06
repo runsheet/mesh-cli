@@ -518,6 +518,42 @@ func (s *Session) SetExtraEnv(vars []string) {
 	s.extraEnv = append(s.extraEnv, vars...)
 }
 
+// DropMounts removes every mount ShareMount added under what, leaving
+// every other mount (another what, and namedMounts' own) untouched: a
+// v1 lease retrying its agent without its tenant cache alone, never its
+// shared build cache (internal/nodev1/podsession.go,
+// runAgentRetryingCache).
+func (s *Session) DropMounts(what string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]namedMount, 0, len(s.extraMounts))
+	for _, m := range s.extraMounts {
+		if m.what != what {
+			out = append(out, m)
+		}
+	}
+	s.extraMounts = out
+}
+
+// DropEnv removes every variable SetExtraEnv set under one of names,
+// beside DropMounts for the same retry.
+func (s *Session) DropEnv(names ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	drop := make(map[string]bool, len(names))
+	for _, n := range names {
+		drop[n] = true
+	}
+	out := make([]string, 0, len(s.extraEnv))
+	for _, kv := range s.extraEnv {
+		name, _, _ := strings.Cut(kv, "=")
+		if !drop[name] {
+			out = append(out, kv)
+		}
+	}
+	s.extraEnv = out
+}
+
 // ShareProxyDir mounts dir, the directory of the session's sessionproxy
 // socket, read-write at its own path in every pod the session runs
 // from now on — checked against the org root like every other mount —

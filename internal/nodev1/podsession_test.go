@@ -319,6 +319,71 @@ func TestAPodWhoseServiceFailsHandsBackCannotRun(t *testing.T) {
 	assertReleased(t, g, job)
 }
 
+// A lease whose first agent run is refused for its tenant cache's
+// overlay mount (goal the-warm-cache-mounts-on-the-nodes-podman, item
+// 3) is retried once with the tenant cache dropped — its shared build
+// cache mount and GOCACHE left in place — and finishes normally.
+func TestALeaseWhoseCacheMountFailsRetriesWithoutIt(t *testing.T) {
+	g, sb, _ := podRig(t)
+	out := filepath.Join(t.TempDir(), "claude")
+	agent := hostAgent(t, out, "")
+	var calls []sandbox.AgentSpec
+	sb.Agent = func(ctx context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
+		calls = append(calls, spec)
+		if len(calls) == 1 {
+			return sandbox.Exit{}, &sandbox.CacheMountUnsupportedError{Op: "agent run", Err: errors.New(`invalid filesystem type "overlay"`)}
+		}
+		return agent(ctx, spec)
+	}
+	job := g.offer(t, func(b *meshapi.Brief) { b.FinishTool, b.FinishSchema = "", nil })
+	run(t, g, context.Background())
+
+	if n := len(g.fake.Calls("finish")); n != 1 {
+		t.Fatalf("%d finishes; hand-backs %+v", n, g.fake.Calls("hand-back"))
+	}
+	if len(calls) != 2 {
+		t.Fatalf("%d agent calls, want exactly 2 (one retry)", len(calls))
+	}
+	retried := calls[1]
+	for _, m := range retried.Mounts {
+		if m.Overlay {
+			t.Errorf("the retried call still mounts a tenant cache overlay: %+v", m)
+		}
+	}
+	for _, name := range []string{"GOMODCACHE", "npm_config_cache", "pnpm_config_store_dir"} {
+		if v := envValue(retried.Env, name); v != "" {
+			t.Errorf("the retried call's env still has %s=%s", name, v)
+		}
+	}
+	if envValue(retried.Env, "GOCACHE") == "" {
+		t.Error("the retried call lost the shared build cache (GOCACHE)")
+	}
+	assertReleased(t, g, job)
+}
+
+// A lease whose retry fails the same way its first call did hands back
+// exactly what an ordinary RunAgent failure produces today: no new
+// cause, and no further retry.
+func TestALeaseWhoseCacheMountFailsTwiceHandsBackOrdinarily(t *testing.T) {
+	g, sb, _ := podRig(t)
+	var calls int
+	sb.Agent = func(ctx context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
+		calls++
+		return sandbox.Exit{}, &sandbox.CacheMountUnsupportedError{Op: "agent run", Err: errors.New(`invalid filesystem type "overlay"`)}
+	}
+	job := g.offer(t, nil)
+	run(t, g, context.Background())
+
+	hb := onlyHandBack(t, g, job)
+	if hb.Cause != meshapi.CauseCannotRun || !strings.Contains(hb.Reason, "cache mount") {
+		t.Fatalf("hand-back %+v", hb)
+	}
+	if calls != 2 {
+		t.Fatalf("%d agent calls, want exactly 2 (the one retry, never more)", calls)
+	}
+	assertReleased(t, g, job)
+}
+
 // The pod's agent killed under the session — exit 137 from the runtime,
 // or its memory limit — is pod_killed, never the work's red.
 func TestAPodSessionKilledIsPodKilled(t *testing.T) {
