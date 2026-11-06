@@ -252,6 +252,29 @@ func (e *RuntimeError) Unwrap() error { return e.Err }
 // validate.RuntimeBroken.
 func (e *RuntimeError) EnvironmentKind() validate.EnvironmentKind { return validate.RuntimeBroken }
 
+// CacheMountUnsupportedError is podman refusing `--mount type=overlay`
+// for a cache mount (Mount.Overlay) because the host's kernel or
+// storage driver has no overlay filesystem of its own (podman's own
+// "invalid filesystem type \"overlay\"", IsOverlayMountUnsupported) —
+// narrower than, and never, a *RuntimeError: the runtime itself still
+// starts pods and runs agents fine, only this one mount type is
+// refused, and the cache can be built instead by a host-made overlay
+// (fuse-overlayfs, outside any container — HostOverlayMount,
+// MergeOverlay, ProbeCacheMount) bound in as a plain read-write volume.
+// It carries no EnvironmentKind on purpose: unlike RuntimeError, this
+// is not validate.RuntimeBroken and must never stop the node claiming.
+type CacheMountUnsupportedError struct {
+	// Op names what failed: "agent run", "agent start".
+	Op string
+	// Err is podman's own words.
+	Err error
+}
+
+func (e *CacheMountUnsupportedError) Error() string {
+	return fmt.Sprintf("sandbox: cache mount: %s: %s", e.Op, e.Err)
+}
+func (e *CacheMountUnsupportedError) Unwrap() error { return e.Err }
+
 // asRuntimeError is err as a *RuntimeError naming op, unless it already
 // is one (podman.go's own classification stands); nil is nil.
 func asRuntimeError(op string, err error) error {
