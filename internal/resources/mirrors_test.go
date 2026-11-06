@@ -126,6 +126,100 @@ func TestTrimRemovesUnusedMirrors(t *testing.T) {
 	}
 }
 
+// A mirror never writes a commit-graph, whatever a global or system
+// config (GitArgs' included) asks for, and sheds one found at Sync —
+// left by an older node or a hand-run `git commit-graph write` — since
+// a corrupt or merely stale one can fail every checkout that borrows
+// the mirror's objects by reference, not only a read of the mirror
+// itself.
+func TestSyncRemovesACommitGraphAndNeverWritesOne(t *testing.T) {
+	src, commit := origin(t)
+	m := &Mirrors{
+		Root: t.TempDir(),
+		Env:  os.Environ(),
+		// a config that would otherwise make the fetch write one, to
+		// prove Sync's own flags win over whatever GitArgs carries.
+		GitArgs: []string{"-c", "core.commitGraph=true", "-c", "fetch.writeCommitGraph=true"},
+	}
+	key := MirrorKey{Tenant: "acme", Repo: "acme/app"}
+	dir, err := m.Sync(context.Background(), key, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph := filepath.Join(dir, "objects", "info", "commit-graph")
+	if _, err := os.Stat(graph); err == nil {
+		t.Fatalf("the first fetch wrote a commit-graph at %s", graph)
+	}
+
+	// a commit-graph (and a split chain) found in the mirror, however it
+	// got there, is removed the next time it is synced.
+	chain := filepath.Join(dir, "objects", "info", "commit-graphs")
+	if err := os.MkdirAll(chain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(graph, []byte("not a real commit-graph"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	commit("two")
+	if _, err := m.Sync(context.Background(), key, src); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(graph); !os.IsNotExist(err) {
+		t.Fatalf("the commit-graph is still there after Sync: %v", err)
+	}
+	if _, err := os.Stat(chain); !os.IsNotExist(err) {
+		t.Fatalf("the commit-graph chain is still there after Sync: %v", err)
+	}
+}
+
+// SetAside renames the mirror directory aside, and the next Sync for
+// the same key creates a fresh mirror at the original path: a mirror
+// Sync or a checkout found untrustworthy is set aside rather than
+// repaired in place.
+func TestSetAsideLetsTheNextSyncRebuild(t *testing.T) {
+	src, commit := origin(t)
+	m := &Mirrors{Root: t.TempDir(), Env: os.Environ()}
+	key := MirrorKey{Tenant: "acme", Repo: "acme/app"}
+	dir, err := m.Sync(context.Background(), key, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, "a-marker-only-the-old-mirror-has")
+	if err := os.WriteFile(marker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	aside, err := m.SetAside(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if aside == "" || aside == dir {
+		t.Fatalf("aside %q, want a different, non-empty path", aside)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("the mirror is still at %s: %v", dir, err)
+	}
+	if _, err := os.Stat(filepath.Join(aside, "a-marker-only-the-old-mirror-has")); err != nil {
+		t.Fatalf("the set-aside copy lost its marker: %v", err)
+	}
+
+	second := commit("two")
+	fresh, err := m.Sync(context.Background(), key, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh != dir {
+		t.Fatalf("the fresh mirror is at %s, want %s", fresh, dir)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the fresh mirror carries the old marker: %v", err)
+	}
+	if got := gitIn(t, fresh, "rev-parse", "refs/heads/main"); got != second {
+		t.Fatalf("fresh mirror main %s, want %s", got, second)
+	}
+}
+
 // A sync that cannot reach its origin answers an error and leaves the
 // mirror as it was.
 func TestSyncFailureLeavesTheMirror(t *testing.T) {
