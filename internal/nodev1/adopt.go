@@ -44,9 +44,17 @@ import (
 // abandoned before adoptOne has had the chance to register it in
 // r.leases: adoptOne's first network call (openSession) can take long
 // enough for releaseLeftovers to run and read the same actor.json
-// first.
+// first. It logs exactly one aggregate line before it returns, "adopted
+// N of M hand-off(s) at start" -- M every hand-off file it found
+// readable, whether or not it could then be parsed, N the ones it is
+// adopting -- so a start with none logs "adopted 0 of 0" rather than
+// nothing at all.
 func (r *Runtime) adoptHandoffs(ctx context.Context) map[string]bool {
 	adopting := map[string]bool{}
+	found := 0
+	defer func() {
+		r.logf("nodev1: adopted %d of %d hand-off(s) at start", len(adopting), found)
+	}()
 	root := filepath.Join(r.WorkRoot, "leases")
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -69,6 +77,7 @@ func (r *Runtime) adoptHandoffs(ctx context.Context) map[string]bool {
 			}
 			continue
 		}
+		found++
 		var st handoffState
 		if err := json.Unmarshal(data, &st); err != nil || st.Brief == nil {
 			r.logf("nodev1: lease %s: its hand-off could not be read; handed back", id)

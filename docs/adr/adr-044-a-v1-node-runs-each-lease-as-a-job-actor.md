@@ -276,19 +276,30 @@ the legacy node the same way) picks them back up.
    remove the marker the same way they remove `node.drain-wait` and
    `node.status`, so one left over from a run that never reached its
    handler is never read by the next.
-2. **The hand-off, not a wait.** `Runtime.UpgradeSignal` (
-   `internal/nodev1/upgrade_signal.go`) calls `Upgrade(why)` then exits
-   the process (`UpgradeExit`, `os.Exit`, swapped in tests) --- never by
-   cancelling the root context every lease's own descends from, which
-   would end every lease the upgrade means to leave running. `Upgrade`
-   (`internal/nodev1/handoff.go`) locks the lease table and, for each
-   live lease, writes `handoff.json` under the lease's own directory
-   atomically: its brief, its sessionproxy socket directory, its push
-   heads, its sidecar directory and its turn ledger. On success nothing
-   about the lease is touched --- its pod, sidecar and agent keep
-   running exactly as they were, and nothing is yet reported to Mesh. A
-   lease that intercepts, or whose hand-off cannot be written, is handed
-   back `node_update` instead (the drain wait's cause), same as before.
+2. **The hand-off, and a bounded wait for hand-backs.**
+   `Runtime.UpgradeSignal` (`internal/nodev1/upgrade_signal.go`) calls
+   `Upgrade(why)`. `Upgrade` (`internal/nodev1/handoff.go`) locks the
+   lease table and, for each live lease, writes `handoff.json` under the
+   lease's own directory atomically: its brief, its sessionproxy socket
+   directory, its push heads, its sidecar directory and its turn
+   ledger. On success nothing about the lease is touched --- its pod,
+   sidecar and agent keep running exactly as they were, and nothing is
+   yet reported to Mesh. A lease that intercepts, or whose hand-off
+   cannot be written, is handed back `node_update` instead (the drain
+   wait's cause), same as before --- and `Upgrade` returns the ids it
+   handed back this way. `UpgradeSignal` then waits, bounded, for those
+   hand-backs (and only those; a plain hand-off needs no such wait) to
+   be reported to Mesh before exiting the process (`UpgradeExit`,
+   `os.Exit`, swapped in tests): `awaitReported` polls the lease table
+   until every handed-back id is gone from it --- `runActor` deletes a
+   lease's id only after its actor has reported its end --- or until
+   `handBackWait` (twice `reportTimeout`) elapses, whichever comes
+   first. An `os.Exit` cut off mid-report would leave its lease's
+   `actor.json` `Cancelling` and unreported on disk forever, since a
+   hand-off is never adopted that way; the wait is what keeps that from
+   happening. Neither the wait nor the exit cancels the root context
+   every lease's own descends from, which would end every lease the
+   upgrade means to leave running.
 3. **Start-up adoption picks it back up.** The process that starts next
    (`adoptHandoffs`, `internal/nodev1/adopt.go`) reads every hand-off
    left under the leases directory, each on its own goroutine, and
