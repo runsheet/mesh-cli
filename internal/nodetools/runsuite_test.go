@@ -5,12 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/validate"
@@ -478,6 +483,77 @@ func TestRunSuiteRunsASelection(t *testing.T) {
 		if _, err := tool.Call(context.Background(), bad); err == nil {
 			t.Fatalf("%v ran", bad)
 		}
+	}
+}
+
+// run_suite wired to a results location (meshapi.Brief.Results) sends
+// its complete raw output there, never to Mesh's own blob storage: the
+// answer names the upload's digest and location, and the record
+// posted to the Recorder carries no occurrence of the raw output text
+// (projectmesh-io/api docs/adr/adr-001-amendment-learnings-and-
+// transcripts.md's results location).
+func TestRunSuiteUploadsToTheResultsLocationNotMeshsBlobs(t *testing.T) {
+	dir := suiteCheckout(t, "suites:\n  - name: unit\n    kind: unit\n    command: go test ./...\n")
+
+	var mu sync.Mutex
+	var puts [][]byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		puts = append(puts, b)
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	const rawOutput = "boom, the complete raw failure text nobody else should see\n"
+	m := &fakeMesh{}
+	rec, _ := recorder(t, m, RunSuiteTool)
+	run := func(_ context.Context, _ string, steps []validate.Step, _ []string) ([]validate.StepResult, error) {
+		return []validate.StepResult{{Name: steps[0].Name, Command: steps[0].Command, ExitCode: 1, TestsRun: 1, TestsFailed: 1,
+			Tests: []validate.TestResult{{Name: "TestBoom", Package: "pkg", Action: "fail", ElapsedMs: 5, Output: rawOutput}}}}, nil
+	}
+	loc := meshapi.ResultsLocation{UploadURL: srv.URL + "/mesh/v1/results/run-1", ExpiresAt: time.Now().Add(time.Hour)}
+	tool := (&RunSuite{Workspace: dir, Recorder: rec, Run: run, Results: loc}).Tool()
+	ans := answerOf(t)(tool.Call(context.Background(), map[string]any{}))
+
+	digest, _ := ans["output_digest"].(string)
+	gotLoc, _ := ans["output_location"].(string)
+	if digest == "" || !strings.HasPrefix(digest, "sha256:") {
+		t.Fatalf("answer %v, want an output_digest", ans)
+	}
+	if gotLoc != loc.UploadURL {
+		t.Fatalf("answer output_location %q, want %q", gotLoc, loc.UploadURL)
+	}
+
+	mu.Lock()
+	gotPuts := puts
+	mu.Unlock()
+	if len(gotPuts) != 1 {
+		t.Fatalf("the results location saw %d puts, want 1", len(gotPuts))
+	}
+	var uploaded SuiteOutput
+	if err := json.Unmarshal(gotPuts[0], &uploaded); err != nil || len(uploaded.Tests) != 1 || uploaded.Tests[0].Output != rawOutput {
+		t.Fatalf("the results location did not receive the complete raw output: %v %+v", err, uploaded)
+	}
+	if Digest(gotPuts[0]) != digest {
+		t.Fatalf("the uploaded bytes are not %s", digest)
+	}
+
+	if len(m.blobs) != 0 {
+		t.Fatalf("Mesh's own blob storage kept %d blobs; the output must never land there", len(m.blobs))
+	}
+	if len(m.records) != 1 {
+		t.Fatalf("the recorder posted %d records, want 1", len(m.records))
+	}
+	st, payload := statementOf(t, m.records[0])
+	for _, raw := range [][]byte{payload, m.records[0].Envelope} {
+		if strings.Contains(string(raw), "nobody else should see") {
+			t.Fatal("the posted record carries the raw output text")
+		}
+	}
+	if st.Predicate.OutputDigest != digest {
+		t.Fatalf("the record's output digest %q, want the upload's %q", st.Predicate.OutputDigest, digest)
 	}
 }
 

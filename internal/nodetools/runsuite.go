@@ -16,6 +16,8 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/mcptool"
+	"projectmesh.io/mesh-cli/internal/meshapi"
+	rawresults "projectmesh.io/mesh-cli/internal/results"
 	"projectmesh.io/mesh-cli/internal/validate"
 )
 
@@ -112,6 +114,17 @@ type RunSuite struct {
 	// "red"), and answers the model the session moves to, "" when it
 	// does not; nil never escalates.
 	Escalate func(why string) string
+
+	// Results is the brief's results location (meshapi.Brief.Results):
+	// when it names an UploadURL, a run's complete raw output goes there
+	// (internal/results.Upload), on Session, and the signed record names
+	// the upload's digest alone, never Mesh's own blob storage. The zero
+	// value keeps today's path: the output blob posted to the Recorder's
+	// Mesh as before.
+	Results meshapi.ResultsLocation
+	// Session authenticates the upload to Results; unused when Results
+	// names no UploadURL.
+	Session rawresults.Session
 
 	// A run outlives the call that starts it (ADR-049): the call waits
 	// at most Wait (DefaultSuiteWait when zero) — under the MCP call's
@@ -578,10 +591,25 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 	}
 	rec := Record{Tool: RunSuiteTool, StartedAt: start, EndedAt: ended, Exit: exit, Summary: summary,
 		InputDigest: InputDigest(input), Selection: sel}
-	id, recErr := s.Recorder.Record(readCtx, rec, blob)
+	var id string
+	var recErr error
+	outputDigest := Digest(blob)
+	if s.Results.UploadURL != "" {
+		var up rawresults.Result
+		up, recErr = rawresults.Upload(readCtx, s.Results, blob, rawresults.Options{Session: s.Session})
+		if recErr == nil {
+			outputDigest = up.Digest
+			id, recErr = s.Recorder.RecordUploaded(readCtx, rec, up.Digest)
+		}
+	} else {
+		id, recErr = s.Recorder.Record(readCtx, rec, blob)
+	}
 	answerTests, testsTruncated := answerTestsOf(out.Tests)
 	answer := map[string]any{"run_id": r.id, "status": "finished", "exit": exit, "summary": summary, "steps": out.Steps, "tests": answerTests, "failing_tests": failing,
-		"head": strings.TrimSpace(head), "tree": strings.TrimSpace(tree), "uncommitted": strings.TrimSpace(status) != "", "output_digest": Digest(blob)}
+		"head": strings.TrimSpace(head), "tree": strings.TrimSpace(tree), "uncommitted": strings.TrimSpace(status) != "", "output_digest": outputDigest}
+	if s.Results.UploadURL != "" {
+		answer["output_location"] = s.Results.UploadURL
+	}
 	if testsTruncated {
 		answer["tests_truncated"] = true
 	}
