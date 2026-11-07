@@ -61,19 +61,25 @@ its pod goes.
 context and waits at most `Runtime.SuiteWait` (
 `nodetools.DefaultSuiteWait`, 10 minutes: under the 30 minutes a
 session's MCP call gives up after). A run that has not ended answers its
-handle:
+handle, carrying every test streamed so far (`validate.WithOnTest`), the
+same bounded `tests` list (and `tests_truncated` when it was cut) a
+finished answer carries:
 
 ```json
 {"run_id": "run-1", "status": "running", "suites": ["integration"],
  "started_at": "…", "elapsed_s": 600, "budget_left_s": 3900,
+ "tests": [{"name": "TestFoo", "package": "./e2e", "outcome": "fail",
+            "duration_ms": 120, "output": "…"}],
  "next": "the run goes on: call run_suite {\"run_id\": \"run-1\"} to wait for it again"}
 ```
 
 `run_suite {run_id, wait_seconds?}` waits again (at most the node's
-wait) and answers the same handle or, once the run has ended, its
-result, now with `run_id` and `status: finished`; a finished run's id
-answers its result again. A call its caller gave up on leaves the run
-going. The run ends with the lease, never with a call.
+wait) and answers the same handle, its `tests` list grown by whatever
+streamed meanwhile, or, once the run has ended, its result, now with
+`run_id` and `status: finished`, its own `tests` list `Normalise`'s —
+never the streamed one, which is live and unauthoritative; a finished
+run's id answers its result again. A call its caller gave up on leaves
+the run going. The run ends with the lease, never with a call.
 
 **fail_fast.** `run_suite {…, fail_fast: true}` stops the run at its
 first failing suite or shard: the lanes still running are cancelled, and
@@ -130,8 +136,9 @@ the suite's full run to a product that does not know shards, which gap
   runtime, and the host runner) still run shards one after another; they
   get the handle and the budget all the same.
 - Mesh's API, the kind's brief and the evidence contract are unchanged:
-  run_suite's schema is the node's own (`run_id`, `wait_seconds` and
-  `fail_fast` added), so no projectmesh-io/api amendment.
+  run_suite's schema is the node's own (`run_id`, `wait_seconds`,
+  `fail_fast` and, on both the running handle and the finished answer,
+  `tests`/`tests_truncated` added), so no projectmesh-io/api amendment.
 
 ## Amendment 2026-11-02: a lane sees what its lease's pod sees
 
