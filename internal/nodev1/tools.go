@@ -2,6 +2,7 @@ package nodev1
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/escalate"
@@ -59,6 +60,22 @@ func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace s
 	if b.Git != nil {
 		repo = b.Git.Repo
 	}
+	// rs, built ahead of the loop whenever run_suite is named, is the one
+	// RunSuite instance both run_suite and stop_suite share — stop_suite
+	// reaches a run's still-going lanes only through run_suite's own
+	// registry, whichever order the kind names them in.
+	var rs *nodetools.RunSuite
+	if slices.Contains(b.NodeTools, nodetools.RunSuiteTool) {
+		rs = &nodetools.RunSuite{Workspace: workspace, Recorder: rec, Run: suites,
+			OnHost: suites == nil && r.hostSuites(), Escalate: escalateOn(ladder, mb, escalate.OnRed),
+			Wait: r.SuiteWait, Context: clock.ctx, Began: clock.began, Budget: r.suiteBudget(b, workspace)}
+		if b.Results != nil {
+			rs.Results = *b.Results
+			if tokens != nil {
+				rs.Session = tokens
+			}
+		}
+	}
 	var out []mcptool.Tool
 	for _, name := range b.NodeTools {
 		switch name {
@@ -71,16 +88,13 @@ func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace s
 				Refusal: func(since time.Time) string { return r.refusalSince(b.LeaseID, since) }}
 			out = append(out, p.Tool())
 		case nodetools.RunSuiteTool:
-			rs := &nodetools.RunSuite{Workspace: workspace, Recorder: rec, Run: suites,
-				OnHost: suites == nil && r.hostSuites(), Escalate: escalateOn(ladder, mb, escalate.OnRed),
-				Wait: r.SuiteWait, Context: clock.ctx, Began: clock.began, Budget: r.suiteBudget(b, workspace)}
-			if b.Results != nil {
-				rs.Results = *b.Results
-				if tokens != nil {
-					rs.Session = tokens
-				}
-			}
 			out = append(out, rs.Tool())
+		case nodetools.StopSuiteTool:
+			if rs == nil {
+				r.logf("nodev1: lease %s: the kind names node tool %q without %q to stop a lane of", b.LeaseID, name, nodetools.RunSuiteTool)
+				continue
+			}
+			out = append(out, (&nodetools.StopSuite{Runs: rs}).Tool())
 		case nodetools.ApplyOntoTool:
 			var vendor string
 			if b.Git != nil {

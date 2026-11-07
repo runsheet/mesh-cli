@@ -168,6 +168,13 @@ type suiteRun struct {
 	// only while the run is going (await's handle); the finished answer
 	// is Normalise's own, authoritative list, never this one.
 	live []TestResult
+
+	laneMu sync.Mutex
+	// lanes is each lane's stop func, by name (validate.WithOnLane), as
+	// each opens: stop_suite names a lane and calls it, ending that
+	// shard's (or unsharded step's) command and pod alone, while the
+	// run's other lanes go on.
+	lanes map[string]func(reason string)
 }
 
 // addLive appends a streamed test's result to the run's live list.
@@ -182,6 +189,25 @@ func (r *suiteRun) liveTests() []TestResult {
 	r.liveMu.Lock()
 	defer r.liveMu.Unlock()
 	return slices.Clone(r.live)
+}
+
+// registerLane records name's stop func as its lane opens.
+func (r *suiteRun) registerLane(name string, stop func(reason string)) {
+	r.laneMu.Lock()
+	if r.lanes == nil {
+		r.lanes = map[string]func(reason string){}
+	}
+	r.lanes[name] = stop
+	r.laneMu.Unlock()
+}
+
+// laneStop is name's registered stop func, and whether it has one: a
+// lane not yet open, or never sharded, or already ended, has none.
+func (r *suiteRun) laneStop(name string) (func(reason string), bool) {
+	r.laneMu.Lock()
+	defer r.laneMu.Unlock()
+	stop, ok := r.lanes[name]
+	return stop, ok
 }
 
 // SuiteOutput is run_suite's output blob.
@@ -202,6 +228,11 @@ type SuiteStep struct {
 	TestsPassed int          `json:"tests_passed"`
 	TestsFailed int          `json:"tests_failed"`
 	Shards      []SuiteShard `json:"shards,omitempty"`
+	// Stopped is whether the step (or, for a sharded step, the shard
+	// whose exit the step took) was ended on purpose by stop_suite,
+	// never by failing on its own; its Exit is still non-zero.
+	Stopped    bool   `json:"stopped,omitempty"`
+	StopReason string `json:"stop_reason,omitempty"`
 }
 
 // SuiteShard is one shard of a sharded step: its index (0-based, as
@@ -216,6 +247,11 @@ type SuiteShard struct {
 	TestsPassed int   `json:"tests_passed"`
 	TestsFailed int   `json:"tests_failed"`
 	NotRun      bool  `json:"not_run,omitempty"`
+	// Stopped is whether this shard was ended on purpose, mid-run, by a
+	// stop_suite call naming its lane, rather than by failing on its
+	// own: its Exit is still non-zero, never 0, and StopReason names why.
+	Stopped    bool   `json:"stopped,omitempty"`
+	StopReason string `json:"stop_reason,omitempty"`
 }
 
 // TestResult is one test's (or, Test empty, one package's) final event.
@@ -477,11 +513,16 @@ func (s *RunSuite) start(steps []validate.Step) *suiteRun {
 	return r
 }
 
+// find is the run id names, nil when this lease has none by that id.
+func (s *RunSuite) find(id string) *suiteRun {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.runs[id]
+}
+
 // poll waits up to wait for the run id names.
 func (s *RunSuite) poll(ctx context.Context, id string, wait time.Duration) (string, error) {
-	s.mu.Lock()
-	r := s.runs[id]
-	s.mu.Unlock()
+	r := s.find(id)
 	if r == nil {
 		return "", fmt.Errorf("no run %q on this lease: run_suite answers a run's id when it starts one", id)
 	}
@@ -553,6 +594,9 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 	}
 	ctx = validate.WithOnTest(ctx, func(tr validate.TestResult) {
 		r.addLive(TestResult{Package: tr.Package, Test: tr.Name, Action: tr.Action, Elapsed: float64(tr.ElapsedMs) / 1000, Output: tr.Output})
+	})
+	ctx = validate.WithOnLane(ctx, func(name string, stop func(reason string)) {
+		r.registerLane(name, stop)
 	})
 	head, _ := git(readCtx, s.Workspace, "rev-parse", "--verify", "-q", "HEAD^{commit}")
 	tree, _ := git(readCtx, s.Workspace, "rev-parse", "--verify", "-q", "HEAD^{tree}")
@@ -675,7 +719,8 @@ func Normalise(results []validate.StepResult) SuiteOutput {
 	out := SuiteOutput{Steps: []SuiteStep{}, Tests: []TestResult{}}
 	for _, r := range results {
 		out.Steps = append(out.Steps, SuiteStep{Name: r.Name, Command: r.Command, Exit: r.ExitCode, DurationMs: r.DurationMs,
-			TestsRun: r.TestsRun, TestsPassed: r.TestsPassed, TestsFailed: r.TestsFailed, Shards: shardsOf(r.Shards)})
+			TestsRun: r.TestsRun, TestsPassed: r.TestsPassed, TestsFailed: r.TestsFailed, Shards: shardsOf(r.Shards),
+			Stopped: r.Stopped, StopReason: r.StopReason})
 		if len(r.Tests) > 0 {
 			out.Tests = append(out.Tests, testResultsFrom(r.Tests)...)
 		} else {
@@ -714,7 +759,8 @@ func shardsOf(shards []validate.ShardResult) []SuiteShard {
 			continue
 		}
 		out[sh.Index] = SuiteShard{Index: sh.Index, Total: total, Exit: sh.ExitCode, DurationMs: sh.DurationMs,
-			TestsRun: sh.TestsRun, TestsPassed: sh.TestsPassed, TestsFailed: sh.TestsFailed}
+			TestsRun: sh.TestsRun, TestsPassed: sh.TestsPassed, TestsFailed: sh.TestsFailed,
+			Stopped: sh.Stopped, StopReason: sh.StopReason}
 	}
 	return out
 }
