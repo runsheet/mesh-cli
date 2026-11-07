@@ -61,7 +61,9 @@ func startRealPostgres(t *testing.T) int {
 		t.Fatal(err)
 	}
 
-	port := freePort(t)
+	ln := freeListener(t)
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
 	logFile := filepath.Join(data, "log")
 	opts := fmt.Sprintf("-p %d -c listen_addresses=127.0.0.1 -c unix_socket_directories=%s -c password_encryption=scram-sha-256", port, sockDir)
 	if out, err := exec.Command("pg_ctl", "start", "-D", data, "-w", "-t", "30", "-l", logFile, "-o", opts).CombinedOutput(); err != nil {
