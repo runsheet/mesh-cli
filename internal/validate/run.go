@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -100,6 +101,16 @@ type Options struct {
 	// results, as if never run (a sharded step's missing shards are
 	// named "not run"). WithFailFast on Run's ctx asks the same.
 	FailFast bool
+	// OnTest, when set, is called with each test's result as it streams
+	// off a unit's own stdout — pass, fail or skip — the instant that
+	// test's terminating go-test-json event is read, the step (and the
+	// run) still going: a caller watching a long suite sees a failure
+	// as it happens rather than only once the whole step ends. A
+	// failing test's TestResult carries its accumulated output, as the
+	// final parse's does; a pass or skip carries none. Stdout that is
+	// not go test -json yields no calls. May be called concurrently
+	// from different lanes' units.
+	OnTest func(TestResult)
 }
 
 type failFastKey struct{}
@@ -161,6 +172,74 @@ func lastLines(s string, n, max int) string {
 		}
 	}
 	return out
+}
+
+// testEventWriter feeds a unit's stdout to onTest one go-test-json line
+// at a time, as the bytes arrive — never waiting for the unit's command
+// to finish — so OnTest fires while the step (and the run) is still
+// going. It mirrors ParseGoTestJSONTests' per-test state (each open
+// test's accumulated "output" events, by package and test name) so a
+// streamed failing test's TestResult carries the same Output the final,
+// whole-stream parse would give it.
+type testEventWriter struct {
+	onTest func(TestResult)
+	open   map[string]*strings.Builder
+	buf    []byte
+}
+
+func newTestEventWriter(onTest func(TestResult)) *testEventWriter {
+	return &testEventWriter{onTest: onTest, open: map[string]*strings.Builder{}}
+}
+
+// Write never errs: a line that is not valid go-test-json, or carries no
+// Test name, is silently not a test event.
+func (w *testEventWriter) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	for {
+		i := bytes.IndexByte(w.buf, '\n')
+		if i < 0 {
+			break
+		}
+		line := w.buf[:i]
+		w.buf = w.buf[i+1:]
+		w.line(line)
+	}
+	return len(p), nil
+}
+
+func (w *testEventWriter) line(line []byte) {
+	if len(line) == 0 {
+		return
+	}
+	var ev struct {
+		Action  string  `json:"Action"`
+		Package string  `json:"Package"`
+		Test    string  `json:"Test"`
+		Output  string  `json:"Output"`
+		Elapsed float64 `json:"Elapsed"`
+	}
+	if err := json.Unmarshal(line, &ev); err != nil || ev.Test == "" {
+		return
+	}
+	k := ev.Package + "\x00" + ev.Test
+	switch ev.Action {
+	case "output":
+		b, ok := w.open[k]
+		if !ok {
+			b = &strings.Builder{}
+			w.open[k] = b
+		}
+		b.WriteString(ev.Output)
+	case "pass", "fail", "skip":
+		tr := TestResult{Name: ev.Test, Package: ev.Package, Action: ev.Action, ElapsedMs: int64(ev.Elapsed * 1000)}
+		if b, ok := w.open[k]; ok {
+			if ev.Action == "fail" {
+				tr.Output = b.String()
+			}
+			delete(w.open, k)
+		}
+		w.onTest(tr)
+	}
 }
 
 // LaneRunner is a Runner that can make another runner beside itself:
@@ -308,7 +387,11 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 			st := steps[u.step]
 			out := &ran{}
 			start := time.Now()
-			out.exitCode, out.runErr = r.Run(rctx, shardCommand(st.Command, u), st.Timeout, &out.stdout, &out.stderr)
+			stdout := io.Writer(&out.stdout)
+			if opts.OnTest != nil {
+				stdout = io.MultiWriter(&out.stdout, newTestEventWriter(opts.OnTest))
+			}
+			out.exitCode, out.runErr = r.Run(rctx, shardCommand(st.Command, u), st.Timeout, stdout, &out.stderr)
 			out.duration = time.Since(start)
 			failed := out.runErr != nil || out.exitCode != 0
 			mu.Lock()
