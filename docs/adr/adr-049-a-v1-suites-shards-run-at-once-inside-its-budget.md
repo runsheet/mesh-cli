@@ -200,3 +200,58 @@ but for its pod, its own services and its scheduler hold:
 this one exactly as dl360 did (shard 1: exit 1, 0 tests);
 `TestALaneReachesTheLeasesRelay`, `TestTheLanesTunnelServesTheLeasesEgressAlone`
 and `TestALanesFailedStepIsInTheNodesLog` hold the rest.
+
+## Amendment 2026-11-07: stop_suite ends one unit without leaving a pod
+
+A shard stuck past the point it is worth waiting on — a hung process, a
+lane plainly not going to pass — held its lease to the whole budget or
+the session's own 30-minute timeout, for want of a way to end it alone:
+stopping the run_suite call stops none of the lanes it is polling.
+
+**Decision.** `stop_suite {run_id, step, index?, reason}` ends one unit
+of a run still going — a sharded step's one shard (`index`), or a step
+with no shards (no `index`) — while the run's other units go on:
+
+```json
+{"run_id": "run-1", "step": "integration", "index": 1,
+ "reason": "stuck: no output for 12 minutes"}
+```
+
+A lane is a pod: the group's steps (or one shard) that run in it, one
+after another where there is more than one. Several steps naming no
+`group:` (or the same one) share a lane and run there in turn, so
+`run_suite` registers `validate.Options.OnLane` (asked through the
+runner's ctx by `validate.WithOnLane` as `FailFast` and `OnTest` are)
+once per unit, not once per lane: each unit's own cancel is kept under
+its own name — `"<step>"` with no shards, `"<step>-<index>"` with one,
+the same name `MESH_SHARD_INDEX` carries — so stop_suite reaches a unit
+by its step's name whether or not that step shares its pod with others,
+and naming an unknown run or unit is refused. The cancel runs the
+unit's command's ctx down, so its pod's container (and a lane's own
+pod, beside the lease's) is torn down at once as fail_fast's lanes are
+(`sandbox.Session.Exec`); any other unit still queued behind the
+stopped one in a lane it shares (an unsharded step's lane-mate) does
+not start — that lane ends the way a failing exit would end it, its
+pod going with it — while the lease's own pod and the run's other
+lanes are untouched.
+
+**The record gains a stop, nothing else.** The stopped unit's
+`StepResult` (and, merged, its sharded step's) carries `stopped: true`
+and `stop_reason`, beside its ordinarily non-zero exit, in both the
+running handle's and the finished answer's `shards`/`steps` and the
+signed output blob — the predicate's shape otherwise unchanged, so a
+product reading it as before reads a failed shard with a reason, not a
+new field it must learn. A lane-mate that never ran because its lane
+stopped first carries no result at all, the same as a step fail_fast
+never reached. A stopped shard's exit is never classified as an
+environment failure (`EnvironmentKindOf`) and never folds into
+run_suite's own runner error: it is the stop asked for, not a tool or
+host failure. A run with one stopped unit is never green: run_suite's
+own `exit` is non-zero once any shard is stopped, same as any other
+failing shard.
+
+Stopping a unit is a deliberate end, not a retry: the run is not
+restarted and the stopped shard is not re-run. A reason naming no open
+unit (it has not opened yet, or has already ended — queued behind
+another that stopped the lane first, among other reasons) is refused,
+so a session stopping a unit always knows whether it took.
