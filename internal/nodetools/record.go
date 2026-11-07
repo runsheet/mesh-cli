@@ -34,14 +34,30 @@ func (rc *Recorder) Record(ctx context.Context, r Record, output []byte) (string
 	if rc == nil || rc.Signer == nil || rc.Mesh == nil {
 		return "", fmt.Errorf("the %s record cannot be kept: the node has no recorder for this lease", r.Tool)
 	}
-	l := rc.Lease
-	r.JobID, r.LeaseID, r.LeaseN, r.Product, r.Tenant, r.NodeID = l.JobID, l.LeaseID, l.LeaseN, l.Product, l.Tenant, l.NodeID
 	if output != nil {
 		r.OutputDigest = Digest(output)
 		if err := rc.Mesh.PutBlob(ctx, r.OutputDigest, output); err != nil {
 			return "", fmt.Errorf("uploading the %s output: %w", r.Tool, err)
 		}
 	}
+	return rc.recordSigned(ctx, r)
+}
+
+// RecordUploaded signs and posts r whose output has already been
+// uploaded straight to the product's own location (never to Mesh's
+// blobs, internal/results): r.OutputDigest is set to outputDigest and
+// the record posted as Record does, with no PutBlob call.
+func (rc *Recorder) RecordUploaded(ctx context.Context, r Record, outputDigest string) (string, error) {
+	if rc == nil || rc.Signer == nil || rc.Mesh == nil {
+		return "", fmt.Errorf("the %s record cannot be kept: the node has no recorder for this lease", r.Tool)
+	}
+	r.OutputDigest = outputDigest
+	return rc.recordSigned(ctx, r)
+}
+
+func (rc *Recorder) recordSigned(ctx context.Context, r Record) (string, error) {
+	l := rc.Lease
+	r.JobID, r.LeaseID, r.LeaseN, r.Product, r.Tenant, r.NodeID = l.JobID, l.LeaseID, l.LeaseN, l.Product, l.Tenant, l.NodeID
 	payload, err := Statement(r)
 	if err != nil {
 		return "", err

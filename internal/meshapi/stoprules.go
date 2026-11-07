@@ -87,6 +87,20 @@ type Transcript struct {
 	FlushS int `json:"flush_s,omitempty"`
 }
 
+// ResultsLocation is where a node tool's full raw output goes when the
+// product offers one: run_suite's complete, unbounded test output goes
+// here, never to Mesh's own blob storage, so a record's output subject
+// names only a digest (projectmesh-io/api docs/adr/adr-001-amendment-
+// learnings-and-transcripts.md's results location). One PUT of the
+// whole output, DPoP-authenticated as the lease's session, with any
+// headers the product still names; a location past ExpiresAt is not
+// tried.
+type ResultsLocation struct {
+	UploadURL string            `json:"upload_url"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	ExpiresAt time.Time         `json:"expires_at"`
+}
+
 // ToolCount is one tool's calls and errors in the lease, by its name
 // alone.
 type ToolCount struct {
