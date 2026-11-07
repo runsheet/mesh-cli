@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -188,6 +189,67 @@ type TestResult struct {
 	Test    string  `json:"test"`
 	Action  string  `json:"action"`
 	Elapsed float64 `json:"elapsed"`
+	// Output is the test's own output (validate.TestResult.Output, from
+	// the full untruncated go test -json stream): kept only for a
+	// failing or still-running (timeout) test, never a pass or a skip;
+	// empty for a step whose report predates it, read instead by
+	// goTestEvents' Report reparse.
+	Output string `json:"output,omitempty"`
+}
+
+// answerTestsCap bounds run_suite's answer's "tests" list in marshaled
+// bytes: a failing or still-running test's output is kept whole as long
+// as the list fits under it; once it would not, the last such test's
+// output is stripped, repeatedly, until it fits or none is left to
+// strip — never cutting an output in half — and tests_truncated is set.
+const answerTestsCap = 16 * 1024
+
+// answerTest is one test's entry in run_suite's answer.
+type answerTest struct {
+	Name       string `json:"name"`
+	Package    string `json:"package"`
+	Outcome    string `json:"outcome"`
+	DurationMs int64  `json:"duration_ms"`
+	Output     string `json:"output,omitempty"`
+}
+
+// answerTestsOf is tests (a step's own TestResult, a package-level
+// rollup's empty name skipped) as the answer's bounded "tests" list.
+func answerTestsOf(tests []TestResult) ([]answerTest, bool) {
+	var list []answerTest
+	for _, t := range tests {
+		if t.Test == "" {
+			continue
+		}
+		list = append(list, answerTest{Name: t.Test, Package: t.Package, Outcome: t.Action,
+			DurationMs: int64(math.Round(t.Elapsed * 1000)), Output: t.Output})
+	}
+	truncated := false
+	for marshaledLen(list) > answerTestsCap {
+		i := lastWithOutput(list)
+		if i < 0 {
+			break
+		}
+		list[i].Output = ""
+		truncated = true
+	}
+	return list, truncated
+}
+
+// lastWithOutput is the last entry of list still carrying its output, -1
+// when none does.
+func lastWithOutput(list []answerTest) int {
+	for i := len(list) - 1; i >= 0; i-- {
+		if list[i].Output != "" {
+			return i
+		}
+	}
+	return -1
+}
+
+func marshaledLen(list []answerTest) int {
+	b, _ := json.Marshal(list)
+	return len(b)
 }
 
 // Tool is run_suite {suite?, suites?, targets?, tests?}.
@@ -200,6 +262,8 @@ func (s *RunSuite) Tool() mcptool.Tool {
 		Description: "Run the repository's declared validation (.runsheet/validate.yml) on your checkout as it stands, " +
 			"every suite or the one you name, whole or only the targets and tests you name. A sharded suite's shards run at once, each beside its own services. " +
 			"Answers each step's exit and test counts, the failing tests, " +
+			"and every test's own name, package, outcome and duration (a test still running when a step was killed at its timeout named outcome timeout); " +
+			"a failing or still-running test's own output is kept whole until the tests list would pass a size cap, after which the rest are named with their output stripped and tests_truncated is set. " +
 			"and the evidence id of the node's signed record of the run: pass that id on, never your own account of it. " +
 			"A run of named targets or tests is recorded as that selection, never as the suite's full run. " +
 			"A run still going after a while answers {run_id, status: running} instead: call run_suite {run_id} again to wait for it, as often as it takes; " +
@@ -468,7 +532,7 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 	if err != nil {
 		return "", err
 	}
-	passed, failed, exit := 0, 0, 0
+	passed, failed, skipped, timedOut, exit := 0, 0, 0, 0, 0
 	var failing []string
 	for _, st := range out.Steps {
 		if st.Exit != 0 {
@@ -490,9 +554,16 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 			if len(failing) < 20 {
 				failing = append(failing, t.Package+"."+t.Test)
 			}
+		case "skip":
+			skipped++
+		case "timeout":
+			timedOut++
 		}
 	}
-	summary := fmt.Sprintf("%d of %d steps passed; %d tests passed, %d failed", countOK(out.Steps), len(steps), passed, failed)
+	summary := fmt.Sprintf("%d of %d steps passed; %d tests passed, %d failed, %d skipped", countOK(out.Steps), len(steps), passed, failed, skipped)
+	if timedOut > 0 {
+		summary += fmt.Sprintf(", %d still running at the timeout", timedOut)
+	}
 	if sel != nil {
 		summary += fmt.Sprintf(" (a selection: %d targets, %d tests)", len(sel.Targets), len(sel.Tests))
 	}
@@ -508,8 +579,12 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 	rec := Record{Tool: RunSuiteTool, StartedAt: start, EndedAt: ended, Exit: exit, Summary: summary,
 		InputDigest: InputDigest(input), Selection: sel}
 	id, recErr := s.Recorder.Record(readCtx, rec, blob)
-	answer := map[string]any{"run_id": r.id, "status": "finished", "exit": exit, "summary": summary, "steps": out.Steps, "failing_tests": failing,
+	answerTests, testsTruncated := answerTestsOf(out.Tests)
+	answer := map[string]any{"run_id": r.id, "status": "finished", "exit": exit, "summary": summary, "steps": out.Steps, "tests": answerTests, "failing_tests": failing,
 		"head": strings.TrimSpace(head), "tree": strings.TrimSpace(tree), "uncommitted": strings.TrimSpace(status) != "", "output_digest": Digest(blob)}
+	if testsTruncated {
+		answer["tests_truncated"] = true
+	}
 	if sel != nil {
 		answer["selection"] = sel
 	}
@@ -541,7 +616,24 @@ func Normalise(results []validate.StepResult) SuiteOutput {
 	for _, r := range results {
 		out.Steps = append(out.Steps, SuiteStep{Name: r.Name, Command: r.Command, Exit: r.ExitCode, DurationMs: r.DurationMs,
 			TestsRun: r.TestsRun, TestsPassed: r.TestsPassed, TestsFailed: r.TestsFailed, Shards: shardsOf(r.Shards)})
-		out.Tests = append(out.Tests, goTestEvents(r.Report)...)
+		if len(r.Tests) > 0 {
+			out.Tests = append(out.Tests, testResultsFrom(r.Tests)...)
+		} else {
+			out.Tests = append(out.Tests, goTestEvents(r.Report)...)
+		}
+	}
+	return out
+}
+
+// testResultsFrom is a step's own tests (validate.TestResult, read from
+// the full untruncated go test -json stream, a test still running at a
+// timeout named Action "timeout") as the blob's TestResult: preferred
+// over goTestEvents' Report reparse whenever the step carries them,
+// since they carry Output and timeouts the capped Report may not.
+func testResultsFrom(tests []validate.TestResult) []TestResult {
+	out := make([]TestResult, len(tests))
+	for i, t := range tests {
+		out[i] = TestResult{Package: t.Package, Test: t.Name, Action: t.Action, Elapsed: float64(t.ElapsedMs) / 1000, Output: t.Output}
 	}
 	return out
 }

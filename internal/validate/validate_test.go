@@ -3,6 +3,7 @@ package validate
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -586,6 +587,122 @@ func TestThisRepositorysFileIsThePlatformsShape(t *testing.T) {
 	for _, s := range cfg.Steps {
 		if !s.Kind.Valid() {
 			t.Errorf("suite %s has kind %q", s.Name, s.Kind)
+		}
+	}
+}
+
+// Run on a go test -json stream names every test on StepResult.Tests, a
+// failing test's Output holding its accumulated text, while the counts
+// stay as before.
+func TestRunNamesEveryTestWithFailingTestsOutput(t *testing.T) {
+	dir := t.TempDir()
+	stream := `{"Time":"2026-11-01T00:00:00Z","Action":"run","Package":"pkg","Test":"TestOK1"}
+{"Time":"2026-11-01T00:00:00Z","Action":"pass","Package":"pkg","Test":"TestOK1","Elapsed":0.01}
+{"Time":"2026-11-01T00:00:00Z","Action":"run","Package":"pkg","Test":"TestBad1"}
+{"Time":"2026-11-01T00:00:00Z","Action":"output","Package":"pkg","Test":"TestBad1","Output":"--- FAIL: TestBad1\n"}
+{"Time":"2026-11-01T00:00:00Z","Action":"output","Package":"pkg","Test":"TestBad1","Output":"    want 1 got 2\n"}
+{"Time":"2026-11-01T00:00:01Z","Action":"fail","Package":"pkg","Test":"TestBad1","Elapsed":0.02}
+{"Time":"2026-11-01T00:00:01Z","Action":"run","Package":"pkg","Test":"TestSkip1"}
+{"Time":"2026-11-01T00:00:01Z","Action":"skip","Package":"pkg","Test":"TestSkip1","Elapsed":0}
+{"Time":"2026-11-01T00:00:01Z","Action":"run","Package":"pkg","Test":"TestBad2"}
+{"Time":"2026-11-01T00:00:01Z","Action":"output","Package":"pkg","Test":"TestBad2","Output":"--- FAIL: TestBad2\n"}
+{"Time":"2026-11-01T00:00:02Z","Action":"fail","Package":"pkg","Test":"TestBad2","Elapsed":0.03}
+{"Time":"2026-11-01T00:00:02Z","Action":"run","Package":"pkg","Test":"TestOK2"}
+{"Time":"2026-11-01T00:00:02Z","Action":"pass","Package":"pkg","Test":"TestOK2","Elapsed":0.01}
+`
+	writeFile(t, filepath.Join(dir, "stream.json"), stream)
+	steps := []Step{{Name: "unit", Command: "cat stream.json", Timeout: time.Second, Results: "stdout"}}
+
+	results, err := Run(context.Background(), steps, HostRunner{Dir: dir}, Options{Dir: dir})
+	if err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	r := results[0]
+	if r.TestsRun != 5 || r.TestsPassed != 2 || r.TestsFailed != 2 {
+		t.Fatalf("counts = run %d passed %d failed %d, want 5 2 2", r.TestsRun, r.TestsPassed, r.TestsFailed)
+	}
+	if len(r.Tests) != 5 {
+		t.Fatalf("Tests = %d entries, want 5: %+v", len(r.Tests), r.Tests)
+	}
+	byName := map[string]TestResult{}
+	for _, tr := range r.Tests {
+		byName[tr.Name] = tr
+	}
+	for _, name := range []string{"TestOK1", "TestBad1", "TestSkip1", "TestBad2", "TestOK2"} {
+		if _, ok := byName[name]; !ok {
+			t.Errorf("Tests missing %s: %+v", name, r.Tests)
+		}
+	}
+	if tr := byName["TestBad1"]; tr.Action != "fail" || !strings.Contains(tr.Output, "want 1 got 2") {
+		t.Errorf("TestBad1 = %+v, want fail with its accumulated output", tr)
+	}
+	if tr := byName["TestBad2"]; tr.Action != "fail" || !strings.Contains(tr.Output, "FAIL: TestBad2") {
+		t.Errorf("TestBad2 = %+v, want fail with its accumulated output", tr)
+	}
+	if tr := byName["TestOK1"]; tr.Action != "pass" {
+		t.Errorf("TestOK1 action = %q, want pass", tr.Action)
+	}
+	if tr := byName["TestSkip1"]; tr.Action != "skip" {
+		t.Errorf("TestSkip1 action = %q, want skip", tr.Action)
+	}
+}
+
+// A stream larger than reportCap still names every test, built from the
+// untruncated buffer, while Report stays capped as before.
+func TestRunNamesEveryTestEvenPastTheReportCap(t *testing.T) {
+	dir := t.TempDir()
+	const n = 3200
+	cmd := fmt.Sprintf(`i=0; while [ "$i" -lt %d ]; do
+printf '{"Action":"run","Package":"pkg","Test":"Test%%d"}\n' "$i"
+printf '{"Action":"pass","Package":"pkg","Test":"Test%%d","Elapsed":0.01}\n' "$i"
+i=$((i+1))
+done`, n)
+	steps := []Step{{Name: "unit", Command: cmd, Timeout: 10 * time.Second, Results: "stdout"}}
+
+	results, err := Run(context.Background(), steps, HostRunner{Dir: dir}, Options{Dir: dir})
+	if err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	r := results[0]
+	if r.TestsRun != n || r.TestsPassed != n {
+		t.Fatalf("counts = run %d passed %d, want %d, %d", r.TestsRun, r.TestsPassed, n, n)
+	}
+	if len(r.Tests) != n {
+		t.Fatalf("Tests = %d entries, want %d", len(r.Tests), n)
+	}
+	if len(r.Report) != reportCap {
+		t.Fatalf("Report = %d bytes, want the cap %d", len(r.Report), reportCap)
+	}
+}
+
+// A HostRunner unit killed at its timeout, its stream naming tests still
+// "run" with no terminating event, names each "timeout" with a positive
+// ElapsedMs.
+func TestRunNamesStillRunningTestsOnATimeout(t *testing.T) {
+	dir := t.TempDir()
+	cmd := `echo '{"Time":"2026-11-01T00:00:00Z","Action":"run","Package":"pkg","Test":"TestSlow1"}'
+echo '{"Time":"2026-11-01T00:00:00Z","Action":"run","Package":"pkg","Test":"TestSlow2"}'
+echo '{"Time":"2026-11-01T00:00:00Z","Action":"run","Package":"pkg","Test":"TestSlow3"}'
+sleep 5`
+	steps := []Step{{Name: "unit", Command: cmd, Timeout: 200 * time.Millisecond, Results: "stdout"}}
+
+	results, err := Run(context.Background(), steps, HostRunner{Dir: dir}, Options{Dir: dir})
+	if err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	r := results[0]
+	if r.ExitCode != 124 || !r.TimedOut {
+		t.Fatalf("step = exitCode %d timedOut %v, want 124 true", r.ExitCode, r.TimedOut)
+	}
+	if len(r.Tests) != 3 {
+		t.Fatalf("Tests = %d entries, want 3: %+v", len(r.Tests), r.Tests)
+	}
+	for _, tr := range r.Tests {
+		if tr.Action != "timeout" {
+			t.Errorf("%s action = %q, want timeout", tr.Name, tr.Action)
+		}
+		if tr.ElapsedMs <= 0 {
+			t.Errorf("%s elapsedMs = %d, want positive", tr.Name, tr.ElapsedMs)
 		}
 	}
 }
