@@ -112,15 +112,20 @@ type Options struct {
 	// from different lanes' units. WithOnTest on Run's ctx asks the
 	// same, for a runner whose Options it does not build.
 	OnTest func(TestResult)
-	// OnLane, when set, is called once as each lane starts — the run's
-	// own pod first, then each group or shard's beside it — naming it
-	// and a stop func the caller may call once, with a reason, to end
-	// that lane alone: its running unit's command is cancelled, its
-	// StepResult (ShardResult, for a shard) answers Stopped and
-	// StopReason with a non-zero ExitCode, and the run's other lanes go
-	// on untouched. Calling stop after the lane's last unit has run does
-	// nothing. WithOnLane on Run's ctx asks the same, for a runner whose
-	// Options it does not build (stop_suite, ADR-049).
+	// OnLane, when set, is called once as each unit — a step with no
+	// shards, or one shard of a sharded step — starts running, naming
+	// it "<step>" or "<step>-<index>" (unitName; the same scheme
+	// stop_suite's step and index name) and a stop func the caller may
+	// call once, with a reason, to end that unit alone: its running
+	// command is cancelled, its StepResult (ShardResult, for a shard)
+	// answers Stopped and StopReason with a non-zero ExitCode, and the
+	// run's other units go on — except any still queued behind it in
+	// a lane it shares with other unsharded steps (no Group, or the
+	// same Group): a stop leaves that lane the way a failing exit
+	// would, so the lane's pod goes with it while the run's other
+	// lanes are untouched. Calling stop once the unit has ended does
+	// nothing. WithOnLane on Run's ctx asks the same, for a runner
+	// whose Options it does not build (stop_suite, ADR-049).
 	OnLane func(name string, stop func(reason string))
 }
 
@@ -317,21 +322,21 @@ type ran struct {
 	stopReason     string
 }
 
-// laneStop is one lane's Options.OnLane stop func, and whether it was
-// called: stop cancels the lane's own ctx exactly once, keeping the
+// unitStop is one unit's Options.OnLane stop func, and whether it was
+// called: stop cancels the unit's own ctx exactly once, keeping the
 // first reason given.
-type laneStop struct {
+type unitStop struct {
 	mu     sync.Mutex
 	reason string
 	did    bool
 	cancel context.CancelFunc
 }
 
-func newLaneStop(cancel context.CancelFunc) *laneStop {
-	return &laneStop{cancel: cancel}
+func newUnitStop(cancel context.CancelFunc) *unitStop {
+	return &unitStop{cancel: cancel}
 }
 
-func (s *laneStop) stop(reason string) {
+func (s *unitStop) stop(reason string) {
 	s.mu.Lock()
 	first := !s.did
 	if first {
@@ -344,10 +349,23 @@ func (s *laneStop) stop(reason string) {
 	}
 }
 
-func (s *laneStop) stopped() (string, bool) {
+func (s *unitStop) stopped() (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.reason, s.did
+}
+
+// unitName is a unit's own name, as stop_suite and Options.OnLane's
+// caller name it (laneName in internal/nodetools, ADR-049): "<step>"
+// with no shards, "<step>-<index>" for one of several — never the
+// lane (pod) it happens to run in, since several unsharded steps with
+// no Group, or the same Group, run one after another in one shared
+// lane.
+func unitName(step string, u unit) string {
+	if u.total <= 1 {
+		return step
+	}
+	return fmt.Sprintf("%s-%d", step, u.shard)
 }
 
 // lane is the units that run one after another in one runner.
@@ -465,19 +483,25 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 		defer mu.Unlock()
 		return stopped && ctx.Err() == nil
 	}
-	runLane := func(lctx context.Context, r Runner, l lane, ls *laneStop) {
+	runLane := func(lctx context.Context, r Runner, l lane) {
 		for _, u := range l.units {
 			if cancelled() {
 				return
 			}
 			st := steps[u.step]
+			uctx, cancelUnit := context.WithCancel(lctx)
+			ls := newUnitStop(cancelUnit)
+			if onLane != nil {
+				onLane(unitName(st.Name, u), ls.stop)
+			}
 			out := &ran{}
 			start := time.Now()
 			stdout := io.Writer(&out.stdout)
 			if onTest != nil {
 				stdout = io.MultiWriter(&out.stdout, newTestEventWriter(onTest))
 			}
-			out.exitCode, out.runErr = r.Run(lctx, shardCommand(st.Command, u), st.Timeout, stdout, &out.stderr)
+			out.exitCode, out.runErr = r.Run(uctx, shardCommand(st.Command, u), st.Timeout, stdout, &out.stderr)
+			cancelUnit()
 			out.duration = time.Since(start)
 			if reason, didStop := ls.stopped(); didStop {
 				out.stopped = true
@@ -512,12 +536,8 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 				defer wg.Done()
 				lctx, cancelLane := context.WithCancel(rctx)
 				defer cancelLane()
-				ls := newLaneStop(cancelLane)
-				if onLane != nil {
-					onLane(l.name, ls.stop)
-				}
 				if i == 0 {
-					runLane(lctx, runner, l, ls)
+					runLane(lctx, runner, l)
 					// the run's own pod goes as a lane's does (release),
 					// its steps' reports and artifacts being in the
 					// workspace, read after every lane
@@ -537,7 +557,7 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 					return
 				}
 				defer release()
-				runLane(lctx, r, l, ls)
+				runLane(lctx, r, l)
 			}(i, l)
 		}
 		wg.Wait()
@@ -546,11 +566,7 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 		theLane := ls[0]
 		lctx, cancelLane := context.WithCancel(rctx)
 		defer cancelLane()
-		lstop := newLaneStop(cancelLane)
-		if onLane != nil {
-			onLane(theLane.name, lstop.stop)
-		}
-		runLane(lctx, runner, theLane, lstop)
+		runLane(lctx, runner, theLane)
 	}
 
 	results := make([]StepResult, 0, len(steps))

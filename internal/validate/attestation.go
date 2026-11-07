@@ -35,12 +35,12 @@ type StepResult struct {
 	// EnvironmentKind is why the step failed on the node rather than on
 	// the code (EnvironmentKindOf): empty for a pass or a code failure.
 	EnvironmentKind EnvironmentKind `json:"environmentKind,omitempty"`
-	// Stopped is whether a lane running this step (or shard) was ended
-	// on purpose, mid-run, by Options.OnLane's stop func (stop_suite,
+	// Stopped is whether this step (or shard)'s own run was ended on
+	// purpose, mid-run, by Options.OnLane's stop func (stop_suite,
 	// ADR-049) rather than by failing on its own: its ExitCode is still
 	// non-zero, never 0, and StopReason names why.
 	Stopped bool `json:"stopped,omitempty"`
-	// StopReason is who stopped this lane and why (Stopped alone).
+	// StopReason is who stopped it and why (Stopped alone).
 	StopReason string `json:"stopReason,omitempty"`
 	// Tail is a failing step's last TailLines lines of its combined
 	// stdout and stderr, redacted, for the node's log; never part of the
