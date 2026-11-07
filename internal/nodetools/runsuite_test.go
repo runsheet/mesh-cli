@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,6 +49,152 @@ func TestNormaliseGoTestJSON(t *testing.T) {
 				t.Fatalf("got %+v\nwant %+v", got, c.want)
 			}
 		})
+	}
+}
+
+// run_suite's answer names every test the step ran — one entry with
+// name, package, outcome and duration each — the two failing tests'
+// output carried whole, the skipped one's own counts matching the
+// summary.
+func TestExecuteAnswersEveryTestsResult(t *testing.T) {
+	dir := suiteCheckout(t, "suites:\n  - name: unit\n    kind: unit\n    command: go test ./...\n")
+	m := &fakeMesh{}
+	rec, _ := recorder(t, m, RunSuiteTool)
+	run := func(_ context.Context, _ string, steps []validate.Step, _ []string) ([]validate.StepResult, error) {
+		return []validate.StepResult{{Name: steps[0].Name, Command: steps[0].Command, ExitCode: 1, TestsRun: 3, TestsPassed: 0, TestsFailed: 2,
+			Tests: []validate.TestResult{
+				{Name: "TestFailA", Package: "pkg", Action: "fail", ElapsedMs: 12, Output: "boom a\n"},
+				{Name: "TestFailB", Package: "pkg", Action: "fail", ElapsedMs: 34, Output: "boom b\n"},
+				{Name: "TestSkipC", Package: "pkg", Action: "skip", ElapsedMs: 0},
+			}}}, nil
+	}
+	ans := answerOf(t)((&RunSuite{Workspace: dir, Recorder: rec, Run: run}).Tool().Call(context.Background(), map[string]any{}))
+	tests, ok := ans["tests"].([]any)
+	if !ok || len(tests) != 3 {
+		t.Fatalf("answer %v, want a tests list of 3", ans)
+	}
+	byName := map[string]map[string]any{}
+	for _, raw := range tests {
+		e := raw.(map[string]any)
+		byName[e["name"].(string)] = e
+	}
+	a, b, c := byName["TestFailA"], byName["TestFailB"], byName["TestSkipC"]
+	if a == nil || b == nil || c == nil {
+		t.Fatalf("tests %v, missing an entry", tests)
+	}
+	if a["package"] != "pkg" || a["outcome"] != "fail" || a["duration_ms"] != float64(12) || a["output"] != "boom a\n" {
+		t.Fatalf("TestFailA entry %v", a)
+	}
+	if b["outcome"] != "fail" || b["duration_ms"] != float64(34) || b["output"] != "boom b\n" {
+		t.Fatalf("TestFailB entry %v", b)
+	}
+	if c["outcome"] != "skip" || c["output"] != nil {
+		t.Fatalf("TestSkipC entry %v, want no output", c)
+	}
+	summary, _ := ans["summary"].(string)
+	if !strings.Contains(summary, "0 tests passed, 2 failed, 1 skipped") {
+		t.Fatalf("summary %q", summary)
+	}
+	if ans["tests_truncated"] != nil {
+		t.Fatalf("answer %v, want no truncation", ans)
+	}
+}
+
+// A step whose tests' combined output exceeds answerTestsCap keeps the
+// earlier failing tests' output whole and strips the rest's, naming
+// tests_truncated and staying at or under the cap.
+func TestExecuteTruncatesTestsPastTheCap(t *testing.T) {
+	dir := suiteCheckout(t, "suites:\n  - name: unit\n    kind: unit\n    command: go test ./...\n")
+	frontOutput := strings.Repeat("A", 500)
+	const backN = 40
+	backOutput := strings.Repeat("B", 600)
+	var tests []validate.TestResult
+	for i := 0; i < 3; i++ {
+		tests = append(tests, validate.TestResult{Name: fmt.Sprintf("TestFront%d", i), Package: "pkg", Action: "fail", ElapsedMs: 10, Output: frontOutput})
+	}
+	for i := 0; i < backN; i++ {
+		tests = append(tests, validate.TestResult{Name: fmt.Sprintf("TestBack%d", i), Package: "pkg", Action: "fail", ElapsedMs: 10, Output: backOutput})
+	}
+
+	m := &fakeMesh{}
+	rec, _ := recorder(t, m, RunSuiteTool)
+	run := func(_ context.Context, _ string, steps []validate.Step, _ []string) ([]validate.StepResult, error) {
+		return []validate.StepResult{{Name: steps[0].Name, Command: steps[0].Command, ExitCode: 1, TestsRun: len(tests), TestsFailed: len(tests), Tests: tests}}, nil
+	}
+	text, err := (&RunSuite{Workspace: dir, Recorder: rec, Run: run}).Tool().Call(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Tests          json.RawMessage `json:"tests"`
+		TestsTruncated bool            `json:"tests_truncated"`
+	}
+	if err := json.Unmarshal([]byte(text), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !decoded.TestsTruncated {
+		t.Fatal("tests_truncated was not set")
+	}
+	if len(decoded.Tests) > answerTestsCap {
+		t.Fatalf("the tests list is %d bytes, over the cap of %d", len(decoded.Tests), answerTestsCap)
+	}
+	var list []map[string]any
+	if err := json.Unmarshal(decoded.Tests, &list); err != nil || len(list) != len(tests) {
+		t.Fatalf("tests list %v, err %v", list, err)
+	}
+	byName := map[string]map[string]any{}
+	for _, e := range list {
+		byName[e["name"].(string)] = e
+	}
+	for i := 0; i < 3; i++ {
+		e := byName[fmt.Sprintf("TestFront%d", i)]
+		if e == nil || e["output"] != frontOutput {
+			t.Fatalf("TestFront%d entry %v, want its output whole", i, e)
+		}
+	}
+	if e := byName[fmt.Sprintf("TestBack%d", backN-1)]; e["output"] != nil {
+		t.Fatalf("the last test's output was not stripped: %v", e)
+	}
+}
+
+// A step killed at its timeout with tests mid-run names each of them,
+// outcome timeout, with its own running duration.
+func TestExecuteNamesTestsStillRunningAtTheTimeout(t *testing.T) {
+	dir := suiteCheckout(t, "suites:\n  - name: integration\n    kind: integration\n    command: go test ./e2e\n")
+	m := &fakeMesh{}
+	rec, _ := recorder(t, m, RunSuiteTool)
+	run := func(_ context.Context, _ string, steps []validate.Step, _ []string) ([]validate.StepResult, error) {
+		return []validate.StepResult{{Name: steps[0].Name, Command: steps[0].Command, ExitCode: 1, TimedOut: true,
+			Tests: []validate.TestResult{
+				{Name: "TestSlowA", Package: "e2e", Action: "timeout", ElapsedMs: 1500},
+				{Name: "TestSlowB", Package: "e2e", Action: "timeout", ElapsedMs: 2500},
+				{Name: "TestSlowC", Package: "e2e", Action: "timeout", ElapsedMs: 3200},
+			}}}, nil
+	}
+	ans := answerOf(t)((&RunSuite{Workspace: dir, Recorder: rec, Run: run}).Tool().Call(context.Background(), map[string]any{}))
+	tests, ok := ans["tests"].([]any)
+	if !ok || len(tests) != 3 {
+		t.Fatalf("answer %v, want 3 tests named", ans)
+	}
+	want := map[string]float64{"TestSlowA": 1500, "TestSlowB": 2500, "TestSlowC": 3200}
+	for _, raw := range tests {
+		e := raw.(map[string]any)
+		name := e["name"].(string)
+		ms, has := want[name]
+		if !has {
+			t.Fatalf("unexpected test %v", e)
+		}
+		if e["outcome"] != "timeout" || e["duration_ms"] != ms {
+			t.Fatalf("%s entry %v, want outcome timeout and duration_ms %v", name, e, ms)
+		}
+		delete(want, name)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing tests %v", want)
+	}
+	summary, _ := ans["summary"].(string)
+	if !strings.Contains(summary, "3 still running at the timeout") {
+		t.Fatalf("summary %q", summary)
 	}
 }
 
@@ -136,7 +283,11 @@ func TestRunSuiteRecordsItsRun(t *testing.T) {
 			t.Fatalf("statement %+v", st)
 		}
 		var out SuiteOutput
-		if err := json.Unmarshal(m.blobs[p.OutputDigest], &out); err != nil || len(out.Tests) != 4 {
+		// the real stream's package-level rollup event (empty Test) is
+		// skipped by validate.ParseGoTestJSONTests, so the "unit" step's
+		// r.Tests (preferred over the goTestEvents Report reparse) holds
+		// 3 tests, not the 4 raw events in testdata/gotest.json
+		if err := json.Unmarshal(m.blobs[p.OutputDigest], &out); err != nil || len(out.Tests) != 3 {
 			t.Fatalf("the blob %s is not the normalised run: %v %+v", p.OutputDigest, err, out)
 		}
 		verifyNodeSigned(t, post, signer.NodeKey)
