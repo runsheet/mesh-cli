@@ -3,6 +3,7 @@ package nodetools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -171,5 +172,119 @@ func TestRunSuiteFailFastAndShards(t *testing.T) {
 	}
 	if _, err := (&RunSuite{Workspace: dir, Recorder: rec, Run: run}).Tool().Call(context.Background(), map[string]any{"fail_fast": "yes"}); err == nil {
 		t.Fatal("a fail_fast that is not a boolean was taken")
+	}
+}
+
+// A poll mid-run answers each test's result as it streams in
+// (validate.WithOnTest, which the runner's ctx carries to Options.OnTest):
+// a session watching a long suite sees a failure as it happens, not only
+// at the end. The finished answer's tests are Normalise's own list, never
+// the live buffer, so a poll after the run ends does not repeat it.
+func TestRunSuitePollSeesEachTestAsItHappens(t *testing.T) {
+	dir := suiteCheckout(t, "suites:\n  - name: unit\n    kind: unit\n    command: go test ./...\n")
+	m := &fakeMesh{}
+	rec, _ := recorder(t, m, RunSuiteTool)
+
+	tick := make(chan struct{})
+	proceed := make(chan struct{})
+	run := func(ctx context.Context, _ string, steps []validate.Step, _ []string) ([]validate.StepResult, error) {
+		onTest := validate.OnTestFunc(ctx)
+		tests := make([]validate.TestResult, 10)
+		for i := 1; i <= 10; i++ {
+			name := fmt.Sprintf("Test%d", i)
+			tr := validate.TestResult{Name: name, Package: "pkg", Action: "pass", ElapsedMs: 10}
+			if i == 3 {
+				tr.Action = "fail"
+				tr.Output = "it broke\n"
+			}
+			tests[i-1] = tr
+			if onTest != nil {
+				onTest(tr)
+			}
+			tick <- struct{}{}
+			<-proceed
+		}
+		return []validate.StepResult{{Name: steps[0].Name, ExitCode: 1, TestsRun: 10, TestsFailed: 1, Tests: tests}}, nil
+	}
+	tool := (&RunSuite{Workspace: dir, Recorder: rec, Run: run, Wait: 20 * time.Millisecond}).Tool()
+
+	type callResult struct {
+		s   string
+		err error
+	}
+	firstCh := make(chan callResult, 1)
+	go func() {
+		s, err := tool.Call(context.Background(), map[string]any{})
+		firstCh <- callResult{s, err}
+	}()
+
+	for i := 1; i <= 2; i++ {
+		<-tick
+		proceed <- struct{}{}
+	}
+	<-tick // Test3's failure has streamed; held here before Test4 runs
+
+	cr := <-firstCh
+	first := decodeAnswer(t, cr.s, cr.err)
+	id, _ := first["run_id"].(string)
+	if first["status"] != "running" || id == "" {
+		t.Fatalf("first answer %v, want a running handle", first)
+	}
+
+	mid := answerOf(t)(tool.Call(context.Background(), map[string]any{"run_id": id, "wait_seconds": 0}))
+	if mid["status"] != "running" {
+		t.Fatalf("mid-run poll %v, want still running", mid)
+	}
+	midTests, _ := mid["tests"].([]any)
+	var sawThird bool
+	for _, x := range midTests {
+		e := x.(map[string]any)
+		if e["name"] == "Test10" {
+			t.Fatalf("mid-run poll already carries Test10, strictly before its event: %v", midTests)
+		}
+		if e["name"] == "Test3" {
+			sawThird = true
+			if e["outcome"] != "fail" || e["output"] != "it broke\n" {
+				t.Fatalf("Test3 in the mid-run poll = %v, want its failure and output", e)
+			}
+		}
+	}
+	if !sawThird {
+		t.Fatalf("mid-run poll %v, want Test3's failure", midTests)
+	}
+
+	proceed <- struct{}{} // let Test3's iteration finish
+	for i := 4; i <= 10; i++ {
+		<-tick
+		proceed <- struct{}{}
+	}
+
+	var last map[string]any
+	for polls := 0; polls < 50; polls++ {
+		last = answerOf(t)(tool.Call(context.Background(), map[string]any{"run_id": id}))
+		if last["status"] != "running" {
+			break
+		}
+	}
+	if last["status"] != "finished" {
+		t.Fatalf("final poll %v, want finished", last)
+	}
+	lastTests, _ := last["tests"].([]any)
+	if len(lastTests) != 10 {
+		t.Fatalf("finished answer's tests %v, want all 10 of Normalise's own list", lastTests)
+	}
+	var thirdCount int
+	for _, x := range lastTests {
+		if x.(map[string]any)["name"] == "Test3" {
+			thirdCount++
+		}
+	}
+	if thirdCount != 1 {
+		t.Fatalf("Test3 appears %d times in the finished answer, want exactly once: not repeated from the mid-run poll", thirdCount)
+	}
+
+	again := answerOf(t)(tool.Call(context.Background(), map[string]any{"run_id": id, "wait_seconds": 0}))
+	if again["evidence_id"] != last["evidence_id"] {
+		t.Fatalf("a finished run answered %v again, want the same", again)
 	}
 }

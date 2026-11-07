@@ -109,7 +109,8 @@ type Options struct {
 	// failing test's TestResult carries its accumulated output, as the
 	// final parse's does; a pass or skip carries none. Stdout that is
 	// not go test -json yields no calls. May be called concurrently
-	// from different lanes' units.
+	// from different lanes' units. WithOnTest on Run's ctx asks the
+	// same, for a runner whose Options it does not build.
 	OnTest func(TestResult)
 }
 
@@ -126,6 +127,22 @@ func WithFailFast(ctx context.Context) context.Context {
 func FailFastAsked(ctx context.Context) bool {
 	v, _ := ctx.Value(failFastKey{}).(bool)
 	return v
+}
+
+type onTestKey struct{}
+
+// WithOnTest is ctx asking Run to call fn with each test's result as it
+// streams (Options.OnTest): how a caller asks it through a runner whose
+// Options it does not build (run_suite's live poll, ADR-049).
+func WithOnTest(ctx context.Context, fn func(TestResult)) context.Context {
+	return context.WithValue(ctx, onTestKey{}, fn)
+}
+
+// OnTestFunc is the OnTest callback ctx carries (WithOnTest), nil when
+// none was set.
+func OnTestFunc(ctx context.Context) func(TestResult) {
+	fn, _ := ctx.Value(onTestKey{}).(func(TestResult))
+	return fn
 }
 
 // outputCap is the total bytes of a step's combined stdout+stderr kept
@@ -364,6 +381,10 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 		split = false
 	}
 	failFast := opts.FailFast || FailFastAsked(ctx)
+	onTest := opts.OnTest
+	if onTest == nil {
+		onTest = OnTestFunc(ctx)
+	}
 	// rctx is what the units run on: cancelled, with fail fast, at the
 	// first failing command, the rest of the run's lanes with it
 	rctx, stop := context.WithCancel(ctx)
@@ -388,8 +409,8 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 			out := &ran{}
 			start := time.Now()
 			stdout := io.Writer(&out.stdout)
-			if opts.OnTest != nil {
-				stdout = io.MultiWriter(&out.stdout, newTestEventWriter(opts.OnTest))
+			if onTest != nil {
+				stdout = io.MultiWriter(&out.stdout, newTestEventWriter(onTest))
 			}
 			out.exitCode, out.runErr = r.Run(rctx, shardCommand(st.Command, u), st.Timeout, stdout, &out.stderr)
 			out.duration = time.Since(start)

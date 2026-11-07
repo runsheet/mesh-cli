@@ -160,6 +160,28 @@ type suiteRun struct {
 	done    chan struct{}
 	answer  string
 	err     error
+
+	liveMu sync.Mutex
+	// live is each test's result as it streamed in (validate.WithOnTest),
+	// while the run is still going: a poll mid-run answers it so a
+	// session watching a long suite sees a failure as it happens. Read
+	// only while the run is going (await's handle); the finished answer
+	// is Normalise's own, authoritative list, never this one.
+	live []TestResult
+}
+
+// addLive appends a streamed test's result to the run's live list.
+func (r *suiteRun) addLive(t TestResult) {
+	r.liveMu.Lock()
+	r.live = append(r.live, t)
+	r.liveMu.Unlock()
+}
+
+// liveTests is the run's live list so far.
+func (r *suiteRun) liveTests() []TestResult {
+	r.liveMu.Lock()
+	defer r.liveMu.Unlock()
+	return slices.Clone(r.live)
 }
 
 // SuiteOutput is run_suite's output blob.
@@ -490,6 +512,13 @@ func (s *RunSuite) await(ctx context.Context, r *suiteRun, wait time.Duration) (
 	if d := s.deadline(); !d.IsZero() {
 		handle["budget_left_s"] = max(int(time.Until(d).Seconds()), 0)
 	}
+	if live := r.liveTests(); len(live) > 0 {
+		tests, truncated := answerTestsOf(live)
+		handle["tests"] = tests
+		if truncated {
+			handle["tests_truncated"] = true
+		}
+	}
 	b, _ := json.Marshal(handle)
 	return string(b), nil
 }
@@ -522,6 +551,9 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 	if failFast {
 		ctx = validate.WithFailFast(ctx)
 	}
+	ctx = validate.WithOnTest(ctx, func(tr validate.TestResult) {
+		r.addLive(TestResult{Package: tr.Package, Test: tr.Name, Action: tr.Action, Elapsed: float64(tr.ElapsedMs) / 1000, Output: tr.Output})
+	})
 	head, _ := git(readCtx, s.Workspace, "rev-parse", "--verify", "-q", "HEAD^{commit}")
 	tree, _ := git(readCtx, s.Workspace, "rev-parse", "--verify", "-q", "HEAD^{tree}")
 	// what the checkout holds beyond HEAD is part of what was run
