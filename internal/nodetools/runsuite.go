@@ -262,8 +262,8 @@ func (s *RunSuite) Tool() mcptool.Tool {
 		Description: "Run the repository's declared validation (.runsheet/validate.yml) on your checkout as it stands, " +
 			"every suite or the one you name, whole or only the targets and tests you name. A sharded suite's shards run at once, each beside its own services. " +
 			"Answers each step's exit and test counts, the failing tests, " +
-				"and every test's own name, package, outcome and duration (a test still running when a step was killed at its timeout named outcome timeout); " +
-				"a failing or still-running test's own output is kept whole until the tests list would pass a size cap, after which the rest are named with their output stripped and tests_truncated is set. " +
+			"and every test's own name, package, outcome and duration (a test still running when a step was killed at its timeout named outcome timeout); " +
+			"a failing or still-running test's own output is kept whole until the tests list would pass a size cap, after which the rest are named with their output stripped and tests_truncated is set. " +
 			"and the evidence id of the node's signed record of the run: pass that id on, never your own account of it. " +
 			"A run of named targets or tests is recorded as that selection, never as the suite's full run. " +
 			"A run still going after a while answers {run_id, status: running} instead: call run_suite {run_id} again to wait for it, as often as it takes; " +
