@@ -6,7 +6,26 @@ import (
 	"encoding/xml"
 	"io"
 	"strconv"
+	"strings"
+	"time"
 )
+
+// TestResult is one test's outcome, read from a go test -json stream:
+// Action is pass, fail, skip, or timeout for a test the stream never
+// closed — still "run" when the step was killed at its timeout.
+// ElapsedMs is the terminating event's own elapsed time, or, for a
+// timeout, the stream's last event's time less the test's "run" event's
+// (never zero, so a timed-out test is told apart from one that genuinely
+// ran for 0ms). Output is the test's own accumulated "output" events'
+// text, kept only for a fail or a timeout — never for a pass or a skip,
+// where it is never needed — so it survives a step's capped Report.
+type TestResult struct {
+	Name      string `json:"name"`
+	Package   string `json:"package"`
+	Action    string `json:"action"`
+	ElapsedMs int64  `json:"elapsedMs"`
+	Output    string `json:"output,omitempty"`
+}
 
 // ParseGoTestJSON counts `go test -json` events: each Action of pass,
 // fail or skip that carries a Test name is one test; run is their total,
@@ -14,6 +33,26 @@ import (
 // only). Lines that are not a test event, or not JSON at all, are
 // ignored.
 func ParseGoTestJSON(r io.Reader) (run, passed, failed int, err error) {
+	run, passed, failed, _, err = ParseGoTestJSONTests(r)
+	return run, passed, failed, err
+}
+
+// ParseGoTestJSONTests is ParseGoTestJSON's counts, plus every test's
+// own TestResult, read from the same stream — the full, untruncated one
+// a caller must give it: a test's Output and whether it is still
+// running (Action "timeout") can only be read this way, since a step's
+// Report may be cut by reportCap before it carries them.
+func ParseGoTestJSONTests(r io.Reader) (run, passed, failed int, tests []TestResult, err error) {
+	type pending struct {
+		pkg, name string
+		start     time.Time
+		output    strings.Builder
+	}
+	open := map[string]*pending{}
+	var order []string
+	var last time.Time
+	key := func(pkg, test string) string { return pkg + "\x00" + test }
+
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 10*1024*1024)
 	for sc.Scan() {
@@ -22,30 +61,65 @@ func ParseGoTestJSON(r io.Reader) (run, passed, failed int, err error) {
 			continue
 		}
 		var ev struct {
-			Action string `json:"Action"`
-			Test   string `json:"Test"`
+			Time    time.Time `json:"Time"`
+			Action  string    `json:"Action"`
+			Package string    `json:"Package"`
+			Test    string    `json:"Test"`
+			Output  string    `json:"Output"`
+			Elapsed float64   `json:"Elapsed"`
 		}
 		if jerr := json.Unmarshal(line, &ev); jerr != nil {
 			continue
 		}
+		if ev.Time.After(last) {
+			last = ev.Time
+		}
 		if ev.Test == "" {
 			continue
 		}
+		k := key(ev.Package, ev.Test)
 		switch ev.Action {
-		case "pass":
+		case "run":
+			if _, ok := open[k]; !ok {
+				open[k] = &pending{pkg: ev.Package, name: ev.Test, start: ev.Time}
+				order = append(order, k)
+			}
+		case "output":
+			if p, ok := open[k]; ok {
+				p.output.WriteString(ev.Output)
+			}
+		case "pass", "fail", "skip":
 			run++
-			passed++
-		case "fail":
-			run++
-			failed++
-		case "skip":
-			run++
+			if ev.Action == "pass" {
+				passed++
+			} else if ev.Action == "fail" {
+				failed++
+			}
+			tr := TestResult{Name: ev.Test, Package: ev.Package, Action: ev.Action, ElapsedMs: int64(ev.Elapsed * 1000)}
+			if p, ok := open[k]; ok {
+				if ev.Action == "fail" {
+					tr.Output = p.output.String()
+				}
+				delete(open, k)
+			}
+			tests = append(tests, tr)
 		}
 	}
 	if sc.Err() != nil {
-		return 0, 0, 0, sc.Err()
+		return 0, 0, 0, nil, sc.Err()
 	}
-	return run, passed, failed, nil
+	for _, k := range order {
+		p, ok := open[k]
+		if !ok {
+			continue
+		}
+		elapsed := last.Sub(p.start)
+		if elapsed <= 0 {
+			elapsed = time.Millisecond
+		}
+		tests = append(tests, TestResult{Name: p.name, Package: p.pkg, Action: "timeout", ElapsedMs: elapsed.Milliseconds(), Output: p.output.String()})
+	}
+	return run, passed, failed, tests, nil
 }
 
 // ParseJUnit sums the tests/failures/errors/skipped attributes of every

@@ -19,7 +19,12 @@ type StepResult struct {
 	TestsRun    int    `json:"testsRun,omitempty"`
 	TestsPassed int    `json:"testsPassed,omitempty"`
 	TestsFailed int    `json:"testsFailed,omitempty"`
-	Output      string `json:"output,omitempty"`
+	// Tests is every test the step's go test -json stream named, read
+	// from the full, untruncated stream — never cut by reportCap as
+	// Report is. A test still "run" when the step ended (a timeout) is
+	// named with Action "timeout".
+	Tests  []TestResult `json:"tests,omitempty"`
+	Output string       `json:"output,omitempty"`
 	// Report is the raw test report the step's results named (its
 	// results file, or stdout; else its reports files), within the
 	// run's reportCap — the attestation's reports, which the platform
