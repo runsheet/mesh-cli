@@ -323,6 +323,94 @@ func TestNodeHandsBackUnadoptableHandoff(t *testing.T) {
 	})
 }
 
+// With no leases directory at all -- an ordinary start, nothing left
+// running by an earlier process -- adoptHandoffs still logs its one
+// aggregate line, "adopted 0 of 0", rather than nothing: a start that
+// found no hand-offs is as much a fact worth a line in node.log as one
+// that found several.
+func TestAdoptHandoffsLogsAggregateCountWithNone(t *testing.T) {
+	g := newRig(t, nil)
+
+	var logMu sync.Mutex
+	var logs []string
+	g.rt.Logf = func(format string, args ...any) {
+		msg := fmt.Sprintf(format, args...)
+		logMu.Lock()
+		logs = append(logs, msg)
+		logMu.Unlock()
+		t.Log(msg)
+	}
+
+	g.rt.adoptHandoffs(context.Background())
+
+	logMu.Lock()
+	defer logMu.Unlock()
+	assertOneAggregateAdoptLine(t, logs, 0, 0)
+}
+
+// With a mix of hand-offs on disk -- one a node can adopt, one it
+// cannot -- adoptHandoffs logs exactly one aggregate line naming how
+// many of how many it adopted, never one line per lease: "adopted 1 of
+// 2 hand-off(s) at start".
+func TestAdoptHandoffsLogsAggregateCountWithHandoffs(t *testing.T) {
+	g := newRig(t, nil)
+
+	adoptableID, brief := mintLease(t, g, func(b *meshapi.Brief) { b.FinishTool = "submit" })
+	sidecarDir := filepath.Join(t.TempDir(), "sidecar")
+	sidecar := startFakeSidecarControl(t, sidecarDir)
+	block := make(chan struct{})
+	sidecar.mu.Lock()
+	sidecar.block = block
+	sidecar.mu.Unlock()
+	t.Cleanup(func() { close(block) })
+	writeHandoffFixture(t, g, adoptableID, &handoffState{Brief: brief, SidecarDir: sidecarDir})
+
+	corruptID, _ := mintLease(t, g, nil)
+	corruptDir := g.rt.leaseDir(corruptID)
+	if err := os.MkdirAll(corruptDir, 0o700); err != nil {
+		t.Fatalf("making the corrupt lease's directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(corruptDir, handoffFile), []byte("{ not json"), 0o600); err != nil {
+		t.Fatalf("writing the corrupt hand-off: %v", err)
+	}
+
+	var logMu sync.Mutex
+	var logs []string
+	g.rt.Logf = func(format string, args ...any) {
+		msg := fmt.Sprintf(format, args...)
+		logMu.Lock()
+		logs = append(logs, msg)
+		logMu.Unlock()
+		t.Log(msg)
+	}
+
+	g.rt.adoptHandoffs(context.Background())
+
+	waitFor(t, "the corrupt hand-off's hand-back", func() bool {
+		return len(g.fake.Calls("hand-back")) == 1
+	})
+
+	logMu.Lock()
+	defer logMu.Unlock()
+	assertOneAggregateAdoptLine(t, logs, 1, 2)
+}
+
+// assertOneAggregateAdoptLine fails unless logs holds exactly one line
+// counting hand-offs adopted at start, naming n of m.
+func assertOneAggregateAdoptLine(t *testing.T, logs []string, n, m int) {
+	t.Helper()
+	want := fmt.Sprintf("nodev1: adopted %d of %d hand-off(s) at start", n, m)
+	count := 0
+	for _, l := range logs {
+		if l == want {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("%d occurrence(s) of %q, want exactly 1; logs: %v", count, want, logs)
+	}
+}
+
 // A lease adoptHandoffs is adopting survives releaseLeftovers, which
 // Run calls right behind it, even while adoptOne is still waiting on
 // the sidecar's control socket -- still short of r.leases.Put -- the

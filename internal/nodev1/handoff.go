@@ -133,9 +133,13 @@ func (r *Runtime) tailAgentOutput(id string, offset int64) ([]byte, error) {
 // it -- not its pod, its sidecars, its agent, nor the lease itself -- is
 // stopped, cancelled or reported to Mesh. A lease whose hand-off cannot
 // be written is handed back instead, so it is never silently lost.
-func (r *Runtime) Upgrade(why string) {
+// Upgrade only starts each hand-back's cancel; it returns the ids it
+// handed back so a caller that must not exit before Mesh hears of them
+// (UpgradeSignal) can wait on them.
+func (r *Runtime) Upgrade(why string) []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	var handedBack []string
 	handBack := func(id string, l *running) {
 		if l.cancelled == "" {
 			l.cancelled = why
@@ -144,6 +148,7 @@ func (r *Runtime) Upgrade(why string) {
 			l.actor.Cancel(why)
 		}
 		l.cancel(errNodeUpdate)
+		handedBack = append(handedBack, id)
 	}
 	for _, e := range r.leases.All() {
 		id, l := e.ID, e.Value
@@ -156,4 +161,5 @@ func (r *Runtime) Upgrade(why string) {
 			handBack(id, l)
 		}
 	}
+	return handedBack
 }
