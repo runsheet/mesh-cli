@@ -383,7 +383,7 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 			if err != nil {
 				return results, err
 			}
-			run, passed, failed, report, err := parseResults(opts.Dir, sh, out.stdout.Bytes())
+			run, passed, failed, report, tests, err := parseResults(opts.Dir, sh, out.stdout.Bytes())
 			if err != nil {
 				return results, err
 			}
@@ -396,6 +396,7 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 				TestsPassed: passed,
 				TestsFailed: failed,
 				Report:      report,
+				Tests:       tests,
 				TimedOut:    out.exitCode == 124,
 				Artifacts:   artifacts,
 			}
@@ -465,6 +466,7 @@ func merge(shards []ShardResult, concurrent bool) StepResult {
 		out.TestsRun += s.TestsRun
 		out.TestsPassed += s.TestsPassed
 		out.TestsFailed += s.TestsFailed
+		out.Tests = append(out.Tests, s.Tests...)
 		out.TimedOut = out.TimedOut || s.TimedOut
 		report.WriteString(s.Report)
 		if s.ExitCode != 0 && failed < 0 {
@@ -502,36 +504,46 @@ const reportCap = 256 * 1024
 // parseResults parses a step's test output per its Results field:
 // "stdout" reads stdout as go test -json, "go-test-json:<path>" and
 // "junit:<path>" read that file (relative to dir). The raw report it
-// parsed is returned beside the counts, cut at reportCap. A step with no
-// results is the files its reports name that exist, one after another,
-// and its tests are the go test -json events on its stdout, if any: a
-// suite running `go test -json` with no results: line (runsheet's unit
-// and integration, 2026-10-29) counted 0 tests on every shard, green or
-// red, though the events were all there.
-func parseResults(dir string, step Step, stdout []byte) (run, passed, failed int, report string, err error) {
-	var raw []byte
-	parse := ParseGoTestJSON
+// parsed is returned beside the counts, cut at reportCap; tests —
+// nil for a JUnit report, which carries no per-test output to keep —
+// is built from the whole, uncapped buffer, so a failing or still-running
+// test's own output is never lost to the cap. A step with no results is
+// the files its reports name that exist, one after another, and its
+// tests are the go test -json events on its stdout, if any: a suite
+// running `go test -json` with no results: line (runsheet's unit and
+// integration, 2026-10-29) counted 0 tests on every shard, green or red,
+// though the events were all there.
+func parseResults(dir string, step Step, stdout []byte) (run, passed, failed int, report string, tests []TestResult, err error) {
 	switch {
 	case step.Results == "stdout":
-		raw = stdout
+		run, passed, failed, tests, err = ParseGoTestJSONTests(bytes.NewReader(stdout))
+		return run, passed, failed, capReport(stdout), tests, err
 	case strings.HasPrefix(step.Results, "go-test-json:"):
-		if raw, err = os.ReadFile(filepath.Join(dir, strings.TrimPrefix(step.Results, "go-test-json:"))); err != nil {
-			return 0, 0, 0, "", err
+		raw, rerr := os.ReadFile(filepath.Join(dir, strings.TrimPrefix(step.Results, "go-test-json:")))
+		if rerr != nil {
+			return 0, 0, 0, "", nil, rerr
 		}
+		run, passed, failed, tests, err = ParseGoTestJSONTests(bytes.NewReader(raw))
+		return run, passed, failed, capReport(raw), tests, err
 	case strings.HasPrefix(step.Results, "junit:"):
-		if raw, err = os.ReadFile(filepath.Join(dir, strings.TrimPrefix(step.Results, "junit:"))); err != nil {
-			return 0, 0, 0, "", err
+		raw, rerr := os.ReadFile(filepath.Join(dir, strings.TrimPrefix(step.Results, "junit:")))
+		if rerr != nil {
+			return 0, 0, 0, "", nil, rerr
 		}
-		parse = ParseJUnit
+		run, passed, failed, err = ParseJUnit(bytes.NewReader(raw))
+		return run, passed, failed, capReport(raw), nil, err
 	default:
-		run, passed, failed, err = ParseGoTestJSON(bytes.NewReader(stdout))
-		return run, passed, failed, readReports(dir, step.Reports), err
+		run, passed, failed, tests, err = ParseGoTestJSONTests(bytes.NewReader(stdout))
+		return run, passed, failed, readReports(dir, step.Reports), tests, err
 	}
-	run, passed, failed, err = parse(bytes.NewReader(raw))
+}
+
+// capReport is raw cut to reportCap, as the attestation's report of it.
+func capReport(raw []byte) string {
 	if len(raw) > reportCap {
 		raw = raw[:reportCap]
 	}
-	return run, passed, failed, string(raw), err
+	return string(raw)
 }
 
 // readReports is the content of each of reports under dir that exists,
