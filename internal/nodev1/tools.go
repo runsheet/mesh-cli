@@ -71,9 +71,16 @@ func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace s
 				Refusal: func(since time.Time) string { return r.refusalSince(b.LeaseID, since) }}
 			out = append(out, p.Tool())
 		case nodetools.RunSuiteTool:
-			out = append(out, (&nodetools.RunSuite{Workspace: workspace, Recorder: rec, Run: suites,
+			rs := &nodetools.RunSuite{Workspace: workspace, Recorder: rec, Run: suites,
 				OnHost: suites == nil && r.hostSuites(), Escalate: escalateOn(ladder, mb, escalate.OnRed),
-				Wait: r.SuiteWait, Context: clock.ctx, Began: clock.began, Budget: r.suiteBudget(b, workspace)}).Tool())
+				Wait: r.SuiteWait, Context: clock.ctx, Began: clock.began, Budget: r.suiteBudget(b, workspace)}
+			if b.Results != nil {
+				rs.Results = *b.Results
+				if tokens != nil {
+					rs.Session = tokens
+				}
+			}
+			out = append(out, rs.Tool())
 		case nodetools.ApplyOntoTool:
 			var vendor string
 			if b.Git != nil {

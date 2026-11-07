@@ -206,9 +206,13 @@ type Brief struct {
 	Pushed []BriefPushed `json:"pushed,omitempty"`
 	// StopRules are the kind's stop rules, which the node checks over the
 	// session's stream, and Transcript the product's location for the
-	// session's redacted transcript (stoprules.go).
-	StopRules  []StopRule  `json:"stop_rules,omitempty"`
-	Transcript *Transcript `json:"transcript,omitempty"`
+	// session's redacted transcript (stoprules.go). Results is where
+	// run_suite's full raw test output goes when the product offers one;
+	// nil runs run_suite with no output upload at all, never to Mesh's
+	// blobs.
+	StopRules  []StopRule       `json:"stop_rules,omitempty"`
+	Transcript *Transcript      `json:"transcript,omitempty"`
+	Results    *ResultsLocation `json:"results,omitempty"`
 	// Tools are the kind's tool slots and Egress where its session may
 	// reach (projectmesh-io/api ADR 001 amendment, tool slots and
 	// egress); each nil when the kind declares none, which is not the
