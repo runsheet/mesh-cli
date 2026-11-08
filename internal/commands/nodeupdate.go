@@ -50,11 +50,14 @@ set, no image is pulled. Asked for the version already running, the
 command ensures its image and nothing else.
 
 Then the node running on this machine (its pid is in
-~/.mesh/node.pid) is drained as by ` + "`mesh node drain`" + `, and the executable
-is swapped atomically, the previous one kept as <path>.prev. The node
-exits when its sessions end and its service (systemd --user, launchd)
-starts the new binary; one that fails to start twice is rolled back to
-.prev.
+~/.mesh/node.pid) is drained as by ` + "`mesh node drain`" + `, and a Mesh v1 node
+running beside it (~/.mesh/node-v1/node.pid) is drained the same way: both
+run the one executable, so neither is left to start sessions or take a
+lease on a binary it is about to lose. Only then is the executable
+swapped atomically, the previous one kept as <path>.prev. Each node
+exits when its sessions or leases end and its service (systemd --user,
+launchd) starts the new binary; one that fails to start twice is rolled
+back to .prev.
 
 To upgrade without waiting for the sessions — the node restarts at once
 and the new process adopts them — use ` + "`mesh node upgrade`" + `.
@@ -99,6 +102,12 @@ type nodeUpdate struct {
 	// Drain drains the node Run names, reporting whether one was running;
 	// nil is drainIfRunning.
 	Drain func(node.RunState, io.Writer) (bool, error)
+	// V1Run is where a Mesh v1 node's pidfile is (~/.mesh/node-v1); drained
+	// alongside Run before the swap, since both run the one executable.
+	V1Run node.RunState
+	// V1Drain drains the Mesh v1 node V1Run names, reporting whether one
+	// was running; nil is drainV1IfRunning.
+	V1Drain func(node.RunState, io.Writer) (bool, error)
 	// Image makes the node image of a version present on this machine
 	// (SandboxConfig.EnsureImage); nil ensures none.
 	Image func(context.Context, string) (sandbox.Image, error)
@@ -120,12 +129,17 @@ func defaultNodeUpdate(out io.Writer) (*nodeUpdate, error) {
 	if err != nil {
 		return nil, err
 	}
+	v1Run, err := v1RunState()
+	if err != nil {
+		return nil, err
+	}
 	gh := selfupdate.GitHub{}
 	return &nodeUpdate{
 		Updater: &node.ReleaseUpdater{Source: gh, State: state, Exe: exe},
 		Latest:  gh.Latest,
 		Running: version.Resolved(),
 		Run:     run,
+		V1Run:   v1Run,
 		Image:   ensureNodeImage,
 		Out:     out,
 	}, nil
@@ -181,6 +195,15 @@ func (u *nodeUpdate) run(ctx context.Context, want string, verifyOnly bool) erro
 	if err != nil {
 		return fmt.Errorf("not updated: %w", err)
 	}
+	v1Drain := u.V1Drain
+	if v1Drain == nil {
+		v1Drain = drainV1IfRunning
+	}
+	v1Running, err := v1Drain(u.V1Run, u.Out)
+	if err != nil {
+		return fmt.Errorf("not updated: %w", err)
+	}
+	running = running || v1Running
 	err = u.Updater.Begin(u.Running, want, nil)
 	if err == nil {
 		err = u.Updater.Swap(bin)
