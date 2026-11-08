@@ -1,7 +1,12 @@
 package commands
 
 import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -39,6 +44,23 @@ var leaseEgressCmd = &cobra.Command{
 		logf := func(format string, a ...any) { fmt.Fprintf(cmd.ErrOrStderr(), format+"\n", a...) }
 
 		tunnel := &egress.Tunnel{Logf: logf}
+		if addr := os.Getenv(nodev1.TestEgressDialEnv); addr != "" {
+			dial := func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, addr)
+			}
+			tunnel.Dial = dial
+			if serverName := os.Getenv(nodev1.TestEgressUpstreamServerNameEnv); serverName != "" {
+				cfg := &tls.Config{ServerName: serverName}
+				if ca := os.Getenv(nodev1.TestEgressUpstreamCAEnv); ca != "" {
+					pool := x509.NewCertPool()
+					if !pool.AppendCertsFromPEM([]byte(ca)) {
+						return fmt.Errorf("lease-egress: %s: not a PEM certificate", nodev1.TestEgressUpstreamCAEnv)
+					}
+					cfg.RootCAs = pool
+				}
+				tunnel.Upstream = &http.Transport{DialContext: dial, TLSClientConfig: cfg}
+			}
+		}
 		srv := nodev1.NewLeaseEgressServer(tunnel, logf)
 
 		nodeClose, err := nodev1.ServeTunnelSocket(tunnel, leaseEgressOpts.Node)

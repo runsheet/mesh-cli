@@ -227,7 +227,7 @@ func TestTheInProcessRelayServesTheBriefsRegistry(t *testing.T) {
 func TestARelaySidecarServesTheBriefsRegistry(t *testing.T) {
 	g, sb, installed := sidecarRig(t)
 	reg := newLeaseRegistry(t)
-	g.rt.EgressDial = reg.dial
+	sidecarEgressDial(t, g, reg.srv.Listener.Addr().String())
 	g.sidecarRoots = reg.roots()
 	dir := t.TempDir()
 	probe, answers := filepath.Join(dir, "probe.js"), filepath.Join(dir, "answers")

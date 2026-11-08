@@ -32,6 +32,7 @@ func sidecarRig(t *testing.T) (*rig, *sandbox.Fake, *[][]byte) {
 	t.Helper()
 	g, sb, _ := podRig(t)
 	g.rt.RelaySidecar = true
+	g.rt.MeshBinary = testMeshBinary(t)
 	installed := &[][]byte{}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -88,6 +89,19 @@ func sidecarRig(t *testing.T) (*rig, *sandbox.Fake, *[][]byte) {
 	return g, sb, installed
 }
 
+// sidecarEgressDial redirects every egress dial to addr instead of the real
+// host: the in-process Runtime hook a podRig test uses, and — since a
+// sidecar lease's egress runs as a process of its own (ADR-051) and cannot
+// reach the test's own closures across the process boundary — the same
+// redirect told to that subprocess over its environment.
+func sidecarEgressDial(t *testing.T, g *rig, addr string) {
+	t.Helper()
+	g.rt.EgressDial = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, addr)
+	}
+	t.Setenv(TestEgressDialEnv, addr)
+}
+
 // A lease whose relay is a sidecar: its pod has no network at all and
 // shares only its network namespace; the sidecar runs on the node's own
 // binary with the lease's socket directory and its checkout (read-only)
@@ -102,9 +116,7 @@ func TestALeaseWhoseRelayIsASidecar(t *testing.T) {
 		io.WriteString(w, "reached "+r.Host)
 	}))
 	defer host.Close()
-	g.rt.EgressDial = func(ctx context.Context, network, _ string) (net.Conn, error) {
-		return (&net.Dialer{}).DialContext(ctx, network, host.Listener.Addr().String())
-	}
+	sidecarEgressDial(t, g, host.Listener.Addr().String())
 	dir := t.TempDir()
 	probe, answers := filepath.Join(dir, "probe.js"), filepath.Join(dir, "answers")
 	os.WriteFile(probe, []byte(egressProbe), 0o600)

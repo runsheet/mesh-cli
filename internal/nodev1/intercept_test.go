@@ -3,6 +3,7 @@ package nodev1
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"net"
 	"net/http"
@@ -67,6 +68,12 @@ func registryHostRig(t *testing.T, g *rig) {
 		return (&net.Dialer{}).DialContext(ctx, network, host.Listener.Addr().String())
 	}
 	g.rt.EgressDial = dial
+	// a sidecar lease's egress runs as a process of its own (ADR-051) and
+	// cannot reach these closures across the process boundary; harmless
+	// when no such process runs.
+	t.Setenv(TestEgressDialEnv, host.Listener.Addr().String())
+	t.Setenv(TestEgressUpstreamServerNameEnv, "example.com")
+	t.Setenv(TestEgressUpstreamCAEnv, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: host.Certificate().Raw})))
 	up := host.Client().Transport.(*http.Transport).Clone()
 	up.TLSClientConfig.ServerName = "example.com"
 	up.DialContext = dial

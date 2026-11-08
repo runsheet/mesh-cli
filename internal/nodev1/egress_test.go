@@ -241,9 +241,7 @@ func TestARelaySidecarsEgressIsReportedByTheNode(t *testing.T) {
 		io.WriteString(w, "reached "+r.Host)
 	}))
 	defer host.Close()
-	g.rt.EgressDial = func(ctx context.Context, network, _ string) (net.Conn, error) {
-		return (&net.Dialer{}).DialContext(ctx, network, host.Listener.Addr().String())
-	}
+	sidecarEgressDial(t, g, host.Listener.Addr().String())
 	dir := t.TempDir()
 	probe, answers := filepath.Join(dir, "probe.js"), filepath.Join(dir, "answers")
 	plain, plainAnswer := filepath.Join(dir, "plain.js"), filepath.Join(dir, "plain")

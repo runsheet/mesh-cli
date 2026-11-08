@@ -1,19 +1,23 @@
 package nodev1
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/egress"
@@ -80,6 +84,48 @@ const RelayURLEnv = "MESH_RELAY_URL"
 // relayReadyWait bounds the wait for the sidecar's control socket.
 const relayReadyWait = 60 * time.Second
 
+// Names in the lease's egress process's own private socket directory
+// (ADR-051 decision 1): reached by the node's UID alone, never the
+// pod's — the process's control socket, and its own node and lane
+// sockets, which the node's pod-facing relayNodeSocket and
+// relayLaneSocket forward every CONNECT onto unchanged.
+const (
+	egressControlSocket = "control"
+	egressNodeSocket    = "node"
+	egressLaneSocket    = "lane"
+)
+
+// TestEgressDialEnv, set in the lease-egress process's own environment,
+// redirects every dial it makes to the named address instead of the
+// real host. A test's own Runtime.EgressDial cannot reach a lease's
+// egress once it runs as a process of its own (ADR-051): this is its
+// equivalent across the process boundary, read only by the
+// lease-egress subcommand and never set outside a test.
+const TestEgressDialEnv = "MESH_LEASE_EGRESS_TEST_DIAL"
+
+// TestEgressUpstreamServerNameEnv, set alongside TestEgressDialEnv, is
+// the TLS ServerName a test's redirected dial must verify as instead of
+// the request's own host: a test server's certificate covers a name of
+// its own (example.com), never the real host (api.runsheet.dev) a
+// terminated request is addressed to. A test's own Runtime.EgressUpstream
+// carries the same override to the in-process tunnel's transport; this
+// is its equivalent for a lease's egress once it runs as a process of
+// its own (ADR-051), read only by the lease-egress subcommand and never
+// set outside a test.
+const TestEgressUpstreamServerNameEnv = "MESH_LEASE_EGRESS_TEST_UPSTREAM_SERVERNAME"
+
+// TestEgressUpstreamCAEnv, set alongside TestEgressUpstreamServerNameEnv,
+// is a PEM-encoded certificate the redirected dial's TLS verification
+// must trust in place of the system roots: a test server's certificate
+// is its own, signed by no root the subprocess otherwise holds. Mirrors
+// what a test's own Runtime.EgressUpstream trusts in-process by cloning
+// the test server's own client transport.
+const TestEgressUpstreamCAEnv = "MESH_LEASE_EGRESS_TEST_UPSTREAM_CA"
+
+// egressStopWait bounds the wait for the lease's egress process to
+// exit after SIGTERM before it is killed.
+const egressStopWait = 5 * time.Second
+
 // sidecarMode says the node runs each lease's relay as a sidecar.
 func (r *Runtime) sidecarMode() bool { return r.Pods != nil && r.RelaySidecar }
 
@@ -116,6 +162,29 @@ type relaySidecar struct {
 	// lanes serves the lease's egress to run_suite's lanes
 	// (openLaneTunnel)
 	lanes *http.Server
+
+	// laneHandler is the lane's inner handler when the lease's egress
+	// runs as a process of its own (ADR-051): forwardConnect onto its
+	// lane socket. nil when the tunnel is in process (rs.tunnel, above,
+	// serves the lane directly).
+	laneHandler http.Handler
+	// caPEM is the CA the lease's egress process minted for the rules it
+	// terminates (LeaseEgressStartResult), when the lease's egress runs
+	// as a process of its own: the pod trusts it the same way it would
+	// trust one minted in process (intercept.go's trust), since the CA
+	// itself never leaves that process.
+	caPEM []byte
+	// egressCmd is the lease's egress process (ADR-051 decision 1): its
+	// own process group, outside the node's and the pod's, ended by
+	// close (stopEgressProcess). nil when the lease's egress runs in
+	// process.
+	egressCmd *exec.Cmd
+	// egressDir is that process's own private socket directory
+	// (control, node, lane), reached by the node's UID alone.
+	egressDir string
+	// egressAuditCancel stops the goroutine reading that process's
+	// audit stream (ADR-051 decision 2).
+	egressAuditCancel context.CancelFunc
 
 	mu     sync.Mutex
 	minted []gitrelay.Token
@@ -219,16 +288,25 @@ func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe 
 	// in-process relay's (security.go)
 	report := r.egressReporter(b.LeaseID)
 	audit := r.tunnelAudit(b.LeaseID, "the relay sidecar's tunnel", report)
-	rs.tunnel = &egress.Tunnel{
-		Policy: policy, Dial: r.EgressDial, Logf: r.logf,
-		Audit: func(c egress.Call) {
-			if !c.Allowed {
-				audit(c)
-			}
-		},
-		Done: report,
+	// a lease whose relay runs as a process of its own (ADR-051) builds
+	// no tunnel here: that process keeps its own CA and rules, driven
+	// over its control socket below, once the pod-facing sockets are
+	// open. injects and federates stay entirely in process (ADR-051
+	// decision 4, a later goal): InjectRule is not representable over
+	// the wire yet.
+	outOfProcess := r.sidecarMode() && rs.lp != nil && !injects(b) && !federates(b)
+	if !outOfProcess {
+		rs.tunnel = &egress.Tunnel{
+			Policy: policy, Dial: r.EgressDial, Logf: r.logf,
+			Audit: func(c egress.Call) {
+				if !c.Allowed {
+					audit(c)
+				}
+			},
+			Done: report,
+		}
+		rs.ic.install(r, b.LeaseID, rs.tunnel)
 	}
-	rs.ic.install(r, b.LeaseID, rs.tunnel)
 	rs.node = &relaysidecar.Node{
 		Tunnel: rs.tunnel, Proxy: np, Renew: rs.renew, Logf: r.logf,
 		Access:  func(rec meshapi.AccessRecord) { r.keepAccess(b.LeaseID, rec) },
@@ -253,6 +331,11 @@ func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe 
 	creds, err := rs.credentials(ctx, sl)
 	if err != nil {
 		return nil, err
+	}
+	if outOfProcess {
+		if err := rs.startEgressProcess(ctx, policy, b, creds, report, audit); err != nil {
+			return nil, fmt.Errorf("the lease's egress process: %w", err)
+		}
 	}
 	raw, err := json.Marshal(creds)
 	if err != nil {
@@ -570,6 +653,233 @@ func (rs *relaySidecar) openOwn(ctx context.Context) error {
 	return nil
 }
 
+// startEgressProcess runs the lease's egress as a process of its own
+// (ADR-051 decision 1): mesh lease-egress, in its own process group, as
+// the node's own user — never a child of the node's process group, and
+// never inside the pod. It drives the process over its control socket
+// (decision 2): Start installs the policy and the sign rule the
+// session's tokens read of the moment, Credentials hands it the
+// lease's session token and DPoP key, and a goroutine streams its
+// audit back into the node's existing reporters until close cancels it
+// (decision 3: the actor owns the process's lifecycle, like a pod).
+// rs.node.Tunnel and rs.laneHandler become forwarding handlers onto the
+// process's own node and lane sockets: neither the sidecar nor a lane
+// ever sees an address change.
+func (rs *relaySidecar) startEgressProcess(ctx context.Context, policy *egress.Policy, b *meshapi.Brief, creds relaysidecar.Credentials, report, audit func(egress.Call)) error {
+	dir, err := rs.r.leaseSocketDir(rs.b.LeaseID + "\x00egress")
+	if err != nil {
+		return err
+	}
+	ctlSock := filepath.Join(dir, egressControlSocket)
+	nodeSock := filepath.Join(dir, egressNodeSocket)
+	laneSock := filepath.Join(dir, egressLaneSocket)
+	bin, err := relayBinary(rs.r.MeshBinary)
+	if err != nil {
+		os.RemoveAll(dir)
+		return err
+	}
+	cmd := exec.Command(bin, "lease-egress", "--control", ctlSock, "--node", nodeSock, "--lane", laneSock)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		os.RemoveAll(dir)
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		os.RemoveAll(dir)
+		return err
+	}
+	go func() {
+		sc := bufio.NewScanner(stderr)
+		for sc.Scan() {
+			rs.r.logf("nodev1: lease %s: lease-egress: %s", rs.b.LeaseID, sc.Text())
+		}
+	}()
+	if err := waitListening(ctx, ctlSock, relayReadyWait); err != nil {
+		stopEgressProcess(cmd)
+		os.RemoveAll(dir)
+		return fmt.Errorf("did not start: %w", err)
+	}
+	client := LeaseEgressClient{Socket: ctlSock}
+	var specs []egress.RuleSpec
+	if rs.ic != nil {
+		specs = rs.ic.specs
+	}
+	started, err := client.Start(ctx, LeaseEgressStartRequest{Hosts: policy.Hosts(), Open: b.Egress == nil, Rules: specs})
+	if err != nil {
+		stopEgressProcess(cmd)
+		os.RemoveAll(dir)
+		return err
+	}
+	if !started.Started {
+		stopEgressProcess(cmd)
+		os.RemoveAll(dir)
+		return fmt.Errorf("refused: %s", started.Refused)
+	}
+	replaced, err := client.Credentials(ctx, LeaseEgressCredentialsRequest{Key: creds.Key, Session: creds.Session})
+	if err != nil {
+		stopEgressProcess(cmd)
+		os.RemoveAll(dir)
+		return err
+	}
+	if !replaced.Replaced {
+		stopEgressProcess(cmd)
+		os.RemoveAll(dir)
+		return fmt.Errorf("credentials refused: %s", replaced.Refused)
+	}
+	actx, cancel := context.WithCancel(context.Background())
+	reqAudit := rs.r.interceptAudit(rs.b.LeaseID)
+	go func() {
+		for actx.Err() == nil {
+			_ = client.Audit(actx, nil, func(ev AuditEvent) {
+				switch ev.Kind {
+				case "call":
+					if ev.Call != nil && !ev.Call.Allowed {
+						audit(*ev.Call)
+					}
+				case "done":
+					if ev.Call != nil {
+						report(*ev.Call)
+					}
+				case "request":
+					if ev.Request != nil {
+						reqAudit(*ev.Request)
+					}
+				}
+			})
+			if actx.Err() != nil {
+				return
+			}
+			select {
+			case <-actx.Done():
+				return
+			case <-time.After(time.Second):
+			}
+		}
+	}()
+	rs.mu.Lock()
+	rs.caPEM = started.CACertPEM
+	rs.egressCmd, rs.egressDir, rs.egressAuditCancel = cmd, dir, cancel
+	rs.mu.Unlock()
+	rs.node.Tunnel = rs.forwardConnect(nodeSock, func(r *http.Request) bool { return egress.IsSpliceOnly(r.Context()) })
+	rs.laneHandler = rs.forwardConnect(laneSock, nil)
+	return nil
+}
+
+// forwardConnect is the node's CONNECT-forwarding handler onto the
+// lease's egress process (ADR-051 decision 1): the node's own node and
+// lane sockets forward every CONNECT here unchanged, so neither the
+// sidecar nor a lane ever sees an address change. own, when it answers
+// true for the request, re-sends the sidecar's own dial mark
+// (relaysidecar.OwnHeader) on the forwarded CONNECT, since
+// egress.SpliceOnly cannot cross the socket boundary — the process
+// re-derives it there the same way relaysidecar.Node.ServeHTTP does
+// for the in-process tunnel.
+func (rs *relaySidecar) forwardConnect(sock string, own func(*http.Request) bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		mark := ""
+		if own != nil && own(r) {
+			mark = relaysidecar.OwnHeader + ": own\r\n"
+		}
+		var d net.Dialer
+		up, err := d.DialContext(r.Context(), "unix", sock)
+		if err != nil {
+			egress.Refuse(w, "internal", "the lease's egress process: "+err.Error())
+			return
+		}
+		if _, err := fmt.Fprintf(up, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n%s\r\n", r.Host, r.Host, mark); err != nil {
+			up.Close()
+			egress.Refuse(w, "internal", "the lease's egress process: "+err.Error())
+			return
+		}
+		br := bufio.NewReader(up)
+		resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
+		if err != nil {
+			up.Close()
+			egress.Refuse(w, "internal", "the lease's egress process: "+err.Error())
+			return
+		}
+		if resp.StatusCode != http.StatusOK {
+			for k, vv := range resp.Header {
+				for _, v := range vv {
+					w.Header().Add(k, v)
+				}
+			}
+			w.WriteHeader(resp.StatusCode)
+			_, _ = io.Copy(w, io.LimitReader(resp.Body, 1<<16))
+			resp.Body.Close()
+			up.Close()
+			return
+		}
+		resp.Body.Close()
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			up.Close()
+			egress.Refuse(w, "internal", "the relay cannot open a tunnel here")
+			return
+		}
+		conn, brw, err := hj.Hijack()
+		if err != nil {
+			up.Close()
+			return
+		}
+		if _, err := io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+			conn.Close()
+			up.Close()
+			return
+		}
+		forwardPipe(conn, brw.Reader, up, br)
+		conn.Close()
+		up.Close()
+	}
+}
+
+// forwardPipe copies the pod's (or lane's) hijacked connection, read
+// through r (what the hijack buffered), to the lease's egress process
+// and back, through upR (what the CONNECT handshake buffered there),
+// until either side ends.
+func forwardPipe(client net.Conn, r io.Reader, up net.Conn, upR io.Reader) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		io.Copy(up, r)
+		closeWriteConn(up)
+	}()
+	go func() {
+		defer wg.Done()
+		io.Copy(client, upR)
+		closeWriteConn(client)
+	}()
+	wg.Wait()
+}
+
+func closeWriteConn(c net.Conn) {
+	if cw, ok := c.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+		return
+	}
+	_ = c.Close()
+}
+
+// stopEgressProcess ends the lease's egress process (ADR-051 decision
+// 3: the actor owns its lifecycle, like a pod): SIGTERM, a bounded
+// wait for its own exit, then SIGKILL — its own process group, never
+// the node's own (ADR-051 decision 1), so a kill here never touches
+// the node.
+func stopEgressProcess(cmd *exec.Cmd) {
+	done := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(done) }()
+	_ = cmd.Process.Signal(syscall.SIGTERM)
+	select {
+	case <-done:
+		return
+	case <-time.After(egressStopWait):
+	}
+	_ = cmd.Process.Kill()
+	<-done
+}
+
 // close ends the node's side: the socket and its tunnels, the node's own
 // proxy, every git token minted for the sidecar, and the socket
 // directory. The sidecar and its tmpfs go with the pod.
@@ -581,6 +891,7 @@ func (rs *relaySidecar) close() error {
 	}
 	rs.closed = true
 	minted, lanes := rs.minted, rs.lanes
+	auditCancel, egressCmd, egressDir := rs.egressAuditCancel, rs.egressCmd, rs.egressDir
 	rs.mu.Unlock()
 	if rs.node != nil {
 		_ = rs.node.Close()
@@ -591,6 +902,15 @@ func (rs *relaySidecar) close() error {
 	if rs.own != nil {
 		rs.own.Close()
 		os.RemoveAll(rs.ownDir)
+	}
+	if auditCancel != nil {
+		auditCancel()
+	}
+	if egressCmd != nil && egressCmd.Process != nil {
+		stopEgressProcess(egressCmd)
+	}
+	if egressDir != "" {
+		os.RemoveAll(egressDir)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
 	defer cancel()
@@ -662,7 +982,13 @@ const (
 // node's side: no renewal, no credentials, no node tools, no model.
 // The lease's end closes it.
 func (rs *relaySidecar) openLaneTunnel() (string, error) {
-	if rs.tunnel == nil {
+	var inner http.Handler
+	switch {
+	case rs.laneHandler != nil:
+		inner = rs.laneHandler
+	case rs.tunnel != nil:
+		inner = rs.tunnel
+	default:
 		return "", errors.New("the lease has no egress tunnel")
 	}
 	dir := filepath.Join(rs.dir, relayLaneDir)
@@ -679,7 +1005,6 @@ func (rs *relaySidecar) openLaneTunnel() (string, error) {
 		ln.Close()
 		return "", err
 	}
-	tunnel := rs.tunnel
 	srv := &http.Server{ReadHeaderTimeout: 30 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodConnect {
 			http.Error(w, "a lane reaches the lease's egress by CONNECT alone", http.StatusForbidden)
@@ -687,7 +1012,7 @@ func (rs *relaySidecar) openLaneTunnel() (string, error) {
 		}
 		// never the sidecar's own connection, whatever a step says
 		r.Header.Del(relaysidecar.OwnHeader)
-		tunnel.ServeHTTP(w, r)
+		inner.ServeHTTP(w, r)
 	})}
 	rs.mu.Lock()
 	rs.lanes = srv
