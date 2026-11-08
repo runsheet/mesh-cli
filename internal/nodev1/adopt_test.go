@@ -286,15 +286,7 @@ func TestNodeAdoptsHandoffAtStart(t *testing.T) {
 		// egressAlive signals the process group by pid, so the fixture
 		// needs a real, alive process of its own -- a throwaway one, with
 		// no part in the fake control/node protocol above.
-		cmd := exec.Command("sleep", "30")
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		if err := cmd.Start(); err != nil {
-			t.Fatalf("starting a throwaway process to stand in for the egress process: %v", err)
-		}
-		t.Cleanup(func() {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			_ = cmd.Wait()
-		})
+		cmd := startThrowawayProcessGroup(t)
 
 		writeHandoffFixture(t, g, leaseID, &handoffState{
 			Brief:         brief,
@@ -348,6 +340,108 @@ func TestNodeAdoptsHandoffAtStart(t *testing.T) {
 		if string(got) != marker {
 			t.Fatalf("got %q through the tunnel, want %q", got, marker)
 		}
+
+		// The claimed egress process is noted in actor.json exactly as a
+		// freshly started one is, so a second crash -- the adopting node
+		// itself dying before it releases -- still finds and stops it
+		// (releaseLeftovers, ADR-051 decision 5).
+		rec := readActorRecord(t, g, leaseID)
+		if rec.EgressPID != cmd.Process.Pid || rec.EgressControl != filepath.Join(egressDir, egressControlSocket) {
+			t.Fatalf("actor.json's egress process = %d/%q, want %d/%q", rec.EgressPID, rec.EgressControl, cmd.Process.Pid, filepath.Join(egressDir, egressControlSocket))
+		}
+	})
+
+	// An egress process that is still alive but refuses the fresh
+	// credentials is never left both disowned by the old process
+	// (Upgrade unconditionally disowns it the moment the hand-off is
+	// written, handoff.go) and unclaimed by the new one: adoptOne stops
+	// it itself (stopUnclaimedEgress), since its stale pre-upgrade
+	// credentials are no further use to anyone and node.Tunnel never
+	// gets wired to it.
+	t.Run("with an egress process that refuses fresh credentials", func(t *testing.T) {
+		g := newRig(t, nil)
+		g.rt.Scheduler = scheduler.New(scheduler.Capacity{CPUs: 4, MemGB: 8, Slots: 1})
+
+		leaseID, brief := mintLease(t, g, func(b *meshapi.Brief) { b.FinishTool = "submit" })
+		if _, err := openSession(context.Background(), g.rt.API, leaseID, nil); err != nil {
+			t.Fatalf("opening the lease's original session: %v", err)
+		}
+
+		sidecarDir := filepath.Join(t.TempDir(), "sidecar")
+		startFakeSidecarControl(t, sidecarDir)
+
+		egressDir := filepath.Join(t.TempDir(), "egress")
+		egressProc := startFakeEgressProcess(t, egressDir, "unreachable through a refused tunnel\n")
+		egressProc.setRefuse("the egress process's own credentials policy")
+
+		cmd := startThrowawayProcessGroup(t)
+
+		writeHandoffFixture(t, g, leaseID, &handoffState{
+			Brief:         brief,
+			SidecarDir:    sidecarDir,
+			EgressPID:     cmd.Process.Pid,
+			EgressControl: filepath.Join(egressDir, egressControlSocket),
+		})
+
+		g.rt.adoptHandoffs(context.Background())
+
+		nodeSocket := filepath.Join(sidecarDir, relayNodeSocket)
+		waitFor(t, "the adopted lease's node socket", func() bool {
+			_, err := os.Stat(nodeSocket)
+			return err == nil
+		})
+		waitFor(t, "the refused egress process to be stopped", func() bool {
+			return !egressAlive(cmd.Process.Pid)
+		})
+
+		rec := readActorRecord(t, g, leaseID)
+		if rec.EgressPID != 0 || rec.EgressControl != "" {
+			t.Fatalf("actor.json named an unclaimed egress process: %d/%q", rec.EgressPID, rec.EgressControl)
+		}
+	})
+
+	// An egress process whose control socket cannot be reached at all --
+	// gone, or never came back up -- is stopped the same way: adoptOne
+	// never leaves a confirmed-alive process neither claimed nor
+	// stopped.
+	t.Run("with an unreachable egress control socket", func(t *testing.T) {
+		g := newRig(t, nil)
+		g.rt.Scheduler = scheduler.New(scheduler.Capacity{CPUs: 4, MemGB: 8, Slots: 1})
+
+		leaseID, brief := mintLease(t, g, func(b *meshapi.Brief) { b.FinishTool = "submit" })
+		if _, err := openSession(context.Background(), g.rt.API, leaseID, nil); err != nil {
+			t.Fatalf("opening the lease's original session: %v", err)
+		}
+
+		sidecarDir := filepath.Join(t.TempDir(), "sidecar")
+		startFakeSidecarControl(t, sidecarDir)
+
+		cmd := startThrowawayProcessGroup(t)
+
+		writeHandoffFixture(t, g, leaseID, &handoffState{
+			Brief:      brief,
+			SidecarDir: sidecarDir,
+			EgressPID:  cmd.Process.Pid,
+			// No process listens here: the push over this socket fails
+			// outright, never answering Replaced at all.
+			EgressControl: filepath.Join(t.TempDir(), "gone", egressControlSocket),
+		})
+
+		g.rt.adoptHandoffs(context.Background())
+
+		nodeSocket := filepath.Join(sidecarDir, relayNodeSocket)
+		waitFor(t, "the adopted lease's node socket", func() bool {
+			_, err := os.Stat(nodeSocket)
+			return err == nil
+		})
+		waitFor(t, "the unreachable egress process to be stopped", func() bool {
+			return !egressAlive(cmd.Process.Pid)
+		})
+
+		rec := readActorRecord(t, g, leaseID)
+		if rec.EgressPID != 0 || rec.EgressControl != "" {
+			t.Fatalf("actor.json named an unclaimed egress process: %d/%q", rec.EgressPID, rec.EgressControl)
+		}
 	})
 }
 
@@ -397,11 +491,13 @@ func postNodeSocket(t *testing.T, socket, path, body string, out any) {
 // socket takes a CONNECT the way the real process's tunnel would,
 // answering 200 then writing marker -- what a test dialing the adopted
 // lease's own node socket should see forwarded through adoptOne's
-// tunnel.
+// tunnel. refuse, set before adoptOne runs, makes every credentials
+// push answer Replaced: false with that reason instead.
 type fakeEgressProcess struct {
 	mu     sync.Mutex
 	calls  []LeaseEgressCredentialsRequest
 	marker string
+	refuse string
 	ctlSrv *http.Server
 	nodeLn net.Listener
 }
@@ -426,8 +522,13 @@ func startFakeEgressProcess(t *testing.T, dir, marker string) *fakeEgressProcess
 		}
 		f.mu.Lock()
 		f.calls = append(f.calls, req)
+		refuse := f.refuse
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		if refuse != "" {
+			json.NewEncoder(w).Encode(LeaseEgressCredentialsResult{Refused: refuse})
+			return
+		}
 		json.NewEncoder(w).Encode(LeaseEgressCredentialsResult{Replaced: true})
 	})
 	f.ctlSrv = &http.Server{Handler: mux}
@@ -473,6 +574,47 @@ func (f *fakeEgressProcess) credentials() []LeaseEgressCredentialsRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]LeaseEgressCredentialsRequest(nil), f.calls...)
+}
+
+func (f *fakeEgressProcess) setRefuse(reason string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.refuse = reason
+}
+
+// startThrowawayProcessGroup starts a long-lived process in its own
+// process group to stand in for a lease's egress process: egressAlive
+// and stopLeftoverEgress signal a real process group, not the fake
+// control/node protocol above. A background Wait reaps it the moment
+// it dies -- otherwise it would sit a zombie, still answering
+// egressAlive's Kill(pid, 0) as present, until the test's own Cleanup
+// got around to reaping it.
+func startThrowawayProcessGroup(t *testing.T) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command("sleep", "30")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting a throwaway process to stand in for the egress process: %v", err)
+	}
+	go func() { _ = cmd.Wait() }()
+	t.Cleanup(func() {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	})
+	return cmd
+}
+
+// readActorRecord reads the adopted lease's actor.json.
+func readActorRecord(t *testing.T, g *rig, leaseID string) actor.Record {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(g.rt.leaseDir(leaseID), actor.FileName))
+	if err != nil {
+		t.Fatalf("reading actor.json: %v", err)
+	}
+	var rec actor.Record
+	if err := json.Unmarshal(data, &rec); err != nil {
+		t.Fatalf("unmarshalling actor.json: %v", err)
+	}
+	return rec
 }
 
 // A hand-off a node cannot pick back up -- unreadable, or its sidecar
