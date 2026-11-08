@@ -832,4 +832,9 @@ const (
 	// vendor (401 or 403): Mesh does not count it against the job, cools
 	// the account down and offers the job again on another (ADR-048).
 	CauseAccountRefused = "account_refused"
+	// CauseEgressDied is the lease's egress process — its own process
+	// group, outside the node's and the pod's — ending on its own while
+	// the lease was still live: the node's condition, never the work's
+	// (ADR-051 decision 3), like pod_killed.
+	CauseEgressDied = "egress_died"
 )

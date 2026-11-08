@@ -339,6 +339,13 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		}
 	}
 	r.setPushHeads(b.LeaseID, pushHeads)
+	// the lease's relay sidecar, named here, before its pod: its egress
+	// process (ADR-051), started later once rs.open runs, is held before
+	// the pod's hold so Release's reverse-of-order stops it after the
+	// pod (ADR-051 decision 3). A lease that never starts one (no
+	// sidecar, or the tunnel runs in process) releases nothing here.
+	var rs *relaySidecar
+	keep("the lease's egress process", func() error { return rs.stopEgress() })
 	// the lease's pod, with --sandbox: its services start once the
 	// checkout declares them, before the session (podsession.go)
 	var lp *leasePod
@@ -400,7 +407,6 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		lp.proxyEnv = append(lp.proxyEnv, ic.env...)
 	}
 	// the lease's relay as a sidecar in its pod (relaypod.go)
-	var rs *relaySidecar
 	if r.sidecarMode() && lp != nil {
 		if rs, err = r.prepareRelaySidecar(ctx, b, lp, tokens); err != nil {
 			return outcome{err: fmt.Errorf("the lease's relay sidecar: %w", err), cause: context.Cause(ctx)}
@@ -460,6 +466,14 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		if servers, err = rs.open(ctx, tools, fin.observe, gate, account, sl, workspace); err != nil {
 			return outcome{err: fmt.Errorf("the lease's relay sidecar: %w", err), cause: context.Cause(ctx)}
 		}
+		if a != nil {
+			if pid := rs.egressPID(); pid != 0 {
+				a.SetEgress(pid, rs.egressControlSocket())
+			}
+		}
+		// the lease's egress process dying on its own, never stopped by
+		// the actor, ends the lease egress_died (leaseegress.go)
+		go r.watchEgress(ctx, rs, endLease)
 		if outOfProcess && len(rs.caPEM) > 0 {
 			if err := lp.trustPEM(rs.caPEM, r.logf, b.LeaseID); err != nil {
 				return outcome{err: fmt.Errorf("the lease's pod: trusting its relay: %w", err), cause: context.Cause(ctx)}
@@ -885,6 +899,17 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) (end actor.End)
 		reason := "the thread was quiet for its park_after"
 		r.handBack(id, meshapi.CauseParked, reason, o.result.SessionID)
 		return actor.End{Report: actor.ReportHandBack, Cause: meshapi.CauseParked, Reason: reason}
+	}
+	// the lease's egress process dying on its own is the node's condition
+	// too, never the work's (ADR-051 decision 3): handed back
+	// egress_died, writes or not
+	if why, ok := egressDied(o); ok && r.Actors {
+		r.postAccess(id, o.access)
+		r.postUsage(id, o)
+		reason := afterWrites(why, writes)
+		r.logf("nodev1: lease %s: %s", id, reason)
+		r.handBack(id, meshapi.CauseEgressDied, reason, o.result.SessionID)
+		return actor.End{Report: actor.ReportHandBack, Cause: meshapi.CauseEgressDied, Reason: reason}
 	}
 	// a job actor's session, its pod or a run_suite step killed from
 	// outside is the node's condition, never the work's (ADR-044): handed

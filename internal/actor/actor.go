@@ -76,6 +76,17 @@ type Record struct {
 	End *End `json:"end,omitempty"`
 	// Reported is Mesh having heard the end.
 	Reported bool `json:"reported,omitempty"`
+	// Egress is the lease's egress process, once it has one (ADR-051
+	// decision 3): named here before the actor leaves preparing, so a
+	// node that restarts (Leftovers) can find and stop it.
+	Egress *EgressRef `json:"egress,omitempty"`
+}
+
+// EgressRef is a lease's egress process as actor.json names it: its pid
+// and the control socket that drives it (ADR-051 decisions 2 and 3).
+type EgressRef struct {
+	PID     int    `json:"pid"`
+	Control string `json:"control"`
 }
 
 // End is how a lease ended: a finish, a failure (cause work, or a
@@ -255,6 +266,20 @@ func (a *Actor) HoldPod(name string, remove func() error) {
 	a.rec.Pods = append(a.rec.Pods, name)
 	a.mu.Unlock()
 	a.Hold("pod "+name, remove)
+}
+
+// SetEgress records the lease's egress process in actor.json — its pid
+// and control socket — before the actor leaves preparing (ADR-051
+// decision 3), so a node that restarts (Leftovers) can find and stop
+// it. It takes no hold of its own: the hold that stops the process is
+// registered separately, ordered against the lease's other holds.
+func (a *Actor) SetEgress(pid int, control string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.rec.Egress = &EgressRef{PID: pid, Control: control}
+	if err := a.writeLocked(); err != nil {
+		a.logf("actor: lease %s: %v", a.rec.LeaseID, err)
+	}
 }
 
 // Ended records how the lease ended, before it is reported.

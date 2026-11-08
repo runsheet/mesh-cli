@@ -362,6 +362,11 @@ func (r *Runtime) releaseLeftovers(adopting map[string]bool) {
 			}
 			cancel()
 		}
+		if eg := rec.Egress; eg != nil && eg.PID != 0 {
+			if err := stopLeftoverEgress(eg.PID); err != nil {
+				r.logf("nodev1: lease %s: stopping its egress process %d: %v", rec.LeaseID, eg.PID, err)
+			}
+		}
 		if err := os.RemoveAll(l.Dir); err != nil {
 			r.logf("nodev1: lease %s: removing %s: %v", rec.LeaseID, l.Dir, err)
 		}

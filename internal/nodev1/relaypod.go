@@ -176,15 +176,23 @@ type relaySidecar struct {
 	caPEM []byte
 	// egressCmd is the lease's egress process (ADR-051 decision 1): its
 	// own process group, outside the node's and the pod's, ended by
-	// close (stopEgressProcess). nil when the lease's egress runs in
-	// process.
+	// stopEgress, held by the actor after the pod so it stops after it
+	// (ADR-051 decision 3). nil when the lease's egress runs in process.
 	egressCmd *exec.Cmd
+	// egressDone closes when egressCmd's Wait returns: the one goroutine
+	// that calls it, shared by every path that waits for the process to
+	// exit (stopEgress, watchEgress).
+	egressDone chan struct{}
 	// egressDir is that process's own private socket directory
 	// (control, node, lane), reached by the node's UID alone.
 	egressDir string
 	// egressAuditCancel stops the goroutine reading that process's
 	// audit stream (ADR-051 decision 2).
 	egressAuditCancel context.CancelFunc
+	// egressWaitErr is egressCmd's Wait error, set once egressDone
+	// closes: watchEgress reads it to classify an unexpected exit
+	// (ADR-051 decision 3). Set under mu before egressDone closes.
+	egressWaitErr error
 
 	mu     sync.Mutex
 	minted []gitrelay.Token
@@ -197,6 +205,29 @@ func (rs *relaySidecar) base() string { return rs.lp.bridgeBase() }
 // controlSocket is the sidecar's control socket on the host.
 func (rs *relaySidecar) controlSocket() string {
 	return filepath.Join(rs.dir, relayControlDir, relayControlSocket)
+}
+
+// egressPID is the lease's egress process's pid, 0 before it starts or
+// once stopEgress has run.
+func (rs *relaySidecar) egressPID() int {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if rs.egressCmd == nil || rs.egressCmd.Process == nil {
+		return 0
+	}
+	return rs.egressCmd.Process.Pid
+}
+
+// egressControlSocket is the egress process's own control socket
+// (distinct from controlSocket, the sidecar's), "" before it starts or
+// once stopEgress has run.
+func (rs *relaySidecar) egressControlSocket() string {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if rs.egressDir == "" {
+		return ""
+	}
+	return filepath.Join(rs.egressDir, egressControlSocket)
 }
 
 // prepareRelaySidecar makes the lease's socket directory for its
@@ -689,6 +720,14 @@ func (rs *relaySidecar) startEgressProcess(ctx context.Context, policy *egress.P
 		os.RemoveAll(dir)
 		return err
 	}
+	done := make(chan struct{})
+	go func() {
+		err := cmd.Wait()
+		rs.mu.Lock()
+		rs.egressWaitErr = err
+		rs.mu.Unlock()
+		close(done)
+	}()
 	go func() {
 		sc := bufio.NewScanner(stderr)
 		for sc.Scan() {
@@ -696,7 +735,7 @@ func (rs *relaySidecar) startEgressProcess(ctx context.Context, policy *egress.P
 		}
 	}()
 	if err := waitListening(ctx, ctlSock, relayReadyWait); err != nil {
-		stopEgressProcess(cmd)
+		stopEgressProcess(cmd, done)
 		os.RemoveAll(dir)
 		return fmt.Errorf("did not start: %w", err)
 	}
@@ -707,23 +746,23 @@ func (rs *relaySidecar) startEgressProcess(ctx context.Context, policy *egress.P
 	}
 	started, err := client.Start(ctx, LeaseEgressStartRequest{Hosts: policy.Hosts(), Open: b.Egress == nil, Rules: specs})
 	if err != nil {
-		stopEgressProcess(cmd)
+		stopEgressProcess(cmd, done)
 		os.RemoveAll(dir)
 		return err
 	}
 	if !started.Started {
-		stopEgressProcess(cmd)
+		stopEgressProcess(cmd, done)
 		os.RemoveAll(dir)
 		return fmt.Errorf("refused: %s", started.Refused)
 	}
 	replaced, err := client.Credentials(ctx, LeaseEgressCredentialsRequest{Key: creds.Key, Session: creds.Session})
 	if err != nil {
-		stopEgressProcess(cmd)
+		stopEgressProcess(cmd, done)
 		os.RemoveAll(dir)
 		return err
 	}
 	if !replaced.Replaced {
-		stopEgressProcess(cmd)
+		stopEgressProcess(cmd, done)
 		os.RemoveAll(dir)
 		return fmt.Errorf("credentials refused: %s", replaced.Refused)
 	}
@@ -759,7 +798,7 @@ func (rs *relaySidecar) startEgressProcess(ctx context.Context, policy *egress.P
 	}()
 	rs.mu.Lock()
 	rs.caPEM = started.CACertPEM
-	rs.egressCmd, rs.egressDir, rs.egressAuditCancel = cmd, dir, cancel
+	rs.egressCmd, rs.egressDone, rs.egressDir, rs.egressAuditCancel = cmd, done, dir, cancel
 	rs.mu.Unlock()
 	rs.node.Tunnel = rs.forwardConnect(nodeSock, func(r *http.Request) bool { return egress.IsSpliceOnly(r.Context()) })
 	rs.laneHandler = rs.forwardConnect(laneSock, nil)
@@ -863,13 +902,11 @@ func closeWriteConn(c net.Conn) {
 }
 
 // stopEgressProcess ends the lease's egress process (ADR-051 decision
-// 3: the actor owns its lifecycle, like a pod): SIGTERM, a bounded
-// wait for its own exit, then SIGKILL — its own process group, never
-// the node's own (ADR-051 decision 1), so a kill here never touches
-// the node.
-func stopEgressProcess(cmd *exec.Cmd) {
-	done := make(chan struct{})
-	go func() { _ = cmd.Wait(); close(done) }()
+// 3): SIGTERM, a bounded wait for its own exit (on done, the one
+// goroutine that calls cmd.Wait, shared with watchEgress), then
+// SIGKILL — its own process group, never the node's own (ADR-051
+// decision 1), so a kill here never touches the node.
+func stopEgressProcess(cmd *exec.Cmd, done <-chan struct{}) {
 	_ = cmd.Process.Signal(syscall.SIGTERM)
 	select {
 	case <-done:
@@ -880,9 +917,36 @@ func stopEgressProcess(cmd *exec.Cmd) {
 	<-done
 }
 
+// stopEgress ends the lease's egress process, its control-audit reader
+// and its socket directory (ADR-051 decision 3). It is held by the
+// actor after the pod's hold, so it is released after the pod is
+// removed, in the reverse of the order taken; a lease with no egress
+// process (rs nil, or the sidecar never started one) does nothing.
+func (rs *relaySidecar) stopEgress() error {
+	if rs == nil {
+		return nil
+	}
+	rs.mu.Lock()
+	auditCancel, cmd, done, dir := rs.egressAuditCancel, rs.egressCmd, rs.egressDone, rs.egressDir
+	rs.egressAuditCancel, rs.egressCmd, rs.egressDone, rs.egressDir = nil, nil, nil, ""
+	rs.mu.Unlock()
+	if auditCancel != nil {
+		auditCancel()
+	}
+	if cmd != nil && cmd.Process != nil {
+		stopEgressProcess(cmd, done)
+	}
+	if dir != "" {
+		os.RemoveAll(dir)
+	}
+	return nil
+}
+
 // close ends the node's side: the socket and its tunnels, the node's own
 // proxy, every git token minted for the sidecar, and the socket
-// directory. The sidecar and its tmpfs go with the pod.
+// directory. The sidecar and its tmpfs go with the pod. It does not
+// touch the lease's egress process: that is stopEgress's, held by the
+// actor to run after the pod (ADR-051 decision 3).
 func (rs *relaySidecar) close() error {
 	rs.mu.Lock()
 	if rs.closed {
@@ -891,7 +955,6 @@ func (rs *relaySidecar) close() error {
 	}
 	rs.closed = true
 	minted, lanes := rs.minted, rs.lanes
-	auditCancel, egressCmd, egressDir := rs.egressAuditCancel, rs.egressCmd, rs.egressDir
 	rs.mu.Unlock()
 	if rs.node != nil {
 		_ = rs.node.Close()
@@ -902,15 +965,6 @@ func (rs *relaySidecar) close() error {
 	if rs.own != nil {
 		rs.own.Close()
 		os.RemoveAll(rs.ownDir)
-	}
-	if auditCancel != nil {
-		auditCancel()
-	}
-	if egressCmd != nil && egressCmd.Process != nil {
-		stopEgressProcess(egressCmd)
-	}
-	if egressDir != "" {
-		os.RemoveAll(egressDir)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
 	defer cancel()
