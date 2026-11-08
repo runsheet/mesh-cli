@@ -382,6 +382,12 @@ type running struct {
 	// sidecar at all).
 	egressPID     int
 	egressControl string
+	// disownEgress tells the lease's egress watch (relaypod.go's
+	// watchEgress) that the process is no longer this node's to watch:
+	// Upgrade calls it once the lease's hand-off is written, since the
+	// adopter now holds the process and stops it at its own release.
+	// nil for a lease whose egress process this node did not start.
+	disownEgress func()
 }
 
 // touch is the lease's session showing progress: its progress_at in the
