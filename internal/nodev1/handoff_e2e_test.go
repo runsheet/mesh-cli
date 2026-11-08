@@ -7,14 +7,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/egress"
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/sandbox"
+	"projectmesh.io/mesh-cli/internal/scheduler"
 )
 
 // TestAnUpgradeHandsBackInterceptingLeasesAndAdoptsTheRestNextStart is
@@ -68,6 +72,9 @@ func TestAnUpgradeHandsBackInterceptingLeasesAndAdoptsTheRestNextStart(t *testin
 	// until Mesh has heard of the hand-back.
 	sess := &stubSession{hold: make(chan struct{})}
 	g, sb := actorRig(t, sess)
+	// two leases are adopted together below; actorRig's own scheduler
+	// has room for one.
+	g.rt.Scheduler = scheduler.New(scheduler.Capacity{CPUs: 4, MemGB: 8, Slots: 2})
 	g.rt.Logf = record
 	g.rt.Pods = &sandbox.Sandbox{Runtime: sb, Logf: t.Logf, Config: sandbox.Config{
 		Image:          "mesh-node:test",
@@ -132,13 +139,70 @@ func TestAnUpgradeHandsBackInterceptingLeasesAndAdoptsTheRestNextStart(t *testin
 
 	writeHandoffFixture(t, g, leaseID, &handoffState{Brief: brief, SidecarDir: sidecarDir})
 
-	adoptCtx, adoptCancel := context.WithCancel(context.Background())
-	defer adoptCancel()
-	g.rt.adoptHandoffs(adoptCtx)
+	// --- a second hand-off, left beside the first by the same upgrade:
+	// an intercepting lease whose egress runs as a process of its own
+	// (ADR-051), still alive, so adoptability would have left it running
+	// rather than handing it back (handoff.go's Upgrade). Its egress is
+	// the real "mesh lease-egress" binary, not a fake, because this
+	// item's acceptance asks for a genuinely signed request after
+	// adoption, not just a credentials push: adoptOne pushes it the same
+	// freshly minted session key it pushes the sidecar (adopt.go), and
+	// registryHostRig's env vars -- already set above, before Run --
+	// reach it across the process boundary the same way they would the
+	// real one.
+	bin := testMeshBinary(t)
+	egressDir := filepath.Join(t.TempDir(), "egress")
+	if err := os.MkdirAll(egressDir, 0o755); err != nil {
+		t.Fatalf("making the egress process's directory: %v", err)
+	}
+	ctlSock := filepath.Join(egressDir, egressControlSocket)
+	egressSock := filepath.Join(egressDir, egressNodeSocket)
+	egressCmd := exec.Command(bin, "lease-egress", "--control", ctlSock, "--node", egressSock)
+	egressCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	egressCmd.Stderr = os.Stderr
+	if err := egressCmd.Start(); err != nil {
+		t.Fatalf("starting the real lease-egress process: %v", err)
+	}
+	go func() { _ = egressCmd.Wait() }()
+	t.Cleanup(func() { _ = syscall.Kill(-egressCmd.Process.Pid, syscall.SIGKILL) })
+	if err := waitListening(context.Background(), ctlSock, relayReadyWait); err != nil {
+		t.Fatalf("the real lease-egress process's control socket: %v", err)
+	}
+	egressClient := LeaseEgressClient{Socket: ctlSock}
+	startRes, err := egressClient.Start(context.Background(), LeaseEgressStartRequest{
+		Hosts: []string{"api.runsheet.dev"},
+		Rules: []egress.RuleSpec{{Kind: "sign", Registries: []string{"https://api.runsheet.dev/npm/", "https://api.runsheet.dev/v2/"}}},
+	})
+	if err != nil || !startRes.Started {
+		t.Fatalf("starting the real lease-egress process's tunnel: %v, %+v", err, startRes)
+	}
+
+	leaseID2, brief2 := mintLease(t, g, func(b *meshapi.Brief) {
+		registryBrief(b)
+		b.RenewEveryS = 1
+	})
+
+	sidecarDir2 := filepath.Join(t.TempDir(), "sidecar2")
+	startFakeSidecarControl(t, sidecarDir2)
+
+	writeHandoffFixture(t, g, leaseID2, &handoffState{
+		Brief:         brief2,
+		SidecarDir:    sidecarDir2,
+		EgressPID:     egressCmd.Process.Pid,
+		EgressControl: ctlSock,
+	})
+
+	g.rt.adoptHandoffs(context.Background())
 
 	nodeSocket := filepath.Join(sidecarDir, relayNodeSocket)
 	waitFor(t, "the adopted lease's node socket", func() bool {
 		_, err := os.Stat(nodeSocket)
+		return err == nil
+	})
+
+	nodeSocket2 := filepath.Join(sidecarDir2, relayNodeSocket)
+	waitFor(t, "the adopted intercepting lease's node socket", func() bool {
+		_, err := os.Stat(nodeSocket2)
 		return err == nil
 	})
 
@@ -148,26 +212,43 @@ func TestAnUpgradeHandsBackInterceptingLeasesAndAdoptsTheRestNextStart(t *testin
 	// steps it never redoes) -- so the lease's running status is read
 	// from the node's own status report, which holds it from the
 	// moment adoptOne registers it in r.leases until it is reported.
-	waitFor(t, "the adopted lease to show running in the node's status", func() bool {
+	running := func(id string) bool {
 		for _, l := range g.rt.Status().Leases {
-			if l.LeaseID == leaseID {
+			if l.LeaseID == id {
 				return true
 			}
 		}
 		return false
-	})
+	}
+	waitFor(t, "the adopted lease to show running in the node's status", func() bool { return running(leaseID) })
+	waitFor(t, "the adopted intercepting lease to show running in the node's status", func() bool { return running(leaseID2) })
 
-	waitFor(t, "the adopted lease to be renewed (heartbeated) before its deadline", func() bool {
+	renewed := func(id string) bool {
 		for _, c := range g.fake.Calls("renew") {
-			if c.LeaseID == leaseID {
+			if c.LeaseID == id {
 				return true
 			}
 		}
 		return false
-	})
+	}
+	waitFor(t, "the adopted lease to be renewed (heartbeated) before its deadline", func() bool { return renewed(leaseID) })
+	waitFor(t, "the adopted intercepting lease to be renewed (heartbeated) before its deadline", func() bool { return renewed(leaseID2) })
 
 	if calls := sidecar.replacements(); len(calls) != 1 {
 		t.Fatalf("expected exactly one credential replacement for the adopted lease's sidecar, got %d", len(calls))
+	}
+
+	// a post-adoption request under the signed registry prefix reaches
+	// registryHostRig's fake host through the real egress process,
+	// genuinely signed with the fresh DPoP key adoptOne pushed it --
+	// never the hand-off's old one, which this fixture never set in the
+	// first place.
+	body, err := laneTransfer(nodeSocket2, "api.runsheet.dev", "/npm/@anythink%2fshell")
+	if err != nil {
+		t.Fatalf("the signed transfer through the adopted intercepting lease's node socket: %v", err)
+	}
+	if !strings.HasSuffix(body, "signed") {
+		t.Fatalf("the adopted intercepting lease's node socket answered %q, want it to end %q", body, "signed")
 	}
 
 	driveObserve(t, nodeSocket, "conform", `{"id":1,"method":"tools/call","params":{"name":"submit"}}`,
@@ -180,7 +261,7 @@ func TestAnUpgradeHandsBackInterceptingLeasesAndAdoptsTheRestNextStart(t *testin
 		t.Fatalf("the adopted lease ended %q, not finish", g.fake.Ended(leaseID))
 	}
 
-	if n := countLog("nodev1: adopted 1 of 1 hand-off(s) at start"); n != 1 {
+	if n := countLog("nodev1: adopted 2 of 2 hand-off(s) at start"); n != 1 {
 		t.Fatalf("%d occurrence(s) of the aggregate adopt line, want exactly 1; logs: %v", n, logs)
 	}
 	if hasLog("node_restart") {
