@@ -1,9 +1,12 @@
 package nodev1
 
 import (
+	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -13,8 +16,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"projectmesh.io/mesh-cli/internal/meshapi"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 )
 
 // signProbe is run in a pod's agent before its session: through
@@ -173,6 +178,78 @@ func TestARelaySidecarsSessionHasItsRegistryRequestsSigned(t *testing.T) {
 	run(t, g, context.Background())
 	if n := len(g.fake.Calls("finish")); n != 1 {
 		t.Fatalf("%d finishes; hand-backs %+v", n, g.fake.Calls("hand-back"))
+	}
+	assertRegistrySigned(t, g, answers, sb.AgentSpecs()[0].Env)
+}
+
+// laneTransfer dials sock, CONNECTs to host and performs a real TLS
+// handshake naming it — host is outside the lease's registries, so the
+// real egress process splices rather than terminates it — then returns
+// a GET's body.
+func laneTransfer(sock, host string) (string, error) {
+	c, err := net.Dial("unix", sock)
+	if err != nil {
+		return "", err
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(5 * time.Second))
+	io.WriteString(c, "CONNECT "+host+":443 HTTP/1.1\r\nHost: "+host+":443\r\n\r\n")
+	br := bufio.NewReader(c)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("CONNECT answered %d", resp.StatusCode)
+	}
+	tlsConn := tls.Client(&bufferedConn{c, br}, &tls.Config{ServerName: host, InsecureSkipVerify: true})
+	if err := tlsConn.Handshake(); err != nil {
+		return "", err
+	}
+	io.WriteString(tlsConn, "GET / HTTP/1.1\r\nHost: "+host+"\r\nConnection: close\r\n\r\n")
+	body, err := io.ReadAll(tlsConn)
+	return string(body), err
+}
+
+// A sidecar lease's egress is a process of its own (ADR-051): under
+// --relay-sidecar, a lane's HTTPS transfer through the lease's lane
+// socket and the node's signed registry request through its node
+// socket both reach the real mesh lease-egress subprocess
+// startEgressProcess starts (TestTheLanesTunnelServesTheRealEgressProcess
+// proves it is never in this process's own group) and behave exactly
+// as the in-process tunnel did.
+func TestASidecarLeasesLaneAndNodeSocketsBothServeTheRealEgressProcess(t *testing.T) {
+	g, sb, _ := sidecarRig(t)
+	registryHostRig(t, g)
+	var laneDir string
+	wrap := sb.RelayInstalled
+	sb.RelayInstalled = func(pod sandbox.Pod, creds []byte) error {
+		laneDir = sb.Relays[len(sb.Relays)-1].SocketDir
+		return wrap(pod, creds)
+	}
+	dir := t.TempDir()
+	probe, answers := filepath.Join(dir, "probe.js"), filepath.Join(dir, "answers")
+	os.WriteFile(probe, []byte(signProbe), 0o600)
+	var laneBody string
+	var laneErr error
+	agent := hostAgent(t, filepath.Join(dir, "claude"), copyTrust(dir)+`; node "`+probe+`" "`+answers+`"`)
+	sb.Agent = func(ctx context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
+		laneBody, laneErr = laneTransfer(filepath.Join(laneDir, relayLaneDir, relayLaneSocket), "proxy.golang.org")
+		return agent(ctx, spec)
+	}
+	g.offer(t, func(b *meshapi.Brief) {
+		registryBrief(b)
+		b.Egress.Hosts = append(b.Egress.Hosts, "proxy.golang.org")
+	})
+	run(t, g, context.Background())
+	if n := len(g.fake.Calls("finish")); n != 1 {
+		t.Fatalf("%d finishes; hand-backs %+v", n, g.fake.Calls("hand-back"))
+	}
+	if laneErr != nil {
+		t.Fatalf("the HTTPS transfer through the lane socket: %v", laneErr)
+	}
+	if !strings.Contains(laneBody, "as sent:") {
+		t.Fatalf("the lane socket's transfer got %q", laneBody)
 	}
 	assertRegistrySigned(t, g, answers, sb.AgentSpecs()[0].Env)
 }
