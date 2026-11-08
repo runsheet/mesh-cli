@@ -46,8 +46,11 @@ type Status struct {
 	DrainReason string        `json:"drain_reason,omitempty"`
 	DrainSince  *time.Time    `json:"drain_since,omitempty"`
 	HandBackAt  *time.Time    `json:"hand_back_at,omitempty"`
-	Leases      []LeaseStatus `json:"leases"`
-	At          time.Time     `json:"at"`
+	// DiskGate is the disk gate's current reason (diskgate.go), "" when
+	// the node takes leases freely.
+	DiskGate string        `json:"disk_gate,omitempty"`
+	Leases   []LeaseStatus `json:"leases"`
+	At       time.Time     `json:"at"`
 }
 
 // LeaseStatus is one lease the node runs.
@@ -258,7 +261,8 @@ func (r *Runtime) Status() Status {
 	defer r.mu.Unlock()
 	s := Status{
 		PID: os.Getpid(), NodeID: r.nodeID, Name: r.Node.Name, Version: r.Node.Version,
-		Draining: r.drain, DrainReason: r.drainReason, Leases: []LeaseStatus{}, At: time.Now().UTC(),
+		Draining: r.drain, DrainReason: r.drainReason, DiskGate: r.diskGateReason,
+		Leases: []LeaseStatus{}, At: time.Now().UTC(),
 	}
 	if !r.drainSince.IsZero() {
 		t := r.drainSince.UTC()
@@ -324,6 +328,9 @@ func (s Status) DrainLines(now time.Time) []string {
 			}
 		}
 		out = append(out, line+".")
+	}
+	if s.DiskGate != "" {
+		out = append(out, "Disk: "+s.DiskGate+"; taking no new lease.")
 	}
 	if len(s.Leases) == 0 {
 		out = append(out, "Leases: none running.")
