@@ -472,6 +472,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 				a.NoteEgress(rs.egressCmd.Process.Pid, control)
 			}
 			r.setEgress(b.LeaseID, rs.egressCmd.Process.Pid, control)
+			r.setDisownEgress(b.LeaseID, rs.disownEgress)
 			// the lease's egress process dying on its own, never stopped by
 			// the actor, ends the lease egress_died (leaseegress.go)
 			go rs.watchEgress(ctx, endLease)

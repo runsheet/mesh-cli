@@ -34,9 +34,12 @@ type handoffState struct {
 	SidecarDir string `json:"sidecarDir,omitempty"`
 	// EgressPID and EgressControl name the lease's egress process
 	// (ADR-051 decisions 1 and 3), beside SidecarDir: "" for a lease
-	// whose relay ran in-process, or with no sidecar at all. Picking
-	// the process back up on adoption is goal 2's (decision 4), out of
-	// scope here; this only carries what a later node would need to.
+	// whose relay ran in-process, or with no sidecar at all. adoptOne
+	// (decision 4) pushes it fresh credentials over EgressControl and
+	// forwards the adopted node socket's CONNECTs onto its own node
+	// socket, as long as the process named by EgressPID is still
+	// alive; one that has died is adopted anyway, with no egress
+	// tunnel from then on.
 	EgressPID     int    `json:"egressPid,omitempty"`
 	EgressControl string `json:"egressControl,omitempty"`
 	// AgentStdoutOffset is how far into the lease's agent output the
@@ -172,6 +175,10 @@ func (r *Runtime) Upgrade(why string) []string {
 		if err := r.writeHandoff(id, l); err != nil {
 			r.logf("nodev1: lease %s: its hand-off was not written (%v); handed back instead", id, err)
 			handBack(id, l)
+			continue
+		}
+		if l.disownEgress != nil {
+			l.disownEgress()
 		}
 	}
 	return handedBack

@@ -264,14 +264,26 @@ func (r *Runtime) setSidecarDir(id, dir string) {
 }
 
 // setEgress records the lease's egress process (ADR-051 decision 1),
-// for its hand-off file beside SidecarDir (handoff.go, decision 3) --
-// adopting it is goal 2's, out of scope here; this only carries it.
+// for its hand-off file beside SidecarDir (handoff.go, decision 3) and
+// for Status to report once adopted (decision 4, adopt.go): adoptOne
+// calls it only once it has pushed the egress process fresh
+// credentials and wired its node socket's tunnel onto it.
 func (r *Runtime) setEgress(id string, pid int, control string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if l := r.lease(id); l != nil {
 		l.egressPID = pid
 		l.egressControl = control
+	}
+}
+
+// setDisownEgress records how Upgrade lets go of the lease's egress
+// process once its hand-off is written (handoff.go).
+func (r *Runtime) setDisownEgress(id string, disown func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if l := r.lease(id); l != nil {
+		l.disownEgress = disown
 	}
 }
 

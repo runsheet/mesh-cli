@@ -3,13 +3,19 @@ package nodev1
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
+	"sync"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/actor"
+	"projectmesh.io/mesh-cli/internal/egress"
+	"projectmesh.io/mesh-cli/internal/gitrelay"
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/relaysidecar"
 )
@@ -25,15 +31,24 @@ import (
 // (relaysidecar.ReplaceCredentials), its room in the scheduler taken
 // again, its agent output tailed from where the hand-off left it, and
 // a fresh relaysidecar.Node listening on the sidecar's own node
-// socket -- but only far enough to observe the finish, carry security
-// reports and scan for the lease's injected values (Observe, Security,
-// Canary). Its egress tunnel, its sessionproxy, its token renewal pull
-// and its Stop gate are not reattached: rebuilding those means
-// rebuilding the pod session itself, which adoption does not do. A
-// hand-off that cannot be adopted this way -- unreadable, no sidecar
-// named, or the sidecar refuses the new credentials -- is handed back
-// node_update instead, the same cause the drain's wait hands a lease
-// back with, and its job directory removed.
+// socket, this time with its token renewal pull (Renew, mirroring the
+// sidecar's own rs.renew), its Stop gate (openStopGate, as a fresh
+// start would open it, with no earlier hand-back request or evidence
+// record to carry across the restart) and, for a lease whose egress
+// runs as a process of its own (ADR-051 decisions 1 and 4), fresh
+// credentials pushed to that process's control socket and its node
+// socket's CONNECT forwarded onto the egress process's own
+// (forwardConnect, relaypod.go) -- beside Observe, Security and
+// Canary as before. A lease whose egress process has died since the
+// hand-off, or that refuses its new credentials, is still adopted:
+// it just runs with no egress tunnel from here on, logged, never
+// handed back over it alone. Its sessionproxy is not reattached:
+// rebuilding it means rebuilding the pod session itself, which
+// adoption does not do. A hand-off that cannot be adopted this way --
+// unreadable, no sidecar named, or the sidecar refuses the new
+// credentials -- is handed back node_update instead, the same cause
+// the drain's wait hands a lease back with, and its job directory
+// removed.
 
 // adoptHandoffs picks up every hand-off a prior process left under the
 // node's leases directory, each on its own goroutine so one lease's
@@ -174,13 +189,102 @@ func (r *Runtime) adoptOne(ctx context.Context, id, dir string, st *handoffState
 		r.publishStatus()
 	}()
 
-	node := &relaysidecar.Node{Observe: fin.observe, Security: r.securityReporter(id), Canary: v.canary(), Logf: r.logf}
-	if err := node.Listen(filepath.Join(st.SidecarDir, relayNodeSocket)); err != nil {
+	var gitReq SourceRequest
+	if b.Git != nil && b.Git.Repo != "" {
+		policy := policyOf(b.Git)
+		policy.Heads = st.PushHeads
+		gitReq = sourceRequest(b.Git, policy)
+	}
+	var mintMu sync.Mutex
+	var minted []gitrelay.Token
+	mintGit := func(ctx context.Context, req SourceRequest) (relaysidecar.Token, error) {
+		t, err := tokens.MintSource(ctx, req)
+		if err != nil {
+			return relaysidecar.Token{}, err
+		}
+		v.addGitToken(b.Git, req.Repository, t)
+		mintMu.Lock()
+		minted = append(minted, t)
+		mintMu.Unlock()
+		return relaysidecar.Token{Value: t.Value, ExpiresAt: t.ExpiresAt}, nil
+	}
+	gitRequestFor := func(repo string) (SourceRequest, error) {
+		if repo == "" || strings.EqualFold(repo, gitReq.Repository) {
+			return gitReq, nil
+		}
+		for _, rr := range b.Git.ReadRepos {
+			if strings.EqualFold(repo, rr) {
+				return sourceRequestFor(b.Git, rr, gitrelay.Read), nil
+			}
+		}
+		return SourceRequest{}, fmt.Errorf("the brief names no read repo %s", repo)
+	}
+	// renew is adoptOne's analog of the sidecar's own rs.renew
+	// (relaypod.go): the lease's session token always, and a git
+	// token when asked -- the job's own repository's, or a read-only
+	// one of a read_repo the brief names. Nothing once the lease has
+	// ended.
+	renew := func(ctx context.Context, req relaysidecar.RenewRequest) (relaysidecar.Renewal, error) {
+		if leaseCtx.Err() != nil {
+			return relaysidecar.Renewal{}, errors.New("the lease has ended")
+		}
+		tok, exp, err := tokens.current(ctx)
+		if err != nil {
+			return relaysidecar.Renewal{}, err
+		}
+		out := relaysidecar.Renewal{Session: relaysidecar.Token{Value: tok, ExpiresAt: exp}}
+		if req.Git {
+			if gitReq.Repository == "" {
+				return relaysidecar.Renewal{}, errors.New("the lease has no git")
+			}
+			mint, err := gitRequestFor(req.Repo)
+			if err != nil {
+				return relaysidecar.Renewal{}, err
+			}
+			t, err := mintGit(ctx, mint)
+			if err != nil {
+				return relaysidecar.Renewal{}, err
+			}
+			out.Git = &t
+		}
+		return out, nil
+	}
+
+	nodeSock := filepath.Join(st.SidecarDir, relayNodeSocket)
+	gate := r.openStopGate(b, nodeSock, fin, nil, nil)
+
+	node := &relaysidecar.Node{Observe: fin.observe, Security: r.securityReporter(id), Canary: v.canary(), Logf: r.logf, Renew: renew}
+	if gate != nil {
+		node.Stop = gate.handler()
+	}
+	if st.EgressControl != "" {
+		if !egressAlive(st.EgressPID) {
+			r.logf("nodev1: lease %s: its egress process (pid %d) is gone; adopted with no egress tunnel", id, st.EgressPID)
+		} else {
+			egRes, egErr := LeaseEgressClient{Socket: st.EgressControl}.Credentials(ctx, LeaseEgressCredentialsRequest{Key: handoffKey, Session: relaysidecar.Token{Value: tok, ExpiresAt: exp}})
+			switch {
+			case egErr != nil:
+				r.logf("nodev1: lease %s: pushing fresh credentials to its egress process: %v; adopted with no egress tunnel", id, egErr)
+			case !egRes.Replaced:
+				r.logf("nodev1: lease %s: its egress process refused its new credentials: %s; adopted with no egress tunnel", id, egRes.Refused)
+			default:
+				node.Tunnel = forwardConnect(filepath.Join(filepath.Dir(st.EgressControl), egressNodeSocket), func(req *http.Request) bool { return egress.IsSpliceOnly(req.Context()) })
+			}
+		}
+	}
+	if err := node.Listen(nodeSock); err != nil {
 		end := actor.End{Report: actor.ReportHandBack, Cause: meshapi.CauseNodeUpdate, Reason: fmt.Sprintf("its node socket: %v", err)}
 		r.endActor(a, id, end, func() { r.handBack(id, end.Cause, end.Reason, "") })
 		return
 	}
 	defer node.Close()
+	if gate != nil {
+		a.Hold("the stop gate", func() error { gate.close(); return nil })
+	}
+	if node.Tunnel != nil {
+		r.setEgress(id, st.EgressPID, st.EgressControl)
+		a.Hold("the lease's egress process", func() error { return stopLeftoverEgress(st.EgressPID) })
+	}
 
 	if n, err := r.tailAgentOutput(id, st.AgentStdoutOffset); err != nil {
 		r.logf("nodev1: lease %s: resuming its agent output: %v", id, err)
@@ -212,6 +316,17 @@ func (r *Runtime) adoptOne(ctx context.Context, id, dir string, st *handoffState
 	}
 	cancel(nil)
 	<-renewDone
+
+	mintMu.Lock()
+	toRevoke := minted
+	mintMu.Unlock()
+	if len(toRevoke) > 0 {
+		rctx, rcancel := context.WithTimeout(context.Background(), reportTimeout)
+		if err := tokens.RevokeSource(rctx, toRevoke); err != nil {
+			r.logf("nodev1: lease %s: revoking its relay sidecar's git tokens: %v", id, err)
+		}
+		rcancel()
+	}
 
 	out := outcome{finish: fin.result()}
 	out.nodeEnding = ctx.Err() != nil
