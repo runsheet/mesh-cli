@@ -107,6 +107,24 @@ func ReadBuildCacheConfig(path string, freeBytes func() (uint64, error)) (BuildC
 	return cfg, nil
 }
 
+// pinBuildCache sets BuildCache, left "", to the path every lease
+// mounts as GOCACHE (buildCacheDir: WorkRoot/build-cache) and makes it,
+// before Run starts WatchBuildCache: left "", evictBuildCache evicted
+// nothing and diskGate read WorkRoot, while every lease filled
+// WorkRoot/build-cache unbounded (dl360, 2026-11-09: 456G against a
+// default cap near 175G, no eviction ever logged).
+func (r *Runtime) pinBuildCache() {
+	if r.BuildCache == "" && r.WorkRoot != "" {
+		r.BuildCache = r.buildCacheDir()
+	}
+	if r.BuildCache == "" {
+		return
+	}
+	if err := os.MkdirAll(r.BuildCache, 0o700); err != nil {
+		r.logf("nodev1: build cache: %v", err)
+	}
+}
+
 // WatchBuildCache is the node.yaml watcher for the node's build cache:
 // it rereads node.yaml's cache config with read every poll and at once
 // whenever reload fires, keeps it live as r.buildCacheConfig —
@@ -122,6 +140,7 @@ func (r *Runtime) WatchBuildCache(ctx context.Context, read func() (BuildCacheCo
 	}
 	t := time.NewTicker(poll)
 	defer t.Stop()
+	started := false
 	apply := func() {
 		cfg, err := read()
 		if err != nil {
@@ -131,6 +150,10 @@ func (r *Runtime) WatchBuildCache(ctx context.Context, read func() (BuildCacheCo
 		r.mu.Lock()
 		r.buildCacheConfig = cfg
 		r.mu.Unlock()
+		if !started {
+			started = true
+			r.logf("nodev1: build cache: watching %s every %s: cap %.1f GB, disk floor %.1f GB", r.BuildCache, poll, cfg.MaxGB, cfg.MinFreeGB)
+		}
 		r.evictBuildCache(cfg)
 	}
 	apply()
@@ -165,6 +188,6 @@ func (r *Runtime) evictBuildCache(cfg BuildCacheConfig) {
 		return
 	}
 	if res.Entries > 0 {
-		r.logf("nodev1: build cache: evicted %d entries at %s (%s -> %s)", res.Entries, r.BuildCache, resources.FormatBytes(res.Before), resources.FormatBytes(res.After))
+		r.logf("nodev1: build cache: evicted %d entries at %s (%s -> %s, cap %s)", res.Entries, r.BuildCache, resources.FormatBytes(res.Before), resources.FormatBytes(res.After), resources.FormatBytes(maxBytes))
 	}
 }
