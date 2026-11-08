@@ -62,10 +62,40 @@ type LeaseStatus struct {
 	// Adoptable is whether a restart's hand-off (handoff.go's Upgrade,
 	// adopt.go's adoptOne) could pick this lease back up: false for one
 	// with no relay sidecar to adopt (plain sessionproxy mode,
-	// sidecarDir == "") or one whose tunnel terminates TLS on a CA this
-	// process alone holds (intercepts), both handed back node_update
-	// instead rather than left running for a later process.
+	// sidecarDir == "") or one whose tunnel terminates TLS on a CA held
+	// only in this process's memory (intercepts, with no egress process
+	// of its own, ADR-051 decision 1) -- both handed back node_update
+	// instead rather than left running for a later process. An
+	// intercepting lease whose egress runs as a process of its own
+	// (ADR-051 decisions 1 and 4) is adoptable as long as that process
+	// is still alive.
 	Adoptable bool `json:"adoptable"`
+	// AdoptableReason names why Adoptable is false for an intercepting
+	// lease whose egress ran as a process of its own: that process,
+	// once it has died. Empty in every other case.
+	AdoptableReason string `json:"adoptable_reason,omitempty"`
+}
+
+// adoptability is whether l's hand-off could pick it back up, and why
+// not when an intercepting lease's own egress process is the reason
+// (handoff.go's Upgrade, adopt.go's adoptOne). A lease with no relay
+// sidecar is never adoptable (plain sessionproxy mode). One that
+// intercepts is adoptable only when its egress runs as a process of its
+// own (ADR-051 decisions 1 and 4) and that process is still alive.
+func adoptability(l *running) (bool, string) {
+	if l.sidecarDir == "" {
+		return false, ""
+	}
+	if !l.intercepts {
+		return true, ""
+	}
+	if l.egressPID != 0 && egressAlive(l.egressPID) {
+		return true, ""
+	}
+	if l.egressPID != 0 {
+		return false, fmt.Sprintf("its egress process (pid %d) has died", l.egressPID)
+	}
+	return false, ""
 }
 
 // Drain is the operator's drain: the node takes no new lease, asks Mesh
@@ -273,8 +303,8 @@ func (r *Runtime) Status() Status {
 		s.HandBackAt = &t
 	}
 	for _, e := range r.leases.All() {
-		adoptable := e.Value.sidecarDir != "" && !e.Value.intercepts
-		s.Leases = append(s.Leases, LeaseStatus{LeaseID: e.ID, JobID: e.Value.jobID, Kind: e.Value.kind, Since: e.Value.started.UTC(), Adoptable: adoptable})
+		adoptable, reason := adoptability(e.Value)
+		s.Leases = append(s.Leases, LeaseStatus{LeaseID: e.ID, JobID: e.Value.jobID, Kind: e.Value.kind, Since: e.Value.started.UTC(), Adoptable: adoptable, AdoptableReason: reason})
 	}
 	sort.Slice(s.Leases, func(i, j int) bool { return s.Leases[i].Since.Before(s.Leases[j].Since) })
 	return s

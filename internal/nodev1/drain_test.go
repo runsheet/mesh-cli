@@ -3,10 +3,13 @@ package nodev1
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -229,15 +232,44 @@ func TestStatusDrainLines(t *testing.T) {
 
 // A lease an upgrade's hand-off could not pick back up -- one with no
 // relay sidecar to adopt (adopt.go's adoptOne, SidecarDir == "") or one
-// whose tunnel terminates TLS on a CA this process alone holds
-// (handoff.go's Upgrade, which hands an intercepting lease back rather
-// than writing it) -- reports Adoptable false; a sidecar-mode,
-// non-intercepting lease reports it true.
+// whose tunnel terminates TLS on a CA this process alone holds, with no
+// egress process of its own (handoff.go's Upgrade, which hands such a
+// lease back rather than writing it) -- reports Adoptable false; a
+// sidecar-mode, non-intercepting lease reports it true. An intercepting
+// lease whose egress runs as a process of its own (ADR-051 decisions 1
+// and 4) reports Adoptable true as long as that process is still alive,
+// and false with AdoptableReason naming it once it has died.
 func TestStatusMarksUnadoptableLeases(t *testing.T) {
+	// a process of its own group, as a lease's egress runs (ADR-051
+	// decision 1): sleeping, it is live; waited on, it is dead and
+	// kill(pid, 0) reports ESRCH, never a zombie's false "alive".
+	live := exec.Command("sleep", "100")
+	live.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := live.Start(); err != nil {
+		t.Fatalf("starting the live egress stand-in: %v", err)
+	}
+	livePID := live.Process.Pid
+	t.Cleanup(func() {
+		syscall.Kill(-livePID, syscall.SIGKILL)
+		live.Wait()
+	})
+
+	dead := exec.Command("true")
+	dead.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := dead.Start(); err != nil {
+		t.Fatalf("starting the dead egress stand-in: %v", err)
+	}
+	deadPID := dead.Process.Pid
+	if err := dead.Wait(); err != nil {
+		t.Fatalf("waiting on the dead egress stand-in: %v", err)
+	}
+
 	r := &Runtime{}
 	r.leases.Put("no-sidecar", &running{jobID: "j-1", kind: "build", started: time.Now(), sidecarDir: ""})
 	r.leases.Put("intercepting", &running{jobID: "j-2", kind: "build", started: time.Now(), sidecarDir: "/tmp/sidecar-2", intercepts: true})
 	r.leases.Put("adoptable", &running{jobID: "j-3", kind: "build", started: time.Now(), sidecarDir: "/tmp/sidecar-3"})
+	r.leases.Put("intercepting-live-egress", &running{jobID: "j-4", kind: "build", started: time.Now(), sidecarDir: "/tmp/sidecar-4", intercepts: true, egressPID: livePID})
+	r.leases.Put("intercepting-dead-egress", &running{jobID: "j-5", kind: "build", started: time.Now(), sidecarDir: "/tmp/sidecar-5", intercepts: true, egressPID: deadPID})
 
 	byID := map[string]LeaseStatus{}
 	for _, l := range r.Status().Leases {
@@ -251,5 +283,11 @@ func TestStatusMarksUnadoptableLeases(t *testing.T) {
 	}
 	if l := byID["adoptable"]; !l.Adoptable {
 		t.Fatalf("sidecar-mode lease %+v, want Adoptable true", l)
+	}
+	if l := byID["intercepting-live-egress"]; !l.Adoptable {
+		t.Fatalf("intercepting lease with a live egress process %+v, want Adoptable true", l)
+	}
+	if l := byID["intercepting-dead-egress"]; l.Adoptable || !strings.Contains(l.AdoptableReason, fmt.Sprintf("%d", deadPID)) {
+		t.Fatalf("intercepting lease with a dead egress process %+v, want Adoptable false with AdoptableReason naming pid %d", l, deadPID)
 	}
 }

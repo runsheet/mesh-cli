@@ -429,3 +429,39 @@ full the disk under it was before taking another lease.
    ...; taking no new lease."), the first gate of this shape surfaced
    through `mesh node status` rather than kept purely internal. A nil
    `Disk` (the watcher off) or a floor read as 0 never gates.
+
+## Amendment, 2026-11-08: an intercepting lease with a live egress process is adoptable
+
+The 2026-11-06 amendment's `Adoptable` treated every intercepting lease
+alike: its CA trusted nowhere but this process's memory, so no later
+process could ever pick it back up. That was only true of a lease whose
+relay ran in process. ADR-051 decision 1's egress process holds the CA
+and the policy itself, outside this process, reachable over its own
+control socket -- so an intercepting lease whose egress still runs as
+that separate process when a later process starts is, in principle,
+exactly as adoptable as any other sidecar-mode lease; only one with no
+egress process of its own (in-process relay) or whose egress process has
+since died is not.
+
+1. **`adoptability` (`internal/nodev1/drain.go`) replaces the flat
+   `sidecarDir != "" && !intercepts` test.** A lease with no relay
+   sidecar is still never adoptable. A non-intercepting sidecar-mode
+   lease still is. An intercepting lease is adoptable when its
+   `egressPID` names a process that is still running (`egressAlive`,
+   `internal/nodev1/leaseegress.go`: `kill(-pid, 0)` against its own
+   process group, the same signal `stopLeftoverEgress` sends it) --
+   never when `egressPID` is 0 (an in-process relay, never started one)
+   nor when the named process has died. `Status` carries the result as
+   before, now beside a new `AdoptableReason`: empty unless an
+   intercepting lease's own egress process is the reason it is not
+   adoptable, in which case it names that process.
+2. **`Upgrade` (`internal/nodev1/handoff.go`) hands off, rather than
+   back, an intercepting lease `adoptability` finds adoptable.** Every
+   other lease is handed back `node_update` exactly as before --
+   nothing about step 3's adoption (picking the egress process itself
+   back up, over its control socket) is built here; this only stops
+   ending, needlessly, a lease that an adopting process could in
+   principle resume.
+3. **`mesh node upgrade --api v1`'s refusal names the reason per lease**
+   (`internal/commands/nodeupgrade.go`) when `AdoptableReason` is set,
+   instead of the one fixed phrase every unadoptable lease used to get.

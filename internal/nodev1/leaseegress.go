@@ -36,6 +36,17 @@ func egressDied(o outcome) (string, bool) {
 	return "", false
 }
 
+// egressAlive is whether a lease's egress process (ADR-051 decision 1),
+// named by its pid from setEgress, is still running: its own process
+// group, the same one stopLeftoverEgress signals. A pid of 0 or less (a
+// lease with no out-of-process egress) is never alive.
+func egressAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	return !errors.Is(syscall.Kill(-pid, 0), syscall.ESRCH)
+}
+
 // stopLeftoverEgress stops a lease's egress process left running with
 // no actor to own it: a node that stopped without releasing the lease
 // (ADR-051 decision 5, from releaseLeftovers at start-up), or one a

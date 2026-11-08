@@ -131,17 +131,21 @@ func (r *Runtime) tailAgentOutput(id string, offset int64) ([]byte, error) {
 
 // Upgrade is the node choosing, per live lease, between a hand-off and a
 // hand-back, the way a self-update would call it before swapping its
-// binary: a lease whose tunnel terminates TLS trusts a CA this process
-// minted and holds nowhere but memory, so a later process could never
-// pick it back up -- it is handed back node_update, the same cause every
-// lease the drain's wait outlives gets (handBackAll). Any other lease is
-// left running untouched: its brief, sessionproxy socket, turn ledger
-// and push heads go to its own hand-off file instead, and nothing about
-// it -- not its pod, its sidecars, its agent, nor the lease itself -- is
-// stopped, cancelled or reported to Mesh. A lease whose hand-off cannot
-// be written is handed back instead, so it is never silently lost.
-// Upgrade only starts each hand-back's cancel; it returns the ids it
-// handed back so a caller that must not exit before Mesh hears of them
+// binary: a lease whose tunnel terminates TLS trusts a CA held only in
+// this process's memory (intercepts, with no egress process of its own)
+// could never be picked back up by a later process -- it is handed back
+// node_update, the same cause every lease the drain's wait outlives gets
+// (handBackAll). An intercepting lease whose egress runs as a process of
+// its own (ADR-051 decisions 1 and 4) is handed off instead, as long as
+// that process is still alive: adoptability names the same condition
+// Status reports as Adoptable. Any other lease is left running
+// untouched: its brief, sessionproxy socket, turn ledger and push heads
+// go to its own hand-off file instead, and nothing about it -- not its
+// pod, its sidecars, its agent, nor the lease itself -- is stopped,
+// cancelled or reported to Mesh. A lease whose hand-off cannot be
+// written is handed back instead, so it is never silently lost. Upgrade
+// only starts each hand-back's cancel; it returns the ids it handed back
+// so a caller that must not exit before Mesh hears of them
 // (UpgradeSignal) can wait on them.
 func (r *Runtime) Upgrade(why string) []string {
 	r.mu.Lock()
@@ -160,8 +164,10 @@ func (r *Runtime) Upgrade(why string) []string {
 	for _, e := range r.leases.All() {
 		id, l := e.ID, e.Value
 		if l.intercepts {
-			handBack(id, l)
-			continue
+			if adoptable, _ := adoptability(l); !adoptable {
+				handBack(id, l)
+				continue
+			}
 		}
 		if err := r.writeHandoff(id, l); err != nil {
 			r.logf("nodev1: lease %s: its hand-off was not written (%v); handed back instead", id, err)
