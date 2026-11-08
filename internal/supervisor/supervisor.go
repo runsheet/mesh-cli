@@ -6,7 +6,9 @@
 //     for QuietAfter is escalated first, through the lease's mailbox —
 //     a stalled turn often moves on a bigger model — and, still quiet
 //     QuietAfter after that, stopped with cause stalled. Mode warn only
-//     logs both; mode cancel acts.
+//     logs both; mode cancel acts; mode tidy never escalates or stalls
+//     a lease at all (it only logs, as warn does) — tidy's whole job is
+//     the reconcile below.
 //   - A reconcile every minute: the node's pods with no actor, and pods
 //     whose agent has ended with only a sidecar left, are removed; a
 //     lease-egress process no actor and no hand-off names is stopped
@@ -24,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/actor"
@@ -47,9 +50,14 @@ const (
 	Warn Mode = "warn"
 	// Cancel escalates a quiet lease, then stops it stalled.
 	Cancel Mode = "cancel"
+	// Tidy reconciles the node against its actors the same way Cancel
+	// does — removing pods, job directories, grants and lease-egress
+	// processes no actor holds — but never escalates or stalls a lease
+	// for quiet: it only logs a quiet lease, as Warn does.
+	Tidy Mode = "tidy"
 )
 
-// ParseMode reads --supervisor: off, warn (or report) or cancel.
+// ParseMode reads --supervisor: off, warn (or report), cancel or tidy.
 func ParseMode(s string) (Mode, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "", "off":
@@ -58,8 +66,10 @@ func ParseMode(s string) (Mode, error) {
 		return Warn, nil
 	case "cancel":
 		return Cancel, nil
+	case "tidy":
+		return Tidy, nil
 	}
-	return Off, fmt.Errorf("supervisor: mode is off, warn or cancel, not %q", s)
+	return Off, fmt.Errorf("supervisor: mode is off, warn, cancel or tidy, not %q", s)
 }
 
 // Defaults.
@@ -127,7 +137,12 @@ type Fleet interface {
 // Supervisor is the node's.
 type Supervisor struct {
 	Fleet Fleet
-	Mode  Mode
+	// Mode is read by Run, Look and Reconcile through mode(), under mu,
+	// so a SetMode call from another goroutine takes effect on the next
+	// one of them, even mid-Run; set it directly only before the
+	// Supervisor's first use.
+	Mode Mode
+	mu   sync.Mutex
 	// QuietAfter is how long a running session may show no progress
 	// before it is escalated, and again before it is stopped.
 	QuietAfter time.Duration
@@ -168,6 +183,23 @@ func (s *Supervisor) logf(format string, args ...any) {
 	}
 }
 
+// mode is the Supervisor's current Mode, safe alongside a concurrent
+// SetMode.
+func (s *Supervisor) mode() Mode {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Mode
+}
+
+// SetMode changes the supervisor's mode. It takes effect at once: the
+// next Look or Reconcile — including one Run is about to make, or one
+// already running concurrently with this call — reads the new mode.
+func (s *Supervisor) SetMode(m Mode) {
+	s.mu.Lock()
+	s.Mode = m
+	s.mu.Unlock()
+}
+
 func or(d, def time.Duration) time.Duration {
 	if d > 0 {
 		return d
@@ -177,7 +209,7 @@ func or(d, def time.Duration) time.Duration {
 
 // Run looks and reconciles until ctx ends; it does nothing in mode off.
 func (s *Supervisor) Run(ctx context.Context) {
-	if s.Mode == Off || s.Mode == "" {
+	if m := s.mode(); m == Off || m == "" {
 		return
 	}
 	look := time.NewTicker(or(s.LookEvery, DefaultLookEvery))
@@ -196,10 +228,12 @@ func (s *Supervisor) Run(ctx context.Context) {
 	}
 }
 
-// Look is one pass of liveness over the live leases. In mode warn it
-// logs once as each lease crosses a threshold — QuietAfter (it would be
-// escalated) and twice that (it would be stopped) — and does nothing.
+// Look is one pass of liveness over the live leases. In mode warn or
+// tidy it logs once as each lease crosses a threshold — QuietAfter (it
+// would be escalated) and twice that (it would be stopped) — and does
+// nothing: only mode cancel escalates or stalls a lease for quiet.
 func (s *Supervisor) Look() {
+	mode := s.mode()
 	quiet := or(s.QuietAfter, DefaultQuietAfter)
 	every := or(s.LookEvery, DefaultLookEvery)
 	now := s.now()
@@ -212,12 +246,12 @@ func (s *Supervisor) Look() {
 			continue
 		}
 		said := silent.Round(time.Second)
-		if s.Mode != Cancel {
+		if mode != Cancel {
 			switch {
 			case silent < quiet+every:
-				s.logf("supervisor: lease %s: the session has shown no progress for %s (warn: it would be escalated)", l.LeaseID, said)
+				s.logf("supervisor: lease %s: the session has shown no progress for %s (%s: it would be escalated)", l.LeaseID, said, mode)
 			case silent >= 2*quiet && silent < 2*quiet+every:
-				s.logf("supervisor: lease %s: the session has shown no progress for %s (warn: it would be stopped stalled)", l.LeaseID, said)
+				s.logf("supervisor: lease %s: the session has shown no progress for %s (%s: it would be stopped stalled)", l.LeaseID, said, mode)
 			}
 			continue
 		}
@@ -256,7 +290,8 @@ func (r Reconciled) Line() string {
 }
 
 // Reconcile is one reconcile of the node against its actors. In mode
-// warn it removes nothing and logs what it would.
+// warn it removes nothing and logs what it would; modes cancel and
+// tidy both remove it.
 func (s *Supervisor) Reconcile(ctx context.Context) Reconciled {
 	live := s.Fleet.Live()
 	byLease := map[string]Live{}
@@ -268,7 +303,8 @@ func (s *Supervisor) Reconcile(ctx context.Context) Reconciled {
 			out.Adopted++
 		}
 	}
-	act := s.Mode == Cancel
+	mode := s.mode()
+	act := mode == Cancel || mode == Tidy
 	s.reconcilePods(ctx, byLease, act, &out)
 	s.reconcileEgress(byLease, act, &out)
 	s.reconcileWorkspaces(byLease, act, &out)

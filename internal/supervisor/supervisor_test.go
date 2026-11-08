@@ -112,13 +112,71 @@ func TestWarnOnlyLogs(t *testing.T) {
 }
 
 func TestParseMode(t *testing.T) {
-	for in, want := range map[string]Mode{"": Off, "off": Off, "warn": Warn, "report": Warn, "Cancel": Cancel} {
+	for in, want := range map[string]Mode{"": Off, "off": Off, "warn": Warn, "report": Warn, "Cancel": Cancel, "tidy": Tidy, "TIDY": Tidy} {
 		if got, err := ParseMode(in); err != nil || got != want {
 			t.Errorf("ParseMode(%q) = %q, %v", in, got, err)
 		}
 	}
 	if _, err := ParseMode("kill"); err == nil {
 		t.Error("ParseMode(kill) passed")
+	}
+}
+
+// Mode tidy never escalates or stalls a quiet lease, however long it
+// stays quiet -- only mode cancel manages that ladder.
+func TestTidyNeverEscalatesOrStalls(t *testing.T) {
+	now := t0
+	f := &fleet{canEscal: true, now: func() time.Time { return now }, live: []Live{{LeaseID: "l", Running: true, ProgressAt: t0}}}
+	s := &Supervisor{Fleet: f, Mode: Tidy, QuietAfter: 10 * time.Minute, Now: func() time.Time { return now }}
+	now = t0.Add(25 * time.Minute)
+	s.Look()
+	if len(f.escalated) != 0 || len(f.stalled) != 0 {
+		t.Fatalf("tidy acted: escalated %v stalled %v", f.escalated, f.stalled)
+	}
+}
+
+// Mode tidy reconciles exactly as mode cancel does: the orphan pod,
+// job directory and grant no actor holds are removed.
+func TestTidyReconcilesLikeCancel(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "lse_orphan"), 0o700)
+	old := t0.Add(-time.Hour)
+	os.Chtimes(filepath.Join(root, "lse_orphan"), old, old)
+	sb := &sandbox.Fake{Standing: []sandbox.PodInfo{{Name: "p", Labels: map[string]string{"mesh.v1.lease": "gone"}}}}
+	f := &fleet{now: func() time.Time { return t0 }, grants: []string{"gone"}}
+	s := &Supervisor{Fleet: f, Mode: Tidy, Sandbox: sb, PodLabel: "mesh.v1.lease", LeaseRoot: root, Now: func() time.Time { return t0 }}
+	got := s.Reconcile(context.Background())
+	if !slices.Equal(got.PodsNoActor, []string{"p"}) || len(got.Workspaces) != 1 || !slices.Equal(got.Grants, []string{"gone"}) {
+		t.Fatalf("found %+v", got)
+	}
+	if !slices.Equal(sb.Removed, []string{"p"}) {
+		t.Fatalf("removed %v", sb.Removed)
+	}
+	if _, err := os.Stat(filepath.Join(root, "lse_orphan")); !os.IsNotExist(err) {
+		t.Fatal("tidy left the orphan directory")
+	}
+	if !slices.Equal(f.closed, []string{"gone"}) {
+		t.Fatalf("closed grants %v", f.closed)
+	}
+}
+
+// SetMode takes effect at once: a Supervisor built with Mode Warn, then
+// switched to Tidy by SetMode before its first Reconcile call, acts
+// like Tidy on that very call.
+func TestSetModeTakesEffectImmediately(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "lse_orphan"), 0o700)
+	old := t0.Add(-time.Hour)
+	os.Chtimes(filepath.Join(root, "lse_orphan"), old, old)
+	f := &fleet{now: func() time.Time { return t0 }}
+	s := &Supervisor{Fleet: f, Mode: Warn, LeaseRoot: root, Now: func() time.Time { return t0 }}
+	s.SetMode(Tidy)
+	got := s.Reconcile(context.Background())
+	if len(got.Workspaces) != 1 {
+		t.Fatalf("workspaces %v, want the orphan found", got.Workspaces)
+	}
+	if _, err := os.Stat(filepath.Join(root, "lse_orphan")); !os.IsNotExist(err) {
+		t.Fatal("SetMode(Tidy) did not take effect: the orphan directory is still there")
 	}
 }
 
