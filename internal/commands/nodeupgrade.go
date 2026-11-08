@@ -70,8 +70,9 @@ SIGHUP to its own pidfile: every lease it holds is left running untouched,
 its brief, sidecar, push heads and turn ledger written to
 leases/<id>/handoff.json for the new process to adopt (adr-044); nothing
 is drained. A lease the hand-off cannot adopt — one with no relay
-sidecar, or one whose tunnel intercepts — refuses the upgrade, naming
-it, unless --force; once restarted, the command reports how many of
+sidecar, or one whose tunnel intercepts with no egress process of its
+own still alive — refuses the upgrade, naming it, unless --force; once
+restarted, the command reports how many of
 the leases left running the new process's own status says it adopted,
 and exits non-zero if fewer than that arrived. With both a legacy and
 a v1 node running as this user, --api says which.`,
@@ -296,12 +297,14 @@ func (u *nodeUpgrade) run(ctx context.Context, want, binary string, force bool) 
 			for _, l := range before.Leases {
 				if l.Adoptable {
 					adoptableBefore++
+				} else if l.AdoptableReason != "" {
+					unadoptable = append(unadoptable, fmt.Sprintf("%s (job %s): %s", l.LeaseID, l.JobID, l.AdoptableReason))
 				} else {
 					unadoptable = append(unadoptable, fmt.Sprintf("%s (job %s)", l.LeaseID, l.JobID))
 				}
 			}
 			if len(unadoptable) > 0 && !force {
-				return fmt.Errorf("the restart's hand-off cannot adopt %d lease(s) with no relay sidecar or whose tunnel intercepts: %s; --force restarts anyway, ending them",
+				return fmt.Errorf("the restart's hand-off cannot adopt %d lease(s) with no relay sidecar, whose tunnel intercepts with no egress process of its own, or whose egress process has died: %s; --force restarts anyway, ending them",
 					len(unadoptable), strings.Join(unadoptable, ", "))
 			}
 		}
