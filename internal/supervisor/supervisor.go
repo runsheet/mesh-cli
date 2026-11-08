@@ -9,9 +9,9 @@
 //     logs both; mode cancel acts.
 //   - A reconcile every minute: the node's pods with no actor, and pods
 //     whose agent has ended with only a sidecar left, are removed; a
-//     lease-egress process no actor names is stopped (ADR-051 decision
-//     3); job directories and relay grants no actor holds are removed;
-//     adopted sessions are counted.
+//     lease-egress process no actor and no hand-off names is stopped
+//     (ADR-051 decision 3); job directories and relay grants no actor
+//     holds are removed; adopted sessions are counted.
 //
 // The supervisor holds no state of a lease's own: what it knows of each
 // it reads from the actors (Fleet) on every look.
@@ -19,14 +19,23 @@ package supervisor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/actor"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 )
+
+// handoffFileName is "handoff.json", the name nodev1's own handoffFile
+// constant gives a lease's hand-off state under its job directory: a
+// directory naming one is a deliberate hand-off, not a leftover, so its
+// egress process is left alone (ADR-051 decision 3). Named here too
+// since this package cannot import nodev1 (nodev1 imports supervisor).
+const handoffFileName = "handoff.json"
 
 // Mode is what the supervisor does about a quiet lease.
 type Mode string
@@ -131,8 +140,10 @@ type Supervisor struct {
 	Sandbox  sandbox.Runtime
 	PodLabel string
 	// Egress, when set, lists and stops the node's own lease-egress
-	// processes (ADR-051 decision 3): one not named by any live lease's
-	// EgressPID is stopped the way a pod no actor holds is removed.
+	// processes (ADR-051 decision 3): one no live lease's EgressPID and
+	// no hand-off names — listed, or named by a leftover lease's
+	// actor.json under LeaseRoot — is stopped the way a pod no actor
+	// holds is removed.
 	Egress EgressRuntime
 	// LeaseRoot holds the job directories, one per lease.
 	LeaseRoot string
@@ -233,14 +244,14 @@ type Reconciled struct {
 	PodsNoActor, PodsSidecarOnly []string
 	Workspaces, Grants           []string
 	// EgressNoActor is the lease-egress processes the reconcile found no
-	// live lease naming (ADR-051 decision 3), by pid.
+	// live lease and no hand-off naming (ADR-051 decision 3), by pid.
 	EgressNoActor []int
 	Errors        []string
 }
 
 // Line is the reconcile's log line.
 func (r Reconciled) Line() string {
-	return fmt.Sprintf("supervisor: reconcile: %d actors (%d adopted); removed %d pods with no actor, %d with only a sidecar, %d job directories, %d grants and %d egress processes no actor held",
+	return fmt.Sprintf("supervisor: reconcile: %d actors (%d adopted); removed %d pods with no actor, %d with only a sidecar, %d job directories and %d grants no actor held; stopped %d egress process(es) with no actor and no hand-off",
 		r.Actors, r.Adopted, len(r.PodsNoActor), len(r.PodsSidecarOnly), len(r.Workspaces), len(r.Grants), len(r.EgressNoActor))
 }
 
@@ -341,11 +352,14 @@ func (s *Supervisor) reconcilePods(ctx context.Context, live map[string]Live, ac
 	}
 }
 
-// reconcileEgress stops a `mesh lease-egress` process no live lease
-// names, as reconcilePods removes a pod no actor holds (ADR-051
-// decision 3): no hand-off file is consulted here, since an adopted
-// lease's egress tunnel is never reattached (decision 4, adopt.go) and
-// an orphan is exactly what such a process has become.
+// reconcileEgress stops a `mesh lease-egress` process no live lease and
+// no hand-off names, as reconcilePods removes a pod no actor holds
+// (ADR-051 decision 3). It finds them two ways: the runtime's listing
+// of the host's lease-egress processes, and the egress a leftover
+// lease's actor.json names (the actor names it there before it ever
+// leaves preparing, so a live lease is never caught). A lease directory
+// carrying handoff.json holds the egress its actor.json and hand-off
+// name: a lease mid hand-off is not yet abandoned.
 func (s *Supervisor) reconcileEgress(live map[string]Live, act bool, out *Reconciled) {
 	if s.Egress == nil {
 		return
@@ -356,22 +370,78 @@ func (s *Supervisor) reconcileEgress(live map[string]Live, act bool, out *Reconc
 			held[l.EgressPID] = true
 		}
 	}
+	named := s.leftoverEgress(live, held)
+	var found []int
 	procs, err := s.Egress.List()
 	if err != nil {
 		out.Errors = append(out.Errors, "listing egress processes: "+err.Error())
-		return
 	}
+	seen := map[int]bool{}
 	for _, p := range procs {
-		if held[p.PID] {
+		seen[p.PID] = true
+		found = append(found, p.PID)
+	}
+	for _, n := range named {
+		if !seen[n] {
+			seen[n] = true
+			found = append(found, n)
+		}
+	}
+	for _, pid := range found {
+		if held[pid] {
 			continue
 		}
-		out.EgressNoActor = append(out.EgressNoActor, p.PID)
+		out.EgressNoActor = append(out.EgressNoActor, pid)
 		if act {
-			if err := s.Egress.Stop(p.PID); err != nil {
-				out.Errors = append(out.Errors, fmt.Sprintf("stopping egress process %d: %v", p.PID, err))
+			if err := s.Egress.Stop(pid); err != nil {
+				out.Errors = append(out.Errors, fmt.Sprintf("stopping egress process %d: %v", pid, err))
 			}
 		}
 	}
+}
+
+// leftoverEgress reads each lease directory under LeaseRoot that no live
+// lease holds: the egress its actor.json names is returned, unless the
+// directory carries a hand-off, whose egress (its actor.json's and its
+// handoff.json's) is marked held instead.
+func (s *Supervisor) leftoverEgress(live map[string]Live, held map[int]bool) []int {
+	if s.LeaseRoot == "" {
+		return nil
+	}
+	ents, err := os.ReadDir(s.LeaseRoot)
+	if err != nil {
+		return nil
+	}
+	var named []int
+	for _, e := range ents {
+		if !e.IsDir() {
+			continue
+		}
+		if _, ok := live[e.Name()]; ok {
+			continue
+		}
+		dir := filepath.Join(s.LeaseRoot, e.Name())
+		pid := 0
+		if rec, err := readActorRecord(filepath.Join(dir, actor.FileName)); err == nil {
+			pid = rec.EgressPID
+		}
+		if b, err := os.ReadFile(filepath.Join(dir, handoffFileName)); err == nil {
+			var h struct {
+				EgressPID int `json:"egressPid"`
+			}
+			_ = json.Unmarshal(b, &h)
+			for _, p := range []int{pid, h.EgressPID} {
+				if p != 0 {
+					held[p] = true
+				}
+			}
+			continue
+		}
+		if pid != 0 {
+			named = append(named, pid)
+		}
+	}
+	return named
 }
 
 // reconcileWorkspaces removes the job directories no actor holds, once
@@ -405,4 +475,15 @@ func (s *Supervisor) reconcileWorkspaces(live map[string]Live, act bool, out *Re
 			}
 		}
 	}
+}
+
+// readActorRecord reads a lease's actor.json at path.
+func readActorRecord(path string) (actor.Record, error) {
+	var rec actor.Record
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return rec, err
+	}
+	err = json.Unmarshal(b, &rec)
+	return rec, err
 }
