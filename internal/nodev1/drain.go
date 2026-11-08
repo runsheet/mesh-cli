@@ -38,14 +38,14 @@ var errDrainWait = fmt.Errorf("the drain's wait is up: %w", errNodeUpdate)
 // Status is what the node says of itself for `mesh node status`: its
 // registration, whether it drains and the leases it runs.
 type Status struct {
-	PID         int           `json:"pid"`
-	NodeID      string        `json:"node_id,omitempty"`
-	Name        string        `json:"name"`
-	Version     string        `json:"version"`
-	Draining    bool          `json:"draining"`
-	DrainReason string        `json:"drain_reason,omitempty"`
-	DrainSince  *time.Time    `json:"drain_since,omitempty"`
-	HandBackAt  *time.Time    `json:"hand_back_at,omitempty"`
+	PID         int        `json:"pid"`
+	NodeID      string     `json:"node_id,omitempty"`
+	Name        string     `json:"name"`
+	Version     string     `json:"version"`
+	Draining    bool       `json:"draining"`
+	DrainReason string     `json:"drain_reason,omitempty"`
+	DrainSince  *time.Time `json:"drain_since,omitempty"`
+	HandBackAt  *time.Time `json:"hand_back_at,omitempty"`
 	// DiskGate is the disk gate's current reason (diskgate.go), "" when
 	// the node takes leases freely.
 	DiskGate string        `json:"disk_gate,omitempty"`
