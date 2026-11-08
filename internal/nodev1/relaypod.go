@@ -772,8 +772,8 @@ func (rs *relaySidecar) startEgressProcess(ctx context.Context, policy *egress.P
 	rs.caPEM = started.CACertPEM
 	rs.egressCmd, rs.egressDir, rs.egressAuditCancel, rs.egressDone = cmd, dir, cancel, done
 	rs.mu.Unlock()
-	rs.node.Tunnel = rs.forwardConnect(nodeSock, func(r *http.Request) bool { return egress.IsSpliceOnly(r.Context()) })
-	rs.laneHandler = rs.forwardConnect(laneSock, nil)
+	rs.node.Tunnel = forwardConnect(nodeSock, func(r *http.Request) bool { return egress.IsSpliceOnly(r.Context()) })
+	rs.laneHandler = forwardConnect(laneSock, nil)
 	return nil
 }
 
@@ -785,8 +785,11 @@ func (rs *relaySidecar) startEgressProcess(ctx context.Context, policy *egress.P
 // (relaysidecar.OwnHeader) on the forwarded CONNECT, since
 // egress.SpliceOnly cannot cross the socket boundary — the process
 // re-derives it there the same way relaysidecar.Node.ServeHTTP does
-// for the in-process tunnel.
-func (rs *relaySidecar) forwardConnect(sock string, own func(*http.Request) bool) http.HandlerFunc {
+// for the in-process tunnel. A free function, not a relaySidecar
+// method: adopt.go wires an adopted lease's node socket onto its
+// egress process's node socket the same way, with no relaySidecar of
+// its own to hang it from.
+func forwardConnect(sock string, own func(*http.Request) bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		mark := ""
 		if own != nil && own(r) {
@@ -913,6 +916,15 @@ func (rs *relaySidecar) stopEgress() error {
 		os.RemoveAll(dir)
 	}
 	return nil
+}
+
+// disownEgress leaves the egress process running but no longer this
+// node's: its exit from then on is the adopter's to judge, never an
+// egress_died here (watchEgress).
+func (rs *relaySidecar) disownEgress() {
+	rs.mu.Lock()
+	rs.egressStopping = true
+	rs.mu.Unlock()
 }
 
 // watchEgress ends the lease egress_died (leaseegress.go) when the lease's
