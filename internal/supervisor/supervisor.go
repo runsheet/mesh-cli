@@ -8,9 +8,10 @@
 //     QuietAfter after that, stopped with cause stalled. Mode warn only
 //     logs both; mode cancel acts.
 //   - A reconcile every minute: the node's pods with no actor, and pods
-//     whose agent has ended with only a sidecar left, are removed; job
-//     directories and relay grants no actor holds are removed; adopted
-//     sessions are counted.
+//     whose agent has ended with only a sidecar left, are removed; a
+//     lease-egress process no actor names is stopped (ADR-051 decision
+//     3); job directories and relay grants no actor holds are removed;
+//     adopted sessions are counted.
 //
 // The supervisor holds no state of a lease's own: what it knows of each
 // it reads from the actors (Fleet) on every look.
@@ -78,6 +79,23 @@ type Live struct {
 	Pod string
 	// Adopted is a session the node found running rather than started.
 	Adopted bool
+	// EgressPID is the lease's egress process (ADR-051 decision 1), 0
+	// for a lease with none (in-process relay, or no sidecar at all).
+	EgressPID int
+}
+
+// EgressProcess is a running `mesh lease-egress` the reconcile found on
+// the host, named only by its pid (ADR-051 decision 3).
+type EgressProcess struct {
+	PID int
+}
+
+// EgressRuntime lists and stops the node's own lease-egress processes.
+// Nil runs no egress reconcile at all (a platform with no /proc, or a
+// node not built with one).
+type EgressRuntime interface {
+	List() ([]EgressProcess, error)
+	Stop(pid int) error
 }
 
 // Fleet is the node's actors as the supervisor sees and moves them.
@@ -112,6 +130,10 @@ type Supervisor struct {
 	// pods labelled PodLabel are the node's.
 	Sandbox  sandbox.Runtime
 	PodLabel string
+	// Egress, when set, lists and stops the node's own lease-egress
+	// processes (ADR-051 decision 3): one not named by any live lease's
+	// EgressPID is stopped the way a pod no actor holds is removed.
+	Egress EgressRuntime
 	// LeaseRoot holds the job directories, one per lease.
 	LeaseRoot string
 	// OrphanAge is how old an unheld job directory must be to go.
@@ -210,13 +232,16 @@ type Reconciled struct {
 	Actors, Adopted              int
 	PodsNoActor, PodsSidecarOnly []string
 	Workspaces, Grants           []string
-	Errors                       []string
+	// EgressNoActor is the lease-egress processes the reconcile found no
+	// live lease naming (ADR-051 decision 3), by pid.
+	EgressNoActor []int
+	Errors        []string
 }
 
 // Line is the reconcile's log line.
 func (r Reconciled) Line() string {
-	return fmt.Sprintf("supervisor: reconcile: %d actors (%d adopted); removed %d pods with no actor, %d with only a sidecar, %d job directories and %d grants no actor held",
-		r.Actors, r.Adopted, len(r.PodsNoActor), len(r.PodsSidecarOnly), len(r.Workspaces), len(r.Grants))
+	return fmt.Sprintf("supervisor: reconcile: %d actors (%d adopted); removed %d pods with no actor, %d with only a sidecar, %d job directories, %d grants and %d egress processes no actor held",
+		r.Actors, r.Adopted, len(r.PodsNoActor), len(r.PodsSidecarOnly), len(r.Workspaces), len(r.Grants), len(r.EgressNoActor))
 }
 
 // Reconcile is one reconcile of the node against its actors. In mode
@@ -234,6 +259,7 @@ func (s *Supervisor) Reconcile(ctx context.Context) Reconciled {
 	}
 	act := s.Mode == Cancel
 	s.reconcilePods(ctx, byLease, act, &out)
+	s.reconcileEgress(byLease, act, &out)
 	s.reconcileWorkspaces(byLease, act, &out)
 	for _, id := range s.Fleet.Grants() {
 		if _, ok := byLease[id]; ok {
@@ -311,6 +337,39 @@ func (s *Supervisor) reconcilePods(ctx context.Context, live map[string]Live, ac
 		if agentSeen && !agentRunning && sidecarRunning {
 			out.PodsSidecarOnly = append(out.PodsSidecarOnly, p.Name)
 			remove(p.Name)
+		}
+	}
+}
+
+// reconcileEgress stops a `mesh lease-egress` process no live lease
+// names, as reconcilePods removes a pod no actor holds (ADR-051
+// decision 3): no hand-off file is consulted here, since an adopted
+// lease's egress tunnel is never reattached (decision 4, adopt.go) and
+// an orphan is exactly what such a process has become.
+func (s *Supervisor) reconcileEgress(live map[string]Live, act bool, out *Reconciled) {
+	if s.Egress == nil {
+		return
+	}
+	held := map[int]bool{}
+	for _, l := range live {
+		if l.EgressPID != 0 {
+			held[l.EgressPID] = true
+		}
+	}
+	procs, err := s.Egress.List()
+	if err != nil {
+		out.Errors = append(out.Errors, "listing egress processes: "+err.Error())
+		return
+	}
+	for _, p := range procs {
+		if held[p.PID] {
+			continue
+		}
+		out.EgressNoActor = append(out.EgressNoActor, p.PID)
+		if act {
+			if err := s.Egress.Stop(p.PID); err != nil {
+				out.Errors = append(out.Errors, fmt.Sprintf("stopping egress process %d: %v", p.PID, err))
+			}
 		}
 	}
 }

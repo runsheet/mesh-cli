@@ -40,6 +40,13 @@ const PodLeaseLabel = "mesh.v1.lease"
 // exited 137 or 143 and the actor had not stopped it.
 var errPodKilled = errors.New("the lease's pod was killed")
 
+// errEgressKilled is the lease's egress process (ADR-051 decision 1)
+// ending under the actor without the actor stopping it: a killedError
+// built from it ends the lease pod_killed exactly as errPodKilled does
+// (podKilled matches any *killedError by type, not by what it unwraps
+// to), named apart only so the reason says which process died.
+var errEgressKilled = errors.New("the lease's egress process was killed")
+
 // podWatchEvery is how often an actor reads its pod's agent; 5 s when
 // Runtime.PodWatchEvery is zero.
 func (r *Runtime) podWatchEvery() time.Duration {
@@ -263,6 +270,18 @@ func (r *Runtime) setSidecarDir(id, dir string) {
 	}
 }
 
+// setEgress records the lease's egress process (ADR-051 decision 1),
+// for its hand-off file beside SidecarDir (handoff.go, decision 3) --
+// adopting it is goal 2's, out of scope here; this only carries it.
+func (r *Runtime) setEgress(id string, pid int, control string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if l := r.lease(id); l != nil {
+		l.egressPID = pid
+		l.egressControl = control
+	}
+}
+
 // watchPod reads the lease's pod's agent until ctx ends: an agent that
 // exited 137 or 143 while the actor still ran it was killed from
 // outside, and the lease ends pod_killed.
@@ -350,6 +369,14 @@ func (r *Runtime) releaseLeftovers(adopting map[string]bool) {
 				cause, reason = e.Cause, e.Reason
 			}
 			r.handBack(rec.LeaseID, cause, reason, "")
+		}
+		if rec.EgressPID != 0 {
+			// decision 5: an actor.json with no hand-off names an
+			// egress process too (the hand-off path is adopt.go's,
+			// above, not here); stop it with the rest of the release.
+			if err := stopLeftoverEgress(rec.EgressPID); err != nil {
+				r.logf("nodev1: lease %s: stopping leftover egress process %d: %v", rec.LeaseID, rec.EgressPID, err)
+			}
 		}
 		for _, p := range rec.Pods {
 			if r.Sandbox == nil {

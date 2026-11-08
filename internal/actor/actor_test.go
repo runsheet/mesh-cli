@@ -126,6 +126,32 @@ func TestReleaseIsTheOnlyExit(t *testing.T) {
 	}
 }
 
+// NoteEgress records the lease's egress process in actor.json before the
+// actor leaves preparing (ADR 051 decision 3); held before the pod, its
+// release — held the same way, after the pid is noted — runs after the
+// pod's, last to first (decision 1's process outlives nothing of the
+// pod's release ordering by surviving it; it is stopped only once the
+// pod it served is gone).
+func TestNoteEgress(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "lse_1")
+	a, _ := Start(dir, Record{LeaseID: "lse_1"})
+	a.Enter(Preparing)
+	var order []string
+	a.NoteEgress(4242, filepath.Join(dir, "egress", "control"))
+	a.Hold("egress "+filepath.Join(dir, "egress", "control"), func() error {
+		order = append(order, "egress")
+		return nil
+	})
+	a.HoldPod("mesh-v1-lse_1", func() error { order = append(order, "pod"); return nil })
+	if r := readRecord(t, dir); r.EgressPID != 4242 || r.EgressControl != filepath.Join(dir, "egress", "control") {
+		t.Fatalf("actor.json egress %d %q", r.EgressPID, r.EgressControl)
+	}
+	a.Release()
+	if fmt.Sprint(order) != "[pod egress]" {
+		t.Fatalf("released %v, want the pod then the egress process", order)
+	}
+}
+
 // A node that stopped leaves its actors' records; the next start reads
 // every one that is not done.
 func TestLeftovers(t *testing.T) {

@@ -32,6 +32,13 @@ type handoffState struct {
 	// (plain sessionproxy mode): such a lease cannot be adopted
 	// (adopt.go) and is handed back node_update at start instead.
 	SidecarDir string `json:"sidecarDir,omitempty"`
+	// EgressPID and EgressControl name the lease's egress process
+	// (ADR-051 decisions 1 and 3), beside SidecarDir: "" for a lease
+	// whose relay ran in-process, or with no sidecar at all. Picking
+	// the process back up on adoption is goal 2's (decision 4), out of
+	// scope here; this only carries what a later node would need to.
+	EgressPID     int    `json:"egressPid,omitempty"`
+	EgressControl string `json:"egressControl,omitempty"`
 	// AgentStdoutOffset is how far into the lease's agent output the
 	// node had already read, so an adopting node resumes the tail from
 	// there rather than from the top (adopt.go).
@@ -71,7 +78,7 @@ func turnsForHandoff(l *turnLedger) *handoffTurns {
 // writeHandoff leaves l's hand-off state under its own lease directory,
 // atomically: a reader never sees a half-written file.
 func (r *Runtime) writeHandoff(id string, l *running) error {
-	st := &handoffState{Brief: l.brief, SocketDir: filepath.Dir(l.sock), PushHeads: l.pushHeads, SidecarDir: l.sidecarDir}
+	st := &handoffState{Brief: l.brief, SocketDir: filepath.Dir(l.sock), PushHeads: l.pushHeads, SidecarDir: l.sidecarDir, EgressPID: l.egressPID, EgressControl: l.egressControl}
 	if l.mailbox != nil {
 		st.Turns = turnsForHandoff(l.mailbox.turns)
 	}

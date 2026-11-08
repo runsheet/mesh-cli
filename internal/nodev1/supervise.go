@@ -39,6 +39,7 @@ func (f fleet) Live() []supervisor.Live {
 		out = append(out, supervisor.Live{
 			LeaseID: id, Running: l.actor.State() == actor.Running,
 			ProgressAt: l.progressAt, EscalatedAt: l.escalatedAt, Pod: l.pod,
+			EgressPID: l.egressPID,
 		})
 	}
 	return out
@@ -104,5 +105,6 @@ func (r *Runtime) supervisor() *supervisor.Supervisor {
 	if r.Sandbox != nil {
 		s.Sandbox = r.Sandbox
 	}
+	s.Egress = egressRuntime{}
 	return s
 }
