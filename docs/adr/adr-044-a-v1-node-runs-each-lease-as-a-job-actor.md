@@ -351,3 +351,39 @@ whether it did.
    appearing within the poll's timeout is the same. This is
    `mesh node upgrade`'s own account of step 3's adoption, not a
    change to adoption itself.
+
+## Amendment, 2026-11-08: the lease's egress process has its own cause and its own actor.json field
+
+A lease's egress process (ADR-051 decision 1, mesh-specs) runs in its
+own process group, outside the node's and outside the pod's: nothing
+but its own exit, or a signal sent from outside the node, ends it.
+Decision 2's closed set of hand-back causes had no way to say "the
+egress process died" apart from `pod_killed` (an agent exit) or
+`stalled` (the supervisor's own escalation) — neither of which this
+is.
+
+1. **`egress_died`** (`meshapi.CauseEgressDied`) is added to Decision
+   2's set of causes: the lease's egress process ending on its own
+   while the lease is still live, never caused by the actor stopping
+   it as part of releasing. Like `pod_killed`, it is the node's own
+   condition, not the work's — Mesh takes it as a hand-back, not a red
+   verdict. It is distinct from `pod_killed` (the agent's own container
+   exiting) and from `stalled` (the supervisor escalating on silence):
+   the relay sidecar's `watchEgress` raises it the instant the egress process's wait
+   returns, whether or not the agent or supervisor ever notice, and it
+   ends the lease immediately rather than waiting for `quiet_after` or
+   an agent exit to be observed.
+2. **`actor.json` names the lease's egress process.** `Record.EgressPID`
+   and `Record.EgressControl` (json `egressPid`, `egressControl`) are set
+   by `Actor.NoteEgress` before the actor leaves `preparing`, once the
+   lease has an egress process to name — the same point `Holds` and
+   `Pods` are already kept up to date for the leftovers path. A node
+   that stops without releasing the lease leaves it on disk; the next
+   start's `releaseLeftovers` (Decision 2, "a node that stops without
+   releasing leaves `actor.json` behind") reads `Record.EgressPID` beside
+   `Record.Pods` and stops the named process (`stopLeftoverEgress`: its
+   own process group, SIGTERM then, after a bounded wait, SIGKILL)
+   after removing the lease's pods and before removing its job
+   directory — so an egress process a dead node left running never
+   outlives the next node's clean-up, whether or not that lease's own
+   `watchEgress` is still there to catch it.
