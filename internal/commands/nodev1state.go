@@ -164,6 +164,24 @@ func drainV1Node(s node.RunState, wait time.Duration, out io.Writer) error {
 	return nil
 }
 
+// drainV1IfRunning drains the Mesh v1 node running on this machine, as
+// drainIfRunning does for the legacy node (nodeupdate.go: `mesh node
+// update` drains both before it swaps the binary, since they run the
+// one executable); with none running there is nothing to drain.
+func drainV1IfRunning(state node.RunState, out io.Writer) (bool, error) {
+	pid, err := state.PID()
+	if errors.Is(err, node.ErrNoNode) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !processAlive(pid) {
+		return false, nil
+	}
+	return true, drainV1Node(state, 0, out)
+}
+
 // v1StatusLines are `mesh node status`'s lines for the v1 node on this
 // machine; false when none runs.
 func v1StatusLines(s node.RunState, now time.Time) ([]string, bool) {

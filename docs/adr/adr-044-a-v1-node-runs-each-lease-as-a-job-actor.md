@@ -490,3 +490,30 @@ since died is not.
    cap <n> GB, disk floor <n> GB`), and each eviction pass that removes
    entries logs the bytes before and after and the cap
    (`TestRunStartsTheBuildCacheWatcherOnTheMountedCache`).
+
+## Amendment, 2026-11-08: `mesh node update` drains a v1 node beside the legacy one
+
+`mesh node update` swaps the one executable both the legacy node and a
+Mesh v1 node run (adr-002); it already drained a running legacy node
+first (`drainIfRunning`, nodeupdate.go), but a v1 node running beside
+it (`mesh node run --api v1`) was left untouched — still able to take a
+new lease on a binary it was about to lose.
+
+1. **`drainV1IfRunning`** (`internal/commands/nodev1state.go`) is
+   `drainIfRunning`'s counterpart for the v1 node: with no pidfile under
+   its run state (`node.ErrNoNode`) or a pid that is no longer alive,
+   there is nothing to drain; otherwise it calls `drainV1Node` as `mesh
+   node drain --api v1` does, with no wait.
+2. **`nodeUpdate` gains `V1Run node.RunState` and `V1Drain func(node.RunState,
+   io.Writer) (bool, error)`** (nodeupdate.go), defaulting to
+   `v1RunState()` and `drainV1IfRunning` as `Run`/`Drain` already defaulted
+   to the legacy node's own `node.DefaultRunState()`/`drainIfRunning`.
+   `run()` drains the v1 node right after the legacy one, before the
+   swap, and ORs its own "something was running" bool into the legacy
+   drain's: either one being live is enough for the swap's closing lines
+   to say the node is draining and its service will start the new binary,
+   rather than "No node is running on this machine" — which was wrong
+   whenever only the v1 node was up. Neither drain is conditioned on the
+   other: both are unconditional, since the swap affects both regardless
+   of which kind is running, and a `--api` flag would only ask the
+   operator something the command can find out for itself.
