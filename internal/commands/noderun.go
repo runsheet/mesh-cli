@@ -31,7 +31,6 @@ import (
 )
 
 var (
-	nodeRunAPI        string
 	nodeRunURL        string
 	nodeRunName       string
 	nodeRunWorkRoot   string
@@ -66,21 +65,18 @@ var (
 	nodeRunBeforeRun func(*nodev1.Runtime) bool
 )
 
-// nodeRunCmd is the Mesh v1 node runtime (internal/nodev1), beside the
-// legacy `mesh node start`: it speaks only Mesh's v1 node API, on the
+// nodeRunCmd is the Mesh v1 node runtime (internal/nodev1): it speaks
+// only Mesh's v1 node API, on the
 // machine credential `mesh node login` saved.
 var nodeRunCmd = &cobra.Command{
-	Use:   "run --api v1",
-	Short: "Run this machine as a Mesh v1 node (beside `mesh node start`)",
+	Use:   "run",
+	Short: "Run this machine as a Mesh v1 node",
 	Long: `Run this machine as a Mesh v1 node: register with Mesh (api.projectmesh.io),
 take one lease at a time, run its claude-code session with the brief's product
 MCP servers through a sessionproxy of the lease's own, renew the lease while it
-runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `.`,
+runs, and finish or hand back.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		if nodeRunAPI != "v1" {
-			return fmt.Errorf("mesh node run: --api must be v1 (the legacy runtime is `mesh node start`), not %q", nodeRunAPI)
-		}
 		src, err := tokenSource()
 		if err != nil {
 			return fmt.Errorf("mesh node run: no machine credential (run `mesh node login`): %w", err)
@@ -223,7 +219,7 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 			rt.Drain("`mesh node drain` asked", wait)
 		})()
 		// SIGHUP is shared: `mesh node set` sends it for a live reload,
-		// `mesh node upgrade --api v1` sends it to hand every lease off
+		// `mesh node upgrade` sends it to hand every lease off
 		// and restart. node.upgrade-ask, written only by the latter
 		// right before it signals, is what tells them apart (adr-044,
 		// both amendments).
@@ -343,7 +339,7 @@ func nodeRunSigstore(logger *log.Logger) *sigstore.Signer {
 
 // nodeRunHost is node.yaml's `host:` block (the legacy node's
 // HostConfig), reimplemented as nodev1.Host and a nodev1.MachineProbe
-// so --api v1 backs off a hot or short-of-memory host too (Mesh v1
+// so the node backs off a hot or short-of-memory host too (Mesh v1
 // spec amendment, "A node backs off a hot host"; nodev1 may not import
 // internal/node itself, guard_test.go, so this package bridges the
 // two). LoadPerCoreMax carries straight across; MinFreeMemory, a size
@@ -459,7 +455,6 @@ func nodeRunCapacity(cpus, memGB float64, slots int) meshapi.Capacity {
 
 func init() {
 	f := nodeRunCmd.Flags()
-	f.StringVar(&nodeRunAPI, "api", "", "the API the node speaks: v1 (required)")
 	f.StringVar(&nodeRunURL, "url", "", "Mesh's API (default $MESH_API_URL, else "+meshapi.DefaultURL+")")
 	f.StringVar(&nodeRunName, "name", "", "the node's name (default the hostname)")
 	f.StringVar(&nodeRunWorkRoot, "work-root", "", "where leases run (default ~/.mesh/v1)")
@@ -482,6 +477,5 @@ func init() {
 	f.BoolVar(&nodeRunSelfUpdate, "self-update", false, "keep the node on the newest release: drain, hand back node_update what still runs after 30 minutes, install the verified release and exit for the service manager to restart it")
 	f.BoolVar(&nodeRunRelaySidecar, "relay-sidecar", false, "with --sandbox, run each lease's relay as a sidecar in its pod on the lease's credentials alone, the pod with no network but its loopback (projectmesh-io/api ADR 001 amendment \"relay sidecar\"); defaults on with --sandbox, since a lease with no sidecar cannot be adopted across a restart -- pass --relay-sidecar=false to run one unadoptable")
 	f.BoolVar(&nodeRunSandbox, "sandbox", false, "with --actors, run each lease's session and its services (the checkout's .mesh/services.yml and the brief's pods) in a rootless podman pod of the lease's own, on node.yaml's sandbox settings and the brief's CPUs and memory; the relay is reached only through the lease's socket")
-	_ = nodeRunCmd.MarkFlagRequired("api")
 	nodeCmd.AddCommand(nodeRunCmd)
 }

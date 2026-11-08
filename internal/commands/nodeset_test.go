@@ -19,7 +19,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/nodev1"
 )
 
-// registeredCapacity runs `mesh node run --api v1` end to end against a
+// registeredCapacity runs `mesh node run` end to end against a
 // fake Mesh, with node.yaml pre-seeded (or not) and --cpus set to
 // cpusFlag, and returns the capacity it registered with — the
 // flags-become-defaults rule's observable (ADR-044 amendment,
@@ -45,13 +45,13 @@ func registeredCapacity(t *testing.T, nodeYAML string, cpusFlag float64) meshapi
 		}
 	}
 
-	saved := []any{nodeRunAPI, nodeRunName, nodeRunWorkRoot, nodeRunOnce, nodeRunCPUs}
+	saved := []any{nodeRunName, nodeRunWorkRoot, nodeRunOnce, nodeRunCPUs}
 	t.Cleanup(func() {
-		nodeRunAPI, nodeRunName, nodeRunWorkRoot, nodeRunOnce, nodeRunCPUs =
-			saved[0].(string), saved[1].(string), saved[2].(string), saved[3].(bool), saved[4].(float64)
+		nodeRunName, nodeRunWorkRoot, nodeRunOnce, nodeRunCPUs =
+			saved[0].(string), saved[1].(string), saved[2].(bool), saved[3].(float64)
 	})
-	nodeRunAPI, nodeRunName, nodeRunWorkRoot, nodeRunOnce, nodeRunCPUs =
-		"v1", "precedence-test", filepath.Join(home, "work"), false, cpusFlag
+	nodeRunName, nodeRunWorkRoot, nodeRunOnce, nodeRunCPUs =
+		"precedence-test", filepath.Join(home, "work"), false, cpusFlag
 
 	done := make(chan error, 1)
 	go func() { done <- nodeRunCmd.RunE(nodeRunCmd, nil) }()
@@ -116,13 +116,13 @@ func TestNodeSetChangesCapacityWithoutARestart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	saved := []any{nodeRunAPI, nodeRunName, nodeRunWorkRoot, nodeRunOnce, nodeRunCPUs}
+	saved := []any{nodeRunName, nodeRunWorkRoot, nodeRunOnce, nodeRunCPUs}
 	t.Cleanup(func() {
-		nodeRunAPI, nodeRunName, nodeRunWorkRoot, nodeRunOnce, nodeRunCPUs =
-			saved[0].(string), saved[1].(string), saved[2].(string), saved[3].(bool), saved[4].(float64)
+		nodeRunName, nodeRunWorkRoot, nodeRunOnce, nodeRunCPUs =
+			saved[0].(string), saved[1].(string), saved[2].(bool), saved[3].(float64)
 	})
-	nodeRunAPI, nodeRunName, nodeRunWorkRoot, nodeRunOnce, nodeRunCPUs =
-		"v1", "set-test", filepath.Join(home, "work"), false, 4
+	nodeRunName, nodeRunWorkRoot, nodeRunOnce, nodeRunCPUs =
+		"set-test", filepath.Join(home, "work"), false, 4
 
 	r, w, err := os.Pipe()
 	if err != nil {

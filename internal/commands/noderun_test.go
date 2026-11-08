@@ -22,9 +22,6 @@ func runNodeRunUpToBuild(t *testing.T) (*nodev1.Runtime, error) {
 	t.Setenv("HOME", home)
 	t.Setenv("MESH_TOKEN", "rs_test")
 
-	saved := nodeRunAPI
-	nodeRunAPI = "v1"
-	t.Cleanup(func() { nodeRunAPI = saved })
 	savedRoot := nodeRunWorkRoot
 	nodeRunWorkRoot = filepath.Join(home, "work")
 	t.Cleanup(func() { nodeRunWorkRoot = savedRoot })

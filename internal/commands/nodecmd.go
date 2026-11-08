@@ -352,122 +352,15 @@ func registerIn(ctx context.Context, gw *gateway.Client, cfg *node.Config, scope
 
 var nodeStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Heartbeat once, list the org's nodes and this machine's session scopes",
+	Short: "What the Mesh v1 node on this machine is doing",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// a Mesh v1 node running here is shown from what it left in
-		// ~/.mesh/node-v1; with no legacy node beside it, that is all
-		if v1, err := v1RunState(); err == nil {
-			if lines, ok := v1StatusLines(v1, time.Now()); ok {
-				for _, l := range lines {
-					fmt.Println(l)
-				}
-				if legacy, err := node.DefaultRunState(); err == nil {
-					if _, ok := liveNode(legacy); !ok {
-						return nil
-					}
-				}
-				fmt.Println()
-			}
-		}
-		cfg, err := node.LoadConfig()
+		v1, err := v1RunState()
 		if err != nil {
 			return err
 		}
-		src, err := tokenSource()
-		if err != nil {
-			return err
-		}
-		gw := gateway.NewWithSource(gatewayURL(), src)
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		// an owned node — by the contract the last registration saved —
-		// heartbeats once under its one id, a nil answer included; a
-		// per-org node per org as before (node.HeartbeatOutside)
-		out, err := node.HeartbeatOutside(ctx, gw, cfg, version.Resolved(), gateway.HeartbeatExtras{Commit: version.Commit()},
-			func(sc node.Scope, err error) error { return fmt.Errorf("heartbeat in %s: %w", sc.Name(), err) })
-		if err != nil {
-			return err
-		}
-		if line := ownedStatusLine(cfg, out); line != "" {
-			fmt.Println(line)
-		}
-		if line := personalNodeStatusLine(); line != "" {
-			fmt.Println(line)
-		}
-		// the running node's own view, live from its admin socket (ADR-039)
-		if sock, err := node.AdminSocket(); err == nil {
-			if st, err := node.ReadStatus(ctx, sock); err == nil {
-				for _, l := range st.LiveLines() {
-					fmt.Println(l)
-				}
-			}
-		}
-		scopes := out.Scopes
-		fmt.Println(credentialLine(src.Credential()))
-		state, err := node.DefaultRunState()
-		if err != nil {
-			return err
-		}
-		local, draining := localNodeState(state)
-		fmt.Println(local)
-		fmt.Println(takesStatusLine(cfg))
-		fmt.Println(reportingStatusLine(cfg))
-		fmt.Println(hostConfigLine(cfg.Host))
-		if line, ok := attestationsStatusLine(state, time.Now()); ok {
-			fmt.Println(line)
-		}
-		fmt.Println(cacheStatusLine(state, cfg.ValidationCacheCap()))
-		fmt.Println(cacheSizeStatusLine(state))
-		scaling, scales := localScaling(state)
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "ORG\tNAME\tSLUG\tSTATUS\tRUNNING\tCAPACITY\tVERSION\tLAST_SEEN")
-		for _, sc := range scopes {
-			nodes, err := gw.Nodes(ctx, sc.ID)
-			if err != nil {
-				return err
-			}
-			for _, n := range nodes {
-				mark, status, capacity := "", n.Status, fmt.Sprint(n.Capacity)
-				if n.ID == sc.NodeID {
-					mark = " *"
-					if draining {
-						status += ",draining"
-					}
-					if scales {
-						capacity = scaling.String()
-					}
-				}
-				fmt.Fprintf(w, "%s\t%s%s\t%s\t%s\t%d\t%s\t%s\t%s\n", sc.Name(), n.Name, mark, n.Slug, status, n.Running, capacity, n.Version, n.LastSeenAt)
-			}
-		}
-		if err := w.Flush(); err != nil {
-			return err
-		}
-		if rt, ok := localRuntime(state); ok {
-			fmt.Println(runtimeBrokenLine(rt))
-		}
-		if rows, ok := localStanding(state); ok {
-			for _, line := range standingLines(rows) {
-				fmt.Println(line)
-			}
-		}
-		if findings, ok := localFindings(state); ok {
-			for _, line := range findingsLines(findings) {
-				fmt.Println(line)
-			}
-		}
-		if held, ok := localHeld(state); ok {
-			heldGoalsSection(os.Stdout, held)
-		}
-		if pid, err := state.PID(); err == nil && processAlive(pid) {
-			rows, _ := state.Shares()
-			fmt.Println()
-			for _, line := range sharesLines(rows) {
-				fmt.Println(line)
-			}
-		}
-		if _, ok := sessionunit.Default().(sessionunit.SystemdScope); ok {
-			printScopes(ctx, gw, sessionunit.HostSystemctl{})
+		lines, _ := v1StatusLines(v1, time.Now())
+		for _, l := range lines {
+			fmt.Fprintln(cmd.OutOrStdout(), l)
 		}
 		return nil
 	},
@@ -872,72 +765,40 @@ func formatHeldTime(t time.Time) string {
 	return t.Format(time.RFC3339)
 }
 
-var (
-	nodeDrainAPI  string
-	nodeDrainWait time.Duration
-)
+var nodeDrainWait time.Duration
 
 var nodeDrainCmd = &cobra.Command{
 	Use:   "drain",
 	Short: "Drain the node running on this machine: it claims nothing new, lets its sessions finish, then exits",
-	Long: `Sends the running node (its pid is in ~/.mesh/node.pid, or a Mesh v1
-node's in ~/.mesh/node-v1/node.pid) SIGUSR1 — the same as ` + "`kill -USR1 <pid>`" + `.
-The node stops claiming or taking work, lets every session it has running
-end, and exits 0; under systemd or launchd it is started again, on the
-binary and config now on disk. ` + "`mesh node status`" + ` shows it as draining
-meanwhile.
+	Long: `Sends the running Mesh v1 node (` + "`mesh node run`" + `), whose pid is in
+~/.mesh/node-v1/node.pid, SIGUSR1 — the same as ` + "`kill -USR1 <pid>`" + `.
 
-A Mesh v1 node (` + "`mesh node run --api v1`" + `) also asks Mesh to stop offering
-it leases (POST /v1/nodes/{id}/drain), and its next start asks Mesh to
-resume it. With --wait, what it still runs once the wait is up is handed
-back node_update (the job keeps its place, no attempt spent) and the node
-exits. SIGTERM is not a drain: it stops at once, handing every lease back
-node_restart.
-
-With both a legacy and a v1 node running as this user, --api says which.
+The node asks Mesh to stop offering it leases (POST /v1/nodes/{id}/drain),
+lets every lease it is running end, and exits 0; its next start asks Mesh to
+resume it, and under systemd or launchd it is started again, on the binary
+and config now on disk. With --wait, what it still runs once the wait is up
+is handed back node_update (the job keeps its place, no attempt spent) and
+the node exits. SIGTERM is not a drain: it stops at once, handing every
+lease back node_restart.
 
 Capacity and the orgs served need no drain: the node reads them every
 tick.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		state, err := node.DefaultRunState()
-		if err != nil {
-			return err
-		}
 		v1, err := v1RunState()
 		if err != nil {
 			return err
 		}
-		return drainEither(state, v1, nodeDrainAPI, nodeDrainWait, cmd.OutOrStdout())
+		return drainEither(v1, nodeDrainWait, cmd.OutOrStdout())
 	},
 }
 
-// drainEither drains the legacy node (state) or the v1 node (v1): the
-// one api names, else the one running, else the legacy node as before.
-func drainEither(state, v1 node.RunState, api string, wait time.Duration, out io.Writer) error {
+// drainEither drains the Mesh v1 node running on this machine.
+func drainEither(v1 node.RunState, wait time.Duration, out io.Writer) error {
 	if wait < 0 {
 		return fmt.Errorf("--wait %s: a wait is not negative", wait)
 	}
-	switch api {
-	case "v1":
-		return drainV1Node(v1, wait, out)
-	case "v0", "legacy":
-	case "":
-		_, legacy := liveNode(state)
-		_, isV1 := liveNode(v1)
-		switch {
-		case legacy && isV1:
-			return errors.New("a legacy node and a Mesh v1 node both run as this user: say which with --api v0 or --api v1")
-		case isV1:
-			return drainV1Node(v1, wait, out)
-		}
-	default:
-		return fmt.Errorf("--api is v0 or v1, not %q", api)
-	}
-	if wait > 0 {
-		return errors.New("--wait is the Mesh v1 node's: the legacy node's drain waits for its sessions")
-	}
-	return drainNode(state, out)
+	return drainV1Node(v1, wait, out)
 }
 
 // drainNode signals the node whose pid state holds to drain.
@@ -2278,8 +2139,7 @@ func init() {
 	nodeModelCmd.Flags().StringVar(&nodeModelPlanFlag, "plan", "", "model for planner sessions")
 	nodeModelCmd.Flags().StringVar(&nodeModelResearchFlag, "research", "", "model for director (research) sessions")
 	nodeModelCmd.Flags().StringVar(&nodeModelRebaseFlag, "rebase", "", "model for rebase sessions")
-	nodeDrainCmd.Flags().StringVar(&nodeDrainAPI, "api", "", "the node to drain when a legacy and a v1 node both run as this user: v0 or v1 (default the one running)")
-	nodeDrainCmd.Flags().DurationVar(&nodeDrainWait, "wait", 0, "a Mesh v1 node's drain: hand back node_update what still runs after this long, then exit (default wait for every lease)")
+	nodeDrainCmd.Flags().DurationVar(&nodeDrainWait, "wait", 0, "hand back node_update what still runs after this long, then exit (default wait for every lease)")
 	nodeCmd.AddCommand(nodeLoginCmd, nodeRegisterCmd, nodeStartCmd, nodeStatusCmd, nodeDrainCmd, nodeUpgradeCmd, nodeLogoutCmd, nodeModelCmd)
 }
 

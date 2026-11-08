@@ -15,7 +15,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/paths"
 )
 
-// A Mesh v1 node (`mesh node run --api v1`) leaves its run state beside
+// A Mesh v1 node (`mesh node run`) leaves its run state beside
 // the legacy node's, in ~/.mesh/node-v1 (ADR-044 amendment, drain): its
 // pidfile (`mesh node drain` signals it SIGUSR1), its draining marker,
 // the wait a drain asked for (node.drain-wait, read by the node as the
@@ -165,11 +165,13 @@ func drainV1Node(s node.RunState, wait time.Duration, out io.Writer) error {
 }
 
 // v1StatusLines are `mesh node status`'s lines for the v1 node on this
-// machine; false when none runs.
+// machine: what it is doing when one runs, else that none does — always
+// at least one line, so `mesh node status` never falls back to legacy
+// text for this machine.
 func v1StatusLines(s node.RunState, now time.Time) ([]string, bool) {
 	pid, ok := liveNode(s)
 	if !ok {
-		return nil, false
+		return []string{"This machine: no Mesh v1 node running (mesh node run)."}, true
 	}
 	st, ok := readV1Status(s)
 	if !ok || st.PID != pid {

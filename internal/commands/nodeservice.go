@@ -16,7 +16,7 @@ import (
 // mesh node service install|uninstall|status: the node as a service of
 // the operator's login — launchd on macOS, systemd --user on Linux — so
 // it survives crashes, logouts and reboots instead of living in a
-// terminal. The service runs this binary's `node start` with the flags
+// terminal. The service runs this binary's `node run` with the flags
 // given at install (--unattended, --interval, …), logs to ~/.mesh/node.log.
 var nodeServiceCmd = &cobra.Command{
 	Use:   "service",
@@ -31,7 +31,7 @@ var (
 
 var nodeServiceInstallCmd = &cobra.Command{
 	Use:   "install",
-	Short: "Install and start the service (stops a running one first); --unattended and --arg pass flags to node start",
+	Short: "Install and start the service (stops a running one first); --unattended and --arg pass flags to node run",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if _, err := node.LoadConfig(); err != nil {
 			return err
@@ -87,7 +87,7 @@ var nodeServiceInstallCmd = &cobra.Command{
 			}
 			fmt.Printf("Installed %s (%s); it starts now and at every login (run `loginctl enable-linger` to keep it up while logged out). Log: %s (a panic: journalctl --user -u %s)\n", node.ServiceLabel, path, node.ServiceLog(home), node.ServiceLabel)
 		default:
-			return fmt.Errorf("no service manager for %s; run `mesh node start` under your own supervisor", runtime.GOOS)
+			return fmt.Errorf("no service manager for %s; run `mesh node run` under your own supervisor", runtime.GOOS)
 		}
 		return nil
 	},
@@ -178,7 +178,7 @@ func run(name string, args ...string) error {
 
 func init() {
 	nodeServiceInstallCmd.Flags().BoolVar(&serviceUnattended, "unattended", false, "start with --dangerously-skip-permissions (a machine you trust with that)")
-	nodeServiceInstallCmd.Flags().StringArrayVar(&serviceArgs, "arg", nil, "another flag for node start, e.g. --arg=--interval=1m (repeatable)")
+	nodeServiceInstallCmd.Flags().StringArrayVar(&serviceArgs, "arg", nil, "another flag for node run, e.g. --arg=--interval=1m (repeatable)")
 	nodeServiceInstallCmd.Flags().StringArrayVar(&serviceEnv, "env", nil, "a KEY=VALUE the service's sessions inherit (repeatable); GH_CONFIG_DIR, GIT_CONFIG_GLOBAL, GH_TOKEN, GITHUB_TOKEN and CLAUDE_CONFIG_DIR are taken from this shell when set")
 	nodeServiceCmd.AddCommand(nodeServiceInstallCmd, nodeServiceUninstallCmd, nodeServiceStatusCmd)
 	nodeCmd.AddCommand(nodeServiceCmd)
