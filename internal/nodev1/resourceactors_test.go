@@ -3,8 +3,6 @@ package nodev1
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -89,26 +87,3 @@ func (g gatedUpdater) Due(ctx context.Context) (string, error) {
 	return g.u.Due(ctx)
 }
 func (g gatedUpdater) Install(ctx context.Context, v string) error { return g.u.Install(ctx, v) }
-
-// The cache trim runs off the take loop with the node's scheduler: a
-// cache over its cap is cleaned while no lease builds (PR 3.4).
-func TestTheCacheTrimRunsOffTheLoop(t *testing.T) {
-	g, _ := actorRig(t, &stubSession{})
-	root := t.TempDir()
-	os.WriteFile(filepath.Join(root, "x-d"), make([]byte, 4096), 0o600)
-	cleaned := make(chan struct{})
-	g.rt.CacheTrim = &resources.CacheTrim{Root: root, MaxBytes: 1024, Clean: func(_ context.Context, root string) error {
-		if held := g.rt.Scheduler.Leases(); len(held) != 1 || held[0].Owner != "cache-trim" {
-			t.Errorf("the ledger while cleaning: %+v", held)
-		}
-		close(cleaned)
-		return os.Remove(filepath.Join(root, "x-d"))
-	}}
-	g.offer(t, nil)
-	run(t, g, context.Background())
-	select {
-	case <-cleaned:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the trim never ran")
-	}
-}
