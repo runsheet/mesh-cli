@@ -39,6 +39,14 @@ var leaseEgressCmd = &cobra.Command{
 		if leaseEgressOpts.Control == "" || leaseEgressOpts.Node == "" {
 			return fmt.Errorf("lease-egress: --control and --node are required")
 		}
+		// Its node's exit closes the read end of this process's own
+		// stderr (a pipe, cmd.StderrPipe() in startEgressProcess) and
+		// can close the lane and node sockets' connections out from
+		// under it mid-write; without this, the next write to either
+		// raises SIGPIPE and the default disposition kills the process
+		// outright -- before stopEgress ever gets to use the line,
+		// across exactly the restart ADR-051 exists to survive.
+		signal.Ignore(syscall.SIGPIPE)
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		logf := func(format string, a ...any) { fmt.Fprintf(cmd.ErrOrStderr(), format+"\n", a...) }
