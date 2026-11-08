@@ -176,7 +176,8 @@ type relaySidecar struct {
 	caPEM []byte
 	// egressCmd is the lease's egress process (ADR-051 decision 1): its
 	// own process group, outside the node's and the pod's, ended by
-	// stopEgress. nil when the lease's egress runs in process.
+	// stopEgress, held by the actor after the pod so it stops after it
+	// (ADR-051 decision 3). nil when the lease's egress runs in process.
 	egressCmd *exec.Cmd
 	// egressDir is that process's own private socket directory
 	// (control, node, lane), reached by the node's UID alone.
@@ -873,12 +874,11 @@ func closeWriteConn(c net.Conn) {
 }
 
 // stopEgressProcess ends the lease's egress process (ADR-051 decision
-// 3: the actor owns its lifecycle, like a pod): SIGTERM, a bounded
-// wait for its own exit, then SIGKILL — its own process group, never
-// the node's own (ADR-051 decision 1), so a kill here never touches
-// the node. done is the process's own Wait goroutine, started once
-// when it was started: stopEgressProcess only ever reads it.
-func stopEgressProcess(cmd *exec.Cmd, done chan struct{}) {
+// 3): SIGTERM, a bounded wait for its own exit (on done, the one
+// goroutine that calls cmd.Wait, shared with watchEgress), then
+// SIGKILL — its own process group, never the node's own (ADR-051
+// decision 1), so a kill here never touches the node.
+func stopEgressProcess(cmd *exec.Cmd, done <-chan struct{}) {
 	_ = cmd.Process.Signal(syscall.SIGTERM)
 	select {
 	case <-done:
@@ -889,41 +889,15 @@ func stopEgressProcess(cmd *exec.Cmd, done chan struct{}) {
 	<-done
 }
 
-// stopLeftoverEgress ends an egress process a node named in actor.json
-// before it stopped (ADR-051 decision 5): there is no *exec.Cmd to
-// signal or wait on across a restart, only the pid, so it signals the
-// pid directly and polls for it to be gone rather than reading its
-// exit through cmd.Wait. A pid already gone, or refusing the signal
-// with ESRCH, is success, not an error.
-func stopLeftoverEgress(pid int) error {
-	if pid <= 0 {
-		return nil
-	}
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
-		if errors.Is(err, syscall.ESRCH) {
-			return nil
-		}
-		return fmt.Errorf("signalling %d: %w", pid, err)
-	}
-	deadline := time.Now().Add(egressStopWait)
-	for time.Now().Before(deadline) {
-		if err := syscall.Kill(pid, 0); err != nil {
-			return nil
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-		return fmt.Errorf("killing %d: %w", pid, err)
-	}
-	return nil
-}
-
 // stopEgress ends the lease's egress process and removes its socket
 // directory (ADR-051 decisions 1 and 3): the actor's own hold on it,
-// released before the pod's so the process never outlives it, and
-// close's own tail. Idempotent: a second call, or one before the
-// process ever started, does nothing.
+// taken before the pod's so it is released after the pod is removed.
+// Idempotent: a second call, one before the process ever started, or
+// one on a nil sidecar does nothing.
 func (rs *relaySidecar) stopEgress() error {
+	if rs == nil {
+		return nil
+	}
 	rs.mu.Lock()
 	rs.egressStopping = true
 	cmd, dir, auditCancel, done := rs.egressCmd, rs.egressDir, rs.egressAuditCancel, rs.egressDone
@@ -941,7 +915,7 @@ func (rs *relaySidecar) stopEgress() error {
 	return nil
 }
 
-// watchEgress ends the lease, as a killed pod does, when the lease's
+// watchEgress ends the lease egress_died (leaseegress.go) when the lease's
 // egress process exits on its own (ADR-051 decision 3: the actor
 // watches it as it watches the pod) — never when stopEgress stopped
 // it, and never past ctx ending (the lease ending some other way).
@@ -967,12 +941,14 @@ func (rs *relaySidecar) watchEgress(ctx context.Context, cancel context.CancelCa
 	if cmd.ProcessState != nil {
 		code = cmd.ProcessState.ExitCode()
 	}
-	cancel(&killedError{code: code, why: fmt.Sprintf("%v: it exited %d", errEgressKilled, code)})
+	cancel(&egressDiedError{code: code, why: fmt.Sprintf("%v: it exited %d", errEgressDied, code)})
 }
 
 // close ends the node's side: the socket and its tunnels, the node's own
 // proxy, every git token minted for the sidecar, and the socket
-// directory. The sidecar and its tmpfs go with the pod.
+// directory. The sidecar and its tmpfs go with the pod. It does not
+// touch the lease's egress process: that is stopEgress's, held by the
+// actor to run after the pod (ADR-051 decision 3).
 func (rs *relaySidecar) close() error {
 	rs.mu.Lock()
 	if rs.closed {
@@ -992,7 +968,6 @@ func (rs *relaySidecar) close() error {
 		rs.own.Close()
 		os.RemoveAll(rs.ownDir)
 	}
-	rs.stopEgress()
 	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
 	defer cancel()
 	if len(minted) > 0 && rs.tokens != nil {

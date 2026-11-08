@@ -183,10 +183,12 @@ func TestARelaySidecarsSessionHasItsRegistryRequestsSigned(t *testing.T) {
 }
 
 // laneTransfer dials sock, CONNECTs to host and performs a real TLS
-// handshake naming it — host is outside the lease's registries, so the
-// real egress process splices rather than terminates it — then returns
-// a GET's body.
-func laneTransfer(sock, host string) (string, error) {
+// handshake naming it, then GETs path and returns the response body: a
+// host outside the lease's registries is spliced rather than terminated
+// (no path or header of this request ever reaches the real egress
+// process's own matching, since the bytes are its client's own), a
+// registry path is terminated and signed the same as the node socket's.
+func laneTransfer(sock, host, path string) (string, error) {
 	c, err := net.Dial("unix", sock)
 	if err != nil {
 		return "", err
@@ -206,9 +208,45 @@ func laneTransfer(sock, host string) (string, error) {
 	if err := tlsConn.Handshake(); err != nil {
 		return "", err
 	}
-	io.WriteString(tlsConn, "GET / HTTP/1.1\r\nHost: "+host+"\r\nConnection: close\r\n\r\n")
+	tlsConn.SetDeadline(time.Now().Add(30 * time.Second))
+	io.WriteString(tlsConn, "GET "+path+" HTTP/1.1\r\nHost: "+host+"\r\nConnection: close\r\n\r\n")
 	body, err := io.ReadAll(tlsConn)
 	return string(body), err
+}
+
+// heldRegistryHostRig is registryHostRig's signed /npm/ answer with the
+// write held until release closes, so a test can see the transfer sit
+// genuinely in flight — request sent, verified and the connection open
+// with no answer yet — reached closing the moment the egress process's
+// terminated request lands here, verified on the lease's own session
+// token exactly as registryHostRig's does.
+func heldRegistryHostRig(t *testing.T, g *rig, reached, release chan struct{}) {
+	t.Helper()
+	host := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/npm/") {
+			io.WriteString(w, "as sent: "+r.Header.Get("Authorization"))
+			return
+		}
+		if _, err := g.latchkey.checkToken(r, "https://api.runsheet.dev"+r.URL.EscapedPath()); err != nil {
+			http.Error(w, "unsigned: "+err.Error(), http.StatusUnauthorized)
+			return
+		}
+		close(reached)
+		<-release
+		io.WriteString(w, "signed")
+	}))
+	t.Cleanup(host.Close)
+	dial := func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, host.Listener.Addr().String())
+	}
+	g.rt.EgressDial = dial
+	t.Setenv(TestEgressDialEnv, host.Listener.Addr().String())
+	t.Setenv(TestEgressUpstreamServerNameEnv, "example.com")
+	t.Setenv(TestEgressUpstreamCAEnv, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: host.Certificate().Raw})))
+	up := host.Client().Transport.(*http.Transport).Clone()
+	up.TLSClientConfig.ServerName = "example.com"
+	up.DialContext = dial
+	g.rt.EgressUpstream = up
 }
 
 // A sidecar lease's egress is a process of its own (ADR-051): under
@@ -234,7 +272,7 @@ func TestASidecarLeasesLaneAndNodeSocketsBothServeTheRealEgressProcess(t *testin
 	var laneErr error
 	agent := hostAgent(t, filepath.Join(dir, "claude"), copyTrust(dir)+`; node "`+probe+`" "`+answers+`"`)
 	sb.Agent = func(ctx context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
-		laneBody, laneErr = laneTransfer(filepath.Join(laneDir, relayLaneDir, relayLaneSocket), "proxy.golang.org")
+		laneBody, laneErr = laneTransfer(filepath.Join(laneDir, relayLaneDir, relayLaneSocket), "proxy.golang.org", "/")
 		return agent(ctx, spec)
 	}
 	g.offer(t, func(b *meshapi.Brief) {

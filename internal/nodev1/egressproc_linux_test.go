@@ -72,7 +72,7 @@ func waitDead(t *testing.T, pid int) {
 // not a pid nothing answers for.
 func TestIsLeaseEgressMatchesTheRealProcessArgv(t *testing.T) {
 	rs := startTestEgress(t, "lease-argv")
-	t.Cleanup(func() { rs.close() })
+	t.Cleanup(func() { rs.close(); rs.stopEgress() })
 	pid := rs.egressCmd.Process.Pid
 	if !isLeaseEgress(pid) {
 		t.Fatalf("isLeaseEgress(%d) is false for the real lease-egress process", pid)
@@ -93,7 +93,7 @@ func TestIsLeaseEgressMatchesTheRealProcessArgv(t *testing.T) {
 func TestEgressRuntimeListAndStop(t *testing.T) {
 	rs := startTestEgress(t, "lease-list")
 	pid := rs.egressCmd.Process.Pid
-	t.Cleanup(func() { rs.close() })
+	t.Cleanup(func() { rs.close(); rs.stopEgress() })
 
 	rt := egressRuntime{}
 	procs, err := rt.List()
@@ -133,7 +133,7 @@ func TestEgressRuntimeListAndStop(t *testing.T) {
 func TestStopLeftoverEgress(t *testing.T) {
 	rs := startTestEgress(t, "lease-leftover")
 	pid := rs.egressCmd.Process.Pid
-	t.Cleanup(func() { rs.close() })
+	t.Cleanup(func() { rs.close(); rs.stopEgress() })
 
 	if err := stopLeftoverEgress(pid); err != nil {
 		t.Fatal(err)
@@ -174,12 +174,12 @@ func TestStopEgressRemovesTheSocketDirectory(t *testing.T) {
 	}
 }
 
-// watchEgress ends the lease, as a killed pod does, when the egress
+// watchEgress ends the lease egress_died when the egress
 // process exits on its own -- an external kill, never stopEgress
 // (ADR-051 decision 3).
 func TestWatchEgressEndsTheLeaseWhenItExitsOnItsOwn(t *testing.T) {
 	rs := startTestEgress(t, "lease-watch")
-	t.Cleanup(func() { rs.close() })
+	t.Cleanup(func() { rs.close(); rs.stopEgress() })
 	pid := rs.egressCmd.Process.Pid
 
 	ctx, cancel := context.WithCancelCause(context.Background())
@@ -196,10 +196,10 @@ func TestWatchEgressEndsTheLeaseWhenItExitsOnItsOwn(t *testing.T) {
 		t.Fatal("watchEgress did not return once the process exited")
 	}
 
-	var ke *killedError
+	var de *egressDiedError
 	cause := context.Cause(ctx)
-	if !errors.As(cause, &ke) || !strings.Contains(ke.why, errEgressKilled.Error()) {
-		t.Fatalf("cancel cause %v, want a *killedError naming %v", cause, errEgressKilled)
+	if !errors.As(cause, &de) || !errors.Is(cause, errEgressDied) || !strings.Contains(de.why, errEgressDied.Error()) {
+		t.Fatalf("cancel cause %v, want an *egressDiedError naming %v", cause, errEgressDied)
 	}
 }
 
@@ -232,7 +232,7 @@ func TestWatchEgressDoesNothingWhenStopEgressEndedIt(t *testing.T) {
 // for it.
 func TestWatchEgressReturnsWhenCtxEndsFirst(t *testing.T) {
 	rs := startTestEgress(t, "lease-watch-ctx")
-	t.Cleanup(func() { rs.close() })
+	t.Cleanup(func() { rs.close(); rs.stopEgress() })
 
 	ctx, cancel := context.WithCancelCause(context.Background())
 	watched := make(chan struct{})

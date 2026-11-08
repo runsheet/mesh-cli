@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/actor"
 	"projectmesh.io/mesh-cli/internal/dpop"
 	"projectmesh.io/mesh-cli/internal/egress"
 	"projectmesh.io/mesh-cli/internal/meshapi"
@@ -493,6 +494,204 @@ func TestTheLanesTunnelServesTheRealEgressProcess(t *testing.T) {
 	rs.close()
 	if _, err := net.Dial("unix", sock); err == nil {
 		t.Fatal("the lanes' tunnel outlived the lease")
+	}
+}
+
+// A lease's egress process killed from outside — its own process group,
+// never the actor's own cause (ADR-051 decision 3) — ends the lease
+// egress_died, not pod_killed and not stalled: the actor still reaches
+// releasing and then done, and nothing it held outlives it.
+func TestTheLeasesEgressProcessKilledEndsTheLeaseEgressDied(t *testing.T) {
+	if _, err := os.Stat("/proc"); err != nil {
+		t.Skip("no /proc")
+	}
+	g, sb, installed := sidecarRig(t)
+	host := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "reached "+r.Host)
+	}))
+	defer host.Close()
+	sidecarEgressDial(t, g, host.Listener.Addr().String())
+	job := g.offer(t, func(b *meshapi.Brief) {
+		b.FinishTool, b.FinishSchema = "", nil
+		b.Egress = &meshapi.Egress{Hosts: []string{"proxy.golang.org"}}
+	})
+	// no sb.Agent: the agent container stands until stopped, holding the
+	// lease in actor.Running long enough to kill its egress process.
+	done := make(chan error, 1)
+	go func() { done <- g.rt.Run(context.Background()) }()
+	waitFor(t, "the lease to be taken", func() bool { return g.fake.LeaseOf(job) != "" })
+	lease := g.fake.LeaseOf(job)
+	actorFile := filepath.Join(g.rt.leaseDir(lease), actor.FileName)
+	var rec actor.Record
+	waitFor(t, "the lease's egress process", func() bool {
+		b, err := os.ReadFile(actorFile)
+		if err != nil {
+			return false
+		}
+		var r actor.Record
+		if json.Unmarshal(b, &r) != nil || r.EgressPID == 0 {
+			return false
+		}
+		rec = r
+		return true
+	})
+	if len(*installed) == 0 {
+		t.Fatal("the sidecar was never installed")
+	}
+	if err := syscall.Kill(rec.EgressPID, syscall.SIGKILL); err != nil {
+		t.Fatalf("killing the egress process %d: %v", rec.EgressPID, err)
+	}
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the lease outlived its killed egress process")
+	}
+	hb := onlyHandBack(t, g, job)
+	if hb.Cause != meshapi.CauseEgressDied {
+		t.Fatalf("hand-back %+v, want cause %q", hb, meshapi.CauseEgressDied)
+	}
+	if hb.Cause == meshapi.CausePodKilled || hb.Cause == meshapi.CauseStalled {
+		t.Fatalf("hand-back wrongly blamed the pod or a stall: %+v", hb)
+	}
+	assertReleased(t, g, job)
+	_ = sb
+}
+
+// A node that stops without releasing (ADR-051 decision 5) leaves its
+// pod, its sidecar and its lease's egress process running untouched: a
+// registry transfer already in flight through the lane socket, genuinely
+// terminated and signed by the real egress process, completes in full
+// with nothing left to drive the Runtime any further — "killing" it is
+// faithfully only ever abandoning its driving goroutine, never cancelling
+// its context, since Run's own deferred leases.Wait() means it cannot
+// return while a lease is cleanly releasing. Only the next Runtime —
+// sharing no state with the first beyond the same on-disk leases and the
+// same (simulated) podman — finds the orphaned actor.json and, through
+// releaseLeftovers, stops the egress process and hands the lease back
+// (acceptance check 1 of the goal).
+func TestARuntimeKilledMidTransferLeavesPodSidecarAndEgressRunningUntilTheNextRuntimeReleasesIt(t *testing.T) {
+	if _, err := os.Stat("/proc"); err != nil {
+		t.Skip("no /proc")
+	}
+	g, sb, installed := sidecarRig(t)
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	heldRegistryHostRig(t, g, reached, release)
+	var laneDir string
+	wrap := sb.RelayInstalled
+	sb.RelayInstalled = func(pod sandbox.Pod, creds []byte) error {
+		laneDir = sb.Relays[len(sb.Relays)-1].SocketDir
+		return wrap(pod, creds)
+	}
+	job := g.offer(t, registryBrief)
+	// no sb.Agent: the agent container stands until stopped, holding the
+	// lease in actor.Running indefinitely — there is no node left to stop
+	// it this test.
+	go func() { _ = g.rt.Run(context.Background()) }()
+	waitFor(t, "the lease to be taken", func() bool { return g.fake.LeaseOf(job) != "" })
+	lease := g.fake.LeaseOf(job)
+	actorFile := filepath.Join(g.rt.leaseDir(lease), actor.FileName)
+	var rec actor.Record
+	waitFor(t, "the lease's egress process", func() bool {
+		b, err := os.ReadFile(actorFile)
+		if err != nil {
+			return false
+		}
+		var r actor.Record
+		if json.Unmarshal(b, &r) != nil || r.EgressPID == 0 {
+			return false
+		}
+		rec = r
+		return true
+	})
+	if len(*installed) == 0 {
+		t.Fatal("the sidecar was never installed")
+	}
+	waitFor(t, "the lane socket's directory", func() bool { return laneDir != "" })
+	sock := filepath.Join(laneDir, relayLaneDir, relayLaneSocket)
+	// the egress process listens on the lane socket a moment after it
+	// starts; dialling before then is a race, never the kill under test.
+	waitFor(t, "the lane socket", func() bool { _, err := os.Stat(sock); return err == nil })
+	bodyCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		body, err := laneTransfer(sock, "api.runsheet.dev", "/npm/@anythink%2fshell")
+		bodyCh <- body
+		errCh <- err
+	}()
+	select {
+	case <-reached:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the registry was never reached")
+	}
+
+	// The transfer is genuinely in flight: the request already reached
+	// the real egress process, was signed and forwarded, and the upstream
+	// is holding its answer open. This is the moment the node's Runtime
+	// is "killed" — nothing below touches g.rt again.
+	if err := syscall.Kill(rec.EgressPID, 0); err != nil {
+		t.Fatalf("the egress process %d is not running before the kill: %v", rec.EgressPID, err)
+	}
+	if len(sb.Removed) != 0 {
+		t.Fatalf("the pod was removed before the kill: %v", sb.Removed)
+	}
+	close(release)
+
+	var body string
+	select {
+	case body = <-bodyCh:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the transfer outlived the kill")
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("the HTTPS transfer through the lane socket: %v", err)
+	}
+	if !strings.HasSuffix(body, "signed") {
+		t.Fatalf("the lane socket's terminated transfer got %q, want it to end %q", body, "signed")
+	}
+
+	// Still nothing has driven the Runtime to release anything: the pod,
+	// the sidecar (proven by the transfer it just carried) and the egress
+	// process are all still running, and the platform has heard nothing.
+	if err := syscall.Kill(rec.EgressPID, 0); err != nil {
+		t.Fatalf("the egress process %d died on its own: %v", rec.EgressPID, err)
+	}
+	if len(sb.Removed) != 0 {
+		t.Fatalf("the pod was removed with no node left to remove it: %v", sb.Removed)
+	}
+	if n := len(g.fake.Calls("hand-back")) + len(g.fake.Calls("finish")) + len(g.fake.Calls("fail")); n != 0 {
+		t.Fatalf("the lease ended with no node left to end it: %d call(s)", n)
+	}
+
+	// The next Runtime: a node restart, sharing nothing with the first but
+	// the same API, the same work root and the same (simulated) podman.
+	next := &Runtime{API: g.rt.API, WorkRoot: g.rt.WorkRoot, Sandbox: sb, Logf: t.Logf}
+	next.releaseLeftovers(nil)
+
+	if _, err := os.Stat(g.rt.leaseDir(lease)); !os.IsNotExist(err) {
+		t.Fatalf("the lease directory outlived the next Runtime's release: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for syscall.Kill(rec.EgressPID, 0) == nil {
+		if time.Now().After(deadline) {
+			t.Fatalf("the egress process %d outlived the next Runtime's release", rec.EgressPID)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// releaseLeftovers hands the lease back before it ever stops the
+	// egress process (actorlease.go), so this call is recorded before
+	// the kill signal is even sent, whatever the first Runtime's own
+	// abandoned goroutine — still alive in this one test process, never
+	// truly killed the way a real node's would be — goes on to also
+	// attempt once it notices the same death.
+	calls := g.fake.Calls("hand-back")
+	if len(calls) == 0 {
+		t.Fatalf("the next Runtime's releaseLeftovers handed nothing back")
+	}
+	var hb meshapi.HandBackRequest
+	json.Unmarshal(calls[0].Body, &hb)
+	if hb.Cause != meshapi.CauseNodeRestart {
+		t.Fatalf("hand-back cause %q, want %q", hb.Cause, meshapi.CauseNodeRestart)
 	}
 }
 

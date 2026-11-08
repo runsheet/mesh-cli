@@ -40,13 +40,6 @@ const PodLeaseLabel = "mesh.v1.lease"
 // exited 137 or 143 and the actor had not stopped it.
 var errPodKilled = errors.New("the lease's pod was killed")
 
-// errEgressKilled is the lease's egress process (ADR-051 decision 1)
-// ending under the actor without the actor stopping it: a killedError
-// built from it ends the lease pod_killed exactly as errPodKilled does
-// (podKilled matches any *killedError by type, not by what it unwraps
-// to), named apart only so the reason says which process died.
-var errEgressKilled = errors.New("the lease's egress process was killed")
-
 // podWatchEvery is how often an actor reads its pod's agent; 5 s when
 // Runtime.PodWatchEvery is zero.
 func (r *Runtime) podWatchEvery() time.Duration {
@@ -370,14 +363,6 @@ func (r *Runtime) releaseLeftovers(adopting map[string]bool) {
 			}
 			r.handBack(rec.LeaseID, cause, reason, "")
 		}
-		if rec.EgressPID != 0 {
-			// decision 5: an actor.json with no hand-off names an
-			// egress process too (the hand-off path is adopt.go's,
-			// above, not here); stop it with the rest of the release.
-			if err := stopLeftoverEgress(rec.EgressPID); err != nil {
-				r.logf("nodev1: lease %s: stopping leftover egress process %d: %v", rec.LeaseID, rec.EgressPID, err)
-			}
-		}
 		for _, p := range rec.Pods {
 			if r.Sandbox == nil {
 				r.logf("nodev1: lease %s left pod %s and the node has no sandbox runtime to remove it", rec.LeaseID, p)
@@ -388,6 +373,13 @@ func (r *Runtime) releaseLeftovers(adopting map[string]bool) {
 				r.logf("nodev1: lease %s: removing pod %s: %v", rec.LeaseID, p, err)
 			}
 			cancel()
+		}
+		if rec.EgressPID != 0 {
+			// decision 5: the egress process is released after the
+			// pods, as the actor's own holds release it.
+			if err := stopLeftoverEgress(rec.EgressPID); err != nil {
+				r.logf("nodev1: lease %s: stopping its egress process %d: %v", rec.LeaseID, rec.EgressPID, err)
+			}
 		}
 		if err := os.RemoveAll(l.Dir); err != nil {
 			r.logf("nodev1: lease %s: removing %s: %v", rec.LeaseID, l.Dir, err)
