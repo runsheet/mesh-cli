@@ -2,12 +2,19 @@ package nodev1
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/actor"
 	"projectmesh.io/mesh-cli/internal/escalate"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/supervisor"
@@ -88,6 +95,83 @@ func TestTheReconcileRemovesWhatNoActorHolds(t *testing.T) {
 	if slices.Contains(sb.Removed, PodName(g.fake.LeaseOf(job))) {
 		t.Fatal("the live lease's pod went")
 	}
+	close(sess.hold)
+	<-done
+}
+
+// A stray lease-egress process -- its lease's actor.json names it, but
+// the lease is no longer live and no hand-off names it either -- is
+// stopped by the reconcile, and the reconcile line counts it
+// (acceptance check 4 of the goal).
+func TestTheReconcileStopsAStrayEgressProcess(t *testing.T) {
+	if _, err := os.Stat("/proc"); err != nil {
+		t.Skip("no /proc")
+	}
+	sess := &stubSession{hold: make(chan struct{})}
+	g, _ := actorRig(t, sess)
+	g.rt.SupervisorMode = supervisor.Cancel
+	g.rt.ReconcileEvery = 30 * time.Millisecond
+	g.rt.SuperviseEvery = time.Hour
+	var lines []string
+	var mu sync.Mutex
+	g.rt.Logf = func(format string, a ...any) {
+		mu.Lock()
+		lines = append(lines, fmt.Sprintf(format, a...))
+		mu.Unlock()
+		t.Logf(format, a...)
+	}
+
+	cmd := exec.Command("sleep", "100")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting the stray process: %v", err)
+	}
+	pid := cmd.Process.Pid
+	t.Cleanup(func() { syscall.Kill(-pid, syscall.SIGKILL) })
+	// the test is its parent, as a real orphan's would not be: reap it
+	// as soon as it dies, or it sits a zombie and kill(pid, 0) never
+	// reports ESRCH.
+	go cmd.Wait()
+
+	stray := g.rt.leaseDir("lse_stray")
+	if err := os.MkdirAll(stray, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rec := actor.Record{Egress: &actor.EgressRef{PID: pid, Control: "/tmp/stray.sock"}}
+	b, _ := json.Marshal(rec)
+	if err := os.WriteFile(filepath.Join(stray, actor.FileName), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	job := g.offer(t, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- g.rt.Run(ctx) }()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for syscall.Kill(-pid, 0) == nil {
+		if time.Now().After(deadline) {
+			t.Fatalf("the stray egress process %d outlived the reconcile", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	waitFor(t, "the reconcile line counting the stray egress process", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, l := range lines {
+			if strings.Contains(l, "stopped 1 egress process") {
+				return true
+			}
+		}
+		return false
+	})
+
+	// the live lease's own job directory is untouched
+	if _, err := os.Stat(g.rt.leaseDir(g.fake.LeaseOf(job))); err != nil {
+		t.Fatalf("the live lease's directory went: %v", err)
+	}
+
 	close(sess.hold)
 	<-done
 }

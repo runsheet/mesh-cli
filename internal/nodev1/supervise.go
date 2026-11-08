@@ -13,8 +13,9 @@ import (
 // warn|cancel`, with --actors): it reads the node's job actors through
 // fleet — each running lease's progress_at and when it was escalated —
 // escalates a quiet session through its mailbox, then stops it with
-// cause stalled, and reconciles the node's pods, job directories and
-// relay grants against the actors every minute.
+// cause stalled, and reconciles the node's pods, job directories,
+// relay grants and lease-egress processes against the actors every
+// minute (ADR-051 decision 3).
 
 // errStalled is the supervisor stopping a lease whose session stayed
 // quiet past its escalation.
@@ -100,6 +101,7 @@ func (r *Runtime) supervisor() *supervisor.Supervisor {
 		Fleet: fleet{r}, Mode: r.SupervisorMode, QuietAfter: r.QuietAfter,
 		LookEvery: r.SuperviseEvery, ReconcileEvery: r.ReconcileEvery,
 		PodLabel: PodLeaseLabel, LeaseRoot: r.leaseDir(""), Logf: r.Logf,
+		StopEgress: stopLeftoverEgress,
 	}
 	if r.Sandbox != nil {
 		s.Sandbox = r.Sandbox

@@ -9,8 +9,9 @@
 //     logs both; mode cancel acts.
 //   - A reconcile every minute: the node's pods with no actor, and pods
 //     whose agent has ended with only a sidecar left, are removed; job
-//     directories and relay grants no actor holds are removed; adopted
-//     sessions are counted.
+//     directories and relay grants no actor holds are removed; a
+//     lease-egress process no actor and no hand-off names is stopped
+//     (ADR-051 decision 3); adopted sessions are counted.
 //
 // The supervisor holds no state of a lease's own: what it knows of each
 // it reads from the actors (Fleet) on every look.
@@ -18,14 +19,23 @@ package supervisor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/actor"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 )
+
+// handoffFileName is "handoff.json", the name nodev1's own handoffFile
+// constant gives a lease's hand-off state under its job directory: a
+// directory naming one is a deliberate hand-off, not a leftover, so its
+// egress process is left alone (ADR-051 decision 3). Named here too
+// since this package cannot import nodev1 (nodev1 imports supervisor).
+const handoffFileName = "handoff.json"
 
 // Mode is what the supervisor does about a quiet lease.
 type Mode string
@@ -116,6 +126,9 @@ type Supervisor struct {
 	LeaseRoot string
 	// OrphanAge is how old an unheld job directory must be to go.
 	OrphanAge time.Duration
+	// StopEgress stops a lease's egress process by its process group id
+	// (ADR-051 decision 3); nil runs no egress reconcile.
+	StopEgress func(pid int) error
 	// Now is the clock; time.Now when nil.
 	Now func() time.Time
 	// Logf hears everything the supervisor sees and does.
@@ -210,13 +223,16 @@ type Reconciled struct {
 	Actors, Adopted              int
 	PodsNoActor, PodsSidecarOnly []string
 	Workspaces, Grants           []string
-	Errors                       []string
+	// Egress is the leases whose egress process (ADR-051 decision 3)
+	// was stopped: no actor held it and no hand-off named it.
+	Egress []string
+	Errors []string
 }
 
 // Line is the reconcile's log line.
 func (r Reconciled) Line() string {
-	return fmt.Sprintf("supervisor: reconcile: %d actors (%d adopted); removed %d pods with no actor, %d with only a sidecar, %d job directories and %d grants no actor held",
-		r.Actors, r.Adopted, len(r.PodsNoActor), len(r.PodsSidecarOnly), len(r.Workspaces), len(r.Grants))
+	return fmt.Sprintf("supervisor: reconcile: %d actors (%d adopted); removed %d pods with no actor, %d with only a sidecar, %d job directories and %d grants no actor held; stopped %d egress process(es) with no actor and no hand-off",
+		r.Actors, r.Adopted, len(r.PodsNoActor), len(r.PodsSidecarOnly), len(r.Workspaces), len(r.Grants), len(r.Egress))
 }
 
 // Reconcile is one reconcile of the node against its actors. In mode
@@ -235,6 +251,7 @@ func (s *Supervisor) Reconcile(ctx context.Context) Reconciled {
 	act := s.Mode == Cancel
 	s.reconcilePods(ctx, byLease, act, &out)
 	s.reconcileWorkspaces(byLease, act, &out)
+	s.reconcileEgress(byLease, act, &out)
 	for _, id := range s.Fleet.Grants() {
 		if _, ok := byLease[id]; ok {
 			continue
@@ -346,4 +363,55 @@ func (s *Supervisor) reconcileWorkspaces(live map[string]Live, act bool, out *Re
 			}
 		}
 	}
+}
+
+// reconcileEgress stops a lease's egress process (ADR-051 decision 3)
+// once no actor holds it and no hand-off names it, the way
+// reconcilePods removes a pod no actor holds: the actor names its
+// egress process in actor.json (SetEgress) before it ever leaves
+// preparing, well before Fleet.Live() could miss it, so there is no
+// race to wait out the way reconcileWorkspaces's OrphanAge does.
+func (s *Supervisor) reconcileEgress(live map[string]Live, act bool, out *Reconciled) {
+	if s.LeaseRoot == "" || s.StopEgress == nil {
+		return
+	}
+	ents, err := os.ReadDir(s.LeaseRoot)
+	if err != nil {
+		return
+	}
+	for _, e := range ents {
+		if !e.IsDir() {
+			continue
+		}
+		id := e.Name()
+		if _, ok := live[id]; ok {
+			continue
+		}
+		dir := filepath.Join(s.LeaseRoot, id)
+		if _, err := os.Stat(filepath.Join(dir, handoffFileName)); err == nil {
+			continue // a hand-off names it; not a leftover
+		}
+		rec, err := readActorRecord(filepath.Join(dir, actor.FileName))
+		if err != nil || rec.Egress == nil || rec.Egress.PID == 0 {
+			continue
+		}
+		out.Egress = append(out.Egress, id)
+		if !act {
+			continue
+		}
+		if err := s.StopEgress(rec.Egress.PID); err != nil {
+			out.Errors = append(out.Errors, fmt.Sprintf("stopping lease %s's egress process %d: %v", id, rec.Egress.PID, err))
+		}
+	}
+}
+
+// readActorRecord reads a lease's actor.json at path.
+func readActorRecord(path string) (actor.Record, error) {
+	var rec actor.Record
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return rec, err
+	}
+	err = json.Unmarshal(b, &rec)
+	return rec, err
 }

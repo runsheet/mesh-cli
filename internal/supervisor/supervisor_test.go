@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -180,6 +181,68 @@ func TestReconcile(t *testing.T) {
 	}
 	if got.Actors != 3 || got.Adopted != 1 {
 		t.Fatalf("counted %d actors, %d adopted", got.Actors, got.Adopted)
+	}
+}
+
+// A stray egress process -- its lease's actor.json names it, no actor
+// holds the lease and no hand-off names it -- is stopped and counted;
+// one a hand-off names, one held by a live actor and one with no
+// actor.json at all are left alone.
+func TestReconcileEgress(t *testing.T) {
+	root := t.TempDir()
+	write := func(dir, name, data string) {
+		os.MkdirAll(filepath.Join(root, dir), 0o700)
+		os.WriteFile(filepath.Join(root, dir, name), []byte(data), 0o600)
+	}
+	write("lse_stray", "actor.json", `{"egress":{"pid":4242,"control":"/tmp/x.sock"}}`)
+	write("lse_handoff", "actor.json", `{"egress":{"pid":4343,"control":"/tmp/y.sock"}}`)
+	write("lse_handoff", "handoff.json", `{}`)
+	write("lse_no_pid", "actor.json", `{"egress":{"pid":0}}`)
+	os.MkdirAll(filepath.Join(root, "lse_bare"), 0o700)
+	f := &fleet{now: func() time.Time { return t0 }, live: []Live{{LeaseID: "lse_live"}}}
+	var stopped []int
+	s := &Supervisor{
+		Fleet: f, Mode: Cancel, LeaseRoot: root, Now: func() time.Time { return t0 },
+		StopEgress: func(pid int) error { stopped = append(stopped, pid); return nil },
+	}
+	got := s.Reconcile(context.Background())
+	if !slices.Equal(got.Egress, []string{"lse_stray"}) {
+		t.Fatalf("egress %v", got.Egress)
+	}
+	if !slices.Equal(stopped, []int{4242}) {
+		t.Fatalf("stopped %v", stopped)
+	}
+	if !strings.Contains(got.Line(), "stopped 1 egress process(es)") {
+		t.Fatalf("line %q", got.Line())
+	}
+}
+
+// StopEgress nil runs no egress reconcile; an error from it is recorded
+// without stopping the reconcile.
+func TestReconcileEgressNilAndError(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "lse_stray"), 0o700)
+	os.WriteFile(filepath.Join(root, "lse_stray", "actor.json"), []byte(`{"egress":{"pid":99}}`), 0o600)
+	f := &fleet{now: func() time.Time { return t0 }}
+	s := &Supervisor{Fleet: f, Mode: Cancel, LeaseRoot: root, Now: func() time.Time { return t0 }}
+	got := s.Reconcile(context.Background())
+	if len(got.Egress) != 0 {
+		t.Fatalf("egress %v with no StopEgress", got.Egress)
+	}
+
+	s.StopEgress = func(pid int) error { return fmt.Errorf("boom") }
+	got = s.Reconcile(context.Background())
+	if !slices.Equal(got.Egress, []string{"lse_stray"}) {
+		t.Fatalf("egress %v", got.Egress)
+	}
+	found := false
+	for _, e := range got.Errors {
+		if strings.Contains(e, "boom") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("errors %v missing the StopEgress error", got.Errors)
 	}
 }
 

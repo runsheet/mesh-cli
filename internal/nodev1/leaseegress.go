@@ -79,11 +79,14 @@ func egressDied(o outcome) (string, bool) {
 	return "", false
 }
 
-// stopLeftoverEgress stops a lease's egress process a node left running
-// when it stopped without releasing the lease (ADR-051 decision 5): its
-// own process group, since it never shares the node's or the pod's
-// (ADR-051 decision 1). SIGTERM, a bounded wait, then SIGKILL; gone
-// already (ESRCH) is not an error.
+// stopLeftoverEgress stops a lease's egress process left running with
+// no actor to own it: a node that stopped without releasing the lease
+// (ADR-051 decision 5, from releaseLeftovers at start-up), or one a
+// running node's supervisor finds no actor and no hand-off names
+// (ADR-051 decision 3, from Supervisor.StopEgress, wired in
+// supervise.go). Its own process group, since it never shares the
+// node's or the pod's (ADR-051 decision 1). SIGTERM, a bounded wait,
+// then SIGKILL; gone already (ESRCH) is not an error.
 func stopLeftoverEgress(pid int) error {
 	if pid <= 0 {
 		return nil
