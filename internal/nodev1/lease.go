@@ -339,6 +339,18 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		}
 	}
 	r.setPushHeads(b.LeaseID, pushHeads)
+	// the lease's egress (ADR-051 decision 3): a placeholder hold taken
+	// before the pod's, so release stops it after the pod's (release is
+	// LIFO); stopEgress is set once rs.open starts the process, below,
+	// and the hold does nothing when it never did (in-process relay, or
+	// no relay sidecar at all).
+	var stopEgress func() error
+	keep("the lease's egress", func() error {
+		if stopEgress != nil {
+			return stopEgress()
+		}
+		return nil
+	})
 	// the lease's pod, with --sandbox: its services start once the
 	// checkout declares them, before the session (podsession.go)
 	var lp *leasePod
@@ -459,6 +471,15 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		}
 		if servers, err = rs.open(ctx, tools, fin.observe, gate, account, sl, workspace); err != nil {
 			return outcome{err: fmt.Errorf("the lease's relay sidecar: %w", err), cause: context.Cause(ctx)}
+		}
+		stopEgress = rs.stopEgress
+		if rs.egressCmd != nil && rs.egressCmd.Process != nil {
+			control := filepath.Join(rs.egressDir, egressControlSocket)
+			if a != nil {
+				a.NoteEgress(rs.egressCmd.Process.Pid, control)
+			}
+			r.setEgress(b.LeaseID, rs.egressCmd.Process.Pid, control)
+			go rs.watchEgress(ctx, endLease)
 		}
 		if outOfProcess && len(rs.caPEM) > 0 {
 			if err := lp.trustPEM(rs.caPEM, r.logf, b.LeaseID); err != nil {

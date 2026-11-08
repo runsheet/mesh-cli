@@ -352,6 +352,12 @@ type running struct {
 	// (handoff.go, adopt.go) needs it to reach the sidecar's control
 	// socket again.
 	sidecarDir string
+	// egressPID and egressControl name the lease's egress process
+	// (ADR-051 decision 1), for its hand-off file beside sidecarDir;
+	// egressPID 0 for a lease with none (in-process relay, or no
+	// sidecar at all).
+	egressPID     int
+	egressControl string
 }
 
 // touch is the lease's session showing progress: its progress_at in the

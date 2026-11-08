@@ -70,6 +70,13 @@ type Record struct {
 	Holds []string `json:"holds,omitempty"`
 	// Pods are the lease's pods: a node that restarts removes them.
 	Pods []string `json:"pods,omitempty"`
+	// EgressPID and EgressControl name the lease's egress process (ADR
+	// 051 decision 3), mesh lease-egress, before the actor leaves
+	// preparing: its pid and its control socket, for a node that
+	// restarts to stop it (decision 5) and for the supervisor to tell it
+	// apart from an orphan (decision 3).
+	EgressPID     int    `json:"egressPid,omitempty"`
+	EgressControl string `json:"egressControl,omitempty"`
 	// Cancelled is why the actor was cancelled, once it was.
 	Cancelled string `json:"cancelled,omitempty"`
 	// End is how the lease ended, once the actor knows.
@@ -255,6 +262,20 @@ func (a *Actor) HoldPod(name string, remove func() error) {
 	a.rec.Pods = append(a.rec.Pods, name)
 	a.mu.Unlock()
 	a.Hold("pod "+name, remove)
+}
+
+// NoteEgress records the lease's egress process in actor.json — its pid
+// and control socket — before the actor leaves preparing (ADR 051
+// decision 3). It takes no hold of its own: the caller holds it with
+// Hold, in the order decision 3 asks (before the pod's, so release
+// stops it after).
+func (a *Actor) NoteEgress(pid int, control string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.rec.EgressPID, a.rec.EgressControl = pid, control
+	if err := a.writeLocked(); err != nil {
+		a.logf("actor: lease %s: %v", a.rec.LeaseID, err)
+	}
 }
 
 // Ended records how the lease ended, before it is reported.

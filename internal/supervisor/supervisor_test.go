@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -182,6 +183,75 @@ func TestReconcile(t *testing.T) {
 		t.Fatalf("counted %d actors, %d adopted", got.Actors, got.Adopted)
 	}
 }
+
+// fakeEgress is a test's EgressRuntime.
+type fakeEgress struct {
+	procs   []EgressProcess
+	listErr error
+	stopErr map[int]error
+	stopped []int
+}
+
+func (e *fakeEgress) List() ([]EgressProcess, error) { return e.procs, e.listErr }
+func (e *fakeEgress) Stop(pid int) error {
+	e.stopped = append(e.stopped, pid)
+	if e.stopErr != nil {
+		return e.stopErr[pid]
+	}
+	return nil
+}
+
+// The reconcile stops a lease-egress process no live lease's EgressPID
+// names, and leaves one a live lease holds (ADR-051 decision 3); mode
+// warn finds the same orphan but stops nothing.
+func TestReconcileEgress(t *testing.T) {
+	f := &fleet{now: func() time.Time { return t0 }, live: []Live{
+		{LeaseID: "held", Running: true, EgressPID: 111},
+		{LeaseID: "none", Running: true},
+	}}
+	eg := &fakeEgress{procs: []EgressProcess{{PID: 111}, {PID: 222}}}
+	s := &Supervisor{Fleet: f, Mode: Cancel, Egress: eg, Now: func() time.Time { return t0 }}
+	got := s.Reconcile(context.Background())
+	if !slices.Equal(got.EgressNoActor, []int{222}) {
+		t.Fatalf("egress no actor: %v", got.EgressNoActor)
+	}
+	if !slices.Equal(eg.stopped, []int{222}) {
+		t.Fatalf("stopped: %v, want only the orphan", eg.stopped)
+	}
+
+	eg2 := &fakeEgress{procs: []EgressProcess{{PID: 111}, {PID: 222}}}
+	s2 := &Supervisor{Fleet: f, Mode: Warn, Egress: eg2, Now: func() time.Time { return t0 }}
+	got2 := s2.Reconcile(context.Background())
+	if !slices.Equal(got2.EgressNoActor, []int{222}) {
+		t.Fatalf("warn egress no actor: %v", got2.EgressNoActor)
+	}
+	if len(eg2.stopped) != 0 {
+		t.Fatalf("warn stopped %v, want none", eg2.stopped)
+	}
+}
+
+// A nil Egress runs no egress reconcile at all, and a List error is
+// reported without stopping anything.
+func TestReconcileEgressNilAndError(t *testing.T) {
+	f := &fleet{now: func() time.Time { return t0 }}
+	s := &Supervisor{Fleet: f, Mode: Cancel, Now: func() time.Time { return t0 }}
+	got := s.Reconcile(context.Background())
+	if got.EgressNoActor != nil {
+		t.Fatalf("egress no actor with no runtime: %v", got.EgressNoActor)
+	}
+
+	eg := &fakeEgress{listErr: errListFailed}
+	s2 := &Supervisor{Fleet: f, Mode: Cancel, Egress: eg, Now: func() time.Time { return t0 }}
+	got2 := s2.Reconcile(context.Background())
+	if len(got2.Errors) != 1 || !strings.Contains(got2.Errors[0], "listing egress processes") {
+		t.Fatalf("errors: %v", got2.Errors)
+	}
+	if len(eg.stopped) != 0 {
+		t.Fatalf("stopped on a list error: %v", eg.stopped)
+	}
+}
+
+var errListFailed = fmt.Errorf("the runtime refused")
 
 // Mode warn reconciles without removing anything.
 func TestReconcileWarnRemovesNothing(t *testing.T) {
