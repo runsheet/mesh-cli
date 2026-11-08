@@ -253,6 +253,51 @@ func TestReconcileEgressNilAndError(t *testing.T) {
 
 var errListFailed = fmt.Errorf("the runtime refused")
 
+// A stray egress process -- a leftover lease's actor.json names it, no
+// actor holds the lease and no hand-off names it -- is stopped and
+// counted, though the runtime's listing missed it; one a hand-off names
+// (by its actor.json or its handoff.json, listed or not), one held by a
+// live actor and a directory with no actor.json at all are left alone.
+func TestReconcileEgressFromActorRecords(t *testing.T) {
+	root := t.TempDir()
+	write := func(dir, name, data string) {
+		os.MkdirAll(filepath.Join(root, dir), 0o700)
+		os.WriteFile(filepath.Join(root, dir, name), []byte(data), 0o600)
+	}
+	write("lse_stray", "actor.json", `{"egressPid":4242,"egressControl":"/tmp/x.sock"}`)
+	write("lse_handoff", "actor.json", `{"egressPid":4343,"egressControl":"/tmp/y.sock"}`)
+	write("lse_handoff", "handoff.json", `{"egressPid":4444}`)
+	write("lse_no_pid", "actor.json", `{"egressPid":0}`)
+	write("lse_live", "actor.json", `{"egressPid":4545}`)
+	os.MkdirAll(filepath.Join(root, "lse_bare"), 0o700)
+	f := &fleet{now: func() time.Time { return t0 }, live: []Live{{LeaseID: "lse_live", EgressPID: 4545}}}
+	eg := &fakeEgress{procs: []EgressProcess{{PID: 4343}, {PID: 4444}, {PID: 4545}}}
+	s := &Supervisor{Fleet: f, Mode: Cancel, LeaseRoot: root, Egress: eg, Now: func() time.Time { return t0 }}
+	got := s.Reconcile(context.Background())
+	if !slices.Equal(got.EgressNoActor, []int{4242}) {
+		t.Fatalf("egress no actor: %v", got.EgressNoActor)
+	}
+	if !slices.Equal(eg.stopped, []int{4242}) {
+		t.Fatalf("stopped %v", eg.stopped)
+	}
+	if !strings.Contains(got.Line(), "stopped 1 egress process(es) with no actor and no hand-off") {
+		t.Fatalf("line %q", got.Line())
+	}
+
+	eg.stopped = nil
+	eg.stopErr = map[int]error{4242: fmt.Errorf("boom")}
+	got = s.Reconcile(context.Background())
+	found := false
+	for _, e := range got.Errors {
+		if strings.Contains(e, "boom") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("errors %v missing the stop error", got.Errors)
+	}
+}
+
 // Mode warn reconciles without removing anything.
 func TestReconcileWarnRemovesNothing(t *testing.T) {
 	root := t.TempDir()
