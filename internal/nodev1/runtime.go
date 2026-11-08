@@ -181,10 +181,6 @@ type Runtime struct {
 	// when zero); SuperviseEvery and ReconcileEvery are how often it
 	// looks (15 s) and reconciles (a minute).
 	SupervisorMode supervisor.Mode
-	// CacheTrim, with Scheduler, trims the node's Go build cache off the
-	// take loop, holding it exclusively (PR 3.4; `--cache-trim`); its
-	// Scheduler is the runtime's.
-	CacheTrim *resources.CacheTrim
 	// TenantCache, set, is the node's per-tenant GOMODCACHE/npm/pnpm
 	// cache (cache.go, goal a-v1-lease-starts-from-a-warm-cache item 1):
 	// a lease's pod gets its tenant's as a read-only overlay, this

@@ -1,5 +1,5 @@
 ---
-summary: A Mesh v1 node (internal/nodev1) runs each lease as a job actor that owns everything the lease uses and leaves only through releasing; a scheduler alone owns the node's capacity as leases with a TTL and reports `free` on every take; a supervisor watches progress and reconciles the node every minute; resource actors trim the build cache and self-update by draining. Each piece lands behind a node flag, off by default.
+summary: A Mesh v1 node (internal/nodev1) runs each lease as a job actor that owns everything the lease uses and leaves only through releasing; a scheduler alone owns the node's capacity as leases with a TTL and reports `free` on every take; a supervisor watches progress and reconciles the node every minute; a resource actor self-updates by draining, and the build cache is bounded live by entry, on by default. Each other piece lands behind a node flag, off by default.
 status: proposed
 ---
 
@@ -50,10 +50,11 @@ nodev1 runs one lease at a time and has the same shape in miniature.
    minute it reconciles the node: pods with no actor and pods running
    only a sidecar are killed, orphaned job directories and relay grants
    are removed, adopted sessions are counted.
-5. **Resource actors** (internal/resources). The cache trim runs off the
-   take loop holding the build cache exclusively, waiting at most
-   `trim_wait` for builds to drain. Self-update drains the node, then
-   hands back what still runs with cause `node_update`.
+5. **Resource actors** (internal/resources). Self-update drains the
+   node, then hands back what still runs with cause `node_update`. The
+   build cache is bounded by `WatchBuildCache`, evicting by entry beside
+   live builds (amendment 2026-11-08); the exclusive cache trim it
+   replaced is retired.
 6. **No in-flight maps.** Once every piece is on, nothing in nodev1
    holds a lease's state outside its actor; a guard test holds it so.
 
@@ -66,7 +67,7 @@ Each piece is a PR behind a `mesh node run` flag, off by default:
 | 3.1 scheduler and the leases ledger | `--actors-scheduler` (with `--account-slots`) |
 | 3.2 job actor, `actor.json`, panic recovery, `pod_killed` | `--actors` |
 | 3.3 supervisor liveness and reconcile | `--supervisor=off\|warn\|cancel` |
-| 3.4 resource actors | `--cache-trim`, `--self-update` |
+| 3.4 resource actors | `--self-update` (`--cache-trim` retired: the build-cache watcher runs by default, amendment 2026-11-08) |
 | 3.9 guard test | none |
 | the lease's pod (amendment below) | `--sandbox` (with `--actors`) |
 
@@ -465,3 +466,12 @@ since died is not.
 3. **`mesh node upgrade --api v1`'s refusal names the reason per lease**
    (`internal/commands/nodeupgrade.go`) when `AdoptableReason` is set,
    instead of the one fixed phrase every unadoptable lease used to get.
+4. **On by default; `--cache-trim` retired.** `mesh node run` sets
+   `BuildCacheConfigPath` to the node.yaml it already resolves for
+   capacity (`node.ConfigPath()`) and `BuildCacheReload` to a channel
+   the SIGHUP of `mesh node set` wakes beside the capacity and sandbox
+   limits watchers, so every v1 node bounds its build cache with no flag.
+   The exclusive trim — `Runtime.CacheTrim`, which held the build cache
+   alone in the scheduler, and its `--cache-trim`, `--cache-dir` and
+   `--cache-max-gb` flags — is gone from `internal/nodev1` and the
+   command (`TestNodeRunWiresBuildCacheWatcherByDefault`).

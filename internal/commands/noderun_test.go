@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"projectmesh.io/mesh-cli/internal/node"
 	"projectmesh.io/mesh-cli/internal/nodev1"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 )
@@ -116,5 +117,34 @@ func TestNodeRunRelaySidecarWithoutSandboxStillErrors(t *testing.T) {
 	}
 	if rt != nil {
 		t.Fatal("the hook was called; RunE should have returned before the --sandbox block")
+	}
+}
+
+// mesh node run wires the live build-cache watcher by default -- no
+// flag needed -- at the same node.yaml path it already resolves for
+// capacity, retiring the exclusive --cache-trim (goal
+// a-nodes-build-cache-stays-under-its-size).
+func TestNodeRunWiresBuildCacheWatcherByDefault(t *testing.T) {
+	rt, err := runNodeRunUpToBuild(t)
+	if err != nil {
+		t.Fatalf("mesh node run: %v", err)
+	}
+	if rt == nil {
+		t.Fatal("the hook was never called; RunE never built the Runtime")
+	}
+	want, err := node.ConfigPath()
+	if err != nil {
+		t.Fatalf("node.ConfigPath: %v", err)
+	}
+	if rt.BuildCacheConfigPath != want {
+		t.Fatalf("BuildCacheConfigPath = %q, want %q (the same node.yaml capacity resolves)", rt.BuildCacheConfigPath, want)
+	}
+	if rt.BuildCacheReload == nil {
+		t.Fatal("BuildCacheReload = nil, want a channel so mesh node set wakes the watcher")
+	}
+	for _, name := range []string{"cache-trim", "cache-dir", "cache-max-gb"} {
+		if f := nodeRunCmd.Flags().Lookup(name); f != nil {
+			t.Fatalf("flag %q is still registered; the exclusive --cache-trim should be retired", name)
+		}
 	}
 }
