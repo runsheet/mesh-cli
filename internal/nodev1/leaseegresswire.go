@@ -67,10 +67,16 @@ type LeaseEgressStartRequest struct {
 	Rules []egress.RuleSpec `json:"rules,omitempty"`
 }
 
-// LeaseEgressStartResult is the process's answer to Start.
+// LeaseEgressStartResult is the process's answer to Start: Started, or
+// Refused why. CACertPEM is the CA minted for the rules' hosts, when
+// any rule terminates a host (egress.NewCA) — the node installs it as
+// the pod's trust the same way it would one minted in process
+// (nodev1/intercept.go's trust), since the CA itself never leaves the
+// lease-egress process.
 type LeaseEgressStartResult struct {
-	Started bool   `json:"started"`
-	Refused string `json:"refused,omitempty"`
+	Started   bool   `json:"started"`
+	Refused   string `json:"refused,omitempty"`
+	CACertPEM []byte `json:"caCertPem,omitempty"`
 }
 
 // LeaseEgressCredentialsRequest is the node's push of the lease's
@@ -89,11 +95,14 @@ type LeaseEgressCredentialsResult struct {
 }
 
 // AuditEvent is one line of the audit stream: a Call the tunnel heard
-// (Audit) or finished (Done).
+// (Audit) or finished (Done), or one Request a terminated connection
+// answered (Request) — a terminated connection carries many requests,
+// each its own event, never representable as the connection's one Call.
 type AuditEvent struct {
-	Seq  uint64       `json:"seq"`
-	Kind string       `json:"kind"` // "call" or "done"
-	Call *egress.Call `json:"call,omitempty"`
+	Seq     uint64          `json:"seq"`
+	Kind    string          `json:"kind"` // "call", "done" or "request"
+	Call    *egress.Call    `json:"call,omitempty"`
+	Request *egress.Request `json:"request,omitempty"`
 }
 
 // AuditResync opens every audit stream connection: Dropped is how many
@@ -134,8 +143,19 @@ func newAuditBuffer(cap int) *auditBuffer {
 }
 
 func (b *auditBuffer) push(kind string, c egress.Call) {
+	b.appendEvent(AuditEvent{Kind: kind, Call: &c})
+}
+
+// pushRequest holds one terminated connection's Request, same buffer,
+// same ring: a connection's Call is one admission and one close, its
+// Requests as many as it carried.
+func (b *auditBuffer) pushRequest(q egress.Request) {
+	b.appendEvent(AuditEvent{Kind: "request", Request: &q})
+}
+
+func (b *auditBuffer) appendEvent(ev AuditEvent) {
 	b.mu.Lock()
-	ev := AuditEvent{Seq: b.next, Kind: kind, Call: &c}
+	ev.Seq = b.next
 	b.next++
 	b.events = append(b.events, ev)
 	if len(b.events) > b.cap {
@@ -228,14 +248,16 @@ type LeaseEgressServer struct {
 	buf *auditBuffer
 }
 
-// NewLeaseEgressServer wires tunnel's Audit and Done into the server's
-// bounded buffer, so every call the tunnel makes, served or not, is
-// held for the control connection's audit stream.
+// NewLeaseEgressServer wires tunnel's Audit, Done and Request into the
+// server's bounded buffer, so every call the tunnel makes, served or
+// not, and every request a terminated connection answers, is held for
+// the control connection's audit stream.
 func NewLeaseEgressServer(tunnel *egress.Tunnel, logf func(format string, args ...any)) *LeaseEgressServer {
 	s := &LeaseEgressServer{Tunnel: tunnel, Logf: logf}
 	s.buf = newAuditBuffer(0)
 	tunnel.Audit = func(c egress.Call) { s.buf.push("call", c) }
 	tunnel.Done = func(c egress.Call) { s.buf.push("done", c) }
+	tunnel.Request = func(q egress.Request) { s.buf.pushRequest(q) }
 	return s
 }
 
@@ -310,7 +332,11 @@ func (s *LeaseEgressServer) Start(req LeaseEgressStartRequest) LeaseEgressStartR
 	s.Tunnel.CA = ca
 	s.started = true
 	s.logf("lease-egress: started (%d host(s), %d rule(s))", len(req.Hosts), len(rules))
-	return LeaseEgressStartResult{Started: true}
+	result := LeaseEgressStartResult{Started: true}
+	if ca != nil {
+		result.CACertPEM = ca.CertPEM()
+	}
+	return result
 }
 
 // Credentials replaces the lease's session token and DPoP key, for
@@ -460,13 +486,25 @@ func (f closerFunc) Close() error { return f() }
 // lease-egress process's node socket and lane socket are both this:
 // neither the sidecar nor a lane ever sees an address change
 // (ADR-051 decision 1), and egress.Tunnel.Listen tracks one socket at
-// a time, for a lease that opens no lane.
+// a time, for a lease that opens no lane. A CONNECT carrying
+// relaysidecar.OwnHeader is marked spliced before it reaches the
+// tunnel, the same translation relaysidecar.Node.ServeHTTP makes for
+// the in-process tunnel: a caller forwarding the sidecar's own dial
+// onto this socket (the node's CONNECT-forwarding handler, in front of
+// the lease's external node and lane sockets) re-sends the header on
+// its own CONNECT here, and it must still reach egress.SpliceOnly.
 func ServeTunnelSocket(tunnel *egress.Tunnel, path string) (io.Closer, error) {
 	ln, err := listenUnix(path)
 	if err != nil {
 		return nil, err
 	}
-	srv := &http.Server{Handler: tunnel, ReadHeaderTimeout: 30 * time.Second}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodConnect && r.Header.Get(relaysidecar.OwnHeader) != "" {
+			r = r.WithContext(egress.SpliceOnly(r.Context()))
+		}
+		tunnel.ServeHTTP(w, r)
+	})
+	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 30 * time.Second}
 	go func() { _ = srv.Serve(ln) }()
 	return closerFunc(func() error {
 		err := srv.Close()

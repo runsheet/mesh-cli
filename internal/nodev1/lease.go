@@ -385,9 +385,16 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		return outcome{err: err, cause: context.Cause(ctx)}
 	}
 	r.setIntercepts(b.LeaseID, ic != nil && ic.ca != nil)
+	// a lease whose relay runs as a process of its own (ADR-051) mints
+	// its own CA there: the pod trusts it once rs.open returns with
+	// rs.caPEM, below, never the CA leaseInterception minted here, which
+	// that process never receives.
+	outOfProcess := r.sidecarMode() && lp != nil && !injects(b) && !federates(b)
 	if ic != nil && lp != nil {
-		if err := lp.trust(ic.ca, r.logf, b.LeaseID); err != nil {
-			return outcome{err: fmt.Errorf("the lease's pod: trusting its relay: %w", err), cause: context.Cause(ctx)}
+		if !outOfProcess {
+			if err := lp.trust(ic.ca, r.logf, b.LeaseID); err != nil {
+				return outcome{err: fmt.Errorf("the lease's pod: trusting its relay: %w", err), cause: context.Cause(ctx)}
+			}
 		}
 		// the placeholders the injected credentials' tools read
 		lp.proxyEnv = append(lp.proxyEnv, ic.env...)
@@ -452,6 +459,11 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		}
 		if servers, err = rs.open(ctx, tools, fin.observe, gate, account, sl, workspace); err != nil {
 			return outcome{err: fmt.Errorf("the lease's relay sidecar: %w", err), cause: context.Cause(ctx)}
+		}
+		if outOfProcess && len(rs.caPEM) > 0 {
+			if err := lp.trustPEM(rs.caPEM, r.logf, b.LeaseID); err != nil {
+				return outcome{err: fmt.Errorf("the lease's pod: trusting its relay: %w", err), cause: context.Cause(ctx)}
+			}
 		}
 		// the node's own product proxy, for the finish's learnings
 		sock = rs.ownSock

@@ -64,6 +64,11 @@ type interception struct {
 	// fed are the federation targets the relay holds a cloud token of
 	// (federation.go), dropped at the lease's end (release.go)
 	fed []*heldFederation
+	// specs is rules, as a lease whose relay runs as a process of its
+	// own (ADR-051) hands them to it over the wire (leaseegresswire.go):
+	// only the sign rule today, since inject and federation rules are
+	// egress.InjectRule, which that process does not yet run.
+	specs []egress.RuleSpec
 }
 
 // watchRule terminates every host a lease's egress allows and writes
@@ -131,6 +136,7 @@ func (r *Runtime) leaseInterception(ctx context.Context, b *meshapi.Brief, token
 			return nil, err
 		}
 		ic.rules = append(ic.rules, sign)
+		ic.specs = append(ic.specs, egress.RuleSpec{Kind: "sign", Registries: prefixes})
 		hosts = append(hosts, sign.Hosts()...)
 	}
 	// the rules that inject come after the sign rule's
@@ -275,14 +281,25 @@ func (p *leasePod) trust(ca *egress.CA, logf func(string, ...any), lease string)
 	if ca == nil {
 		return nil
 	}
-	caPath, err := p.sess.WriteFile(trustCAFile, ca.CertPEM())
+	return p.trustPEM(ca.CertPEM(), logf, lease)
+}
+
+// trustPEM is trust over a CA certificate already rendered PEM: a
+// lease's relay running as a process of its own (ADR-051) mints its
+// own CA there and hands the node only its bytes
+// (LeaseEgressStartResult.CACertPEM), never the CA itself.
+func (p *leasePod) trustPEM(certPEM []byte, logf func(string, ...any), lease string) error {
+	if len(certPEM) == 0 {
+		return nil
+	}
+	caPath, err := p.sess.WriteFile(trustCAFile, certPEM)
 	if err != nil {
 		return err
 	}
 	vars := []string{"NODE_EXTRA_CA_CERTS=" + caPath}
 	if sys := systemBundle(); sys != nil {
 		bundle := append(append([]byte(nil), sys...), '\n')
-		bundle = append(bundle, ca.CertPEM()...)
+		bundle = append(bundle, certPEM...)
 		path, err := p.sess.WriteFile(trustBundleFile, bundle)
 		if err != nil {
 			return err

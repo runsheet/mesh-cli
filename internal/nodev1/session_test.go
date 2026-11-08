@@ -20,7 +20,9 @@ import (
 // starts it (sessiontest.Env=1).
 func TestMain(m *testing.M) {
 	sessiontest.Main()
-	os.Exit(m.Run())
+	code := m.Run()
+	cleanupTestMeshBinary()
+	os.Exit(code)
 }
 
 // fakeSession is a ClaudeSession on the fake claude, which writes its

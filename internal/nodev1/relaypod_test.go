@@ -1,8 +1,10 @@
 package nodev1
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"net"
@@ -14,9 +16,11 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/dpop"
 	"projectmesh.io/mesh-cli/internal/egress"
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/relaysidecar"
@@ -32,6 +36,7 @@ func sidecarRig(t *testing.T) (*rig, *sandbox.Fake, *[][]byte) {
 	t.Helper()
 	g, sb, _ := podRig(t)
 	g.rt.RelaySidecar = true
+	g.rt.MeshBinary = testMeshBinary(t)
 	installed := &[][]byte{}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -88,6 +93,19 @@ func sidecarRig(t *testing.T) (*rig, *sandbox.Fake, *[][]byte) {
 	return g, sb, installed
 }
 
+// sidecarEgressDial redirects every egress dial to addr instead of the real
+// host: the in-process Runtime hook a podRig test uses, and — since a
+// sidecar lease's egress runs as a process of its own (ADR-051) and cannot
+// reach the test's own closures across the process boundary — the same
+// redirect told to that subprocess over its environment.
+func sidecarEgressDial(t *testing.T, g *rig, addr string) {
+	t.Helper()
+	g.rt.EgressDial = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, addr)
+	}
+	t.Setenv(TestEgressDialEnv, addr)
+}
+
 // A lease whose relay is a sidecar: its pod has no network at all and
 // shares only its network namespace; the sidecar runs on the node's own
 // binary with the lease's socket directory and its checkout (read-only)
@@ -102,9 +120,7 @@ func TestALeaseWhoseRelayIsASidecar(t *testing.T) {
 		io.WriteString(w, "reached "+r.Host)
 	}))
 	defer host.Close()
-	g.rt.EgressDial = func(ctx context.Context, network, _ string) (net.Conn, error) {
-		return (&net.Dialer{}).DialContext(ctx, network, host.Listener.Addr().String())
-	}
+	sidecarEgressDial(t, g, host.Listener.Addr().String())
 	dir := t.TempDir()
 	probe, answers := filepath.Join(dir, "probe.js"), filepath.Join(dir, "answers")
 	os.WriteFile(probe, []byte(egressProbe), 0o600)
@@ -362,3 +378,131 @@ func TestTheLanesTunnelServesTheLeasesEgressAlone(t *testing.T) {
 		t.Fatal("the lanes' tunnel outlived the lease")
 	}
 }
+
+// A sidecar lease's egress is a process of its own (ADR-051 decisions 1
+// and 3): the lanes' socket routes through the real mesh lease-egress
+// subprocess startEgressProcess starts, never a manually-built
+// in-process tunnel, and that subprocess is never a child of this
+// process's own process group, so a kill of this process (standing in
+// for the node) would leave it, and anything it carries, running.
+func TestTheLanesTunnelServesTheRealEgressProcess(t *testing.T) {
+	if _, err := os.Stat("/proc"); err != nil {
+		t.Skip("no /proc")
+	}
+	dir, err := os.MkdirTemp("", "lt2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "reached")
+	}))
+	t.Cleanup(upstream.Close)
+	t.Setenv(TestEgressDialEnv, upstream.Listener.Addr().String())
+
+	rs := &relaySidecar{r: &Runtime{Logf: t.Logf, MeshBinary: testMeshBinary(t)},
+		b:    &meshapi.Brief{LeaseID: "lease-2", Egress: &meshapi.Egress{Hosts: []string{"proxy.golang.org"}}},
+		dir:  dir,
+		node: &relaysidecar.Node{}}
+	key, err := dpop.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	handoff, err := key.Handoff()
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds := relaysidecar.Credentials{Key: handoff, Session: relaysidecar.Token{Value: "lease-2-token"}}
+	policy := egress.NewPolicy([]string{"proxy.golang.org"}, nil, nil)
+	noop := func(egress.Call) {}
+	if err := rs.startEgressProcess(context.Background(), policy, rs.b, creds, noop, noop); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { rs.close() })
+
+	if rs.egressCmd == nil || rs.egressCmd.Process == nil {
+		t.Fatal("no egress process started")
+	}
+	childPgid, err := syscall.Getpgid(rs.egressCmd.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownPgid, err := syscall.Getpgid(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if childPgid == ownPgid {
+		t.Fatalf("the egress process (pid %d, group %d) is in this process's own group %d", rs.egressCmd.Process.Pid, childPgid, ownPgid)
+	}
+
+	sock, err := rs.openLaneTunnel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(sock) != filepath.Join(dir, relayLaneDir) {
+		t.Fatalf("the lanes' socket %s is not in a directory of its own", sock)
+	}
+	ask := func(req string) string {
+		c, err := net.Dial("unix", sock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		c.SetDeadline(time.Now().Add(5 * time.Second))
+		io.WriteString(c, req)
+		line := make([]byte, 64)
+		n, _ := c.Read(line)
+		return string(line[:n])
+	}
+	for _, req := range []string{"POST " + relaysidecar.RenewPath + " HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n",
+		"GET /mcp/mesh-node HTTP/1.1\r\nHost: x\r\n\r\n"} {
+		if got := ask(req); !strings.Contains(got, " 403 ") {
+			t.Fatalf("%q answered %q, want 403", req, got)
+		}
+	}
+	if got := ask("CONNECT evil.example:443 HTTP/1.1\r\nHost: evil.example:443\r\n\r\n"); strings.Contains(got, " 200 ") {
+		t.Fatalf("a host the lease's policy refuses was tunnelled: %q", got)
+	}
+
+	// an actual HTTPS transfer through the lane socket, spliced by the
+	// real subprocess (never terminated there) all the way to the
+	// upstream it dialled: a real TLS handshake naming the lease's
+	// allowed host, then a request and response over it.
+	c, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(5 * time.Second))
+	io.WriteString(c, "CONNECT proxy.golang.org:443 HTTP/1.1\r\nHost: proxy.golang.org:443\r\n\r\n")
+	br := bufio.NewReader(c)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("the lease's allowed host: %v, status %+v", err, resp)
+	}
+	tlsConn := tls.Client(&bufferedConn{c, br}, &tls.Config{ServerName: "proxy.golang.org", InsecureSkipVerify: true})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatalf("the TLS handshake through the lane socket: %v", err)
+	}
+	io.WriteString(tlsConn, "GET / HTTP/1.1\r\nHost: proxy.golang.org\r\nConnection: close\r\n\r\n")
+	body, err := io.ReadAll(tlsConn)
+	if err != nil || !strings.Contains(string(body), "reached") {
+		t.Fatalf("the HTTPS transfer through the real egress process got %q, %v", body, err)
+	}
+
+	rs.close()
+	if _, err := net.Dial("unix", sock); err == nil {
+		t.Fatal("the lanes' tunnel outlived the lease")
+	}
+}
+
+// bufferedConn is a net.Conn whose reads come from a *bufio.Reader
+// already primed over it (by reading the CONNECT response), so no
+// byte the reader buffered past that response is lost to a later TLS
+// handshake over the same connection.
+type bufferedConn struct {
+	net.Conn
+	br *bufio.Reader
+}
+
+func (b *bufferedConn) Read(p []byte) (int, error) { return b.br.Read(p) }

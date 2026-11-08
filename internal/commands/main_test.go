@@ -11,6 +11,14 @@ import (
 // (node.SweepScratch) over os.TempDir(), which must never be the host's
 // /tmp, where other sessions' dirs live.
 func TestMain(m *testing.M) {
+	// a sidecar lease's egress is the node's own binary run as
+	// `mesh lease-egress` (ADR-051); under go test that binary is this one
+	if len(os.Args) > 1 && os.Args[1] == leaseEgressCmd.Name() {
+		if err := Execute(); err != nil {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	dir, err := os.MkdirTemp("", "mesh-commands-test-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
