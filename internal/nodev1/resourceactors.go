@@ -7,11 +7,13 @@ import (
 	"projectmesh.io/mesh-cli/internal/resources"
 )
 
-// The resource actors (ADR-044, Mesh v1 PR 3.4): the cache trim runs off
-// the take loop holding the build cache exclusively in the scheduler
-// (`--cache-trim`), and the self-update drains the node, hands back
-// node_update what still runs past its drain wait, installs the release
-// and ends Run with ErrRestartForUpdate (`--self-update`).
+// The resource actors (ADR-044, Mesh v1 PR 3.4): the self-update drains
+// the node, hands back node_update what still runs past its drain wait,
+// installs the release and ends Run with ErrRestartForUpdate
+// (`--self-update`). The build cache no longer holds the scheduler
+// exclusively to trim: cachewatch.go's WatchBuildCache runs off this
+// loop too, evicting by entry alongside a live build (goal
+// a-nodes-build-cache-stays-under-its-size).
 
 // ErrRestartForUpdate is Run's end once a self-update installed a new
 // binary: the service manager starts it in place.
@@ -50,14 +52,6 @@ func (n updateNode) HandBackAll(why string) { n.r.handBackAll(why, errNodeUpdate
 // startResources starts the node's resource actors under ctx; updated
 // closes once the self-update ends, holding the version it installed.
 func (r *Runtime) startResources(ctx context.Context) {
-	if r.CacheTrim != nil && r.Scheduler != nil {
-		t := *r.CacheTrim
-		t.Scheduler = r.Scheduler
-		if t.Logf == nil {
-			t.Logf = r.Logf
-		}
-		go t.Run(ctx)
-	}
 	r.updated = make(chan string, 1)
 	if r.Updater == nil {
 		close(r.updated)

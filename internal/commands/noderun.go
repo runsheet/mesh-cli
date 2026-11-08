@@ -7,7 +7,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -53,9 +52,6 @@ var (
 	nodeRunActors       bool
 	nodeRunSupervisor   string
 	nodeRunQuietAfter   time.Duration
-	nodeRunCacheTrim    bool
-	nodeRunCacheDir     string
-	nodeRunCacheMaxGB   float64
 	nodeRunSelfUpdate   bool
 	nodeRunSandbox      bool
 	nodeRunRelaySidecar bool
@@ -129,6 +125,7 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 		}
 		capacityReload := make(chan struct{}, 1)
 		sandboxLimitsReload := make(chan struct{}, 1)
+		buildCacheReload := make(chan struct{}, 1)
 		rt := &nodev1.Runtime{
 			API: &meshapi.Client{BaseURL: meshAPIURL(), Token: src.Token},
 			Node: meshapi.RegisterRequest{
@@ -143,14 +140,17 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 			// below, under --sandbox.
 			SandboxLimitsConfigPath: capPath,
 			SandboxLimitsReload:     sandboxLimitsReload,
-			SigningKey:              key,
-			Sigstore:                nodeRunSigstore(logger),
-			Connect:                 connect,
-			WorkRoot:                root,
-			MeshBinary:              meshBinary(),
-			GitUpstream:             gitUpstream(),
-			NoMirrors:               nodeRunNoMirrors,
-			Session:                 sess,
+			// the build-cache watcher (cachewatch.go) runs on every node
+			BuildCacheConfigPath: capPath,
+			BuildCacheReload:     buildCacheReload,
+			SigningKey:           key,
+			Sigstore:             nodeRunSigstore(logger),
+			Connect:              connect,
+			WorkRoot:             root,
+			MeshBinary:           meshBinary(),
+			GitUpstream:          gitUpstream(),
+			NoMirrors:            nodeRunNoMirrors,
+			Session:              sess,
 			// the session runs on the host here, so run_suite's steps
 			// may too; a sandboxed node never runs them there
 			HostSuites: true,
@@ -174,20 +174,6 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 			return fmt.Errorf("mesh node run: --supervisor=%s watches job actors: it needs --actors", mode)
 		}
 		rt.SupervisorMode, rt.QuietAfter = mode, nodeRunQuietAfter
-		if nodeRunCacheTrim {
-			if rt.Scheduler == nil {
-				return errors.New("mesh node run: --cache-trim holds the build cache in the scheduler: it needs --actors-scheduler")
-			}
-			dir := nodeRunCacheDir
-			if dir == "" {
-				out, err := exec.Command("go", "env", "GOCACHE").Output()
-				if err != nil {
-					return fmt.Errorf("mesh node run: --cache-trim: no --cache-dir and `go env GOCACHE` failed: %w", err)
-				}
-				dir = strings.TrimSpace(string(out))
-			}
-			rt.CacheTrim = &resources.CacheTrim{Root: dir, MaxBytes: int64(nodeRunCacheMaxGB * (1 << 30)), Logf: logger.Printf}
-		}
 		if nodeRunSelfUpdate {
 			rt.Updater = &resources.ReleaseUpdater{Releases: selfupdate.GitHub{}, Current: version.Resolved(), Exe: meshBinary()}
 		}
@@ -257,6 +243,10 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 			}
 			select {
 			case sandboxLimitsReload <- struct{}{}:
+			default:
+			}
+			select {
+			case buildCacheReload <- struct{}{}:
 			default:
 			}
 		})()
@@ -489,9 +479,6 @@ func init() {
 	f.BoolVar(&nodeRunActors, "actors", false, "run each lease as a job actor (ADR-044): it owns the lease's directory, room, grant and proxy, writes actor.json before each state change, releases everything however the lease ends, and hands back pod_killed a session killed from outside; a restarted node releases the actors it left")
 	f.StringVar(&nodeRunSupervisor, "supervisor", "off", "with --actors, the supervisor (ADR-044): off; warn (or report) logs quiet sessions and what the minute's reconcile finds; cancel escalates a quiet session, then hands it back stalled, and removes pods, job directories and grants no actor holds")
 	f.DurationVar(&nodeRunQuietAfter, "quiet-after", 0, "with --supervisor, how long a session may show no progress before it is escalated, and again before it is stopped (default 15m)")
-	f.BoolVar(&nodeRunCacheTrim, "cache-trim", false, "with --actors-scheduler, trim the Go build cache hourly when over --cache-max-gb, holding it alone in the scheduler so no build runs under the trim")
-	f.StringVar(&nodeRunCacheDir, "cache-dir", "", "with --cache-trim, the Go build cache (default `go env GOCACHE`)")
-	f.Float64Var(&nodeRunCacheMaxGB, "cache-max-gb", 50, "with --cache-trim, the build cache's cap in GB")
 	f.BoolVar(&nodeRunSelfUpdate, "self-update", false, "keep the node on the newest release: drain, hand back node_update what still runs after 30 minutes, install the verified release and exit for the service manager to restart it")
 	f.BoolVar(&nodeRunRelaySidecar, "relay-sidecar", false, "with --sandbox, run each lease's relay as a sidecar in its pod on the lease's credentials alone, the pod with no network but its loopback (projectmesh-io/api ADR 001 amendment \"relay sidecar\"); defaults on with --sandbox, since a lease with no sidecar cannot be adopted across a restart -- pass --relay-sidecar=false to run one unadoptable")
 	f.BoolVar(&nodeRunSandbox, "sandbox", false, "with --actors, run each lease's session and its services (the checkout's .mesh/services.yml and the brief's pods) in a rootless podman pod of the lease's own, on node.yaml's sandbox settings and the brief's CPUs and memory; the relay is reached only through the lease's socket")
