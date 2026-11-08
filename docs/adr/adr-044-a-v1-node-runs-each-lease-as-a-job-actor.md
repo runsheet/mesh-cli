@@ -5,9 +5,14 @@ status: proposed
 
 # ADR-044: A v1 node runs each lease as a job actor
 
-2026-10-30. Mesh v1 wave 3 (the actor node). Applies to `mesh node run
---api v1` (internal/nodev1) only; the legacy runtime (internal/node) is
-unchanged.
+2026-10-30. Mesh v1 wave 3 (the actor node). Applies to `mesh node run`
+(internal/nodev1) only; the legacy runtime (internal/node) is
+unchanged. `mesh node run` carries no `--api` flag: it always runs
+nodev1, and `mesh node drain`, `mesh node upgrade` and `mesh node status`
+operate on the v1 node alone — a legacy node (`mesh node start`) left
+running is told apart from none running at all by its pid, never
+disambiguated by a flag (the drain and upgrade amendments below,
+collapsed to the one v1 path).
 
 ## Context
 
@@ -154,7 +159,7 @@ exactly that. The legacy node had `mesh node drain` (SIGUSR1 through
 `~/.mesh/node.pid`); the only drain in nodev1 was the one the
 self-update and Mesh ask for.
 
-1. **A pidfile of its own.** `mesh node run --api v1` writes its pid to
+1. **A pidfile of its own.** `mesh node run` writes its pid to
    `~/.mesh/node-v1/node.pid`. A legacy node and a v1 node run by one
    user keep apart: their state is in different directories. Beside the
    pid are:
@@ -164,9 +169,16 @@ self-update and Mesh ask for.
      ends, and as the node drains.
 
    All three are removed as the process exits.
-2. **SIGUSR1 drains.** `mesh node drain` signals the running node.
-   - With a legacy and a v1 node both running as the user, `--api v0|v1`
-     says which; otherwise it is the one running.
+2. **SIGUSR1 drains.** `mesh node drain` signals the v1 node alone,
+   never a legacy node.
+   - With no v1 node running, `drainEither` looks for a legacy node
+     (`mesh node start`, `~/.mesh/node.pid`) before giving up: finding
+     one live, it refuses clearly, naming the legacy node's pid, rather
+     than reporting "no Mesh v1 node is running" as if nothing ran on
+     the machine at all — the legacy node keeps draining on its own
+     signal (`kill -USR1 <pid>`) or by migrating it to `mesh node run`.
+     With neither running, it is the plain "no Mesh v1 node is running"
+     refusal.
    - The node takes no new lease. A wait for a free slot ends at the
      drain. A take already in its long poll is not cut off: a lease Mesh
      placed but the node never heard would sit unrun until its TTL
@@ -202,7 +214,11 @@ self-update and Mesh ask for.
 7. **`mesh node status`.** It shows a v1 node from `node.status`: its
    pid, node id and version; whether it drains, for how long, and when
    its wait hands back; and each live lease with its job, kind and age.
-   With no legacy node beside it, nothing else is printed.
+   With no v1 node running and a legacy node running instead,
+   `v1StatusLines` adds a line naming the legacy node's pid beside the
+   "no Mesh v1 node running" line, rather than leaving the reader to
+   mistake it for nothing running on the machine; with neither running,
+   only that one line prints.
 
 A deploy that should not restart work is still a drain; `mesh node
 upgrade` and `mesh node set` are the amendments below.
@@ -256,7 +272,7 @@ amendment's SIGTERM path does. An operator who only wants to raise
 
 ## Amendment, 2026-11-04: `mesh node upgrade` for v1 (sessions survive a restart)
 
-Unlike a drain, `mesh node upgrade --api v1` does not wait for a v1
+Unlike a drain, `mesh node upgrade` does not wait for a v1
 node's leases to end: it leaves every one running, under the agent
 that is already running it, and restarts the node process at once so
 the binary already swapped onto disk (adr-009's restart, which carries
@@ -268,7 +284,7 @@ the legacy node the same way) picks them back up.
    `0o600`, beside the pidfile) and only then sends SIGHUP — the same
    signal `mesh node set` sends for its live reload (the amendment
    above), so SIGHUP alone no longer says which is meant. `mesh node
-   run --api v1`'s restart handler reads and removes
+   run`'s restart handler reads and removes
    `node.upgrade-ask` first (`takeV1UpgradeAsk`, the same
    read-once-and-clear shape as the drain wait's `node.drain-wait`):
    found, it calls `rt.UpgradeSignal(...)`; not found, it is `mesh node
@@ -326,7 +342,7 @@ the legacy node the same way) picks them back up.
 
 ## Amendment, 2026-11-06: the upgrade refuses an unadoptable lease, and reports what the new process adopted
 
-`mesh node upgrade --api v1` no longer swaps and restarts blind to
+`mesh node upgrade` no longer swaps and restarts blind to
 whether the hand-off above can actually pick a lease back up, or to
 whether it did.
 
@@ -337,10 +353,16 @@ whether it did.
    cases `Upgrade` (above) hands back `node_update` rather than
    writing a hand-off for. Before `(*nodeUpgrade).run`
    (`internal/commands/nodeupgrade.go`) swaps the binary, it reads the
-   v1 node's status once (`V1Status`, nil for a legacy-node upgrade)
-   and, finding any lease not `Adoptable`, refuses: no binary swapped,
-   no restart sent, the lease(s) named by id and job. `--force` swaps
-   and restarts anyway, ending them, as `Upgrade` already would.
+   v1 node's status once (`V1Status`, nil when no v1 node is running —
+   `mesh node upgrade` has no other node to read a status from) and,
+   finding any lease not `Adoptable`, refuses: no binary swapped,
+   no restart sent, the lease(s) named by id and job. With no v1 node
+   running, there is nothing to refuse on this count; `v1Service.Restart`
+   still swaps the binary first and then, finding a legacy node
+   (`mesh node start`) running instead, reports it by pid rather than
+   claiming the next `mesh node run` will pick up the new binary (the
+   drain amendment's legacy-node detection, applied here too). `--force`
+   swaps and restarts anyway, ending them, as `Upgrade` already would.
 2. **The swap reports what the restart actually adopted.** When every
    lease was adoptable (or `--force` overrode a refusal) and at least
    one lease was running, `run` polls `V1Status` after
@@ -463,7 +485,7 @@ since died is not.
    back up, over its control socket) is built here; this only stops
    ending, needlessly, a lease that an adopting process could in
    principle resume.
-3. **`mesh node upgrade --api v1`'s refusal names the reason per lease**
+3. **`mesh node upgrade`'s refusal names the reason per lease**
    (`internal/commands/nodeupgrade.go`) when `AdoptableReason` is set,
    instead of the one fixed phrase every unadoptable lease used to get.
 4. **On by default; `--cache-trim` retired.** `mesh node run` sets

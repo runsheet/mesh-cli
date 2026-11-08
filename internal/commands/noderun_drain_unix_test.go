@@ -3,9 +3,11 @@
 package commands
 
 import (
+	"context"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -107,5 +109,72 @@ func TestTheDrainWaitIsReadOnce(t *testing.T) {
 	}
 	if d := takeV1DrainWait(v1); d != 0 {
 		t.Fatalf("wait read twice: %s", d)
+	}
+}
+
+// With no v1 node running but a legacy node (`mesh node start`) live,
+// drain, status and upgrade all say so clearly instead of reading as
+// if nothing runs on the machine (adr-044's amendment, the --api v0
+// path is gone): drain refuses naming the legacy pid, status adds a
+// line naming it beside the v1 "not running" line, and upgrade (whose
+// binary swap already happened) reports it rather than claiming the
+// next `mesh node run` will pick up the new binary.
+func TestOnlyALegacyNodeRunningIsNamedNotMistakenForNothingRunning(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	legacy, err := node.DefaultRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Started(os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	v1, err := v1RunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := liveNode(v1); ok {
+		t.Fatal("no v1 node was started")
+	}
+
+	// drain refuses clearly, naming the legacy node's pid, rather than
+	// drainV1Node's "no Mesh v1 node is running".
+	var drainOut strings.Builder
+	err = drainEither(v1, 0, &drainOut)
+	if err == nil {
+		t.Fatal("drainEither = nil, want a refusal naming the legacy node")
+	}
+	if !strings.Contains(err.Error(), "legacy node") || !strings.Contains(err.Error(), "mesh node start") {
+		t.Fatalf("drainEither = %v, want it to name the legacy node", err)
+	}
+	wantPID := strconv.Itoa(os.Getpid())
+	if !strings.Contains(err.Error(), wantPID) {
+		t.Fatalf("drainEither = %v, want pid %s", err, wantPID)
+	}
+
+	// status still says the v1 node is not running, but no longer only
+	// that: it also names the legacy node running instead.
+	lines, ok := v1StatusLines(v1, time.Now())
+	if !ok {
+		t.Fatal("v1StatusLines ok = false")
+	}
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "no Mesh v1 node running") {
+		t.Fatalf("status lines %v, want the v1 \"not running\" line kept", lines)
+	}
+	if !strings.Contains(joined, "legacy node") || !strings.Contains(joined, wantPID) {
+		t.Fatalf("status lines %v, want a line naming the running legacy node", lines)
+	}
+
+	// upgrade's restart step (the binary swap already done) reports the
+	// running legacy node rather than claiming the next `mesh node run`
+	// will carry the new binary.
+	var upgradeOut strings.Builder
+	if err := (v1Service{}).Restart(context.Background(), v1, &upgradeOut); err != nil {
+		t.Fatalf("v1Service.Restart = %v, want nil (the swap already succeeded)", err)
+	}
+	if !strings.Contains(upgradeOut.String(), "legacy node") || !strings.Contains(upgradeOut.String(), wantPID) {
+		t.Fatalf("upgrade restart printed %q, want it to name the running legacy node", upgradeOut.String())
 	}
 }

@@ -793,10 +793,22 @@ tick.`,
 	},
 }
 
-// drainEither drains the Mesh v1 node running on this machine.
+// drainEither drains the Mesh v1 node running on this machine. A legacy
+// node (`mesh node start`) is no longer reachable through this command
+// (the --api v0 path is gone, adr-044's amendment): rather than
+// drainV1Node's "no Mesh v1 node is running" — true of the command's
+// own target, misleading about the machine, since a legacy node in
+// fact runs — a live one is refused clearly, naming its pid; it keeps
+// draining on its own signal, `kill -USR1 <pid>`, or by upgrading it to
+// a v1 node with `mesh node run`.
 func drainEither(v1 node.RunState, wait time.Duration, out io.Writer) error {
 	if wait < 0 {
 		return fmt.Errorf("--wait %s: a wait is not negative", wait)
+	}
+	if _, ok := liveNode(v1); !ok {
+		if pid, ok := legacyNode(); ok {
+			return fmt.Errorf("a legacy node (mesh node start) is running at pid %d; mesh node drain no longer supports it — signal it directly (kill -USR1 %d) or migrate to mesh node run", pid, pid)
+		}
 	}
 	return drainV1Node(v1, wait, out)
 }

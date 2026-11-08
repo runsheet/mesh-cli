@@ -133,6 +133,19 @@ func liveNode(s node.RunState) (int, bool) {
 	return pid, true
 }
 
+// legacyNode is the pid of a running legacy node (`mesh node start`,
+// ~/.mesh/node.pid), distinct from a v1 node's own ~/.mesh/node-v1:
+// drain, upgrade and status read it only to tell a running legacy node
+// apart from none running at all, never to act on it (adr-044's
+// amendment, the --api v0 path is gone).
+func legacyNode() (int, bool) {
+	s, err := node.DefaultRunState()
+	if err != nil {
+		return 0, false
+	}
+	return liveNode(s)
+}
+
 // drainV1Node signals the v1 node whose pid state holds to drain, with
 // wait (0 for none) after which it hands back what still runs.
 func drainV1Node(s node.RunState, wait time.Duration, out io.Writer) error {
@@ -167,11 +180,18 @@ func drainV1Node(s node.RunState, wait time.Duration, out io.Writer) error {
 // v1StatusLines are `mesh node status`'s lines for the v1 node on this
 // machine: what it is doing when one runs, else that none does — always
 // at least one line, so `mesh node status` never falls back to legacy
-// text for this machine.
+// text for this machine. With no v1 node and a legacy node (`mesh node
+// start`) running instead, a second line names its pid, so "no Mesh v1
+// node running" is never misread as nothing running at all (adr-044's
+// amendment).
 func v1StatusLines(s node.RunState, now time.Time) ([]string, bool) {
 	pid, ok := liveNode(s)
 	if !ok {
-		return []string{"This machine: no Mesh v1 node running (mesh node run)."}, true
+		lines := []string{"This machine: no Mesh v1 node running (mesh node run)."}
+		if lpid, lok := legacyNode(); lok {
+			lines = append(lines, fmt.Sprintf("This machine: a legacy node (mesh node start) is running at pid %d; mesh node status does not report on it.", lpid))
+		}
+		return lines, true
 	}
 	st, ok := readV1Status(s)
 	if !ok || st.PID != pid {

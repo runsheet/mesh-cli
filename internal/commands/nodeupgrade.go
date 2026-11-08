@@ -87,10 +87,20 @@ for taking a machine out of service.`,
 // to tell its own SIGHUP apart from `mesh node set`'s.
 type v1Service struct{}
 
-// Restart implements nodeRestarter.
+// Restart implements nodeRestarter. The binary is already swapped by
+// the time Restart runs, so a legacy node (`mesh node start`) left
+// running is told apart from no node at all — "the next `mesh node
+// run` runs the new binary" would otherwise read as nothing is running
+// here, when in fact a legacy node, untouched by this restart, is
+// (adr-044's amendment, the --api v0 path is gone); either way the
+// swap already succeeded and nothing more is done here.
 func (v1Service) Restart(ctx context.Context, state node.RunState, out io.Writer) error {
 	pid, err := state.PID()
 	if errors.Is(err, node.ErrNoNode) {
+		if lpid, lok := legacyNode(); lok {
+			fmt.Fprintf(out, "No Mesh v1 node is running on this machine; a legacy node (mesh node start, pid %d) is, untouched by this restart — it already runs the new binary and picks it up at its own next restart or drain.\n", lpid)
+			return nil
+		}
 		fmt.Fprintf(out, "No Mesh v1 node is running on this machine: the next `mesh node run` runs the new binary.\n")
 		return nil
 	}
@@ -98,6 +108,10 @@ func (v1Service) Restart(ctx context.Context, state node.RunState, out io.Writer
 		return err
 	}
 	if !processAlive(pid) {
+		if lpid, lok := legacyNode(); lok {
+			fmt.Fprintf(out, "No Mesh v1 node is running on this machine (pid %d is gone); a legacy node (mesh node start, pid %d) is, untouched by this restart — it already runs the new binary and picks it up at its own next restart or drain.\n", pid, lpid)
+			return nil
+		}
 		fmt.Fprintf(out, "No Mesh v1 node is running on this machine (pid %d is gone): the next `mesh node run` runs the new binary.\n", pid)
 		return nil
 	}
