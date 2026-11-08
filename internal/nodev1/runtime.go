@@ -261,6 +261,27 @@ type Runtime struct {
 	Host    Host
 	Machine MachineProbe
 
+	// BuildCacheConfigPath, when set, is node.yaml's path: the build
+	// cache watcher (ADR-044 amendment, goal
+	// a-nodes-build-cache-stays-under-its-size) rereads its top-level
+	// `cache` section every BuildCachePoll and on BuildCacheReload,
+	// evicts BuildCache's least-recently-used entries toward
+	// cache.max_gb, and keeps cache.min_free_gb as diskGate's floor.
+	// Off (no watcher) when empty.
+	BuildCacheConfigPath string
+	// BuildCachePoll is how often the watcher rereads
+	// BuildCacheConfigPath; a minute when zero.
+	BuildCachePoll time.Duration
+	// BuildCacheReload, when set, wakes the watcher for an immediate
+	// reread, as CapacityReload does; nil runs the poll alone.
+	BuildCacheReload <-chan struct{}
+	// Disk reads free space for diskGate and for ReadBuildCacheConfig's
+	// own default of cache.max_gb; nil never gates and reads no
+	// default, so a node with no Disk set defaults max_gb to 0 (no
+	// cap) and never gates on disk. Defaulted to FSDiskProbe{} at Run
+	// when BuildCacheConfigPath is set and Disk is nil.
+	Disk DiskProbe
+
 	// gitBridgePort, set, is a lease pod's git bridge port in place of
 	// podGitPort: tests, whose fake pods share the host's loopback.
 	gitBridgePort int
@@ -283,7 +304,14 @@ type Runtime struct {
 	// hostGateReason is the host gate's current reason, "" when open, so
 	// noteHostGate logs only a crossing, never the same state twice
 	hostGateReason string
-	drain          bool
+	// diskGateReason is the disk gate's current reason, "" when open, so
+	// noteDiskGate logs only a crossing, never the same state twice
+	diskGateReason string
+	// buildCacheConfig is node.yaml's `cache` section as WatchBuildCache
+	// last read it; diskGate's MinFreeGB floor and evictBuildCache's own
+	// MaxGB cap.
+	buildCacheConfig BuildCacheConfig
+	drain            bool
 	// cacheMountProbed and cacheMountOff are probeCacheMountOnce's own
 	// state (cachemount.go): probed guards the one-time check, off is
 	// true once the runtime's `--mount type=overlay` is found refused,
@@ -519,6 +547,15 @@ func (r *Runtime) Run(ctx context.Context) error {
 		path := r.SandboxLimitsConfigPath
 		go r.WatchSandboxLimits(hbCtx, func() (sandbox.Limits, bool, error) { return ReadSandboxLimitsConfig(path) }, r.SandboxLimitsPoll, r.SandboxLimitsReload)
 	}
+	if r.BuildCacheConfigPath != "" {
+		path := r.BuildCacheConfigPath
+		if r.Disk == nil {
+			r.Disk = FSDiskProbe{}
+		}
+		go r.WatchBuildCache(hbCtx, func() (BuildCacheConfig, error) {
+			return ReadBuildCacheConfig(path, func() (uint64, error) { return r.Disk.FreeBytes(r.diskGatePath()) })
+		}, r.BuildCachePoll, r.BuildCacheReload)
+	}
 	r.probeCacheMountOnce(ctx)
 
 	var leases sync.WaitGroup
@@ -553,6 +590,12 @@ func (r *Runtime) Run(ctx context.Context) error {
 			continue
 		}
 		r.noteHostGate("")
+		if reason := r.diskGate(); reason != "" {
+			r.noteDiskGate(reason)
+			r.sleep(ctx, r.backoff())
+			continue
+		}
+		r.noteDiskGate("")
 		tk, err := r.API.Take(ctx, meshapi.TakeRequest{
 			NodeID: node.NodeID, Free: r.free(), Harnesses: r.Node.Harnesses, WaitS: meshapi.MaxWaitS,
 		})

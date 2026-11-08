@@ -387,3 +387,45 @@ is.
    directory — so an egress process a dead node left running never
    outlives the next node's clean-up, whether or not that lease's own
    `watchEgress` is still there to catch it.
+
+## Amendment, 2026-11-08: the build cache is bounded and read live, and a near-full disk gates new leases
+
+The Go build cache the node's leases share (`Runtime.BuildCache`) had
+no live cap of its own, and nothing in `internal/nodev1` read how
+full the disk under it was before taking another lease.
+
+1. **`cache: {max_gb, min_free_gb}`** is a new, top-level node.yaml
+   section of v1's own — the legacy node's config names no top-level
+   `cache:` key, so this clashes with nothing — read directly in
+   `internal/nodev1/cachewatch.go` (`ReadBuildCacheConfig`,
+   `nodeYAMLCacheFields`) the way `capacitywatch.go` reads `v1.capacity`,
+   since `internal/nodev1` may not import `internal/node`
+   (`guard_test.go`). `max_gb` bounds the node's build cache; a
+   node.yaml that leaves it out defaults it to `DefaultCacheFreeShare`
+   (60%) of the free space `Disk` reads at the cache's own path.
+   `min_free_gb` is the new disk gate's floor (below); left out, it
+   defaults to `DefaultMinFreeGB` (50).
+2. **`WatchBuildCache`** (`Runtime.WatchBuildCache`, started from `Run`
+   when `BuildCacheConfigPath` is set) rereads the `cache` section every
+   `BuildCachePoll` and at once on `BuildCacheReload`, keeps it live as
+   `r.buildCacheConfig`, and evicts `BuildCache`'s least-recently-used
+   entries toward `max_gb` through `resources.EvictLRU` (the entry-by-entry
+   evictor the goal before this one added) whenever it reads over the
+   cap. This runs by entry, never taking `r.Scheduler`, so it evicts
+   alongside a lease still building against the same cache — unlike the
+   wholesale `go clean -cache` the legacy node's scheduled `CacheTrim`
+   still does.
+3. **`diskGate`/`noteDiskGate`** (`internal/nodev1/diskgate.go`) is a new
+   gate of the same shape as `hostGate`/`noteHostGate`, checked once per
+   pass of `Run`'s take loop right after `hostGate` and before
+   `r.API.Take`: "" while free space at the build cache's own path (or
+   `WorkRoot`, with no `BuildCache` set), read through the new `Disk`
+   field (`DiskProbe`, `FSDiskProbe` on linux via `statfs`), stays at or
+   above `r.buildCacheConfig`'s live `min_free_gb`; a reason naming the
+   path, the free space and the floor otherwise. A lease already running
+   is never touched by it — only a new one waits. `noteDiskGate` logs a
+   crossing alone, as `noteHostGate` does, and the gate's current reason
+   now also rides `Status.DiskGate` and a `DrainLines` line ("Disk:
+   ...; taking no new lease."), the first gate of this shape surfaced
+   through `mesh node status` rather than kept purely internal. A nil
+   `Disk` (the watcher off) or a floor read as 0 never gates.
