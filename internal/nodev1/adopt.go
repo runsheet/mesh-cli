@@ -39,10 +39,17 @@ import (
 // credentials pushed to that process's control socket and its node
 // socket's CONNECT forwarded onto the egress process's own
 // (forwardConnect, relaypod.go) -- beside Observe, Security and
-// Canary as before. A lease whose egress process has died since the
-// hand-off, or that refuses its new credentials, is still adopted:
-// it just runs with no egress tunnel from here on, logged, never
-// handed back over it alone. Its sessionproxy is not reattached:
+// Canary as before. A claimed egress process is noted in actor.json
+// (actor.NoteEgress) and held the same way a freshly started one is,
+// so a second crash -- the adopting node itself dying before it
+// releases -- still finds and stops it. A lease whose egress process
+// has died since the hand-off is still adopted with no egress tunnel,
+// logged, never handed back over it alone; one that is alive but
+// refuses the fresh credentials, or cannot be reached at all, is
+// stopped instead (stopUnclaimedEgress): Upgrade disowned it the
+// moment the hand-off was written (handoff.go), so nothing else is
+// left to claim or stop it (ADR-051 decision 4). Its sessionproxy is
+// not reattached:
 // rebuilding it means rebuilding the pod session itself, which
 // adoption does not do. A hand-off that cannot be adopted this way --
 // unreadable, no sidecar named, or the sidecar refuses the new
@@ -265,8 +272,10 @@ func (r *Runtime) adoptOne(ctx context.Context, id, dir string, st *handoffState
 			switch {
 			case egErr != nil:
 				r.logf("nodev1: lease %s: pushing fresh credentials to its egress process: %v; adopted with no egress tunnel", id, egErr)
+				stopUnclaimedEgress(r, id, st.EgressPID)
 			case !egRes.Replaced:
 				r.logf("nodev1: lease %s: its egress process refused its new credentials: %s; adopted with no egress tunnel", id, egRes.Refused)
+				stopUnclaimedEgress(r, id, st.EgressPID)
 			default:
 				node.Tunnel = forwardConnect(filepath.Join(filepath.Dir(st.EgressControl), egressNodeSocket), func(req *http.Request) bool { return egress.IsSpliceOnly(req.Context()) })
 			}
@@ -283,6 +292,7 @@ func (r *Runtime) adoptOne(ctx context.Context, id, dir string, st *handoffState
 	}
 	if node.Tunnel != nil {
 		r.setEgress(id, st.EgressPID, st.EgressControl)
+		a.NoteEgress(st.EgressPID, st.EgressControl)
 		a.Hold("the lease's egress process", func() error { return stopLeftoverEgress(st.EgressPID) })
 	}
 
@@ -341,6 +351,21 @@ func (r *Runtime) adoptOne(ctx context.Context, id, dir string, st *handoffState
 	a.Ended(end)
 	a.Reported()
 	r.settleThread(b, out.result.SessionID, end.Cause == meshapi.CauseParked)
+}
+
+// stopUnclaimedEgress stops a hand-off's egress process once adoptOne
+// has decided not to claim it -- confirmed alive (egressAlive already
+// checked) but refusing fresh credentials, or unreachable over its
+// control socket. Upgrade (handoff.go) disowns a lease's egress
+// process the moment its hand-off is written, whether or not adoption
+// goes on to succeed: from then on nothing but adoptOne's own Hold
+// (the success path, above) or this call stops it, so a process this
+// branch left alone would never be found by either process's
+// clean-up again (ADR-051 decision 4).
+func stopUnclaimedEgress(r *Runtime, id string, pid int) {
+	if err := stopLeftoverEgress(pid); err != nil {
+		r.logf("nodev1: lease %s: stopping its unclaimed egress process %d: %v", id, pid, err)
+	}
 }
 
 // restoreTurnLedger rebuilds a lease's turn ledger from its hand-off,
