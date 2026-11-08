@@ -191,7 +191,8 @@ type Runtime struct {
 	// BuildCache is the node's one Go build cache (GOCACHE), mounted
 	// read-write and identical across every tenant's leases, since it is
 	// keyed by content and safe to share; "" defaults to
-	// WorkRoot/build-cache at first use (cachemount.go).
+	// WorkRoot/build-cache (cachemount.go's buildCacheDir), pinned there
+	// by Run before the build-cache watcher starts.
 	BuildCache string
 	// CacheMountProbe, set, replaces probeCacheMountOnce's own check of
 	// whether the runtime's `--mount type=overlay` is refused
@@ -486,6 +487,8 @@ func (r *Runtime) Run(ctx context.Context) error {
 	if r.Pods != nil && r.Sandbox == nil {
 		r.Sandbox = r.Pods.Runtime
 	}
+	// before anything that may mount it or watch it starts
+	r.pinBuildCache()
 	r.relay = &gitrelay.Server{Upstream: r.GitUpstream, HTTP: r.GitHTTP, Audit: r.audit}
 	if err := r.relay.Start(ctx); err != nil {
 		return fmt.Errorf("nodev1: the git relay: %w", err)

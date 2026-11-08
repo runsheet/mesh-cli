@@ -62,10 +62,7 @@ func (r *Runtime) leaseCacheMounts(b *meshapi.Brief, leaseDir string) ([]sandbox
 		}
 	}
 
-	buildCache := r.BuildCache
-	if buildCache == "" {
-		buildCache = filepath.Join(r.WorkRoot, "build-cache")
-	}
+	buildCache := r.buildCacheDir()
 	if err := os.MkdirAll(buildCache, 0o700); err != nil {
 		r.logf("nodev1: lease %s: build cache: %v", b.LeaseID, err)
 	} else {
@@ -200,4 +197,16 @@ func (r *Runtime) realCacheMountProbe(ctx context.Context) (refused bool, err er
 		return false, fmt.Errorf("nodev1: cache mount probe: %w", err)
 	}
 	return false, nil
+}
+
+// buildCacheDir is the node's one Go build cache: BuildCache, else
+// WorkRoot/build-cache — the path every lease mounts as GOCACHE, and
+// the path Run pins BuildCache to before the build-cache watcher
+// starts, so its eviction and diskGate read the cache the leases
+// actually fill.
+func (r *Runtime) buildCacheDir() string {
+	if r.BuildCache != "" {
+		return r.BuildCache
+	}
+	return filepath.Join(r.WorkRoot, "build-cache")
 }

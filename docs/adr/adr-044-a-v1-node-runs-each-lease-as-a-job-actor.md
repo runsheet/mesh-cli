@@ -475,3 +475,18 @@ since died is not.
    alone in the scheduler, and its `--cache-trim`, `--cache-dir` and
    `--cache-max-gb` flags — is gone from `internal/nodev1` and the
    command (`TestNodeRunWiresBuildCacheWatcherByDefault`).
+5. **`Run` pins `BuildCache` to the cache the leases mount (2026-11-09).**
+   `mesh node run` sets no `BuildCache`, and only `leaseCacheMounts`
+   defaulted it — to `WorkRoot/build-cache`, locally — so the watcher
+   ran with `BuildCache` "" and `evictBuildCache` returned before
+   evicting anything: dl360's `~/.mesh/v1/build-cache` reached 456G
+   against a default cap near 175G with no eviction ever logged.
+   `diskGate` was live throughout (its floor read, free space read at
+   `WorkRoot`, the same filesystem). `Run` now calls `pinBuildCache`
+   before anything that may mount or watch the cache: `BuildCache` left
+   "" becomes `buildCacheDir()` (`WorkRoot/build-cache`, the one path
+   `leaseCacheMounts` mounts as `GOCACHE`) and is made. The watcher logs
+   once at its first read (`build cache: watching <path> every <poll>:
+   cap <n> GB, disk floor <n> GB`), and each eviction pass that removes
+   entries logs the bytes before and after and the cap
+   (`TestRunStartsTheBuildCacheWatcherOnTheMountedCache`).
