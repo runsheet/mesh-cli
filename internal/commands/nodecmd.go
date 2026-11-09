@@ -2145,95 +2145,26 @@ func init() {
 	_ = nodeStartCmd.Flags().MarkDeprecated("mode", "every node runs one session per job; drop --mode")
 	nodeStartCmd.Flags().BoolVar(&nodeUnattended, "unattended", false, "run sessions with --dangerously-skip-permissions (trusted machines only)")
 	nodeStartCmd.Flags().BoolVar(&nodeOnceFlag, "once", false, "one tick, then exit")
-	nodeModelCmd.Flags().StringVar(&nodeModelFlag, "default", "", "model for any kind that names none")
-	nodeModelCmd.Flags().StringVar(&nodeModelBuildFlag, "build", "", "model for build sessions")
-	nodeModelCmd.Flags().StringVar(&nodeModelEvaluateFlag, "evaluate", "", "model for evaluator sessions")
-	nodeModelCmd.Flags().StringVar(&nodeModelPlanFlag, "plan", "", "model for planner sessions")
-	nodeModelCmd.Flags().StringVar(&nodeModelResearchFlag, "research", "", "model for director (research) sessions")
-	nodeModelCmd.Flags().StringVar(&nodeModelRebaseFlag, "rebase", "", "model for rebase sessions")
 	nodeDrainCmd.Flags().DurationVar(&nodeDrainWait, "wait", 0, "hand back node_update what still runs after this long, then exit (default wait for every lease)")
 	nodeCmd.AddCommand(nodeLoginCmd, nodeRegisterCmd, nodeStartCmd, nodeStatusCmd, nodeDrainCmd, nodeUpgradeCmd, nodeLogoutCmd, nodeModelCmd)
 }
 
-// modelPrecedenceNote follows the table of `mesh node model`: the rows
-// are node.yaml's, and an item's own model comes before them.
-const modelPrecedenceNote = `
-build and rebase sessions run on the item's model, then its agent's, then
-node.yaml's build (or default). The evaluator runs on the stronger of the
-builder's model and sonnet. The planner runs on plan if set, else the
-strongest model configured (opus when none is).
-`
-
-// nodeModelCmd reads or writes the models in ~/.mesh/node.yaml, so a
-// node can be moved off a model without editing YAML or passing flags.
-// Drain the node (`mesh node drain`) for a change to take.
+// nodeModelCmd used to read and write the models in ~/.mesh/node.yaml
+// for the legacy node (which chose the model per kind of session before
+// each one started). A Mesh v1 node (`mesh node run`) runs each lease
+// on the model its job brief names (ADR-044): there is no node.yaml
+// table to show or set, so the command is message-only and touches
+// node.yaml not at all.
 var nodeModelCmd = &cobra.Command{
 	Use:   "model",
-	Short: "Show or set the model each kind of session runs on",
-	Long: `With no flags, prints the models this node uses. A flag sets one and
-saves it: an alias the CLI knows (opus, sonnet, haiku) or a full id
-(claude-opus-5). "" clears it back to the CLI's default.
-
-  mesh node model                                  # show
-  mesh node model --default opus                   # everything on Opus
-  mesh node model --plan sonnet --evaluate sonnet  # cheaper planning and review
-
-A flag on ` + "`mesh node start`" + ` wins over these for that run.`,
+	Short: "Where a v1 node's model comes from",
+	Long: `A Mesh v1 node (` + "`mesh node run`" + `) runs every job on the model its
+lease's job brief names — the platform's choice, sent with the job — never
+a model configured on this machine. There is no node.yaml model table left
+to show or set, and this command writes nothing to node.yaml.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		cfg, err := node.LoadConfig()
-		if err != nil {
-			return err
-		}
-		changed := false
-		for _, o := range []struct {
-			flag string
-			val  string
-			set  *string
-		}{
-			{"default", nodeModelFlag, &cfg.Models.Default},
-			{"build", nodeModelBuildFlag, &cfg.Models.Build},
-			{"evaluate", nodeModelEvaluateFlag, &cfg.Models.Evaluate},
-			{"plan", nodeModelPlanFlag, &cfg.Models.Plan},
-			{"research", nodeModelResearchFlag, &cfg.Models.Research},
-			{"rebase", nodeModelRebaseFlag, &cfg.Models.Rebase},
-		} {
-			if cmd.Flags().Changed(o.flag) {
-				*o.set = strings.TrimSpace(o.val)
-				changed = true
-			}
-		}
-		if changed {
-			if err := cfg.Save(); err != nil {
-				return err
-			}
-		}
-		shown := func(v string) string {
-			if v == "" {
-				return "(the CLI's default)"
-			}
-			return v
-		}
-		fmt.Printf("default   %s\n", shown(cfg.Models.Default))
-		for _, k := range []struct{ name, val string }{
-			{"build", cfg.Models.Build}, {"evaluate", cfg.Models.Evaluate},
-			{"plan", cfg.Models.Plan},
-			{"research", cfg.Models.Research}, {"rebase", cfg.Models.Rebase},
-		} {
-			switch {
-			case k.val != "":
-				fmt.Printf("%-9s %s\n", k.name, k.val)
-			case k.name == "plan":
-				// the planner runs on the strongest configured, not default
-				fmt.Printf("%-9s %s (the strongest configured)\n", k.name, cfg.Models.PlanModel())
-			default:
-				fmt.Printf("%-9s %s\n", k.name, shown(cfg.Models.Default))
-			}
-		}
-		fmt.Print(modelPrecedenceNote)
-		if changed {
-			fmt.Println("\nsaved; drain the node for it to take (mesh node drain): it finishes its sessions and its service starts it again")
-		}
+		fmt.Fprintln(cmd.OutOrStdout(), "a v1 node's model comes from the lease's job brief, not node.yaml: this command writes nothing to node.yaml")
 		return nil
 	},
 }
