@@ -333,6 +333,17 @@ type Runtime struct {
 	// it ends, holding the version it installed
 	updating bool
 	updated  chan string
+	// adoptScanned and adoptPending are the start-up hand-off adoption's
+	// own progress, apart from adoptHandoffs' synchronous "N of M" log
+	// line (adopt.go): adoptScanned is set once adoptHandoffs has read
+	// the leases directory and spawned one adoptOne goroutine per
+	// hand-off found, adoptPending the count of those still deciding.
+	// Status reads them to say whether adoption is still in flight,
+	// since a lease newly visible in leases is not by itself proof that
+	// every hand-off's adoption has finished (ADR-044's amendment, a v1
+	// node reports the adopted count only once adoption completes).
+	adoptScanned bool
+	adoptPending int
 }
 
 // running is one lease in flight.

@@ -881,3 +881,76 @@ func TestAdoptedLeaseSurvivesReleaseLeftovers(t *testing.T) {
 		return os.IsNotExist(err)
 	})
 }
+
+// Status's Adopting field tells a status read while some hand-off is
+// still being decided apart from one read once adoptHandoffs has
+// scanned and every adoptOne goroutine it spawned has decided --
+// reportAdoption (internal/commands/nodeupgrade.go) waits on exactly
+// this to report the count of leases the new process actually
+// adopted, not merely how many it set out to adopt.
+func TestStatusDistinguishesStillAdoptingFromAdoptionCompleteAtStart(t *testing.T) {
+	g, _ := actorRig(t, &stubSession{})
+
+	leaseID, brief := mintLease(t, g, func(b *meshapi.Brief) { b.FinishTool = "submit" })
+
+	sidecarDir := filepath.Join(t.TempDir(), "sidecar")
+	sidecar := startFakeSidecarControl(t, sidecarDir)
+	block := make(chan struct{})
+	sidecar.mu.Lock()
+	sidecar.block = block
+	sidecar.mu.Unlock()
+
+	dir := g.rt.leaseDir(leaseID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("making the lease directory: %v", err)
+	}
+	rec := actor.Record{LeaseID: leaseID, JobID: brief.JobID, Kind: brief.Kind, State: actor.Running, Since: time.Now(), Taken: time.Now(), PID: 1}
+	data, err := json.MarshalIndent(rec, "", "  ")
+	if err != nil {
+		t.Fatalf("marshalling actor.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, actor.FileName), data, 0o600); err != nil {
+		t.Fatalf("writing actor.json: %v", err)
+	}
+
+	writeHandoffFixture(t, g, leaseID, &handoffState{Brief: brief, SidecarDir: sidecarDir})
+
+	if st := g.rt.Status(); !st.Adopting {
+		t.Fatalf("status before adoptHandoffs has even scanned: %+v, want Adopting", st)
+	}
+
+	g.rt.adoptHandoffs(context.Background())
+
+	waitFor(t, "adoptOne's credential replacement to reach the sidecar", func() bool {
+		return len(sidecar.replacements()) > 0
+	})
+
+	if st := g.rt.Status(); !st.Adopting {
+		t.Fatalf("status while adoptOne is still deciding the hand-off: %+v, want Adopting", st)
+	}
+
+	close(block)
+
+	nodeSocket := filepath.Join(sidecarDir, relayNodeSocket)
+	waitFor(t, "the adopted lease's node socket", func() bool {
+		_, err := os.Stat(nodeSocket)
+		return err == nil
+	})
+	waitFor(t, "status to read adoption complete", func() bool {
+		return !g.rt.Status().Adopting
+	})
+
+	st := g.rt.Status()
+	if st.Adopting {
+		t.Fatalf("status once every hand-off has been decided: %+v, want not Adopting", st)
+	}
+	if len(st.Leases) != 1 || st.Leases[0].LeaseID != leaseID {
+		t.Fatalf("status's leases once adoption completed: %+v", st.Leases)
+	}
+
+	driveObserve(t, nodeSocket, "conform", `{"id":1,"method":"tools/call","params":{"name":"submit"}}`,
+		`{"id":1,"result":{"content":[{"type":"text","text":"{\"ok\":true}"}]}}`)
+	waitFor(t, "the adopted lease to finish", func() bool {
+		return len(g.fake.Calls("finish")) > 0
+	})
+}

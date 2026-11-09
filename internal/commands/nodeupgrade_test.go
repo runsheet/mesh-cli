@@ -10,10 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/node"
+	"projectmesh.io/mesh-cli/internal/nodev1"
 	"projectmesh.io/mesh-cli/internal/selfupdate"
 )
 
@@ -384,6 +387,82 @@ func TestV1ServiceSignalsANodeNoServiceRuns(t *testing.T) {
 	out.Reset()
 	if err := (v1Service{}).Restart(context.Background(), state, &out); err != nil || !strings.Contains(out.String(), "No Mesh v1 node is running") {
 		t.Fatalf("no node: %v, %q", err, out.String())
+	}
+}
+
+// syncBuf is a concurrency-safe io.Writer: u.run and the test read and
+// write it from different goroutines.
+type syncBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuf) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuf) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// After the restart, reportAdoption polls the new process's v1 Status
+// until adoption is no longer in flight — not merely until a new pid is
+// visible — before printing the adopted count and returning: a status
+// read while hand-offs are still being adopted must not be read as done.
+func TestNodeUpgradeReportsTheAdoptedCountOnlyAfterAdoptionCompletes(t *testing.T) {
+	noDrain(t)
+	u, _, _ := upgradeFixture(t)
+	out := &syncBuf{}
+	u.Out = out
+	u.V1AdoptPoll = 5 * time.Millisecond
+	u.V1AdoptTimeout = 5 * time.Second
+
+	before := nodev1.Status{PID: 111, Leases: []nodev1.LeaseStatus{
+		{LeaseID: "lse_a", JobID: "job_a", Adoptable: true},
+		{LeaseID: "lse_b", JobID: "job_b", Adoptable: true},
+	}}
+	var calls int32
+	var ready atomic.Bool
+	u.V1Status = func() (nodev1.Status, bool) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			return before, true
+		}
+		if !ready.Load() {
+			return nodev1.Status{PID: 222, Adopting: true}, true
+		}
+		return nodev1.Status{PID: 222, Adopting: false, Leases: before.Leases}, true
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- u.run(context.Background(), "", fakeBinary(t, "mesh v9.9.9"), false)
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf("run finished (%v) before adoption completed", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if strings.Contains(out.String(), "adopted") {
+		t.Fatalf("reported adoption before it completed:\n%s", out.String())
+	}
+
+	ready.Store(true)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("upgrade: %v\n%s", err, out.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run never returned once adoption completed")
+	}
+	if !strings.Contains(out.String(), "adopted 2 of 2 lease(s)") {
+		t.Fatalf("output:\n%s", out.String())
 	}
 }
 
