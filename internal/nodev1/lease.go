@@ -422,6 +422,10 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 
 	ladder := escalate.New(b.Harness.Model)
 	fin := &finishCapture{tool: b.FinishTool, learningsTool: b.LearningsTool, onFinish: mb.Finish}
+	// the lease's taint lockdown (taint.go, ADR-046's 2026-11 amendment):
+	// a tool answer marked result._meta["mesh/untrusted"] taints it, and
+	// its push and egress are refused for the rest of the lease
+	tnt := newTaintState(b.LeaseID, r.logf)
 	// run_suite's steps run in the lease's pod, never on a sandboxed
 	// node's host (podsuites.go)
 	suites := r.suiteRunner(b, pod)
@@ -453,7 +457,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		tb = newTimeBudget(ctx, time.Duration(m)*time.Minute, mb)
 		defer tb.Stop()
 	}
-	tools, rec := r.nodeTools(b, grant, workspace, tokens, ladder, mb, suites, pusher, leaseClock{ctx: ctx, began: began}, tb)
+	tools, rec := r.nodeTools(b, grant, workspace, tokens, ladder, mb, suites, pusher, leaseClock{ctx: ctx, began: began}, tb, tnt.Tainted)
 	hb := &sessionHandBack{}
 	tools = sl.nodeTools(append(tools, r.endTools(b, fin, hb, mb)...))
 	var (
@@ -466,7 +470,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		if gate != nil {
 			keep("the stop gate", func() error { gate.close(); return nil })
 		}
-		if servers, err = rs.open(ctx, tools, fin.observe, gate, account, sl, workspace); err != nil {
+		if servers, err = rs.open(ctx, tools, observeBoth(fin.observe, tnt.observe), gate, account, sl, workspace, tnt.Tainted); err != nil {
 			return outcome{err: fmt.Errorf("the lease's relay sidecar: %w", err), cause: context.Cause(ctx)}
 		}
 		if rs.egressCmd != nil && rs.egressCmd.Process != nil {
@@ -496,7 +500,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		lp.setLaneSocket(laneSock)
 	} else {
 		var closeProxy func()
-		servers, sock, closeProxy, err = r.openProxy(ctx, b, tokens, grant, tools, fin.observe, account, sl, ic)
+		servers, sock, closeProxy, err = r.openProxy(ctx, b, tokens, grant, tools, observeBoth(fin.observe, tnt.observe), account, sl, ic, tnt.Tainted)
 		if err != nil {
 			return outcome{err: fmt.Errorf("the lease's sessionproxy: %w", err), cause: context.Cause(ctx)}
 		}
@@ -645,7 +649,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 // brief's access names vendor APIs, the proxy's /latchkey/<vendor>/
 // route reaches Latchkey's proxy on the session token (wave 2.7). It
 // answers only once the socket does (waitListening).
-func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief, tokens *sessionTokens, grant *gitrelay.Grant, tools []mcptool.Tool, observe func(string, []byte, []byte), account *sessionAccount, sl *slots, ic *interception) (map[string]any, string, func(), error) {
+func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief, tokens *sessionTokens, grant *gitrelay.Grant, tools []mcptool.Tool, observe func(string, []byte, []byte), account *sessionAccount, sl *slots, ic *interception, tainted func() bool) (map[string]any, string, func(), error) {
 	ups := map[string]sessionproxy.Upstream{}
 	for _, s := range b.Servers {
 		if s.Name == "" || s.URL == "" {
@@ -696,7 +700,7 @@ func (r *Runtime) openProxy(ctx context.Context, b *meshapi.Brief, tokens *sessi
 		p.Tools, sl.proxy = sl.filter(), p
 	}
 	// the kind's egress: the relay is the session's only exit (egress.go)
-	tunnel := r.egressTunnel(b, ic)
+	tunnel := r.egressTunnel(b, ic, tainted)
 	if tunnel != nil {
 		// the harness always reaches the lease's model through the relay:
 		// every job is harnessed, so egress.model never closes the route

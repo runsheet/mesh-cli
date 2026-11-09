@@ -51,7 +51,7 @@ func TestNodeToolsSignWithTheSessionsSigstoreToken(t *testing.T) {
 
 	rt := &Runtime{Sigstore: &sigstore.Signer{FulcioURL: "http://fulcio.test", RekorURL: "http://rekor.test"}}
 	b := &meshapi.Brief{JobID: "job-1", LeaseID: "lease-1", LeaseN: 1, NodeTools: []string{nodetools.RunSuiteTool}}
-	_, rec := rt.nodeTools(b, nil, t.TempDir(), tokens, nil, nil, nil, nil, leaseClock{}, nil)
+	_, rec := rt.nodeTools(b, nil, t.TempDir(), tokens, nil, nil, nil, nil, leaseClock{}, nil, nil)
 	if rec == nil || rec.Signer == nil || rec.Signer.Token == nil {
 		t.Fatal("the lease's recorder has no signing token")
 	}

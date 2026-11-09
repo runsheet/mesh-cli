@@ -168,6 +168,7 @@ const (
 	RuleDial     = "egress.dial"     // the host could not be reached on a public address
 	RuleInternal = "egress.internal" // the relay could not open a tunnel
 	RuleNone     = "egress.none"     // the session has no egress at all
+	RuleTainted  = "egress.tainted"  // the lease is tainted by untrusted content
 )
 
 // rule is the rule that allows host:port, which Allow has allowed.
@@ -237,6 +238,11 @@ type Tunnel struct {
 	// HelloTimeout bounds the wait for the ClientHello after the tunnel
 	// opens; 10 s when zero.
 	HelloTimeout time.Duration
+	// Tainted says the lease read untrusted content this session and so
+	// lost its egress for the rest of the lease (taint.go): every host
+	// is refused with RuleTainted, whatever the Policy says. Nil, or
+	// answering false, changes nothing.
+	Tainted func() bool
 
 	// CA and Rules terminate TLS for the hosts a rule names, which the
 	// Policy allows (intercept.go); with no CA, or no rule naming the
@@ -313,6 +319,11 @@ func (t *Tunnel) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodConnect {
 		refused(RuleHTTPS, "only HTTPS, by CONNECT to port 443, leaves the relay")
 		Refuse(w, "not_https", call.Refused)
+		return
+	}
+	if t.Tainted != nil && t.Tainted() {
+		refused(RuleTainted, "the lease is tainted by untrusted content it read; its egress is refused for the rest of the lease")
+		Refuse(w, "tainted", call.Refused)
 		return
 	}
 	// a raw host:port is the relay sidecar's own dial to a credential's
