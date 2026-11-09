@@ -312,11 +312,15 @@ func (u *nodeUpgrade) run(ctx context.Context, want, binary string, force bool) 
 }
 
 // reportAdoption polls V1Status until the restarted process has
-// published a status of its own (a different pid than beforePID) or
-// V1AdoptTimeout elapses, then prints how many of the adoptableBefore
-// leases the new process's hand-off adoption actually picked up
-// (adopt.go's adoptOne); fewer than expected, or a timeout with no new
-// status ever seen, is reported as a failure, not silently.
+// published a status of its own (a different pid than beforePID) whose
+// own start-up hand-off adoption has finished deciding every lease it
+// found (!st.Adopting) or V1AdoptTimeout elapses, then prints how many
+// of the adoptableBefore leases the new process's hand-off adoption
+// actually picked up (adopt.go's adoptOne); fewer than expected, or a
+// timeout with no new status ever seen complete, is reported as a
+// failure, not silently. A changed pid alone is not enough: adoptOne
+// runs its leases' adoption on goroutines that can still be deciding
+// well after the new process's first status is published.
 func (u *nodeUpgrade) reportAdoption(ctx context.Context, beforePID, adoptableBefore int) error {
 	poll := u.V1AdoptPoll
 	if poll <= 0 {
@@ -328,7 +332,7 @@ func (u *nodeUpgrade) reportAdoption(ctx context.Context, beforePID, adoptableBe
 	}
 	deadline := time.Now().Add(timeout)
 	for {
-		if st, ok := u.V1Status(); ok && st.PID != beforePID {
+		if st, ok := u.V1Status(); ok && st.PID != beforePID && !st.Adopting {
 			adopted := len(st.Leases)
 			fmt.Fprintf(u.Out, "The new process (pid %d) adopted %d of %d lease(s) left running.\n", st.PID, adopted, adoptableBefore)
 			if adopted < adoptableBefore {

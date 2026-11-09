@@ -48,7 +48,16 @@ type Status struct {
 	HandBackAt  *time.Time `json:"hand_back_at,omitempty"`
 	// DiskGate is the disk gate's current reason (diskgate.go), "" when
 	// the node takes leases freely.
-	DiskGate string        `json:"disk_gate,omitempty"`
+	DiskGate string `json:"disk_gate,omitempty"`
+	// Adopting is whether the node's start-up hand-off adoption
+	// (adopt.go's adoptHandoffs/adoptOne) is still in flight: true from
+	// before adoptHandoffs has read the leases directory, and while any
+	// hand-off it spawned has not yet been adopted or handed back; false
+	// once every one has been decided (ADR-044's amendment, the node
+	// reports the adopted count only once adoption completes). A lease
+	// already visible in Leases is not by itself proof adoption is done
+	// -- adoptOne registers it well before it finishes deciding.
+	Adopting bool          `json:"adopting,omitempty"`
 	Leases   []LeaseStatus `json:"leases"`
 	At       time.Time     `json:"at"`
 }
@@ -292,7 +301,8 @@ func (r *Runtime) Status() Status {
 	s := Status{
 		PID: os.Getpid(), NodeID: r.nodeID, Name: r.Node.Name, Version: r.Node.Version,
 		Draining: r.drain, DrainReason: r.drainReason, DiskGate: r.diskGateReason,
-		Leases: []LeaseStatus{}, At: time.Now().UTC(),
+		Adopting: r.Actors && (!r.adoptScanned || r.adoptPending > 0),
+		Leases:   []LeaseStatus{}, At: time.Now().UTC(),
 	}
 	if !r.drainSince.IsZero() {
 		t := r.drainSince.UTC()

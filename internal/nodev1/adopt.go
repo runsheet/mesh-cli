@@ -83,6 +83,7 @@ func (r *Runtime) adoptHandoffs(ctx context.Context) map[string]bool {
 		if !os.IsNotExist(err) {
 			r.logf("nodev1: reading %s for hand-offs to adopt: %v", root, err)
 		}
+		r.finishAdoptScan(0)
 		return adopting
 	}
 	for _, e := range entries {
@@ -110,7 +111,33 @@ func (r *Runtime) adoptHandoffs(ctx context.Context) map[string]bool {
 		adopting[id] = true
 		go r.adoptOne(ctx, id, dir, &st)
 	}
+	r.finishAdoptScan(len(adopting))
 	return adopting
+}
+
+// finishAdoptScan marks adoptHandoffs' synchronous scan-and-spawn phase
+// done, n the hand-offs it is adopting (0 when it found none, or could
+// not read the leases directory at all): until this runs, Status reads
+// adoption as still in flight, since a lease newly visible in leases is
+// not by itself proof that every hand-off has been picked up yet.
+func (r *Runtime) finishAdoptScan(n int) {
+	r.mu.Lock()
+	r.adoptScanned = true
+	r.adoptPending = n
+	r.mu.Unlock()
+	r.publishStatus()
+}
+
+// adoptionDecided marks one hand-off's adoption as decided, whether it
+// was adopted or handed back; Status reads adoption as complete once
+// every one adoptHandoffs spawned has reached this.
+func (r *Runtime) adoptionDecided() {
+	r.mu.Lock()
+	if r.adoptPending > 0 {
+		r.adoptPending--
+	}
+	r.mu.Unlock()
+	r.publishStatus()
 }
 
 // cannotAdopt hands a hand-off back node_update and removes its job
@@ -127,6 +154,9 @@ func (r *Runtime) cannotAdopt(id, dir, reason string) {
 // lease's context to end, then report and release) once the lease's
 // session, its sidecar's credentials and its node socket are in place.
 func (r *Runtime) adoptOne(ctx context.Context, id, dir string, st *handoffState) {
+	var decideOnce sync.Once
+	decide := func() { decideOnce.Do(r.adoptionDecided) }
+	defer decide()
 	b := st.Brief
 	if st.SidecarDir == "" {
 		r.cannotAdopt(id, dir, "its hand-off named no relay sidecar to adopt")
@@ -313,6 +343,7 @@ func (r *Runtime) adoptOne(ctx context.Context, id, dir string, st *handoffState
 		a.Hold("room", func() error { room.Release(); return nil })
 	}
 	r.logf("nodev1: lease %s of job %s (%s) adopted at start", id, b.JobID, b.Kind)
+	decide()
 
 	renewDone := make(chan struct{})
 	go func() {
