@@ -1,6 +1,7 @@
 package nodev1
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -108,4 +109,53 @@ func (r *Runtime) supervisor() *supervisor.Supervisor {
 	}
 	s.Egress = egressRuntime{}
 	return s
+}
+
+// WatchSupervisor is the node.yaml supervisor-mode watcher (ADR-044
+// amendment, 2026-11-09): it rereads node.yaml's `v1.supervisor` with
+// read every poll, and at once whenever reload fires, calling the
+// running supervisor's SetMode whenever what it read differs from the
+// mode last applied — so an operator who edits node.yaml and signals
+// the process (wired to SIGHUP by `mesh node run`, the same signal
+// WatchCapacity answers) changes the supervisor's mode without a
+// restart: the very next Look or Reconcile reads it
+// (supervisor.Supervisor.SetMode). A read that errors or finds no key
+// changes nothing. With no supervisor running at start (SupervisorMode
+// was off, or Actors is off) r.sup is nil and the watcher does
+// nothing: a supervisor cannot be switched on from off this way, only
+// retuned while it already runs.
+func (r *Runtime) WatchSupervisor(ctx context.Context, read func() (supervisor.Mode, bool, error), poll time.Duration, reload <-chan struct{}) {
+	if read == nil || r.sup == nil {
+		return
+	}
+	if poll <= 0 {
+		poll = time.Minute
+	}
+	last := r.SupervisorMode
+	t := time.NewTicker(poll)
+	defer t.Stop()
+	apply := func() {
+		m, ok, err := read()
+		if err != nil {
+			r.logf("nodev1: supervisor: node.yaml: %v", err)
+			return
+		}
+		if !ok || m == last {
+			return
+		}
+		last = m
+		r.sup.SetMode(m)
+		r.logf("nodev1: supervisor: mode now %s", m)
+	}
+	apply()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			apply()
+		case <-reload:
+			apply()
+		}
+	}
 }

@@ -220,6 +220,22 @@ type Runtime struct {
 	SuperviseEvery time.Duration
 	ReconcileEvery time.Duration
 
+	// SupervisorConfigPath, when set, is node.yaml's path: the
+	// supervisor-mode watcher (ADR-044 amendment, 2026-11-09) rereads
+	// its `v1.supervisor` key every SupervisorPoll and on
+	// SupervisorReload, and calls the running supervisor's SetMode on
+	// what it reads when it differs from the mode last applied. Off
+	// (no watcher) when empty; a no-op with no supervisor already
+	// running (SupervisorMode was off, or Actors is off) since there
+	// is then nothing to retune.
+	SupervisorConfigPath string
+	// SupervisorPoll is how often the watcher rereads
+	// SupervisorConfigPath; a minute when zero.
+	SupervisorPoll time.Duration
+	// SupervisorReload, when set, wakes the watcher for an immediate
+	// reread, as CapacityReload does; nil runs the poll alone.
+	SupervisorReload <-chan struct{}
+
 	// CapacityConfigPath, when set, is node.yaml's path: the capacity
 	// watcher (ADR-044 amendment, 2026-11-03) rereads its `v1.capacity`
 	// section every CapacityPoll and on CapacityReload, and calls
@@ -286,7 +302,12 @@ type Runtime struct {
 	nodeID  string
 	relay   *gitrelay.Server
 	mirrors *resources.Mirrors
-	mu      sync.Mutex
+	// sup is the running supervisor (supervisor() built it, when
+	// Actors and SupervisorMode made one); set once in Run, before
+	// WatchSupervisor's goroutine starts, so it needs no lock to read
+	// there. Nil when no supervisor runs.
+	sup *supervisor.Supervisor
+	mu  sync.Mutex
 	// leases are the leases in flight, each its own record (the job
 	// actor's, under --actors): the node keeps no other in-flight state
 	// of a lease (ADR-044; guard_test.go)
@@ -551,10 +572,15 @@ func (r *Runtime) Run(ctx context.Context) error {
 	go r.heartbeats(hbCtx, every)
 	go r.events(hbCtx)
 	if s := r.supervisor(); s != nil {
+		r.sup = s
 		go s.Run(hbCtx)
 	}
 	r.startResources(hbCtx)
 	go r.handBackWhenWaitIsUp(hbCtx)
+	if r.SupervisorConfigPath != "" {
+		path := r.SupervisorConfigPath
+		go r.WatchSupervisor(hbCtx, func() (supervisor.Mode, bool, error) { return ReadSupervisorConfig(path) }, r.SupervisorPoll, r.SupervisorReload)
+	}
 	if r.CapacityConfigPath != "" {
 		path := r.CapacityConfigPath
 		go r.WatchCapacity(hbCtx, func() (meshapi.Capacity, bool, error) { return ReadCapacityConfig(path) }, r.CapacityPoll, r.CapacityReload)
