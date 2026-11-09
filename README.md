@@ -462,17 +462,14 @@ node's one id and `contract: owner`, from the platform's answer; on
 the legacy path, the node id derived from `(org, slug)` — registering
 twice converges on the same node — org login and id, slug and
 `contract: per-org`. Either way node.yaml keeps the slug and the
-capacity too. `mesh node status` heartbeats once and lists the org's
-nodes, above a line naming the credential this machine runs on — the
-machine, its org and operator, and when its access token is next
-refreshed, or the rs_* console token it is still on.
+capacity too.
 
-That heartbeat and node id are the legacy gateway client's own — what
-`mesh mcp`'s `mesh_join` claims items under (see
-[Who owns a node](#who-owns-a-node) above) — not anything `mesh node
-run` claims or reports on. For the node actually running here, `mesh
-node status` reports the Mesh v1 node instead (see Node above);
-AGENTS.md has its shape.
+The node id and owner contract above are the legacy gateway client's
+own — what `mesh mcp`'s `mesh_join` claims items under (see
+[Who owns a node](#who-owns-a-node) above), not anything `mesh node
+run` claims or reports on. `mesh node status` reports only the Mesh
+v1 node running on this machine (see Node above); AGENTS.md has its
+shape.
 
 ### Node image
 
