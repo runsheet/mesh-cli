@@ -581,6 +581,7 @@ value, so it left unseen.
 
 `TestFindKnownSecret` (`internal/egress`) checks the three shapes and a
 clean miss; `TestSecretSeen` (`internal/nodev1`) each of the four paths,
-one dlp report naming the shape and the lease's exposure nil;
+the secret-seen callback told once naming the shape and host, and the
+lease's exposure nil;
 `TestCanaryExposureIsUnchangedBySecretSeen` that a lease's own value is
 still an exposure that fails the lease `credential_exposed`.
