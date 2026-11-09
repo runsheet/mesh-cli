@@ -307,7 +307,7 @@ type Runtime struct {
 	// WatchSupervisor's goroutine starts, so it needs no lock to read
 	// there. Nil when no supervisor runs.
 	sup *supervisor.Supervisor
-	mu      sync.Mutex
+	mu  sync.Mutex
 	// leases are the leases in flight, each its own record (the job
 	// actor's, under --actors): the node keeps no other in-flight state
 	// of a lease (ADR-044; guard_test.go)
