@@ -126,6 +126,7 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 		capacityReload := make(chan struct{}, 1)
 		sandboxLimitsReload := make(chan struct{}, 1)
 		buildCacheReload := make(chan struct{}, 1)
+		supervisorReload := make(chan struct{}, 1)
 		rt := &nodev1.Runtime{
 			API: &meshapi.Client{BaseURL: meshAPIURL(), Token: src.Token},
 			Node: meshapi.RegisterRequest{
@@ -143,6 +144,11 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 			// the build-cache watcher (cachewatch.go) runs on every node
 			BuildCacheConfigPath: capPath,
 			BuildCacheReload:     buildCacheReload,
+			// SupervisorConfigPath names the same node.yaml; the watcher
+			// itself (supervise.go) only starts once the supervisor
+			// already runs (--actors with --supervisor not off).
+			SupervisorConfigPath: capPath,
+			SupervisorReload:     supervisorReload,
 			SigningKey:           key,
 			Sigstore:             nodeRunSigstore(logger),
 			Connect:              connect,
@@ -247,6 +253,10 @@ runs, and finish or hand back. The legacy runtime is ` + "`mesh node start`" + `
 			}
 			select {
 			case buildCacheReload <- struct{}{}:
+			default:
+			}
+			select {
+			case supervisorReload <- struct{}{}:
 			default:
 			}
 		})()
@@ -477,7 +487,7 @@ func init() {
 	f.BoolVar(&nodeRunScheduler, "actors-scheduler", false, "the scheduler owns the node's capacity (ADR-044): leases hold their resources as scheduler leases, the node reports what is free on each take and runs up to --slots leases side by side (--slots 0: as many as its CPUs and memory hold)")
 	f.IntVar(&nodeRunAccountSlots, "account-slots", 0, "with --actors-scheduler, sessions at once per model account (0 is unbounded)")
 	f.BoolVar(&nodeRunActors, "actors", false, "run each lease as a job actor (ADR-044): it owns the lease's directory, room, grant and proxy, writes actor.json before each state change, releases everything however the lease ends, and hands back pod_killed a session killed from outside; a restarted node releases the actors it left")
-	f.StringVar(&nodeRunSupervisor, "supervisor", "off", "with --actors, the supervisor (ADR-044): off; warn (or report) logs quiet sessions and what the minute's reconcile finds; cancel escalates a quiet session, then hands it back stalled, and removes pods, job directories and grants no actor holds")
+	f.StringVar(&nodeRunSupervisor, "supervisor", "off", "with --actors, the supervisor (ADR-044): off; warn (or report) logs quiet sessions and what the minute's reconcile finds; cancel escalates a quiet session, then hands it back stalled, and removes pods, job directories and grants no actor holds; tidy removes pods, job directories and grants no actor holds like cancel, but never escalates or stalls a quiet session, as warn does not either. Once running, node.yaml's `v1.supervisor` key is read live (ADR-044 amendment, 2026-11-09): editing it and sending SIGHUP (as `mesh node set` does for capacity) changes the mode in force on the next Look or Reconcile, with no restart")
 	f.DurationVar(&nodeRunQuietAfter, "quiet-after", 0, "with --supervisor, how long a session may show no progress before it is escalated, and again before it is stopped (default 15m)")
 	f.BoolVar(&nodeRunSelfUpdate, "self-update", false, "keep the node on the newest release: drain, hand back node_update what still runs after 30 minutes, install the verified release and exit for the service manager to restart it")
 	f.BoolVar(&nodeRunRelaySidecar, "relay-sidecar", false, "with --sandbox, run each lease's relay as a sidecar in its pod on the lease's credentials alone, the pod with no network but its loopback (projectmesh-io/api ADR 001 amendment \"relay sidecar\"); defaults on with --sandbox, since a lease with no sidecar cannot be adopted across a restart -- pass --relay-sidecar=false to run one unadoptable")

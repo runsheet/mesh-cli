@@ -66,7 +66,7 @@ Each piece is a PR behind a `mesh node run` flag, off by default:
 |---|---|
 | 3.1 scheduler and the leases ledger | `--actors-scheduler` (with `--account-slots`) |
 | 3.2 job actor, `actor.json`, panic recovery, `pod_killed` | `--actors` |
-| 3.3 supervisor liveness and reconcile | `--supervisor=off\|warn\|cancel` |
+| 3.3 supervisor liveness and reconcile | `--supervisor=off\|warn\|cancel\|tidy` (live via node.yaml's `v1.supervisor`, amendment 2026-11-09) |
 | 3.4 resource actors | `--self-update` (`--cache-trim` retired: the build-cache watcher runs by default, amendment 2026-11-08) |
 | 3.9 guard test | none |
 | the lease's pod (amendment below) | `--sandbox` (with `--actors`) |
@@ -517,3 +517,55 @@ new lease on a binary it was about to lose.
    other: both are unconditional, since the swap affects both regardless
    of which kind is running, and a `--api` flag would only ask the
    operator something the command can find out for itself.
+
+## Amendment, 2026-11-09: tidy mode, and the supervisor's mode is a live node.yaml setting
+
+`--supervisor` has carried a fourth mode, `tidy`, since 2026-11-03
+(`internal/supervisor/supervisor.go`'s `ParseMode`, `Look` and
+`Reconcile`), but it was never written up here, and every mode could
+only be set at `mesh node run`'s start — changing it meant restarting
+the node and re-adopting every lease.
+
+1. **`tidy` reconciles like `cancel` but never escalates or stalls, like
+   `warn`.** `Reconcile`'s `act := mode == Cancel || mode == Tidy`: a pod
+   with no actor, a pod running only a sidecar, an orphaned job directory
+   and a relay grant no actor holds are removed exactly as `cancel`
+   removes them. `Look`'s escalate/stall ladder runs only `mode ==
+   Cancel`; `tidy`, like `warn`, only logs what it would have done
+   ("it would be stopped stalled") and leaves the lease running. Tidy is
+   for a node whose disk and pods need sweeping without any risk to a
+   session that is merely slow to report progress.
+2. **`v1.supervisor` in node.yaml is read live, with no restart**
+   (`internal/nodev1/supervisorconfig.go`, `supervise.go`'s
+   `WatchSupervisor`). `ReadSupervisorConfig(path)` parses the same
+   `off`/`warn`/`report`/`cancel`/`tidy` names `ParseMode` does; the key
+   left out, or the file not existing yet, changes nothing. `Runtime.sup`
+   keeps the one `*supervisor.Supervisor` `Run` built from
+   `SupervisorMode` at start (set once, before `WatchSupervisor`'s
+   goroutine starts, so it needs no lock there); the watcher calls its
+   `SetMode` whenever a poll or a reload reads a mode that differs from
+   the one last applied, and the very next `Look` or `Reconcile` runs on
+   it. A supervisor that was off at start stays off: `Runtime.sup` is nil
+   then, and the watcher does nothing — this turns a running supervisor's
+   mode up or down, it does not switch one on.
+3. **`mesh node run`'s `SupervisorConfigPath`/`SupervisorReload`** name
+   the same node.yaml and the same reload channel the capacity, sandbox
+   limits and build-cache watchers already share (`internal/commands/noderun.go`):
+   editing node.yaml's `v1.supervisor` and sending the process SIGHUP —
+   `mesh node set`'s signal, disambiguated from `mesh node upgrade
+   --api v1`'s restart-and-adopt by the same `node.upgrade-ask` marker
+   those watchers already rely on — changes the mode in force without
+   ending or adopting any lease. The `--supervisor` flag's default
+   (`off`) is unchanged; node.yaml's key only retunes a supervisor that
+   flag already started.
+4. **`TestTheSupervisorsModeIsReadLiveFromNodeYAML`**
+   (`internal/nodev1/supervise_test.go`) runs it end to end on
+   `actorRig`: starting in `warn` with an orphan pod and job directory
+   standing and a live lease whose session stays quiet, it asserts
+   nothing is removed and the lease is never escalated while still in
+   `warn`; it then rewrites node.yaml's `v1.supervisor` to `tidy` and
+   asserts the very next reconcile removes the orphan pod and directory
+   while the live lease's own directory and pod are untouched, the
+   `Runtime.Run` call never returns (no restart), and — even once the
+   lease has gone quiet past twice `QuietAfter` — its session is still
+   neither escalated nor handed back.
