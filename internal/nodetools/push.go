@@ -87,6 +87,11 @@ type Push struct {
 	// since a moment, "" when there is none.
 	Refusal  func(since time.Time) string
 	Recorder *Recorder
+	// Tainted says the lease read untrusted content this session and so
+	// lost its push for the rest of the lease (taint.go): a call is
+	// refused at once, before Grant or Pusher is ever touched. Nil, or
+	// answering false, changes nothing.
+	Tainted func() bool
 }
 
 // Tool is push {ref?, from?, lease?}.
@@ -152,6 +157,9 @@ func leaseArg(v any) (string, error) {
 }
 
 func (p *Push) call(ctx context.Context, args map[string]any) (string, error) {
+	if p.Tainted != nil && p.Tainted() {
+		return "", errors.New("this lease is tainted by untrusted content it read; push is refused for the rest of the lease")
+	}
 	if (p.Grant == nil && p.Pusher == nil) || p.Repo == "" {
 		return "", errors.New("this job has no repository to push to")
 	}

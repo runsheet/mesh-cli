@@ -36,19 +36,22 @@ import (
 func tenantHosts(*meshapi.Brief) []string { return nil }
 
 // egressTunnel is the lease's tunnel under its egress, nil when the kind
-// declares none.
-func (r *Runtime) egressTunnel(b *meshapi.Brief, ic *interception) *egress.Tunnel {
+// declares none. tainted, when set, is the lease's taint lockdown
+// (taint.go): once it answers true the tunnel refuses every host for
+// the rest of the lease (ADR-046's 2026-11 amendment).
+func (r *Runtime) egressTunnel(b *meshapi.Brief, ic *interception, tainted func() bool) *egress.Tunnel {
 	if b.Egress == nil {
 		return nil
 	}
 	// each request is reported (security.go)
 	report := r.egressReporter(b.LeaseID)
 	t := &egress.Tunnel{
-		Policy: egress.NewPolicy(b.Egress.Hosts, tenantHosts(b), nil),
-		Dial:   r.EgressDial,
-		Logf:   r.logf,
-		Audit:  r.tunnelAudit(b.LeaseID, "egress", report),
-		Done:   report,
+		Policy:  egress.NewPolicy(b.Egress.Hosts, tenantHosts(b), nil),
+		Dial:    r.EgressDial,
+		Logf:    r.logf,
+		Audit:   r.tunnelAudit(b.LeaseID, "egress", report),
+		Done:    report,
+		Tainted: tainted,
 	}
 	// the hosts the lease's rules terminate (intercept.go)
 	ic.install(r, b.LeaseID, t)

@@ -33,7 +33,11 @@ import (
 // clock is the lease's: its ctx, in which a run_suite run goes on past
 // the call that started it, and when it began, from which a validation
 // is held to its repository's budget (ADR-049).
-func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace string, tokens *sessionTokens, ladder *escalate.Ladder, mb *Mailbox, suites nodetools.SuiteRunner, pusher nodetools.Pusher, clock leaseClock) ([]mcptool.Tool, *nodetools.Recorder) {
+//
+// tainted, set, is the lease's taint lockdown (taint.go): once it
+// answers true, push is refused for the rest of the lease (ADR-046's
+// 2026-11 amendment).
+func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace string, tokens *sessionTokens, ladder *escalate.Ladder, mb *Mailbox, suites nodetools.SuiteRunner, pusher nodetools.Pusher, clock leaseClock, tainted func() bool) ([]mcptool.Tool, *nodetools.Recorder) {
 	if len(b.NodeTools) == 0 {
 		return nil, nil
 	}
@@ -63,7 +67,7 @@ func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace s
 				pushTo = b.Code.PushTo
 			}
 			p := &nodetools.Push{Grant: g, Pusher: pusher, Repo: repo, Workspace: workspace, Recorder: rec, PushTo: pushTo,
-				Refusal: func(since time.Time) string { return r.refusalSince(b.LeaseID, since) }}
+				Refusal: func(since time.Time) string { return r.refusalSince(b.LeaseID, since) }, Tainted: tainted}
 			out = append(out, p.Tool())
 		case nodetools.RunSuiteTool:
 			out = append(out, (&nodetools.RunSuite{Workspace: workspace, Recorder: rec, Run: suites,

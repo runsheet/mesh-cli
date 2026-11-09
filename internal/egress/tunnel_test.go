@@ -167,6 +167,39 @@ func TestPolicyIsTheKindsHostsNarrowedByTheTenantPlusFixed(t *testing.T) {
 	}
 }
 
+// A tainted tunnel refuses every host, whatever the policy allows, and
+// says RuleTainted; Tainted answering false or left nil changes
+// nothing.
+func TestTunnel_Tainted(t *testing.T) {
+	g := newRig(t, NewPolicy([]string{"proxy.golang.org"}, nil, nil))
+	g.t.Tainted = func() bool { return true }
+	for _, u := range []string{"https://proxy.golang.org/x", "https://registry.npmjs.org/left-pad"} {
+		if body, err := g.get(u); err == nil || !strings.Contains(err.Error(), "Forbidden") {
+			t.Fatalf("a tainted tunnel reached %s: %q %v", u, body, err)
+		}
+	}
+	calls := g.audited()
+	if len(calls) != 2 {
+		t.Fatalf("audit %+v", calls)
+	}
+	for _, c := range calls {
+		if c.Allowed || c.Rule != RuleTainted || !strings.Contains(c.Refused, "tainted") {
+			t.Fatalf("call %+v", c)
+		}
+	}
+
+	untainted := newRig(t, NewPolicy([]string{"proxy.golang.org"}, nil, nil))
+	untainted.t.Tainted = func() bool { return false }
+	if body, err := untainted.get("https://proxy.golang.org/x"); err != nil || body != "reached proxy.golang.org" {
+		t.Fatalf("Tainted answering false refused: %q %v", body, err)
+	}
+
+	nilTainted := newRig(t, NewPolicy([]string{"proxy.golang.org"}, nil, nil))
+	if body, err := nilTainted.get("https://proxy.golang.org/x"); err != nil || body != "reached proxy.golang.org" {
+		t.Fatalf("a nil Tainted refused: %q %v", body, err)
+	}
+}
+
 // publicDial never reaches a private, loopback or link-local address.
 func TestPublicIPRefusesPrivateRanges(t *testing.T) {
 	for _, a := range []string{"10.0.0.1", "192.168.1.1", "172.16.0.1", "127.0.0.1", "169.254.1.1", "100.64.0.1", "::1", "fe80::1", "fd00::1", "0.0.0.0"} {

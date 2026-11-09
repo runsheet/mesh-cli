@@ -161,8 +161,11 @@ func (rs *relaySidecar) pusher() nodetools.Pusher {
 // in the pod and hands it its credentials, and answers the session's MCP
 // servers as the pod reaches them (each through the proxy shim, on the
 // sidecar's loopback). workspace is the lease's checkout, which the
-// sidecar mounts read-only to prove a push's fast-forward.
-func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe func(string, []byte, []byte), gate *stopGate, account *sessionAccount, sl *slots, workspace string) (map[string]any, error) {
+// sidecar mounts read-only to prove a push's fast-forward. tainted, set,
+// is the lease's taint lockdown (taint.go): once it answers true the
+// sidecar's tunnel refuses every host for the rest of the lease
+// (ADR-046's 2026-11 amendment).
+func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe func(string, []byte, []byte), gate *stopGate, account *sessionAccount, sl *slots, workspace string, tainted func() bool) (map[string]any, error) {
 	r, b := rs.r, rs.b
 	// the node's side: node tools, the model forwarder, the stop gate,
 	// renewal, AccessRecords, the tunnel
@@ -204,7 +207,8 @@ func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe 
 				audit(c)
 			}
 		},
-		Done: report,
+		Done:    report,
+		Tainted: tainted,
 	}
 	rs.ic.install(r, b.LeaseID, rs.tunnel)
 	rs.node = &relaysidecar.Node{
