@@ -540,3 +540,47 @@ speaks the wire protocol on.
    with no TLS support would, so the wire protocol's bytes are never
    decrypted and re-encrypted by the relay; only the login step is its
    own.
+
+## Amendment 2026-11-02: a well-known secret shape is refused, not only an injected value (mesh-specs gap 28 item 5)
+
+The canary scan, on the relay's routes and in a push's pack, looked
+only for a value the relay itself injected. A secret the session found
+or was handed some other way never crossed the relay as an injected
+value, so it left unseen.
+
+1. **Three shapes, wherever the canary looks.** `egress.FindKnownSecret`
+   recognises an AWS access key id (`(?:AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}`),
+   a GitHub token (`gh[opsur]_[0-9A-Za-z]{36,}`) and a PEM private-key
+   header (`-----BEGIN … PRIVATE KEY-----`), labelled
+   `secret:aws_access_key_id`, `secret:github_token` and
+   `secret:pem_private_key`. It runs after the lease's own values on each
+   of the canary's paths: `injectedValues.Scan` (an MCP or vendor API
+   call, and a git push's pack through `Grant.SetScan`), `Body` (a
+   tunnelled request's body as it streams, its window held at no less
+   than `egress.MaxKnownSecretLen`, 80 bytes, so a shape split across
+   two reads is still found) and `inspectModel` (a model request's body,
+   held whole). A lease's own value is still looked for first and is
+   still an exposure.
+2. **Refused and reported, never an exposure.** A shape found is refused
+   with `egress.CodeSecretSeen`, `secret_seen: the call carried a
+   <label>` (a streamed body cut short as an injected value's is), logged
+   `a <label> was seen in <where>; refused, not an injected value`
+   (`injectedValues.secretSeen`), and handed to the lease's
+   `onSecretSeen` callback, `Runtime.reportSecretSeen`: one `dlp`
+   SecurityReport, verdict deny, its rule the label and its host the
+   call's (a bare host, else none), never the value. Unlike an injected
+   value it never calls `expose`: `exposure()` stays nil, `onExposed`
+   never fires, the lease is not failed `credential_exposed` and Latchkey
+   is not told — the shape was never a credential the job carried, so
+   there is nothing to mark exposed or rotate. The session is refused
+   that one call and runs on.
+3. **One callback, told apart by label.** `Body`'s scan carries both
+   kinds of finding through one `found` callback; `egress.IsKnownSecretLabel`
+   (the `secret:` prefix, which no injected value's ref carries) sends a
+   shape to `secretSeen` and anything else to `expose`.
+
+`TestFindKnownSecret` (`internal/egress`) checks the three shapes and a
+clean miss; `TestSecretSeen` (`internal/nodev1`) each of the four paths,
+one dlp report naming the shape and the lease's exposure nil;
+`TestCanaryExposureIsUnchangedBySecretSeen` that a lease's own value is
+still an exposure that fails the lease `credential_exposed`.
