@@ -1,14 +1,18 @@
 package commands
 
 import (
+	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"projectmesh.io/mesh-cli/internal/node"
 )
 
-// The rebase kind is set like every other: --model-rebase on `node
-// start` wins over the file, and `node model --rebase` saves it.
+// The rebase kind is set like every other, for the legacy node:
+// --model-rebase on `mesh node start` wins over node.yaml. (`mesh node
+// model` sets nothing any more: see TestNodeModel.)
 func TestModelsRebaseKind(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	cfg := &node.Config{Name: "n", Slug: "n", Capacity: node.Fixed(1), Models: node.Models{Default: "opus", Rebase: "haiku"}}
@@ -25,56 +29,27 @@ func TestModelsRebaseKind(t *testing.T) {
 	if m.For("rebase") != "sonnet" || m.For("research") != "haiku" || m.For("build") != "opus" {
 		t.Fatalf("flags: %+v", m)
 	}
+}
 
-	if err := nodeModelCmd.Flags().Set("rebase", "claude-opus-5"); err != nil {
-		t.Fatal(err)
-	}
+// mesh node model is message-only on a v1 node (ADR-044): a lease runs
+// on the model its job brief names, so there is no node.yaml model
+// table left to show or set, and the command writes nothing there.
+func TestNodeModel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	var buf bytes.Buffer
+	nodeModelCmd.SetOut(&buf)
+	t.Cleanup(func() { nodeModelCmd.SetOut(nil) })
 	if err := nodeModelCmd.RunE(nodeModelCmd, nil); err != nil {
 		t.Fatal(err)
 	}
-	saved, err := node.LoadConfig()
-	if err != nil {
-		t.Fatal(err)
+	out := buf.String()
+	for _, want := range []string{"job brief", "node.yaml"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("no %q in:\n%s", want, out)
+		}
 	}
-	if saved.Models.Rebase != "claude-opus-5" || saved.Models.For("rebase") != "claude-opus-5" {
-		t.Fatalf("saved: %+v", saved.Models)
-	}
-}
-
-// `mesh node model` shows the model the planner will actually run on —
-// the strongest configured when plan is unset, opus when none is — and
-// ends with how an item's own model comes before the table.
-func TestNodeModelShowsPrecedence(t *testing.T) {
-	for _, c := range []struct {
-		models node.Models
-		plan   string
-	}{
-		{node.Models{Default: "haiku", Build: "sonnet"}, "plan      sonnet (the strongest configured)\n"},
-		{node.Models{}, "plan      opus (the strongest configured)\n"},
-		{node.Models{Default: "opus", Plan: "haiku"}, "plan      haiku\n"},
-	} {
-		t.Setenv("HOME", t.TempDir())
-		cfg := &node.Config{Name: "n", Slug: "n", Capacity: node.Fixed(1), Models: c.models}
-		if err := cfg.Save(); err != nil {
-			t.Fatal(err)
-		}
-		out := captureStdout(func() {
-			if err := nodeModelCmd.RunE(nodeModelCmd, nil); err != nil {
-				t.Fatal(err)
-			}
-		})
-		if !strings.Contains(out, c.plan) {
-			t.Fatalf("%+v: no %q in:\n%s", c.models, c.plan, out)
-		}
-		for _, line := range []string{
-			"build and rebase sessions run on the item's model, then its agent's, then\n",
-			"node.yaml's build (or default). The evaluator runs on the stronger of the\n",
-			"builder's model and sonnet. The planner runs on plan if set, else the\n",
-			"strongest model configured (opus when none is).\n",
-		} {
-			if !strings.Contains(out, line) {
-				t.Fatalf("no %q in:\n%s", line, out)
-			}
-		}
+	if _, err := os.Stat(filepath.Join(home, ".mesh", "node.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("mesh node model touched node.yaml: stat err = %v", err)
 	}
 }
