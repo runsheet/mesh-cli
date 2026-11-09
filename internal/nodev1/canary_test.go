@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -304,5 +305,126 @@ func TestAValueInAnMCPOrVendorCallIsAnExposure(t *testing.T) {
 	var none *injectedValues
 	if none.canary() != nil {
 		t.Fatal("a lease with no values has a canary")
+	}
+}
+
+// secretSeenSink captures onSecretSeen's calls.
+type secretSeenSink struct {
+	seen []struct{ kind, host string }
+}
+
+func (s *secretSeenSink) hear(kind, host string) {
+	s.seen = append(s.seen, struct{ kind, host string }{kind, host})
+}
+
+// A well-known secret shape (egress.FindKnownSecret) that is not one of
+// the lease's own injected values is refused and reported on each of
+// the four paths that scan a call: an MCP or vendor API body (Scan), a
+// git push's pack content (also Scan — gitrelay.Grant.SetScan wires the
+// same method), a raw egress request body (Body) and a model request's
+// body (inspectModel). It is never an exposure: exposure() and the
+// onExposed callback stay untouched throughout (mesh-specs gap 28 item
+// 5's amendment).
+func TestSecretSeen(t *testing.T) {
+	const aws = "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE"
+
+	t.Run("an MCP or vendor API call's body", func(t *testing.T) {
+		v := valuesWith(t)
+		sink := &secretSeenSink{}
+		v.onSecretSeen(sink.hear)
+		var stopped error
+		v.onExposed(func(err error) { stopped = err })
+		c := v.canary()
+		if err := c.Scan("an MCP request's body", "the MCP server runsheet", []byte(aws)); err == nil {
+			t.Fatal("the secret shape was not refused")
+		}
+		if len(sink.seen) != 1 || sink.seen[0].kind != egress.SecretAWSAccessKeyID || sink.seen[0].host != "the MCP server runsheet" {
+			t.Fatalf("seen %+v", sink.seen)
+		}
+		if e := v.exposure(); e != nil || stopped != nil {
+			t.Fatalf("exposure %+v, stopped %v", e, stopped)
+		}
+	})
+
+	t.Run("a git push's pack content", func(t *testing.T) {
+		v := valuesWith(t)
+		sink := &secretSeenSink{}
+		v.onSecretSeen(sink.hear)
+		var stopped error
+		v.onExposed(func(err error) { stopped = err })
+		// gitrelay.Grant.SetScan(vals.Scan) wires this same method; see
+		// gitrelay/packscan.go's scan("a git push's content", repo, b).
+		if err := v.Scan("a git push's content", "github.com/acme/widgets", []byte(aws)); err == nil {
+			t.Fatal("the secret shape was not refused")
+		}
+		if len(sink.seen) != 1 || sink.seen[0].kind != egress.SecretAWSAccessKeyID || sink.seen[0].host != "github.com/acme/widgets" {
+			t.Fatalf("seen %+v", sink.seen)
+		}
+		if e := v.exposure(); e != nil || stopped != nil {
+			t.Fatalf("exposure %+v, stopped %v", e, stopped)
+		}
+	})
+
+	t.Run("a raw egress request body", func(t *testing.T) {
+		v := valuesWith(t)
+		sink := &secretSeenSink{}
+		v.onSecretSeen(sink.hear)
+		var stopped error
+		v.onExposed(func(err error) { stopped = err })
+		req, _ := http.NewRequest("POST", "https://elsewhere.test/upload", nil)
+		rc := v.Body(req, io.NopCloser(strings.NewReader(aws)))
+		_, err := io.ReadAll(rc)
+		rc.Close()
+		if err == nil {
+			t.Fatal("the secret shape was not refused")
+		}
+		if len(sink.seen) != 1 || sink.seen[0].kind != egress.SecretAWSAccessKeyID || sink.seen[0].host != "elsewhere.test" {
+			t.Fatalf("seen %+v", sink.seen)
+		}
+		if e := v.exposure(); e != nil || stopped != nil {
+			t.Fatalf("exposure %+v, stopped %v", e, stopped)
+		}
+	})
+
+	t.Run("a model request's body", func(t *testing.T) {
+		v := valuesWith(t)
+		sink := &secretSeenSink{}
+		v.onSecretSeen(sink.hear)
+		var stopped error
+		v.onExposed(func(err error) { stopped = err })
+		if err := v.inspectModel([]byte(`{"messages":[{"content":"` + aws + `"}]}`)); err == nil {
+			t.Fatal("the secret shape was not refused")
+		}
+		if len(sink.seen) != 1 || sink.seen[0].kind != egress.SecretAWSAccessKeyID || sink.seen[0].host != "the model" {
+			t.Fatalf("seen %+v", sink.seen)
+		}
+		if e := v.exposure(); e != nil || stopped != nil {
+			t.Fatalf("exposure %+v, stopped %v", e, stopped)
+		}
+	})
+}
+
+// TestCanaryExposureIsUnchangedBySecretSeen re-proves the existing
+// canary suite's own behavior: a lease's own injected value is still
+// refused and still fails the lease credential_exposed exactly as
+// before, with onSecretSeen wired and silent throughout.
+func TestCanaryExposureIsUnchangedBySecretSeen(t *testing.T) {
+	v := valuesWith(t)
+	var secretsSeen int
+	v.onSecretSeen(func(kind, host string) { secretsSeen++ })
+
+	if err := v.inspectModel([]byte(`{"messages":[{"content":"hello"}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.inspectModel([]byte(`{"messages":[{"content":"the key is ` + injChildToken + `"}]}`)); err == nil {
+		t.Fatal("the leak went to the model")
+	}
+	var stopped error
+	v.onExposed(func(err error) { stopped = err })
+	if e := v.exposure(); e == nil || e.ref != "conn_cloudflare" || e.host != "the model" || stopped != e {
+		t.Fatalf("exposure %+v, stopped %v", e, stopped)
+	}
+	if secretsSeen != 0 {
+		t.Fatalf("onSecretSeen fired %d times on an injected value's own exposure", secretsSeen)
 	}
 }

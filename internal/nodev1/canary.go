@@ -65,6 +65,10 @@ type injectedValues struct {
 	// session, set once it runs
 	exposed *credentialExposed
 	stop    func(error)
+	// reportSecret hears a well-known secret shape (egress.FindKnownSecret)
+	// Scan, Body and inspectModel saw that was never one of the lease's
+	// own injected values: refused and reported, never an exposure.
+	reportSecret func(kind, host string)
 	// rel ends the lease's carried credentials (release.go)
 	rel *releaser
 }
@@ -276,6 +280,35 @@ func (v *injectedValues) exposure() *credentialExposed {
 	return v.exposed
 }
 
+// onSecretSeen has report hear every well-known secret shape Scan, Body
+// and inspectModel refuse that is not one of the lease's own injected
+// values (egress.FindKnownSecret). Unlike onExposed, seeing one never
+// ends the session: report is only ever told, not replayed.
+func (v *injectedValues) onSecretSeen(report func(kind, host string)) {
+	if v == nil {
+		return
+	}
+	v.mu.Lock()
+	v.reportSecret = report
+	v.mu.Unlock()
+}
+
+// secretSeen logs and reports a well-known secret shape seen where it
+// was not one of the lease's own injected values: refused, but never an
+// exposure, so the job runs on.
+func (v *injectedValues) secretSeen(kind, host, where string) {
+	if v == nil {
+		return
+	}
+	v.logf("nodev1: lease %s: a %s was seen in %s; refused, not an injected value", v.lease, kind, where)
+	v.mu.RLock()
+	report := v.reportSecret
+	v.mu.RUnlock()
+	if report != nil {
+		report(kind, host)
+	}
+}
+
 // Inspect looks for a value in req's URL and headers as the session
 // sent them: one toward a host outside its rule is an exposure.
 func (v *injectedValues) Inspect(req *http.Request) error {
@@ -300,16 +333,36 @@ func (v *injectedValues) Inspect(req *http.Request) error {
 	return &egress.Refusal{Status: http.StatusForbidden, Code: egress.CodeExposed, Message: "the request carried a credential the relay injects"}
 }
 
-// Body scans req's body as it streams.
+// Body scans req's body as it streams: for the lease's own injected
+// values, an exposure as before, and for a well-known secret shape that
+// is not one of them (egress.FindKnownSecret), refused and reported
+// instead.
 func (v *injectedValues) Body(req *http.Request, body io.ReadCloser) io.ReadCloser {
 	host := req.URL.Hostname()
-	return egress.ScanBody(body, v.find, v.window, func(ref string) { v.expose(ref, host, "a request body") })
+	find := func(b []byte) (string, bool) {
+		if ref, ok := v.find(b); ok {
+			return ref, true
+		}
+		return egress.FindKnownSecret(b)
+	}
+	window := func() int { return max(v.window(), egress.MaxKnownSecretLen) }
+	return egress.ScanBody(body, find, window, func(label string) {
+		if egress.IsKnownSecretLabel(label) {
+			v.secretSeen(label, host, "a request body")
+			return
+		}
+		v.expose(label, host, "a request body")
+	})
 }
 
 // Scan looks for a value in part of a call the session sent a product's
 // MCP server, the node's tools or a vendor's API through the relay
-// (sessionproxy.Canary): none of them is a value's own host, so any is
-// an exposure.
+// (sessionproxy.Canary), and the same for a git push's pack
+// (gitrelay.Grant.SetScan): none of them is a value's own host, so any
+// of the lease's own injected values found there is an exposure. A
+// well-known secret shape that is not one of them
+// (egress.FindKnownSecret) is refused too, but reported, never an
+// exposure — the job is not ended over it.
 func (v *injectedValues) Scan(where, toward string, b []byte) error {
 	if v == nil {
 		return nil
@@ -317,6 +370,10 @@ func (v *injectedValues) Scan(where, toward string, b []byte) error {
 	if ref, ok := v.find(b); ok {
 		v.expose(ref, toward, where)
 		return fmt.Errorf("%s: the call carried a credential the relay injects", egress.CodeExposed)
+	}
+	if kind, ok := egress.FindKnownSecret(b); ok {
+		v.secretSeen(kind, toward, where)
+		return fmt.Errorf("%s: the call carried a %s", egress.CodeSecretSeen, kind)
 	}
 	return nil
 }
@@ -331,7 +388,10 @@ func (v *injectedValues) canary() sessionproxy.Canary {
 	return v
 }
 
-// inspectModel scans a model request's body, held whole by the relay.
+// inspectModel scans a model request's body, held whole by the relay:
+// for the lease's own injected values, an exposure as before, and for a
+// well-known secret shape that is not one of them
+// (egress.FindKnownSecret), refused and reported instead.
 func (v *injectedValues) inspectModel(body []byte) error {
 	if v == nil {
 		return nil
@@ -339,6 +399,10 @@ func (v *injectedValues) inspectModel(body []byte) error {
 	if ref, ok := v.find(body); ok {
 		v.expose(ref, "the model", "a model request's body")
 		return fmt.Errorf("%s: the request carried a credential the relay injects", egress.CodeExposed)
+	}
+	if kind, ok := egress.FindKnownSecret(body); ok {
+		v.secretSeen(kind, "the model", "a model request's body")
+		return fmt.Errorf("%s: the request carried a %s", egress.CodeSecretSeen, kind)
 	}
 	return nil
 }
@@ -442,6 +506,21 @@ func (r *Runtime) reportExposed(id string, e *credentialExposed) {
 	now := time.Now().UTC()
 	if rp := r.reporter(id); rp != nil {
 		rp.Add(meshapi.SecurityReport{Type: meshapi.ReportDLP, Host: host, Verdict: meshapi.VerdictDeny, Rule: egress.CodeExposed, At: &now})
+	}
+}
+
+// reportSecretSeen tells Tripline, through the lease's security
+// reports, that a well-known secret shape was seen but was never one of
+// the lease's own injected values: a dlp deny naming the kind, never a
+// value — and never an exposure, so the job runs on (canary.go's
+// onSecretSeen).
+func (r *Runtime) reportSecretSeen(id, kind, host string) {
+	if !secreport.BareHost(host) {
+		host = ""
+	}
+	now := time.Now().UTC()
+	if rp := r.reporter(id); rp != nil {
+		rp.Add(meshapi.SecurityReport{Type: meshapi.ReportDLP, Host: host, Verdict: meshapi.VerdictDeny, Rule: kind, At: &now})
 	}
 }
 
