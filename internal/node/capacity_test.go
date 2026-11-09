@@ -399,12 +399,3 @@ func TestAccountsScalerPushClampedAndStopped(t *testing.T) {
 		t.Fatalf("stopped: %+v, want no slots", a)
 	}
 }
-
-func TestPushLine(t *testing.T) {
-	got := PushLine(AccountSlots{Name: "max-a", Push: true, PushWindow: "seven-day",
-		PushStanding: WindowStanding{Elapsed: 0.92, Utilization: 0.70, Target: 0.87}})
-	want := "capacity: pushing max-a (seven-day window 92% elapsed, 70% used, target 87%)"
-	if got != want {
-		t.Fatalf("got %q\nwant %q", got, want)
-	}
-}

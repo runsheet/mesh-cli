@@ -74,6 +74,23 @@ func JobDeadCheckoutCheck(gw Gateway, git *Git, l *Layout, live func(dir string)
 	}
 }
 
+// itemStatus is the item's status as the sweep's log line says it, its
+// rebase named when one is claimed.
+func itemStatus(item gateway.WorkItem) string {
+	if item.RebaseState == "claimed" {
+		return item.Status + " (rebase claimed)"
+	}
+	return item.Status
+}
+
+// cmpLabel is m's label, else its id.
+func cmpLabel(m JobMeta) string {
+	if m.Label != "" {
+		return m.Label
+	}
+	return m.ID
+}
+
 // jobCheckouts is every item job's workspace with a `.git`: its
 // checkout, eval and rebase, sorted by path.
 func jobCheckouts(l *Layout) []itemCheckout {

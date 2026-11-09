@@ -199,7 +199,7 @@ func (u *nodeUpdate) run(ctx context.Context, want string, verifyOnly bool) erro
 	if running {
 		fmt.Fprintf(u.Out, "Once the node's sessions end it exits, and its service (systemd --user or launchd) starts %s.\n", want)
 	} else {
-		fmt.Fprintf(u.Out, "No node is running on this machine: the next `mesh node start`, or its service, runs %s.\n", want)
+		fmt.Fprintf(u.Out, "No node is running on this machine: the next `mesh node run`, or its service, runs %s.\n", want)
 	}
 	fmt.Fprintf(u.Out, "A %s that fails to start twice is rolled back to %s.\n", want, selfupdate.PrevPath(exe))
 	return nil

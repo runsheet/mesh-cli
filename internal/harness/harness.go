@@ -92,8 +92,8 @@ type Job struct {
 	// demand.
 	MCPServers map[string]any
 	// NodeTools are the node's own tools for this job — mesh_result and
-	// mesh_fail (internal/jobresult, mesh-cli ADR-041) — as the session
-	// reaches them on NodeWorkMCP through its sessionproxy
+	// mesh_fail (mesh-cli ADR-041) — as the session reaches them on
+	// NodeWorkMCP through its sessionproxy
 	// (node.SessionTools.UseVia serves them and names the server in
 	// MCPServers). A harness running an agent does nothing with them;
 	// a test double standing in for a session calls them directly, as the

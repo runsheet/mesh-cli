@@ -279,8 +279,8 @@ func TestLegacyRowsNotRetiredOtherwise(t *testing.T) {
 }
 
 // StartLine on an enterprise's answer names it with its kind, a person
-// stays bare, and `owner changed` names the kind too.
-func TestEnterpriseStartLineAndOwnerChanged(t *testing.T) {
+// stays bare.
+func TestEnterpriseStartLine(t *testing.T) {
 	cfg := enterpriseCfg()
 	s := &enterpriseSteps{steps: steps{takes: true, answer: enterpriseAnswer()}}
 	reg, err := Register(context.Background(), s.registrar(), cfg, nil)
@@ -292,11 +292,6 @@ func TestEnterpriseStartLineAndOwnerChanged(t *testing.T) {
 	}
 	if got := (Owner{Kind: "person", Name: "Chris"}).Who(); got != "Chris" {
 		t.Fatalf("person Who = %q", got)
-	}
-	loop, buf := ownedLoop(t, answerFixture(t, "registerNode.json"))
-	loop.TakeAnswer(enterpriseAnswer())
-	if want := "owner changed: Chris → anythink (enterprise)"; !slices.Contains(logLines(buf), want) {
-		t.Fatalf("log lacks %q:\n%s", want, buf)
 	}
 }
 

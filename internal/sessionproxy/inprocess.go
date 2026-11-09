@@ -11,8 +11,8 @@ import (
 // http.Handler speaking streamable-HTTP MCP (mcptool.Handler), served
 // at /mcp/<name> like any upstream but reached by a call, never a
 // socket or a child. It is how the node's own tools — mesh_result and
-// mesh_fail (internal/jobresult; mesh-cli ADR-041) — reach a session on
-// the host or in a pod on the one path every other server takes, so the
+// mesh_fail (mesh-cli ADR-041) — reach a session on the host or in a
+// pod on the one path every other server takes, so the
 // node holds what the session hands in and refuses what does not fit
 // before anything is sent. It carries no credential and masks nothing
 // of its own: what it answers is the node's words.

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"testing"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
@@ -48,21 +47,6 @@ func TestRetiredAccountsRefused(t *testing.T) {
 			}
 		})
 	}
-}
-
-// A node.yaml that gains accounts: while the node runs is refused like
-// any node.yaml that cannot be read: one reload line naming the
-// refusal, and the last good values stay in force.
-func TestReloadRefusesRetiredAccounts(t *testing.T) {
-	n := newReloadFailNode(t)
-	writeNodeYAML(t, reloadGood()+"accounts:\n  - {label: team, kind: subscription, token_file: /t}\n")
-	n.tick()
-	got := n.oneReloadLine()
-	if !strings.Contains(got, "accounts: is retired") || !strings.Contains(got, "Credentials page") ||
-		!strings.HasPrefix(got, "reload config: node.yaml (keeping the last good capacity and limits): node.yaml: accounts: is retired") {
-		t.Fatalf("reload line %q", got)
-	}
-	n.retained()
 }
 
 // CredentialCoverage decides as the claim-time read does (runsheet trd

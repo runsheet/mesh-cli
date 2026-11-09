@@ -52,6 +52,45 @@ type rebaseWorktrees interface {
 // rebase's worktree.
 var ErrNoRebaseWorktrees = errors.New("the node's workspace makes no rebase worktrees")
 
+// fetchRefspec is the refspec addDetachedClone fetches branch by, and
+// the local ref it lands in: a branch name is refs/heads/<branch> into
+// refs/remotes/origin/<branch>; a full ref (refs/pull/<n>/head) is
+// fetched as it is into refs/remotes/origin/<ref less refs/>.
+func fetchRefspec(branch string) (spec, local string) {
+	if rest, ok := strings.CutPrefix(branch, "refs/"); ok {
+		local = "refs/remotes/origin/" + rest
+		return "+" + branch + ":" + local, local
+	}
+	local = "refs/remotes/origin/" + branch
+	return "+refs/heads/" + branch + ":" + local, local
+}
+
+// addDetachedClone checks sha out detached at dir in a clone of its own
+// (ADR-039): a checkout a crashed run left at dir removed first, repo
+// cloned into dir alone, branch fetched into it, check asked of it, sha
+// checked out — no shared clone, no worktree, no other job's objects.
+// The clone is cloneOwn's, as a build's checkout is.
+func (g *Git) addDetachedClone(ctx context.Context, repo, dir, branch, sha string, check func(clone, ref string) error) error {
+	if _, err := os.Stat(dir); err == nil {
+		if err := g.RemoveWorkspace(ctx, dir); err != nil {
+			return err
+		}
+	}
+	root, key := g.lockRoot("", dir), RepoLockKey(repo)
+	if err := g.cloneOwn(ctx, root, key, repo, dir, "", "--no-checkout"); err != nil {
+		return err
+	}
+	spec, ref := fetchRefspec(branch)
+	if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--quiet", "origin", spec); err != nil {
+		return err
+	}
+	if err := check(dir, ref); err != nil {
+		return err
+	}
+	_, err := g.run(ctx, dir, "git", "checkout", "--quiet", "--detach", sha)
+	return err
+}
+
 // AddRebaseWorktree checks branch out at dir as a fresh detached clone
 // of its own at origin/<branch>, as a candidate's is checked out in a
 // job: a stale dir there removed first, then addDetachedClone — repo

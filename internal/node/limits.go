@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -11,7 +12,21 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/sessionunit"
 )
+
+// errNoAttach is a harness that cannot take up a session it did not
+// start (only a host Claude session can be adopted today).
+var errNoAttach = errors.New("adopt: the harness cannot attach to a running session")
+
+// stateAccount is the account an adopted session's state file names,
+// else DefaultAccount.
+func stateAccount(dir string) string {
+	if st, err := sessionunit.ReadState(dir); err == nil && st.Account != "" {
+		return st.Account
+	}
+	return DefaultAccount
+}
 
 // LimitsConfig is node.yaml's `limits` block: the fractions of the
 // Claude plan's windows at which the node paces itself (mesh-specs trd

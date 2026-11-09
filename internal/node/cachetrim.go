@@ -13,6 +13,8 @@ package node
 
 import (
 	"context"
+	"io/fs"
+	"path/filepath"
 	"time"
 )
 
@@ -78,4 +80,19 @@ func (t *CacheTrim) logf(format string, args ...any) {
 	if t.Logf != nil {
 		t.Logf(format, args...)
 	}
+}
+
+// dirSize is the total size of every file under root.
+func dirSize(root string) int64 {
+	var total int64
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info, err := d.Info(); err == nil && !info.IsDir() {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
 }

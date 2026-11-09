@@ -2322,8 +2322,8 @@ type HeartbeatExtras struct {
 	// which runtime and image (trd §1 Node, ADR 007); nil sends none.
 	Sandbox *SandboxInfo
 	// Manifest is what the node has to run work on — its os and arch
-	// and the toolchains it found with their versions (internal/nodecaps)
-	// — beside the runtimes, adapters and sandbox above, so the platform
+	// and the toolchains it found with their versions — beside the
+	// runtimes, adapters and sandbox above, so the platform
 	// can offer it only work it can run. nil sends none; it is sent only
 	// when the gateway's HeartbeatNodeInput takes it (takesManifest).
 	Manifest *NodeManifest
