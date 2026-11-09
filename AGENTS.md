@@ -72,24 +72,37 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   the `~/.mesh/token` that holds either shape behind one `TokenSource`
   (latchkey `adr-machine-identity`).
 - `internal/node/`: what survives of the legacy runtime now that the
-  v0 Loop (`Runner`/`Evaluator`/`Planner`/`Director`/`Rebaser`, their
-  per-job workspace tree under `~/.mesh/jobs/<id>/`, the shared
-  context render, the quartermaster, the work sweep and everything
-  else that ran inside `mesh node start`) is deleted: the legacy
-  gateway client below, which a person's own `mesh mcp`/`mesh join`
-  still calls (ADR-040's "Not yet" — a person's own join, which holds
-  no job, still asks its item token itself through this package), and
-  `ProjectRepos` for `mesh goal plan` (a person's own plan upload, not
-  an autonomous planner). The service install (`launchd`/
-  `systemd --user`) installs `mesh node run`. A project's repos — for
-  `mesh goal plan` alone now — are read from `project.repoIds` through
-  `ProjectRepos`, each owned by its own account's login, never the
-  org's account: an org links several GitHub accounts (the runsheet
-  org's loom project lives at go-apis/loom). The v1 node's own
-  per-lease workspace, context and job directory are `internal/nodev1`'s
-  and `internal/actor`'s (ADR-044): each lease owns its own job
-  directory (`leases/<lease_id>`), closed in reverse order the moment
-  the lease ends, no shared clone or shared context tree to sweep.
+  v0 Loop types (`Runner`/`Evaluator`/`Planner`/`Director`/`Rebaser`)
+  and the work sweep that ran inside `mesh node start` (`PlanJobSweep`,
+  `ApplyWorkSweep`, their files) are deleted: the legacy gateway client
+  below, which a person's own `mesh mcp`/`mesh join` still calls
+  (ADR-040's "Not yet" — a person's own join, which holds no job, still
+  asks its item token itself through this package, and still reads
+  project context through this package's shared context render,
+  `FetchContext`/`RenderIndex`/`WriteContext` in `workspace.go`, which
+  is live and unchanged), and `ProjectRepos` for `mesh goal plan` (a
+  person's own plan upload, not an autonomous planner). What is not
+  deleted, and not called by anything either: the per-job workspace
+  tree's own layout (`layout.go`'s `Layout`/`JobDirs`, `jobdirs.go`)
+  and the quartermaster, scratch, rebase-worktree and second-opinion
+  helpers that tree once served (`quartermaster.go` and its sibling
+  `quartermaster_*.go` files, `scratch.go`, `rebaseworktree.go`,
+  `second_opinion.go`, `holding.go`) — every exported and unexported
+  func in each still compiles but calls nowhere a built `mesh` binary
+  reaches (`go run golang.org/x/tools/cmd/deadcode@latest ./cmd/mesh`
+  names every one of them unreachable); they are leftover from the v0
+  Loop, not wired to `mesh mcp`/`mesh join` or to `mesh node run`, and a
+  later item should either delete them or give them a caller. The
+  service install (`launchd`/`systemd --user`) installs `mesh node
+  run`. A project's repos — for `mesh goal plan` alone now — are read
+  from `project.repoIds` through `ProjectRepos`, each owned by its own
+  account's login, never the org's account: an org links several
+  GitHub accounts (the runsheet org's loom project lives at
+  go-apis/loom). The v1 node's own per-lease workspace, context and job
+  directory are `internal/nodev1`'s and `internal/actor`'s (ADR-044):
+  each lease owns its own job directory (`leases/<lease_id>`), closed
+  in reverse order the moment the lease ends, no shared clone or shared
+  context tree to sweep.
   `internal/gateway/client.go`: the platform client.
   Every read — a query, and the `issueItemRepoToken`/`planGitHubToken`/
   `researchGitHubToken` mints — retries a transport error, timeout, 429
@@ -221,13 +234,16 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   <value> (version <v>)`, the stack, and exit 70 (`crash.ExitPanic`),
   never Go's 2 (systemd's `INVALIDARGUMENT`); a new node goroutine
   defers it first.
-- **The v0 Loop's architecture — drain, self-update, pace, scale,
-  scratch, the quartermaster, the work sweep, held goals, accounts,
-  Codex, the evaluator's family, tool results, the hand-back,
-  validation, main validation, services, sidecars, session units and
-  the sandbox, all as this section once described them — is deleted
-  with the rest of `internal/node`'s `Loop`/`Runner`/`Evaluator`/
-  `Planner`/`Director`/`Rebaser`** (goal `the-v0-node-is-removed-from-mesh-cli`).
+- **The v0 Loop's architecture — drain, self-update, pace, scale, the
+  work sweep, accounts, Codex, the evaluator's family, tool results,
+  the hand-back, validation, main validation, services, sidecars,
+  session units and the sandbox, all as this section once described
+  them run — is deleted with `internal/node`'s `Loop`/`Runner`/
+  `Evaluator`/`Planner`/`Director`/`Rebaser` types** (goal
+  `the-v0-node-is-removed-from-mesh-cli`); scratch, the quartermaster
+  and held goals are not deleted, only unreferenced leftovers of that
+  Loop (`scratch.go`, `quartermaster.go`, `holding.go` — see
+  `internal/node/`, above).
   What runs today in their place is `mesh node run`'s v1 runtime
   (ADR-044, `status: proposed` — wave 0's minimal shape is live; the
   job-actor/scheduler/supervisor machinery below is wave 3's design and
