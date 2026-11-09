@@ -175,3 +175,93 @@ func TestTheReconcileStopsAStrayEgressProcess(t *testing.T) {
 	close(sess.hold)
 	<-done
 }
+
+// The supervisor's mode is read live from node.yaml (ADR-044 amendment,
+// 2026-11-09): changing `v1.supervisor` from warn to tidy while the
+// Runtime runs makes the very next reconcile remove a pod and a job
+// directory no actor holds, with no process restart, while a live
+// lease whose session stays quiet past 2xQuietAfter is still neither
+// escalated nor handed back -- tidy reconciles like cancel, but never
+// acts on the escalate/stall ladder, same as warn.
+func TestTheSupervisorsModeIsReadLiveFromNodeYAML(t *testing.T) {
+	sess := &quietSession{got: make(chan Message, 4)}
+	g, sb := actorRig(t, sess)
+	g.rt.SupervisorMode = supervisor.Warn
+	g.rt.QuietAfter = 100 * time.Millisecond
+	g.rt.SuperviseEvery = 20 * time.Millisecond
+	g.rt.ReconcileEvery = 30 * time.Millisecond
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "node.yaml")
+	if err := os.WriteFile(path, []byte("v1:\n  supervisor: warn\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g.rt.SupervisorConfigPath = path
+	g.rt.SupervisorPoll = 20 * time.Millisecond
+
+	sb.Standing = []sandbox.PodInfo{{Name: PodName("lse_gone"), Labels: map[string]string{PodLeaseLabel: "lse_gone"}}}
+	orphan := g.rt.leaseDir("lse_gone")
+	if err := os.MkdirAll(orphan, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	os.Chtimes(orphan, old, old)
+
+	job := g.offer(t, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- g.rt.Run(ctx) }()
+
+	// warn alone: the reconcile finds the orphan but only logs it, and
+	// the quiet session is never escalated
+	time.Sleep(150 * time.Millisecond)
+	if _, ok := sb.Called("remove " + PodName("lse_gone")); ok {
+		t.Fatal("the orphan pod went while still in warn mode")
+	}
+	select {
+	case m := <-sess.got:
+		t.Fatalf("the mailbox brought %+v while in warn mode", m)
+	default:
+	}
+
+	// node.yaml now names tidy: the live watcher picks it up on its
+	// next poll and calls SetMode, with no restart of the Runtime
+	if err := os.WriteFile(path, []byte("v1:\n  supervisor: tidy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, "the orphan pod's removal once tidy takes effect", func() bool {
+		_, ok := sb.Called("remove " + PodName("lse_gone"))
+		return ok
+	})
+	waitFor(t, "the orphan directory's removal once tidy takes effect", func() bool {
+		_, err := os.Stat(orphan)
+		return os.IsNotExist(err)
+	})
+
+	if _, err := os.Stat(g.rt.leaseDir(g.fake.LeaseOf(job))); err != nil {
+		t.Fatalf("the live lease's directory went: %v", err)
+	}
+	if slices.Contains(sb.Removed, PodName(g.fake.LeaseOf(job))) {
+		t.Fatal("the live lease's pod went")
+	}
+
+	// tidy still never acts on the escalate/stall ladder: well past
+	// 2xQuietAfter the quiet session is neither escalated nor handed
+	// back, and Run has not returned (no restart)
+	time.Sleep(3 * g.rt.QuietAfter)
+	select {
+	case m := <-sess.got:
+		t.Fatalf("tidy escalated the quiet session: %+v", m)
+	default:
+	}
+	select {
+	case <-done:
+		t.Fatal("the Runtime stopped; tidy must reconcile without restarting it")
+	default:
+	}
+
+	cancel()
+	<-done
+}
