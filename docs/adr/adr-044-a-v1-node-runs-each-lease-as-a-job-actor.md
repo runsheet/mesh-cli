@@ -497,3 +497,29 @@ since died is not.
    alone in the scheduler, and its `--cache-trim`, `--cache-dir` and
    `--cache-max-gb` flags — is gone from `internal/nodev1` and the
    command (`TestNodeRunWiresBuildCacheWatcherByDefault`).
+
+## Amendment, 2026-11-09: the legacy node is deleted; mesh-cli carries one node
+
+Goal `the-v0-node-is-removed-from-mesh-cli` deleted the legacy runtime
+this ADR's opening and Context once described as "unchanged beside" the
+v1 node: `internal/node`'s `Loop`, `Runner`, `Evaluator`, `Planner`,
+`Director` and `Rebaser` types, `internal/jobresult`, `internal/session`
+and `internal/nodecaps` are gone, along with the `mesh node start` and
+`mesh node sweep` commands. `mesh node run` (`internal/nodev1`, this
+ADR) is now the only way this repo runs a machine as a Mesh node — not
+one of two, the way the opening's "applies to `mesh node run` ... only;
+the legacy runtime ... is unchanged" once distinguished it.
+
+The opening, Context, and the drain/upgrade/status amendments below are
+left exactly as written: a record of what wave 3 was built beside, not
+of what mesh-cli runs today. Where they say a legacy node (`mesh node
+start`) left running is told apart from none running at all by its pid
+— never disambiguated by a flag, never acted on — that pid check is now
+the only trace the deleted runtime leaves in this node's own code
+(`internal/commands/nodev1state.go`'s `legacyNode`), kept solely so an
+operator's stale `~/.mesh/node.pid` from before this goal reads as
+"nothing running" rather than a second node. `internal/node` itself is
+not fully deleted — the legacy gateway client `mesh mcp`, `mesh join`
+and `mesh goal plan` still use, and a few of the old Loop's unreferenced
+leftovers not yet swept up — but none of what remains there is a second
+node; AGENTS.md has the detail.
