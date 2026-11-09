@@ -248,8 +248,11 @@ func (rs *relaySidecar) pusher() nodetools.Pusher {
 // in the pod and hands it its credentials, and answers the session's MCP
 // servers as the pod reaches them (each through the proxy shim, on the
 // sidecar's loopback). workspace is the lease's checkout, which the
-// sidecar mounts read-only to prove a push's fast-forward.
-func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe func(string, []byte, []byte), gate *stopGate, account *sessionAccount, sl *slots, workspace string) (map[string]any, error) {
+// sidecar mounts read-only to prove a push's fast-forward. tainted, set,
+// is the lease's taint lockdown (taint.go): once it answers true the
+// sidecar's tunnel refuses every host for the rest of the lease
+// (ADR-046's 2026-11 amendment).
+func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe func(string, []byte, []byte), gate *stopGate, account *sessionAccount, sl *slots, workspace string, tainted func() bool) (map[string]any, error) {
 	r, b := rs.r, rs.b
 	// the node's side: node tools, the model forwarder, the stop gate,
 	// renewal, AccessRecords, the tunnel
@@ -310,7 +313,8 @@ func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe 
 					audit(c)
 				}
 			},
-			Done: report,
+			Done:    report,
+			Tainted: tainted,
 		}
 		rs.ic.install(r, b.LeaseID, rs.tunnel)
 	}
@@ -343,6 +347,11 @@ func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe 
 		if err := rs.startEgressProcess(ctx, policy, b, creds, report, audit); err != nil {
 			return nil, fmt.Errorf("the lease's egress process: %w", err)
 		}
+		// the process holds no taint of its own: its forwards are
+		// refused here once the lease is tainted, as the in-process
+		// tunnel's dials are (taint.go)
+		rs.node.Tunnel = refuseTainted(tainted, rs.node.Tunnel)
+		rs.laneHandler = refuseTainted(tainted, rs.laneHandler)
 	}
 	raw, err := json.Marshal(creds)
 	if err != nil {
@@ -1091,4 +1100,19 @@ func (rs *relaySidecar) openLaneTunnel() (string, error) {
 		}
 	}()
 	return sock, nil
+}
+
+// refuseTainted refuses every CONNECT to h once tainted answers true,
+// as egress.Tunnel does with RuleTainted; nil tainted is h unchanged.
+func refuseTainted(tainted func() bool, h http.Handler) http.Handler {
+	if tainted == nil || h == nil {
+		return h
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if tainted() {
+			egress.Refuse(w, "tainted", "the lease is tainted by untrusted content it read; its egress is refused for the rest of the lease")
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }
