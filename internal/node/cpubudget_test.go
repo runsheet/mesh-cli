@@ -3,18 +3,13 @@ package node
 import (
 	"context"
 	"errors"
-	"fmt"
+
 	"strings"
-	"sync"
+
 	"testing"
 	"time"
 
 	"gopkg.in/yaml.v3"
-
-	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
-	"projectmesh.io/mesh-cli/internal/harness"
-	"projectmesh.io/mesh-cli/internal/sandbox"
-	"projectmesh.io/mesh-cli/internal/validate"
 )
 
 // The budget counts each pod's CPUs, a job's hold beside its pods, and
@@ -132,168 +127,6 @@ func TestCapacityCPUBudgetYAML(t *testing.T) {
 	}
 	if got := CPUBudgetFor(64, 96); got != 64 {
 		t.Fatalf("configured budget %g, want 64", got)
-	}
-}
-
-// A ten-pod validation — an eight-shard integration suite, a unit group
-// and a checks group — on a 32-CPU budget with 8-CPU pods runs in waves:
-// never more than four pods at once, each shard still in a pod of its
-// own with its own Postgres, every lane run.
-func TestATenPodValidationRunsInWaves(t *testing.T) {
-	var mu sync.Mutex
-	running, most, ran := 0, 0, 0
-	rt := &sandbox.Fake{Agent: func(ctx context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
-		mu.Lock()
-		running++
-		ran++
-		most = max(most, running)
-		mu.Unlock()
-		time.Sleep(20 * time.Millisecond)
-		mu.Lock()
-		running--
-		mu.Unlock()
-		return sandbox.Exit{}, nil
-	}}
-	sb := &sandbox.Sandbox{Runtime: rt, Config: SandboxConfig{CPUs: 6, ServicesCPUs: 2}.Settings("v1"), TempDir: t.TempDir()}
-	sb.Config.ServiceTimeout = 2 * time.Second
-	budget := NewCPUBudget(32, 8)
-	sb.Reserve = budget.Reserve
-	dir := t.TempDir()
-	writeServices(t, dir, servicesYML)
-	logs := &syncBuf{}
-	logf := func(f string, a ...any) { fmt.Fprintf(logs, f+"\n", a...) }
-	budget.SetLogf(logf)
-
-	cj := budget.Job("pr acme/app#1", "acme/app", budget.ValidationEstimate("acme/app"))
-	ctx := WithCPUJob(context.Background(), cj)
-	first, err := OpenSessionPod(ctx, sb, dir, "pr-1", harness.Kind("validate"), sandbox.GitIdentity{}, logf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if r := budget.Read(); r.Reserved != 8 {
-		t.Fatalf("the run's own pod reserves %g, want 8 (6 + 2 for its services)", r.Reserved)
-	}
-	lr := laneSandboxRunner{
-		sandboxRunner: sandboxRunner{sess: first.Session, dir: dir},
-		open: func(ctx context.Context, name string) (*SessionPod, error) {
-			return OpenSessionPod(WithCPUJob(ctx, cj), sb, dir, "pr-1-"+name, harness.Kind("validate"), sandbox.GitIdentity{}, logf)
-		},
-		releaseFirst: first.Close,
-	}
-	steps := []validate.Step{
-		{Name: "lint", Kind: validate.KindLint, Group: "checks", Command: "true", Timeout: time.Minute},
-		{Name: "unit", Kind: validate.KindUnit, Group: "unit", Command: "go test ./...", Timeout: time.Minute},
-		{Name: "integration", Kind: validate.KindIntegration, Command: "go test ./e2e", Timeout: time.Minute, Shards: 8},
-	}
-	if n := validate.Lanes(steps); n != 10 {
-		t.Fatalf("lanes %d, want 10", n)
-	}
-	v := &buildValidation{runner: lr, cpu: cj, pod: PodCPUs(sb, dir)}
-	validator{logf: logf, CPU: budget}.estimate(validationTarget{prefix: "pr acme/app#1"}, v, steps)
-	if got := budget.ValidationEstimate("acme/app"); got != 80 {
-		t.Fatalf("learnt estimate %g, want 10 pods of 8", got)
-	}
-	if got := cj.Hold(); got != 32 {
-		t.Fatalf("hold %g, want its estimate capped at the budget", got)
-	}
-
-	// the budget is never past 32 while it runs
-	stop := make(chan struct{})
-	over := make(chan float64, 1)
-	go func() {
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			if r := budget.Read(); r.Reserved > 32 {
-				select {
-				case over <- r.Reserved:
-				default:
-				}
-			}
-			time.Sleep(time.Millisecond)
-		}
-	}()
-	res, err := validate.Run(ctx, steps, lr, validate.Options{Dir: dir})
-	close(stop)
-	if err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case got := <-over:
-		t.Fatalf("reserved %g cpus, past the budget of 32", got)
-	default:
-	}
-	for _, s := range res {
-		if s.ExitCode != 0 {
-			t.Fatalf("step %s exited %d", s.Name, s.ExitCode)
-		}
-	}
-	if ran != 10 {
-		t.Fatalf("ran %d lanes, want 10", ran)
-	}
-	if most > 4 {
-		t.Fatalf("%d pods ran at once on a 32-cpu budget of 8-cpu pods, want at most 4", most)
-	}
-	if most < 2 {
-		t.Fatalf("at most %d pod at once: the lanes did not run beside each other", most)
-	}
-	var postgres int
-	for _, sc := range rt.Sidecars {
-		if strings.HasPrefix(sc.Image, "postgres") {
-			postgres++
-		}
-	}
-	if postgres != 10 {
-		t.Fatalf("postgres sidecars %d, want one per pod (10)", postgres)
-	}
-	if !strings.Contains(logs.String(), "waits for room") {
-		t.Fatalf("no wave said:\n%s", logs.String())
-	}
-	cj.End()
-	if r := budget.Read(); r.Reserved != 0 || r.Committed != 0 {
-		t.Fatalf("after the run: %+v", r)
-	}
-}
-
-// The one claim stops when the budget is full and resumes once pods
-// finish: two 4-cpu sessions fill an 8-cpu budget, the third waits for
-// the next tick after their pods go.
-func TestClaimingStopsWhenTheCPUBudgetIsFullAndResumesWhenPodsFinish(t *testing.T) {
-	r := newQueueRig(t, 3)
-	r.f.WorkItems[item2]["status"], r.f.WorkItems[item2]["dependsOn"] = "ready", []any{}
-	third := map[string]any{}
-	for k, v := range r.f.WorkItems[item2] {
-		third[k] = v
-	}
-	third["id"], third["seq"] = queueItem3, 3
-	r.f.WorkItems[queueItem3] = third
-	r.f.Queue = []gatewaytest.QueuedJob{
-		{Kind: "runsheet/build", SubjectType: "item", SubjectID: item1},
-		{Kind: "runsheet/build", SubjectType: "item", SubjectID: item2},
-		{Kind: "runsheet/build", SubjectType: "item", SubjectID: queueItem3},
-	}
-	r.loop.CPU = NewCPUBudget(8, 4)
-	r.tick()
-	if got := len(r.dispatched); got != 2 {
-		t.Fatalf("dispatched %d with room for two pods, want 2\n%s", got, r.logs.String())
-	}
-	if !strings.Contains(r.logs.String(), "cpu budget full") {
-		t.Fatalf("the full budget was not said:\n%s", r.logs.String())
-	}
-	r.tick()
-	if got := len(r.dispatched); got != 2 {
-		t.Fatalf("dispatched %d while the two sessions' pods are expected, want 2", got)
-	}
-	// the two sessions open their pods and finish
-	a, b := r.loop.CPU.Reserve(4), r.loop.CPU.Reserve(4)
-	a()
-	b()
-	r.tick()
-	if got := len(r.dispatched); got != 3 {
-		t.Fatalf("dispatched %d once the pods finished, want 3\n%s", got, r.logs.String())
 	}
 }
 

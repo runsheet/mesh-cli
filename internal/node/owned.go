@@ -128,10 +128,7 @@ func explainNotYours(err error, r Registrar, cfg *Config) error {
 
 // Registered is Register's result: the scopes to serve and, on the
 // owner contract, the node's one id and its owner and the platform's
-// answer itself (both nil on the legacy per-org path). The answer is
-// handed to the loop before its first tick (Loop.TakeAnswer), so a
-// reload that changes node.yaml's orgs restricts it even while every
-// heartbeat since answers nil.
+// answer itself (both nil on the legacy per-org path).
 type Registered struct {
 	Scopes Scopes
 	Owned  *Owned
@@ -702,61 +699,6 @@ func LegacyIDs(cfg *Config, scopes Scopes) map[string]string {
 		}
 	}
 	return out
-}
-
-// TakeAnswer takes the platform's answer to a registration or a
-// heartbeat on the owner contract: the scopes it names (restricted by
-// node.yaml's orgs, as last reloaded) replace the loop's, logged `orgs a
-// → b` as a reload logs them, and an owner whose id or kind changed —
-// a node handed from a person to an enterprise — is logged `owner
-// changed: Chris → anythink`, with no restart. A nil answer keeps the last scopes; a
-// non-nil one replaces them whatever it names, so an org the platform no
-// longer serves is claimed from no more — one naming no org, or none
-// the restriction keeps, leaves the node serving none. A restriction
-// naming an org not served is logged, not fatal. The loop is Owned from
-// then on.
-func (l *Loop) TakeAnswer(a *gateway.NodeAnswer) {
-	if a == nil {
-		return
-	}
-	l.mu.Lock()
-	l.answer = a
-	restrict := l.restrict
-	if !l.restrictSet && l.Cfg != nil {
-		restrict = l.Cfg.Orgs
-	}
-	l.mu.Unlock()
-	owner, was := OwnerFrom(a), l.owned()
-	if was != nil && (was.Owner.ID != owner.ID || was.Owner.Kind != owner.Kind) {
-		l.logf("owner changed: %s → %s", was.Owner.Who(), owner.Who())
-	}
-	id := a.NodeID
-	if id == "" && was != nil {
-		id = was.NodeID
-	}
-	l.mu.Lock()
-	l.Owned = &Owned{NodeID: id, Owner: owner}
-	l.mu.Unlock()
-	scopes, err := ServedFrom(a, restrict)
-	if err != nil {
-		l.logf("orgs: %v", err)
-	}
-	if !sameOrgs(scopes, l.Scopes) {
-		l.logf("orgs %s → %s", orgsOrNone(l.Scopes), orgsOrNone(scopes))
-	}
-	// the NodeID is the node's one id either way; the scopes are taken
-	// whole so a changed login or slug is taken too
-	l.mu.Lock()
-	l.Scopes = scopes
-	l.mu.Unlock()
-	l.takeAnswerShares(a)
-}
-
-// owned is the loop's Owned under its lock.
-func (l *Loop) owned() *Owned {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.Owned
 }
 
 // orgsOrNone is Names joined by ", ", or "none" for no scope.

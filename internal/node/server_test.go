@@ -2,13 +2,13 @@ package node
 
 import (
 	"context"
-	"encoding/json"
+
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
+
 	"testing"
 	"time"
 
@@ -74,48 +74,5 @@ func TestServerRoutesEachListenerToItsOwnHandler(t *testing.T) {
 	}
 	if _, got := getOn(t, b, "/x"); got != "session-b /x" {
 		t.Fatalf("b after a went: %q", got)
-	}
-}
-
-// The admin endpoints answer the loop live: health, the status with its
-// connections, the jobs on disk, and Prometheus metrics.
-func TestAdminHandlerAnswersTheLoop(t *testing.T) {
-	l := testLayout(t)
-	scopes := connected(Scopes{{Login: "acme", ID: "org-a", Cap: 2}})
-	if _, err := openJob(l, scopes, "org-a", JobMeta{ID: "item-1", Unit: JobItem, ItemID: "item-1", Label: "ship-it/1"}); err != nil {
-		t.Fatal(err)
-	}
-	loop := &Loop{Cfg: &Config{Name: "box", Slug: "box", NodeID: "node-a", Capacity: Fixed(3)}, Scopes: scopes, Version: "v1"}
-	dir := sockettest.Dir(t, "adm")
-	s := &Server{Admin: AdminHandler(loop, l, time.Now())}
-	defer s.Close()
-	sock := filepath.Join(dir, "node.sock")
-	if err := s.ListenAdmin(sock); err != nil {
-		t.Fatal(err)
-	}
-	if code, body := getOn(t, sock, "/health"); code != 200 || !strings.Contains(body, `"ok": true`) {
-		t.Fatalf("health %d %s", code, body)
-	}
-	_, body := getOn(t, sock, "/status")
-	var st NodeStatus
-	if err := json.Unmarshal([]byte(body), &st); err != nil {
-		t.Fatal(err)
-	}
-	if st.Name != "box" || st.Version != "v1" || len(st.Connection) != 1 || st.Connection[0].ConnectionID != "conn-acme" || st.Connection[0].Cap != 2 {
-		t.Fatalf("status %+v", st)
-	}
-	_, body = getOn(t, sock, "/jobs")
-	var jobs []StatusJob
-	if err := json.Unmarshal([]byte(body), &jobs); err != nil || len(jobs) != 1 || jobs[0].ID != "item-1" || jobs[0].ConnectionID != "conn-acme" {
-		t.Fatalf("jobs %s (%v)", body, err)
-	}
-	_, body = getOn(t, sock, "/metrics")
-	for _, want := range []string{`mesh_node_connection_cap{org="acme",connection="conn-acme"} 2`, `mesh_node_jobs{unit="item"} 1`, "mesh_node_capacity"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("metrics lack %q:\n%s", want, body)
-		}
-	}
-	if code, _ := getOn(t, sock, "/nope"); code != http.StatusNotFound {
-		t.Errorf("unknown path %d", code)
 	}
 }

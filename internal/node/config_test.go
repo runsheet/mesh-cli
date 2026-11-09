@@ -2,12 +2,27 @@ package node
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/harness"
 )
+
+func writeNodeYAML(t *testing.T, body string) {
+	t.Helper()
+	path, err := ConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // The Latchkey issuer and client `mesh node login` records live in
 // node.yaml beside the registration — and are written before there is
@@ -128,6 +143,37 @@ func TestCapacityRangeRejected(t *testing.T) {
 				t.Fatalf("capacity %s loaded as %+v, want an error", c, cfg.Capacity)
 			}
 		})
+	}
+}
+
+// disk.free_min_gb parses, defaults when absent, and refuses a negative.
+func TestDiskConfigParsesAndDefaults(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	writeNodeYAML(t, "slug: mini\nname: mini\ncapacity: 1\n")
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Disk.Effective(); got.FreeMinGB != DefaultDiskFreeMinGB || got.Path != "" {
+		t.Fatalf("disk left out = %+v, want free_min_gb %v and the work root", got, DefaultDiskFreeMinGB)
+	}
+
+	writeNodeYAML(t, "slug: mini\nname: mini\ncapacity: 1\ndisk: {free_min_gb: 25, path: /srv/mesh}\n")
+	cfg, err = LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Disk.FreeMinGB != 25 || cfg.Disk.Path != "/srv/mesh" {
+		t.Fatalf("disk = %+v, want free_min_gb 25 on /srv/mesh", cfg.Disk)
+	}
+	if got := cfg.Disk.FloorBytes(); got != 25*(uint64(1)<<30) {
+		t.Errorf("FloorBytes() = %d, want %d", got, 25*(uint64(1)<<30))
+	}
+
+	writeNodeYAML(t, "slug: mini\nname: mini\ncapacity: 1\ndisk: {free_min_gb: -1}\n")
+	if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "disk.free_min_gb") {
+		t.Fatalf("a negative floor: err = %v, want it to name disk.free_min_gb", err)
 	}
 }
 

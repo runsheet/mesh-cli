@@ -102,35 +102,6 @@ func TestCacheTrimLeavesACacheUnderTheCap(t *testing.T) {
 	}
 }
 
-// The trim runs at the first tick and at most once an hour after, on the
-// loop's clock.
-func TestCacheTrimRunsAtMostOnceAnHour(t *testing.T) {
-	var cleaned int
-	c := cacheWithGo(t, 10, 1000, 5000, &cleaned)
-	now := time.Date(2026, 10, 17, 18, 0, 0, 0, time.UTC)
-	l := &Loop{Now: func() time.Time { return now }, CacheTrim: &CacheTrim{Cache: c}}
-	refill := func() {
-		for i := 0; i < 10; i++ {
-			os.WriteFile(filepath.Join(c.Root, "go", fmt.Sprintf("o%02d", i)), make([]byte, 1000), 0o600)
-		}
-	}
-	ctx := context.Background()
-	steps := []struct {
-		after time.Duration // since the step before
-		ran   bool
-	}{{0, true}, {time.Minute, false}, {58 * time.Minute, false}, {time.Minute, true}, {59 * time.Minute, false}, {time.Minute, true}}
-	for i, s := range steps {
-		now = now.Add(s.after)
-		refill()
-		if got := l.CacheTrim.RunIfDue(ctx, l.now()); got != s.ran {
-			t.Fatalf("step %d (+%s): ran %v, want %v", i, s.after, got, s.ran)
-		}
-	}
-	if cleaned != 3 {
-		t.Fatalf("trimmed %d times, want 3", cleaned)
-	}
-}
-
 func containsLine(lines []string, want string) bool {
 	for _, l := range lines {
 		if strings.Contains(l, want) {

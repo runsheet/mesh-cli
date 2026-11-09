@@ -228,39 +228,6 @@ func TestHoldingReportAPIAccountKindAndResearch(t *testing.T) {
 	}
 }
 
-// The holding report carries one row per served org, as holdingOrgs
-// built them: floor, held and ready, and -1 ready for an org whose
-// ready read failed (ADR-023, Reporting).
-func TestHoldingReportOrgs(t *testing.T) {
-	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
-	scopes := Scopes{{Login: "runsheet", ID: "org-r"}, {Slug: "wardroomid", ID: "org-w"}, {Login: "quiet", ID: "org-q"}}
-	floors := Floors(5, scopes, nil)
-	rows := holdingOrgs(scopes, floors, map[string]int{"org-r": 1, "org-w": 2}, map[string]int{"org-r": 3, "org-w": 0})
-	rep := HoldingReport(now, nil, nil, LimitsConfig{}, 5, nodePace(now, nil, nil, LimitsConfig{}), nil, rows, nil)
-	want := []gateway.HoldingOrg{
-		{Org: "runsheet", OrgID: "org-r", Floor: 2, Held: 1, Ready: 3},
-		{Org: "wardroomid", OrgID: "org-w", Floor: 2, Held: 2, Ready: 0},
-		{Org: "quiet", OrgID: "org-q", Floor: 1, Held: 0, Ready: -1},
-	}
-	if len(rep.Orgs) != len(want) {
-		t.Fatalf("orgs = %+v", rep.Orgs)
-	}
-	for i := range want {
-		if rep.Orgs[i] != want[i] {
-			t.Fatalf("orgs[%d] = %+v, want %+v", i, rep.Orgs[i], want[i])
-		}
-	}
-	b, _ := json.Marshal(rep)
-	if !strings.Contains(string(b), `"orgs":[{"org":"runsheet","orgId":"org-r","floor":2,"held":1,"ready":3}`) {
-		t.Fatalf("wire shape: %s", b)
-	}
-	// no org served is still a list
-	b, _ = json.Marshal(HoldingReport(now, nil, nil, LimitsConfig{}, 5, nodePace(now, nil, nil, LimitsConfig{}), nil, nil, nil))
-	if !strings.Contains(string(b), `"orgs":[]`) {
-		t.Fatalf("no orgs: %s", b)
-	}
-}
-
 // The holding report carries the kinds this node takes, in Takes.Kinds'
 // fixed order, on Holding.Kinds, and prefixes the summary with "takes
 // <list>; " when fewer than every kind is taken; with every kind the

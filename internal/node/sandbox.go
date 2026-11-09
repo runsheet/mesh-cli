@@ -170,41 +170,6 @@ func OpenSandbox(ctx context.Context, c SandboxConfig, rt sandbox.Runtime, versi
 	return &sandbox.Sandbox{Runtime: rt, Config: cfg, Logf: logf}, &gateway.SandboxInfo{Mode: SandboxOn, Runtime: ver, Image: cfg.Image}, nil
 }
 
-// SweepSandbox is the sandbox's start-up sweep (ADR-007's amendment
-// 2026-10-10): run after the sessions of the process before this one are
-// adopted and before the first tick, it removes the HOMEs, pods and
-// containers sandboxed sessions left, keeping every HOME a running
-// container mounts and — whatever their state — the pod, its containers
-// and the HOME of every found sandboxed session, which adoption reads,
-// validates in and removes at its end (mesh-cli ADR 009). It logs one
-// line of what it did. No sandbox sweeps nothing.
-//
-// Run again on the quartermaster's cadence (ScratchCheck, ADR-034) it
-// also keeps every session this process has open (sandbox.Sandbox.Live):
-// a validation between two steps or a session between Open and its
-// agent's first container has a pod with only its infra running, which
-// is exactly what the sweep would otherwise remove — and did, on the
-// dl360 on 2026-10-17, 184 validations in five hours dying as "step
-// exited 137" or "no pod with ID".
-func SweepSandbox(ctx context.Context, sb *sandbox.Sandbox, found []FoundSession, logf func(string, ...any)) sandbox.SweepResult {
-	if sb == nil || sb.Runtime == nil {
-		return sandbox.SweepResult{}
-	}
-	keep := sb.Live()
-	for _, s := range found {
-		if s.Sandboxed() {
-			keep.Pods = append(keep.Pods, s.State.Pod)
-			keep.Homes = append(keep.Homes, s.State.Home)
-		}
-	}
-	res, err := sandbox.SweepKeeping(ctx, sb.Runtime, sb.TempDir, keep)
-	if err != nil {
-		logf("sandbox: sweep at start: %s", strings.ReplaceAll(err.Error(), "\n", "; "))
-	}
-	logf("%s", res.Line())
-	return res
-}
-
 // EnsureImage makes the node image of version — the one node.yaml's
 // `sandbox.image` names for it — present on this machine, before the
 // node drains onto that version (mesh-specs ADR 007): pulled, or with
@@ -374,16 +339,4 @@ func ReleaseOnHostFallback(ctx context.Context, gw Gateway, itemID, nodeID, labe
 		_ = handInRefused(logf, nil, label, "FailWorkItem", err)
 	}
 	return wrapped
-}
-
-// releaseHostFallback is ReleaseOnHostFallback for the Runner's item,
-// then the hold that keeps this node off it for WorkspaceReleaseHold,
-// so a refused item does not spin between claim and release.
-func (r *Runner) releaseHostFallback(ctx context.Context, item gateway.WorkItem, label string, cause error) error {
-	sc, _ := r.Scopes.ByOrg(item.OrgID)
-	err := ReleaseOnHostFallback(ctx, r.GW, item.ID, sc.NodeID, label, cause, r.logf)
-	if ctx.Err() == nil {
-		r.Declines.HoldFor(item.ID, HostFallbackReason(cause), time.Now(), WorkspaceReleaseHold)
-	}
-	return err
 }

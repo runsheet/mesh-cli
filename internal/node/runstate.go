@@ -67,85 +67,14 @@ func (s RunState) Stopped(pid int) {
 	}
 	_ = os.Remove(s.DrainingPath())
 	_ = os.Remove(s.ScalingPath())
-	_ = os.Remove(s.HeldPath())
 	_ = os.Remove(s.SharesPath())
 	_ = os.Remove(s.StandingPath())
 	_ = os.Remove(s.FindingsPath())
-	_ = os.Remove(s.RuntimePath())
-}
-
-// WriteScaling leaves a ranged node's capacity in force for `mesh node
-// status`; a fixed one (ranged false) leaves it only while the host
-// back-off has something to show — hot, or still climbing back toward
-// the plan figure (Capacity < Max) — and removes it otherwise (adr-004's
-// amendment 2026-10-03).
-func (s RunState) WriteScaling(sc Scaling, ranged bool) error {
-	if !ranged && !(sc.Host != nil && (sc.Host.Hot || sc.Capacity < sc.Max)) {
-		if err := os.Remove(s.ScalingPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		return nil
-	}
-	data, err := json.Marshal(sc)
-	if err != nil {
-		return err
-	}
-	tmp := s.ScalingPath() + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.ScalingPath())
-}
-
-// Scaling reads what WriteScaling left: false when the node's capacity
-// is fixed, or nothing readable is there.
-func (s RunState) Scaling() (Scaling, bool) {
-	data, err := os.ReadFile(s.ScalingPath())
-	if err != nil {
-		return Scaling{}, false
-	}
-	var sc Scaling
-	if json.Unmarshal(data, &sc) != nil || sc.Max <= 0 {
-		return Scaling{}, false
-	}
-	return sc, true
 }
 
 // SharesPath is each served org's floor, held and ready as of the last
 // pass: node.shares (ADR-023, Reporting).
 func (s RunState) SharesPath() string { return filepath.Join(s.Dir, "node.shares") }
-
-// WriteShares leaves each served org's floor, held and ready for `mesh
-// node status`, atomic like WriteScaling; rows are written as given, []
-// with no org served.
-func (s RunState) WriteShares(rows []HoldingOrg) error {
-	if rows == nil {
-		rows = []HoldingOrg{}
-	}
-	data, err := json.Marshal(rows)
-	if err != nil {
-		return err
-	}
-	tmp := s.SharesPath() + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.SharesPath())
-}
-
-// Shares reads what WriteShares left; false when nothing is there or it
-// cannot be read.
-func (s RunState) Shares() ([]HoldingOrg, bool) {
-	data, err := os.ReadFile(s.SharesPath())
-	if err != nil {
-		return nil, false
-	}
-	var rows []HoldingOrg
-	if json.Unmarshal(data, &rows) != nil {
-		return nil, false
-	}
-	return rows, true
-}
 
 // StandingPath is each scheduled account's clock standing as of the
 // last tick: node.standing (goal

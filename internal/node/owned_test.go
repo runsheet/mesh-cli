@@ -6,14 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+
 	"maps"
 	"os"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -90,49 +89,8 @@ func ownedCfg() *Config {
 	return &Config{Slug: "mini", Name: mini, OwnerID: "44444444-4444-4444-8444-444444444444", NodeID: "22222222-2222-4222-8222-222222222222"}
 }
 
-func ownedLoop(t *testing.T, a *gateway.NodeAnswer) (*Loop, *bytes.Buffer) {
-	t.Helper()
-	var buf bytes.Buffer
-	scopes, err := ScopesFromAnswer(a, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	o := OwnerFrom(a)
-	return &Loop{Cfg: ownedCfg(), Scopes: scopes, Owned: &Owned{NodeID: a.NodeID, Owner: o}, Log: log.New(&buf, "", 0)}, &buf
-}
-
 func logLines(buf *bytes.Buffer) []string {
 	return strings.Split(strings.TrimSpace(buf.String()), "\n")
-}
-
-// A registration answered by registerNode.json: one owner registration
-// under the node's own id, and the loop's Scopes are the answer's three
-// orgs, every one on the answer's one NodeID.
-func TestOwnedRegisterFixtureThreeScopesOneNodeID(t *testing.T) {
-	cfg := ownedCfg()
-	s := &steps{takes: true, answer: answerFixture(t, "registerNode.json"), scopes: personScopes(t, cfg)}
-	reg, err := Register(context.Background(), s.registrar(), cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{"probe", "any org", "owner 22222222-2222-4222-8222-222222222222"}; !slices.Equal(s.did, want) {
-		t.Fatalf("did %q, want %q", s.did, want)
-	}
-	if reg.Owned == nil || reg.Owned.NodeID != "b99be3f5-2f54-54a7-9af5-49d9bfc96744" || reg.Owned.Owner.String() != "owned by Chris" || reg.Owned.Owner.Kind != "person" {
-		t.Fatalf("owned = %+v", reg.Owned)
-	}
-	loop := &Loop{Scopes: reg.Scopes, Owned: reg.Owned}
-	if len(loop.Scopes) != 3 {
-		t.Fatalf("scopes = %+v, want 3", loop.Scopes)
-	}
-	for _, sc := range loop.Scopes {
-		if sc.NodeID != "b99be3f5-2f54-54a7-9af5-49d9bfc96744" {
-			t.Fatalf("scope %s on node %s, want the answer's one id", sc.Name(), sc.NodeID)
-		}
-	}
-	if got := strings.Join(loop.Scopes.Names(), ", "); got != "runsheet, wardroomid, grapevine" {
-		t.Fatalf("names = %q", got)
-	}
 }
 
 // A node with no node_id yet registers under one from (owner, slug), so
@@ -217,80 +175,6 @@ func TestOwnedNodeIDDerivesFromTheEnterpriseIDNotThePerson(t *testing.T) {
 	}
 	if fromPerson := OwnedNodeID(cfg, cfg.OwnerKind(), personID); got == fromPerson {
 		t.Fatalf("OwnedNodeID derived from the enterprise id matches deriving from the person's owner_id %q — it must not", personID)
-	}
-}
-
-// heartbeatNode.json's answer adds foghornid: TakeAnswer serves four
-// orgs, grapevine by its slug, and logs the change as a reload does.
-func TestOwnedTakeAnswerServesTheFourthOrg(t *testing.T) {
-	loop, buf := ownedLoop(t, answerFixture(t, "registerNode.json"))
-	loop.TakeAnswer(answerFixture(t, "heartbeatNode.json"))
-	if len(loop.Scopes) != 4 {
-		t.Fatalf("scopes = %+v, want 4", loop.Scopes)
-	}
-	grapevine := false
-	for _, sc := range loop.Scopes {
-		grapevine = grapevine || sc.Name() == "grapevine"
-		if sc.NodeID != "b99be3f5-2f54-54a7-9af5-49d9bfc96744" {
-			t.Fatalf("scope %s on node %s", sc.Name(), sc.NodeID)
-		}
-	}
-	if !grapevine {
-		t.Fatalf("no scope named grapevine in %q", loop.Scopes.Names())
-	}
-	var orgs string
-	for _, l := range logLines(buf) {
-		if strings.HasPrefix(l, "orgs ") {
-			orgs = l
-		}
-	}
-	if orgs != "orgs runsheet, wardroomid, grapevine → runsheet, wardroomid, grapevine, foghornid" {
-		t.Fatalf("orgs line %q in log:\n%s", orgs, buf)
-	}
-}
-
-// The mini handed from Chris to anythink: the next answer's owner is
-// taken and logged, with no restart.
-func TestOwnedTakeAnswerHandOver(t *testing.T) {
-	loop, buf := ownedLoop(t, answerFixture(t, "registerNode.json"))
-	handed := answerFixture(t, "registerNode.json")
-	handed.Owner = gateway.NodeOwner{Kind: "enterprise", ID: "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb", Name: "anythink"}
-	loop.TakeAnswer(handed)
-	if want := "owner changed: Chris → anythink (enterprise)"; !slices.Contains(logLines(buf), want) {
-		t.Fatalf("log lacks %q:\n%s", want, buf)
-	}
-	if loop.Owned.Owner.Kind != "enterprise" || loop.Owned.Owner.Name != "anythink" {
-		t.Fatalf("owned = %+v", loop.Owned)
-	}
-	// the same owner again says nothing more
-	buf.Reset()
-	loop.TakeAnswer(handed)
-	if buf.Len() != 0 {
-		t.Fatalf("an unchanged answer logged:\n%s", buf)
-	}
-}
-
-// A heartbeat with no answer keeps the last scopes.
-func TestOwnedTakeAnswerNilKeepsScopes(t *testing.T) {
-	loop, buf := ownedLoop(t, answerFixture(t, "registerNode.json"))
-	before := slices.Clone(loop.Scopes)
-	loop.TakeAnswer(nil)
-	if !slices.Equal(loop.Scopes, before) || buf.Len() != 0 {
-		t.Fatalf("scopes %+v → %+v, log %q", before, loop.Scopes, buf)
-	}
-}
-
-// node.yaml's orgs restriction holds on the answer; one naming an org
-// the node is not served is logged, not fatal.
-func TestOwnedTakeAnswerRestriction(t *testing.T) {
-	loop, buf := ownedLoop(t, answerFixture(t, "registerNode.json"))
-	loop.restrict, loop.restrictSet = []string{"grapevine", "initech"}, true
-	loop.TakeAnswer(answerFixture(t, "heartbeatNode.json"))
-	if got := strings.Join(loop.Scopes.Names(), ", "); got != "grapevine" {
-		t.Fatalf("names = %q, want grapevine alone", got)
-	}
-	if !strings.Contains(buf.String(), "orgs: not a member of initech") {
-		t.Fatalf("log lacks the unserved org:\n%s", buf)
 	}
 }
 
@@ -416,25 +300,6 @@ func TestOwnedRegisterProbesBeforeResolving(t *testing.T) {
 	}
 }
 
-// On the owner contract the reload reads node.yaml alone: its orgs
-// restriction is applied to the last answer at once, and no scopes come
-// from it.
-func TestOwnedReloaderRestrictsTheLastAnswer(t *testing.T) {
-	loop, _ := ownedLoop(t, answerFixture(t, "registerNode.json"))
-	loop.TakeAnswer(answerFixture(t, "heartbeatNode.json"))
-	loop.Reload = OwnedReloader(func() (*Config, error) {
-		return &Config{Slug: "mini", Capacity: Fixed(2), Orgs: []string{"foghornid"}}, nil
-	})
-	got, err := loop.Reload(context.Background())
-	if err != nil || got.Scopes != nil || !got.OrgsRead || got.Capacity.Max != 2 {
-		t.Fatalf("reloaded %+v, %v", got, err)
-	}
-	loop.reload(context.Background())
-	if names := strings.Join(loop.Scopes.Names(), ", "); names != "foghornid" {
-		t.Fatalf("names = %q, want foghornid alone", names)
-	}
-}
-
 // An owned node still knows the per-org ids it registered under before,
 // so it adopts the sessions they started.
 func TestOwnedLegacyIDsAreThePerOrgOnes(t *testing.T) {
@@ -494,41 +359,6 @@ func TestOwnedRegisterUnmatchedRestrictionIsNotFatal(t *testing.T) {
 	}
 	if len(reg.Notes) != 1 || !strings.Contains(reg.Notes[0], "not a member of initech") {
 		t.Fatalf("logged %q, want the unmatched restriction once", reg.Notes)
-	}
-}
-
-// A heartbeat answer that drops orgs replaces the scopes: an org the
-// platform no longer serves is claimed from no more, and one naming no
-// org leaves the node serving none — only a nil answer keeps them.
-func TestOwnedTakeAnswerDropsRemovedOrgs(t *testing.T) {
-	loop, buf := ownedLoop(t, answerFixture(t, "heartbeatNode.json"))
-	a := answerFixture(t, "heartbeatNode.json")
-	a.Scopes = a.Scopes[:1]
-	loop.TakeAnswer(a)
-	if len(loop.Scopes) != 1 || loop.Scopes[0].Name() != (Scope{Login: a.Scopes[0].Login, Slug: a.Scopes[0].Slug}).Name() {
-		t.Fatalf("scopes %q, want the one org the answer names", loop.Scopes.Names())
-	}
-	a.Scopes = nil
-	loop.TakeAnswer(a)
-	if len(loop.Scopes) != 0 {
-		t.Fatalf("scopes %q after an answer naming no org, want none", loop.Scopes.Names())
-	}
-	if lines := logLines(buf); !strings.HasSuffix(lines[len(lines)-1], "→ none") {
-		t.Fatalf("log %q, want the last orgs line ending → none", lines)
-	}
-}
-
-// A restriction matching none of a heartbeat answer's orgs is logged,
-// and the node serves none of them.
-func TestOwnedTakeAnswerUnmatchedRestriction(t *testing.T) {
-	loop, buf := ownedLoop(t, answerFixture(t, "registerNode.json"))
-	loop.restrict, loop.restrictSet = []string{"initech"}, true
-	loop.TakeAnswer(answerFixture(t, "heartbeatNode.json"))
-	if len(loop.Scopes) != 0 {
-		t.Fatalf("scopes %q, want none", loop.Scopes.Names())
-	}
-	if !strings.Contains(buf.String(), "orgs: not a member of initech") {
-		t.Fatalf("log lacks the unmatched restriction:\n%s", buf)
 	}
 }
 
@@ -607,131 +437,6 @@ func (g *ownedGW) claimed() map[string]string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return maps.Clone(g.claims)
-}
-
-// An owned node's loop through Tick, no socket: registerNode.json's
-// answer serves three orgs on one id; a tick heartbeats once, under that
-// id, and claims from each of the three on it — grapevine, with no
-// login, named by its slug. When the next heartbeat's answer
-// (heartbeatNode.json) adds foghornid the tick after serves it too,
-// with no restart.
-func TestOwnedLoopClaimsFromEveryAnsweredOrgAndAFourthWithNoRestart(t *testing.T) {
-	const nodeID = "b99be3f5-2f54-54a7-9af5-49d9bfc96744"
-	registered, heartbeat := answerFixture(t, "registerNode.json"), answerFixture(t, "heartbeatNode.json")
-	gw := &ownedGW{items: map[string]gateway.WorkItem{}, claims: map[string]string{}}
-	names := map[string]string{} // org id → its name
-	for i, sa := range heartbeat.Scopes {
-		name := Scope{Login: sa.Login, Slug: sa.Slug}.Name()
-		names[sa.OrgID] = name
-		gw.items[sa.OrgID] = gateway.WorkItem{ID: fmt.Sprintf("e0000000-0000-4000-8000-00000000000%d", i), GoalID: fmt.Sprintf("c0000000-0000-4000-8000-00000000000%d", i),
-			OrgID: sa.OrgID, Seq: 1, Title: name + " work", Status: "ready"}
-	}
-	s := &steps{takes: true, answer: registered}
-	reg, err := Register(context.Background(), s.registrar(), ownedCfg(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var mu sync.Mutex
-	var ran []string
-	var buf bytes.Buffer
-	loop := &Loop{GW: gw, Cfg: &Config{Slug: "mini", Name: "mini", Capacity: Fixed(8)}, Scopes: reg.Scopes, Owned: reg.Owned,
-		Interval: time.Hour, Harness: "claude-code", Log: log.New(&buf, "", 0),
-		Dispatch: func(_ context.Context, item gateway.WorkItem) {
-			mu.Lock()
-			ran = append(ran, names[item.OrgID])
-			mu.Unlock()
-		}}
-	loop.TakeAnswer(reg.Answer)
-	gw.setAnswer(registered)
-
-	ctx := context.Background()
-	loop.Tick(ctx)
-	loop.wg.Wait()
-	if beats := gw.beatsNow(); !slices.Equal(beats, []string{nodeID}) {
-		t.Fatalf("heartbeats %q, want one under the node's id", beats)
-	}
-	claims := gw.claimed()
-	for _, sa := range registered.Scopes {
-		if claims[sa.OrgID] != nodeID {
-			t.Fatalf("%s's item claimed by %q, want %s (claims %v)", names[sa.OrgID], claims[sa.OrgID], nodeID, claims)
-		}
-	}
-	if len(claims) != 3 {
-		t.Fatalf("claims %v, want the three answered orgs", claims)
-	}
-	mu.Lock()
-	first := slices.Sorted(slices.Values(ran))
-	mu.Unlock()
-	if want := []string{"grapevine", "runsheet", "wardroomid"}; !slices.Equal(first, want) {
-		t.Fatalf("first tick ran %q, want %q", first, want)
-	}
-
-	gw.setAnswer(heartbeat)
-	loop.Tick(ctx) // the heartbeat's answer names foghornid: served from this tick on
-	loop.wg.Wait()
-	if beats := gw.beatsNow(); !slices.Equal(beats, []string{nodeID, nodeID}) {
-		t.Fatalf("heartbeats %q, want one per tick under the node's id", beats)
-	}
-	if got := gw.claimed()["cccccccc-3333-4333-8333-cccccccccccc"]; got != nodeID {
-		t.Fatalf("foghornid's item claimed by %q, want %s", got, nodeID)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(ran) != 4 || ran[3] != "foghornid" {
-		t.Fatalf("second tick ran %q, want foghornid added", ran)
-	}
-	for _, want := range []string{
-		"orgs runsheet, wardroomid, grapevine → runsheet, wardroomid, grapevine, foghornid",
-		"owner changed: Chris → anythink (enterprise)",
-	} {
-		if !slices.Contains(logLines(&buf), want) {
-			t.Fatalf("log lacks %q:\n%s", want, buf.String())
-		}
-	}
-}
-
-// node start hands the registration's answer to the loop before its
-// first tick: a reload that narrows node.yaml's orgs to runsheet applies
-// to it even though every heartbeat since answered nil.
-func TestOwnedStartHandsTheAnswerToTheLoop(t *testing.T) {
-	cfg := ownedCfg()
-	s := &steps{takes: true, answer: answerFixture(t, "registerNode.json")}
-	reg, err := Register(context.Background(), s.registrar(), cfg, cfg.Orgs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reg.Answer == nil {
-		t.Fatal("Registered carries no answer")
-	}
-	var buf bytes.Buffer
-	gw := &ownedGW{items: map[string]gateway.WorkItem{}, claims: map[string]string{}} // every heartbeat answers nil
-	// as nodeStart builds it
-	loop := &Loop{GW: gw, Cfg: cfg, Scopes: reg.Scopes, Owned: reg.Owned, Interval: time.Hour, Harness: "claude-code", Log: log.New(&buf, "", 0)}
-	loop.Reload = OwnedReloader(func() (*Config, error) {
-		return &Config{Slug: "mini", Name: mini, Capacity: Fixed(2), Orgs: []string{"runsheet"}}, nil
-	})
-	loop.TakeAnswer(reg.Answer)
-	// the answer's shares (registerNode.json's fixture) are new to the
-	// loop, so taking it logs that line alone — no orgs or owner change,
-	// since this is the registration's own answer, not yet a reload
-	if got := strings.TrimSpace(buf.String()); got != "shares (platform) none → grapevine 1, runsheet 2, wardroomid 1" {
-		t.Fatalf("taking the registration's own answer logged:\n%s", buf.String())
-	}
-	buf.Reset()
-	loop.Tick(context.Background())
-	loop.wg.Wait()
-	if len(gw.beatsNow()) != 1 {
-		t.Fatalf("heartbeats %q", gw.beatsNow())
-	}
-	if names := strings.Join(loop.CurrentScopes().Names(), ", "); names != "runsheet" {
-		t.Fatalf("scopes %q, want runsheet alone", names)
-	}
-	if !slices.Contains(logLines(&buf), "orgs runsheet, wardroomid, grapevine → runsheet") {
-		t.Fatalf("log lacks the orgs change:\n%s", buf.String())
-	}
-	if line := StartLine(cfg, reg); line != "node Chris's Mini (mini) owned by Chris, serving runsheet, wardroomid, grapevine" {
-		t.Fatalf("start line %q", line)
-	}
 }
 
 // Every registration records its contract in node.yaml beside the

@@ -51,11 +51,3 @@ func ReportingStartLine(rep *tripline.Reporter) string {
 	}
 	return "tripline reporting on (" + rep.Endpoint() + ")"
 }
-
-// repoOf is res's repo as owner/name, "" with none resolved.
-func repoOf(res *Resolved) string {
-	if res == nil || res.Repo == nil {
-		return ""
-	}
-	return res.Repo.FullName()
-}
