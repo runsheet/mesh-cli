@@ -5,7 +5,6 @@ package commands
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -173,123 +172,6 @@ func TestNodeUpgradeReleaseSwapsAndRestartsWithoutDraining(t *testing.T) {
 	}
 }
 
-// A sandboxed node whose unit kills its cgroup (systemd's default
-// KillMode=control-group) would end its sessions with it: refused, naming
-// the fix, unless --force.
-func TestNodeUpgradeRefusesASandboxedNodeWhoseUnitKillsItsPods(t *testing.T) {
-	noDrain(t)
-	u, f, svc := upgradeFixture(t)
-	u.Sandboxed = func() bool { return true }
-	u.KillMode = func(context.Context) (string, bool) { return "control-group", true }
-	bin := fakeBinary(t, "mesh v9.9.9")
-	err := u.run(context.Background(), "", bin, false)
-	if err == nil || !strings.Contains(err.Error(), "KillMode=control-group") || !strings.Contains(err.Error(), "KillMode=process") {
-		t.Fatalf("err = %v", err)
-	}
-	f.unchanged(t)
-	if len(svc.calls) != 0 {
-		t.Fatalf("restarted: %q", svc.calls)
-	}
-	if err := u.run(context.Background(), "", bin, true); err != nil || len(svc.calls) != 1 {
-		t.Fatalf("--force: %v, restarts %q", err, svc.calls)
-	}
-}
-
-// A sandboxed node whose unit signals the node alone (KillMode=process)
-// hot-swaps as its self-update does: its pods outlive it and the new
-// process adopts them, with no drain and no --force.
-func TestNodeUpgradeHotSwapsASandboxedNodeWithKillModeProcess(t *testing.T) {
-	noDrain(t)
-	u, _, svc := upgradeFixture(t)
-	u.Sandboxed = func() bool { return true }
-	u.KillMode = func(context.Context) (string, bool) { return "process", true }
-	if err := u.run(context.Background(), "", fakeBinary(t, "mesh v9.9.9"), false); err != nil || len(svc.calls) != 1 {
-		t.Fatalf("err %v, restarts %q", err, svc.calls)
-	}
-}
-
-// With no systemd unit (launchd, or a node no service runs) nothing
-// kills the pods' cgroup, so a sandboxed node is upgraded.
-func TestNodeUpgradeASandboxedNodeWithNoUnit(t *testing.T) {
-	noDrain(t)
-	u, _, svc := upgradeFixture(t)
-	u.Sandboxed = func() bool { return true }
-	u.KillMode = func(context.Context) (string, bool) { return "", false }
-	if err := u.run(context.Background(), "", fakeBinary(t, "mesh v9.9.9"), false); err != nil || len(svc.calls) != 1 {
-		t.Fatalf("err %v, restarts %q", err, svc.calls)
-	}
-}
-
-// Under systemd --user the node's unit is restarted, by its name.
-func TestHostServiceRestartsTheSystemdUnit(t *testing.T) {
-	noDrain(t)
-	var ran []string
-	s := hostService{GOOS: "linux", Command: func(_ context.Context, name string, args ...string) ([]byte, error) {
-		ran = append(ran, name+" "+strings.Join(args, " "))
-		return nil, nil
-	}}
-	var out bytes.Buffer
-	if err := s.Restart(context.Background(), node.RunState{Dir: t.TempDir()}, &out); err != nil {
-		t.Fatal(err)
-	}
-	want := []string{
-		"systemctl --user is-active --quiet io.projectmesh.mesh-node.service",
-		"systemctl --user restart io.projectmesh.mesh-node.service",
-	}
-	if strings.Join(ran, "|") != strings.Join(want, "|") {
-		t.Fatalf("ran %q, want %q", ran, want)
-	}
-}
-
-// Under launchd the agent is kickstarted with -k.
-func TestHostServiceKickstartsTheLaunchAgent(t *testing.T) {
-	var ran []string
-	s := hostService{GOOS: "darwin", Command: func(_ context.Context, name string, args ...string) ([]byte, error) {
-		ran = append(ran, name+" "+strings.Join(args, " "))
-		return nil, nil
-	}}
-	if err := s.Restart(context.Background(), node.RunState{Dir: t.TempDir()}, io.Discard); err != nil {
-		t.Fatal(err)
-	}
-	if len(ran) != 2 || !strings.HasPrefix(ran[1], "launchctl kickstart -k gui/") || !strings.HasSuffix(ran[1], "/"+node.ServiceLabel) {
-		t.Fatalf("ran %q", ran)
-	}
-}
-
-// With no service, the pidfile's process is sent SIGHUP: here the test's
-// own, whose restart handler — the one `node start` installs — is called.
-// No drain is signalled.
-func TestHostServiceSignalsANodeNoServiceRuns(t *testing.T) {
-	noDrain(t)
-	state := node.RunState{Dir: t.TempDir()}
-	if err := state.Started(os.Getpid()); err != nil {
-		t.Fatal(err)
-	}
-	restarted := make(chan struct{}, 1)
-	stop := onRestartSignal(func() { restarted <- struct{}{} })
-	defer stop()
-	s := hostService{GOOS: "linux", Command: func(context.Context, string, ...string) ([]byte, error) {
-		return nil, errors.New("inactive")
-	}}
-	var out bytes.Buffer
-	if err := s.Restart(context.Background(), state, &out); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-restarted:
-	case <-time.After(5 * time.Second):
-		t.Fatal("SIGHUP never reached the restart handler")
-	}
-	if !strings.Contains(out.String(), "restarting") {
-		t.Fatalf("said %q", out.String())
-	}
-	state.Stopped(os.Getpid())
-	out.Reset()
-	if err := s.Restart(context.Background(), state, &out); err != nil || !strings.Contains(out.String(), "No node is running") {
-		t.Fatalf("no node: %v, %q", err, out.String())
-	}
-}
-
 func TestParseVersionLine(t *testing.T) {
 	for in, want := range map[string]string{
 		"mesh v1.2.3\n":                    "v1.2.3",
@@ -356,9 +238,9 @@ func TestBinaryVersion(t *testing.T) {
 	}
 }
 
-// v1Service signals the Mesh v1 node's own pidfile SIGHUP, as hostService
-// does with no service running: here the test's own restart handler (the
-// one `mesh node run --api v1` installs) is called. No drain is signalled.
+// v1Service signals the Mesh v1 node's own pidfile SIGHUP: here the
+// test's own restart handler (the one `mesh node run` installs) is
+// called. No drain is signalled.
 func TestV1ServiceSignalsANodeNoServiceRuns(t *testing.T) {
 	noDrain(t)
 	state := node.RunState{Dir: t.TempDir()}
@@ -384,32 +266,5 @@ func TestV1ServiceSignalsANodeNoServiceRuns(t *testing.T) {
 	out.Reset()
 	if err := (v1Service{}).Restart(context.Background(), state, &out); err != nil || !strings.Contains(out.String(), "No Mesh v1 node is running") {
 		t.Fatalf("no node: %v, %q", err, out.String())
-	}
-}
-
-// upgrade picks the node: --api names it; with none, the one running; a
-// legacy and a v1 node both running need --api; a v1 node restarts
-// through v1Service.
-func TestUpgradeEitherPicksTheNode(t *testing.T) {
-	noDrain(t)
-	legacy := node.RunState{Dir: t.TempDir()}
-	v1 := node.RunState{Dir: t.TempDir()}
-	ctx := context.Background()
-	if err := upgradeEither(ctx, io.Discard, legacy, v1, "v2", "", "", false); err == nil || !strings.Contains(err.Error(), "v0 or v1") {
-		t.Fatalf("--api v2: %v", err)
-	}
-	pid := os.Getpid()
-	if err := legacy.Started(pid); err != nil {
-		t.Fatal(err)
-	}
-	if err := v1Started(v1, pid); err != nil {
-		t.Fatal(err)
-	}
-	if err := upgradeEither(ctx, io.Discard, legacy, v1, "", "", "", false); err == nil || !strings.Contains(err.Error(), "both run") {
-		t.Fatalf("both running: %v", err)
-	}
-	legacy.Stopped(pid)
-	if err := upgradeEither(ctx, io.Discard, legacy, v1, "", "", "nonexistent-binary", false); err == nil || !strings.Contains(err.Error(), "refused") {
-		t.Fatalf("v1 implied, bad binary: %v", err)
 	}
 }

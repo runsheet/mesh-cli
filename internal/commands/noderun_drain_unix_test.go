@@ -3,9 +3,11 @@
 package commands
 
 import (
+	"context"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +16,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/node"
 )
 
-// `mesh node run --api v1` end to end in this process, against the
+// `mesh node run` end to end in this process, against the
 // fake Mesh: it leaves its pidfile and status in ~/.mesh/node-v1,
 // `mesh node drain` signals it SIGUSR1 with a wait, the node tells Mesh
 // it drains, takes nothing more, and the command returns nil — the
@@ -28,11 +30,11 @@ func TestNodeRunV1DrainsOnTheDrainCommandAndExitsZero(t *testing.T) {
 	mesh := httptest.NewServer(fake)
 	t.Cleanup(mesh.Close)
 	t.Setenv("MESH_API_URL", mesh.URL)
-	saved := []any{nodeRunAPI, nodeRunName, nodeRunWorkRoot, nodeRunOnce}
+	saved := []any{nodeRunName, nodeRunWorkRoot, nodeRunOnce}
 	t.Cleanup(func() {
-		nodeRunAPI, nodeRunName, nodeRunWorkRoot, nodeRunOnce = saved[0].(string), saved[1].(string), saved[2].(string), saved[3].(bool)
+		nodeRunName, nodeRunWorkRoot, nodeRunOnce = saved[0].(string), saved[1].(string), saved[2].(bool)
 	})
-	nodeRunAPI, nodeRunName, nodeRunWorkRoot, nodeRunOnce = "v1", "drain-test", filepath.Join(home, "work"), false
+	nodeRunName, nodeRunWorkRoot, nodeRunOnce = "drain-test", filepath.Join(home, "work"), false
 
 	done := make(chan error, 1)
 	go func() { done <- nodeRunCmd.RunE(nodeRunCmd, nil) }()
@@ -60,9 +62,8 @@ func TestNodeRunV1DrainsOnTheDrainCommandAndExitsZero(t *testing.T) {
 		t.Fatalf("status lines %v, %v", lines, ok)
 	}
 
-	legacy, _ := node.DefaultRunState()
 	var out strings.Builder
-	if err := drainEither(legacy, v1, "", 10*time.Minute, &out); err != nil {
+	if err := drainEither(v1, 10*time.Minute, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "after 10m0s is handed back node_update") {
@@ -97,36 +98,6 @@ func TestNodeRunV1DrainsOnTheDrainCommandAndExitsZero(t *testing.T) {
 	}
 }
 
-// drain picks the node: --api names it; with none, the one running; a
-// legacy and a v1 node both running need --api; --wait is the v1
-// node's alone.
-func TestDrainEitherPicksTheNode(t *testing.T) {
-	legacy := node.RunState{Dir: t.TempDir()}
-	v1 := node.RunState{Dir: t.TempDir()}
-	if err := drainEither(legacy, v1, "v2", 0, &strings.Builder{}); err == nil || !strings.Contains(err.Error(), "v0 or v1") {
-		t.Fatalf("--api v2: %v", err)
-	}
-	if err := drainEither(legacy, v1, "v1", 0, &strings.Builder{}); err == nil || !strings.Contains(err.Error(), "no Mesh v1 node") {
-		t.Fatalf("no v1 node: %v", err)
-	}
-	if err := drainEither(legacy, v1, "", time.Minute, &strings.Builder{}); err == nil || !strings.Contains(err.Error(), "--wait is the Mesh v1 node's") {
-		t.Fatalf("--wait on the legacy node: %v", err)
-	}
-	pid := os.Getpid()
-	if err := legacy.Started(pid); err != nil {
-		t.Fatal(err)
-	}
-	if err := v1Started(v1, pid); err != nil {
-		t.Fatal(err)
-	}
-	if err := drainEither(legacy, v1, "", 0, &strings.Builder{}); err == nil || !strings.Contains(err.Error(), "both run") {
-		t.Fatalf("both running: %v", err)
-	}
-	if err := drainEither(legacy, v1, "", -time.Second, &strings.Builder{}); err == nil {
-		t.Fatal("a negative wait was taken")
-	}
-}
-
 // The wait a drain asked for is read once, as the signal arrives.
 func TestTheDrainWaitIsReadOnce(t *testing.T) {
 	v1 := node.RunState{Dir: t.TempDir()}
@@ -138,5 +109,72 @@ func TestTheDrainWaitIsReadOnce(t *testing.T) {
 	}
 	if d := takeV1DrainWait(v1); d != 0 {
 		t.Fatalf("wait read twice: %s", d)
+	}
+}
+
+// With no v1 node running but a legacy node (`mesh node start`) live,
+// drain, status and upgrade all say so clearly instead of reading as
+// if nothing runs on the machine (adr-044's amendment, the --api v0
+// path is gone): drain refuses naming the legacy pid, status adds a
+// line naming it beside the v1 "not running" line, and upgrade (whose
+// binary swap already happened) reports it rather than claiming the
+// next `mesh node run` will pick up the new binary.
+func TestOnlyALegacyNodeRunningIsNamedNotMistakenForNothingRunning(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	legacy, err := node.DefaultRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Started(os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	v1, err := v1RunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := liveNode(v1); ok {
+		t.Fatal("no v1 node was started")
+	}
+
+	// drain refuses clearly, naming the legacy node's pid, rather than
+	// drainV1Node's "no Mesh v1 node is running".
+	var drainOut strings.Builder
+	err = drainEither(v1, 0, &drainOut)
+	if err == nil {
+		t.Fatal("drainEither = nil, want a refusal naming the legacy node")
+	}
+	if !strings.Contains(err.Error(), "legacy node") || !strings.Contains(err.Error(), "mesh node start") {
+		t.Fatalf("drainEither = %v, want it to name the legacy node", err)
+	}
+	wantPID := strconv.Itoa(os.Getpid())
+	if !strings.Contains(err.Error(), wantPID) {
+		t.Fatalf("drainEither = %v, want pid %s", err, wantPID)
+	}
+
+	// status still says the v1 node is not running, but no longer only
+	// that: it also names the legacy node running instead.
+	lines, ok := v1StatusLines(v1, time.Now())
+	if !ok {
+		t.Fatal("v1StatusLines ok = false")
+	}
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "no Mesh v1 node running") {
+		t.Fatalf("status lines %v, want the v1 \"not running\" line kept", lines)
+	}
+	if !strings.Contains(joined, "legacy node") || !strings.Contains(joined, wantPID) {
+		t.Fatalf("status lines %v, want a line naming the running legacy node", lines)
+	}
+
+	// upgrade's restart step (the binary swap already done) reports the
+	// running legacy node rather than claiming the next `mesh node run`
+	// will carry the new binary.
+	var upgradeOut strings.Builder
+	if err := (v1Service{}).Restart(context.Background(), v1, &upgradeOut); err != nil {
+		t.Fatalf("v1Service.Restart = %v, want nil (the swap already succeeded)", err)
+	}
+	if !strings.Contains(upgradeOut.String(), "legacy node") || !strings.Contains(upgradeOut.String(), wantPID) {
+		t.Fatalf("upgrade restart printed %q, want it to name the running legacy node", upgradeOut.String())
 	}
 }

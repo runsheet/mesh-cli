@@ -13,7 +13,7 @@ import (
 
 // The node as a service of the operator's login session: on macOS a
 // launchd LaunchAgent, on Linux a systemd user unit. Both keep
-// `mesh node start` alive across crashes and logins (KeepAlive /
+// `mesh node run` alive across crashes and logins (KeepAlive /
 // Restart=always) and put the tools a session needs — claude, gh, git —
 // on PATH; the node's token and config are read from ~/.mesh as ever.
 // The node writes ~/.mesh/node.log itself, capped and rotated
@@ -76,7 +76,7 @@ func SystemdKillMode(ctx context.Context, run func(ctx context.Context, name str
 type ServiceSpec struct {
 	// Exe is the mesh binary, absolute.
 	Exe string
-	// Args follow `node start`.
+	// Args follow `node run`.
 	Args []string
 	// Home is the operator's home; ~/.mesh lives there.
 	Home string
@@ -154,7 +154,7 @@ var launchAgentTmpl = template.Must(template.New("plist").Parse(`<?xml version="
 	<array>
 		<string>{{.Exe}}</string>
 		<string>node</string>
-		<string>start</string>
+		<string>run</string>
 {{- range .Args}}
 		<string>{{.}}</string>
 {{- end}}
@@ -195,7 +195,7 @@ Description=Mesh node: runs work items of goals on this machine
 After=network-online.target
 
 [Service]
-ExecStart={{.Exe}} node start{{range .Args}} {{.}}{{end}}
+ExecStart={{.Exe}} node run{{range .Args}} {{.}}{{end}}
 WorkingDirectory={{.Home}}
 Environment=PATH={{.Path}}
 Environment=HOME={{.Home}}
