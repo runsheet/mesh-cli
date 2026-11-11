@@ -186,7 +186,19 @@ func checkout(ctx context.Context, grant *gitrelay.Grant, b *meshapi.Brief, work
 		}
 	}
 	target := b.Code.BaseSHA
-	if target == "" && b.Code.BaseRef != "" {
+	switch {
+	case target != "":
+		// The clone's default refspecs name only refs/heads/* and tags, so
+		// a base reachable only through an out-of-band ref -- a changeset
+		// pin, refs/runsheet/changesets/<id> -- was never transferred, and
+		// --dissociate copies only what the clone fetched: the mirror's
+		// own copy (resources.Mirrors.Sync) does not reach the workspace
+		// either. The SHA is the tip of its pin ref on origin, so a fetch
+		// naming it directly is answered without the ref's name.
+		if _, err := git(workspace, "fetch", "-q", "origin", target); err != nil {
+			return nil, err
+		}
+	case b.Code.BaseRef != "":
 		target = "FETCH_HEAD"
 	}
 	if target != "" {
