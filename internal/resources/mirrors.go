@@ -123,6 +123,15 @@ func (m *Mirrors) lock(dir string) func() {
 // URL for the repository — making it on first use, and answers its
 // directory. Leases of one mirror sync one at a time. A mirror whose
 // fetch fails is left as it was; the caller clones without it.
+//
+// The fetch takes every branch, every tag and every ref under
+// refs/runsheet/changesets/ — the pin a finished build's lease points
+// at its final head with (push {ref: pin_to}), which a later lease can
+// resume from (checkout.go's resumePushed) even once the commit is on
+// no branch or tag of its own. Without it the mirror would answer a
+// clone that borrows its objects with nothing to find there, and the
+// resumed lease would have to fetch that history over again from
+// origin on every lease.
 func (m *Mirrors) Sync(ctx context.Context, key MirrorKey, origin string) (string, error) {
 	dir, err := m.Dir(key)
 	if err != nil {
@@ -144,7 +153,7 @@ func (m *Mirrors) Sync(ctx context.Context, key MirrorKey, origin string) (strin
 	// fetch's own flag, since -c fetch.writeCommitGraph=false can still
 	// lose to a later --write-commit-graph were one ever added to
 	// GitArgs. Together the mirror writes none of its own.
-	if out, err := m.git(ctx, dir, "-c", "core.commitGraph=false", "fetch", "-q", "--prune", "--no-tags", "--no-write-commit-graph", origin, "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"); err != nil {
+	if out, err := m.git(ctx, dir, "-c", "core.commitGraph=false", "fetch", "-q", "--prune", "--no-tags", "--no-write-commit-graph", origin, "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*", "+refs/runsheet/changesets/*:refs/runsheet/changesets/*"); err != nil {
 		return "", fmt.Errorf("resources: syncing the mirror: %v: %s", err, lastLine(out))
 	}
 	if err := shedCommitGraph(dir); err != nil {
