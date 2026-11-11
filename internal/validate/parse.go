@@ -19,12 +19,15 @@ import (
 // ran for 0ms). Output is the test's own accumulated "output" events'
 // text, kept only for a fail or a timeout — never for a pass or a skip,
 // where it is never needed — so it survives a step's capped Report.
+// Retry is this test's own outcome of the step's by-name retry (Step.Retry),
+// nil when the test did not fail or the step names no Retry.
 type TestResult struct {
-	Name      string `json:"name"`
-	Package   string `json:"package"`
-	Action    string `json:"action"`
-	ElapsedMs int64  `json:"elapsedMs"`
-	Output    string `json:"output,omitempty"`
+	Name      string      `json:"name"`
+	Package   string      `json:"package"`
+	Action    string      `json:"action"`
+	ElapsedMs int64       `json:"elapsedMs"`
+	Output    string      `json:"output,omitempty"`
+	Retry     *TestResult `json:"retry,omitempty"`
 }
 
 // ParseGoTestJSON counts `go test -json` events: each Action of pass,

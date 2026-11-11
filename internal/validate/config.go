@@ -131,6 +131,18 @@ type Step struct {
 	// 0 (the file leaving it out) and 1 are one run; never more than
 	// MaxShards.
 	Shards int
+	// Retry is the command that re-runs one failing test by name alone,
+	// "{test}" and "{package}" replaced with the failing test's own name
+	// and package (as "{shard}" is replaced in Results and Reports):
+	// "go test -run '^{test}$' {package}". Empty (the file leaving it
+	// out) retries nothing: a failing test stops the unit as it always
+	// did.
+	Retry string
+	// RunToEnd keeps the unit running past a test the retry (Retry)
+	// still failed, instead of stopping it there: every test the unit
+	// would otherwise have streamed is still run, and the confirmed
+	// test's own failure (and its failed retry) is still recorded.
+	RunToEnd bool
 }
 
 // MaxShards bounds a suite's shards: each is a pod with its own
@@ -175,6 +187,8 @@ type rawStep struct {
 	Results   string   `yaml:"results"`
 	Group     string   `yaml:"group"`
 	Shards    int      `yaml:"shards"`
+	Retry     string   `yaml:"retry"`
+	RunToEnd  bool     `yaml:"run_to_end"`
 }
 
 // Load reads <dir>/.runsheet/validate.yml. A missing file is
@@ -228,6 +242,8 @@ func Parse(data []byte) (Config, error) {
 			Results:   s.Results,
 			Group:     strings.TrimSpace(s.Group),
 			Shards:    s.Shards,
+			Retry:     strings.TrimSpace(s.Retry),
+			RunToEnd:  s.RunToEnd,
 		}
 		if step.Name == "" {
 			return Config{}, fmt.Errorf("suite %d has no name", i+1)

@@ -320,6 +320,10 @@ type ran struct {
 	duration       time.Duration
 	stopped        bool
 	stopReason     string
+	// retries is each retried test's own outcome (retryKey to its
+	// TestResult), set when the step names a Retry and one of its
+	// tests failed.
+	retries map[string]TestResult
 }
 
 // unitStop is one unit's Options.OnLane stop func, and whether it was
@@ -496,13 +500,22 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 			}
 			out := &ran{}
 			start := time.Now()
+			unitOnTest := onTest
+			var sup *shardSupervisor
+			if st.Retry != "" {
+				sup = newShardSupervisor(lctx, st, r, ls.stop, onTest)
+				unitOnTest = sup.onStream
+			}
 			stdout := io.Writer(&out.stdout)
-			if onTest != nil {
-				stdout = io.MultiWriter(&out.stdout, newTestEventWriter(onTest))
+			if unitOnTest != nil {
+				stdout = io.MultiWriter(&out.stdout, newTestEventWriter(unitOnTest))
 			}
 			out.exitCode, out.runErr = r.Run(uctx, shardCommand(st.Command, u), st.Timeout, stdout, &out.stderr)
 			cancelUnit()
 			out.duration = time.Since(start)
+			if sup != nil {
+				out.retries = sup.outcomes()
+			}
 			if reason, didStop := ls.stopped(); didStop {
 				out.stopped = true
 				out.stopReason = reason
@@ -591,6 +604,12 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 			run, passed, failed, report, tests, err := parseResults(opts.Dir, sh, out.stdout.Bytes())
 			if err != nil {
 				return results, err
+			}
+			for i := range tests {
+				if rt, ok := out.retries[retryKey(tests[i].Package, tests[i].Name)]; ok {
+					cp := rt
+					tests[i].Retry = &cp
+				}
 			}
 			sr := StepResult{
 				Name:        st.Name,
