@@ -300,6 +300,35 @@ func (p *Push) call(ctx context.Context, args map[string]any) (string, error) {
 	return string(b), nil
 }
 
+// NodePush pushes sha of workspace to ref as the node itself, not a
+// session (nodev1's final pin, adr-050): through pusher, a lease's relay
+// sidecar, when set, else through grant's loopback — the push tool's two
+// paths, so the relay's push rules judge it as they judge a session's.
+func NodePush(ctx context.Context, grant Grant, pusher Pusher, workspace, repo, ref, sha string) error {
+	ctx, cancel := context.WithTimeout(ctx, pushTimeout)
+	defer cancel()
+	if pusher != nil {
+		res, err := pusher(ctx, ref, sha, "")
+		switch {
+		case err != nil:
+			return fmt.Errorf("pushing %s to %s: %v", short(sha), ref, err)
+		case res.Refused != "":
+			return fmt.Errorf("the relay refused the push to %s: %s", ref, res.Refused)
+		case !res.Pushed:
+			return fmt.Errorf("pushing %s to %s: %s", short(sha), ref, res.Failed)
+		}
+		return nil
+	}
+	if grant == nil || repo == "" {
+		return fmt.Errorf("no git relay to push %s through", ref)
+	}
+	target := grant.Base() + repo + ".git"
+	if out, err := git(ctx, workspace, "push", "--porcelain", "--no-verify", target, sha+":"+ref); err != nil {
+		return fmt.Errorf("pushing %s to %s: %s", short(sha), ref, strings.ReplaceAll(lastLines(out, 5), target, "<relay>"))
+	}
+	return nil
+}
+
 // leaseHint is what a refused unleased push of push_to adds: git refused
 // it as no fast-forward, which a lease from where the job found it can
 // replace.

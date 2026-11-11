@@ -328,3 +328,129 @@ func TestPushToolIgnoresWhatTheSessionDidToItsCheckout(t *testing.T) {
 		}
 	}
 }
+
+// pinBrief is a write job whose kind names the push node tool, with a
+// push rule for its own branch (push_to, fast-forward-only by default)
+// and one exact, create-only pin ref — the one ref the brief's push
+// rules grant a single push to (adr-050, meshapi.Git.Pin).
+func pinBrief(b *meshapi.Brief) {
+	b.Git = &meshapi.Git{Host: "github.com", Repo: "acme/fixture", Access: "write", Push: []meshapi.PushRule{
+		{Ref: "refs/heads/mesh/*"},
+		{Ref: "refs/pins/final", CreateOnly: true},
+	}}
+	b.Code.PushTo = "mesh/j-1"
+	b.NodeTools = []string{PushTool}
+}
+
+// finishPin is the "pin" object a lease's finish result carries, after
+// adr-050.
+func finishPin(t *testing.T, g *rig) map[string]any {
+	t.Helper()
+	calls := g.fake.Calls("finish")
+	if len(calls) != 1 {
+		t.Fatalf("%d finish calls, want 1", len(calls))
+	}
+	var fin meshapi.FinishRequest
+	if err := json.Unmarshal(calls[0].Body, &fin); err != nil {
+		t.Fatalf("the finish call: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(fin.Result, &result); err != nil {
+		t.Fatalf("the finish result: %v", err)
+	}
+	pin, ok := result["pin"].(map[string]any)
+	if !ok {
+		t.Fatalf("the finish names no pin: %s", fin.Result)
+	}
+	return pin
+}
+
+// The node pins a lease's final head itself (adr-050): a session that
+// commits and pushes its branch but never touches its brief's one
+// exact, create-only pin ref still ends with the pin pushed, by the
+// node, to push_to's final head — and the finish names what it did.
+func TestTheNodePinsTheFinalHeadItself(t *testing.T) {
+	var head string
+	sess := &stubSession{calls: []string{"conform/submit"}, result: SessionResult{SessionID: "sess-pin-1", Text: "done"}}
+	sess.inspect = func(spec SessionSpec) {
+		sessionGit(spec.Workspace, "checkout", "-q", "-b", "work")
+		head = commitIn(t, spec.Workspace, "one")
+		if text, refused, err := callTool(context.Background(), spec.Servers[NodeToolsServer], PushTool, map[string]any{"ref": "mesh/j-1"}); err != nil || refused {
+			t.Fatalf("pushing mesh/j-1: refused=%v %s %v", refused, text, err)
+		}
+	}
+	g := newRig(t, sess)
+	job := g.offer(t, pinBrief)
+	if err := run(t, g, context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	lease := g.fake.LeaseOf(job)
+	if g.fake.Ended(lease) != "finish" {
+		t.Fatalf("lease %s ended %q", lease, g.fake.Ended(lease))
+	}
+
+	// the node, not the session, pinned the final head
+	if got := g.github.ref("refs/pins/final"); got != head {
+		t.Fatalf("the pin is %q, want the final head %s", got, head)
+	}
+	if got := g.github.ref("refs/heads/mesh/j-1"); got != head {
+		t.Fatalf("mesh/j-1 is %q, want %s", got, head)
+	}
+
+	pin := finishPin(t, g)
+	if pin["ref"] != "refs/pins/final" || pin["sha"] != head || pin["head_sha"] != head || pin["pushed"] != true {
+		t.Fatalf("the finish's pin is %+v, want ref refs/pins/final, sha and head_sha %s, pushed true", pin, head)
+	}
+	if _, mismatch := pin["mismatch"]; mismatch {
+		t.Fatalf("the finish's pin names a mismatch: %+v", pin)
+	}
+}
+
+// A session that pushes its brief's pin ref itself, early, to a commit
+// that is not its branch's eventual final head, is left exactly where
+// the session put it: the node never moves it, no push is attempted,
+// and the finish names the mismatch with both shas (adr-050).
+func TestANodeLeavesASelfPinnedRefUnmovedOnMismatch(t *testing.T) {
+	var early, final string
+	sess := &stubSession{calls: []string{"conform/submit"}, result: SessionResult{SessionID: "sess-pin-2", Text: "done"}}
+	sess.inspect = func(spec SessionSpec) {
+		ctx := context.Background()
+		sessionGit(spec.Workspace, "checkout", "-q", "-b", "work")
+		early = commitIn(t, spec.Workspace, "one")
+		if text, refused, err := callTool(ctx, spec.Servers[NodeToolsServer], PushTool, map[string]any{"ref": "refs/pins/final"}); err != nil || refused {
+			t.Fatalf("pushing the pin early: refused=%v %s %v", refused, text, err)
+		}
+		final = commitIn(t, spec.Workspace, "two")
+		if text, refused, err := callTool(ctx, spec.Servers[NodeToolsServer], PushTool, map[string]any{"ref": "mesh/j-1"}); err != nil || refused {
+			t.Fatalf("pushing mesh/j-1: refused=%v %s %v", refused, text, err)
+		}
+	}
+	g := newRig(t, sess)
+	job := g.offer(t, pinBrief)
+	if err := run(t, g, context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	lease := g.fake.LeaseOf(job)
+	if g.fake.Ended(lease) != "finish" {
+		t.Fatalf("lease %s ended %q", lease, g.fake.Ended(lease))
+	}
+	if early == final {
+		t.Fatal("the two commits are the same; the test proves nothing")
+	}
+
+	// the pin is left exactly where the session put it, never moved
+	if got := g.github.ref("refs/pins/final"); got != early {
+		t.Fatalf("the pin moved to %q, want it left at the early commit %s", got, early)
+	}
+	if got := g.github.ref("refs/heads/mesh/j-1"); got != final {
+		t.Fatalf("mesh/j-1 is %q, want the final head %s", got, final)
+	}
+
+	pin := finishPin(t, g)
+	if pin["ref"] != "refs/pins/final" || pin["sha"] != early || pin["head_sha"] != final || pin["pushed"] != false {
+		t.Fatalf("the finish's pin is %+v, want ref refs/pins/final, sha %s, head_sha %s, pushed false", pin, early, final)
+	}
+	if mismatch, _ := pin["mismatch"].(bool); !mismatch {
+		t.Fatalf("the finish's pin names no mismatch: %+v", pin)
+	}
+}
