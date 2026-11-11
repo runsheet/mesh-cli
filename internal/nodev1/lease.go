@@ -633,6 +633,9 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		st := settle(b, fin, res.Text, gate.refused())
 		o.finish, o.noFinish = st.result, st.noFinish
 		r.handInLearnings(ctx, b, sock, fin, st.learnings)
+		if o.noFinish == "" {
+			o.finish = r.finalPin(ctx, b, grant, pusher, workspace, o.finish)
+		}
 	}
 	return o
 }

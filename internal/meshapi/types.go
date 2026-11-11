@@ -3,6 +3,7 @@ package meshapi
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -368,6 +369,28 @@ type PushRule struct {
 	Ref             string `json:"ref"`
 	CreateOnly      bool   `json:"create_only"`
 	FastForwardOnly *bool  `json:"fast_forward_only,omitempty"`
+}
+
+// Pin is the one exact, create-only ref g's push rules grant a push to —
+// "" when they grant none, or more than one (adr-050, porting
+// gateway.JobBrief.Pin's algorithm from the v0 node to the v1 wire shape).
+// A prefix rule, ending "/*", never qualifies: it names a family of refs,
+// not the one the lease's final head is pinned to.
+func (g *Git) Pin() string {
+	if g == nil {
+		return ""
+	}
+	pin := ""
+	for _, r := range g.Push {
+		if !r.CreateOnly || strings.HasSuffix(r.Ref, "*") {
+			continue
+		}
+		if pin != "" {
+			return ""
+		}
+		pin = r.Ref
+	}
+	return pin
 }
 
 // Access is what a job may reach. Secrets, Mint and Federation are the
