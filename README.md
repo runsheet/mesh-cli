@@ -3123,8 +3123,11 @@ not resolve as a JSON Schema is refused before anything is sent, and
 `--dry-run` prints it with the rest of the bundle. It is optional.
 
 It signs in as the product's own Latchkey client (`client_credentials` at
-`MESH_PRODUCT_ISSUER`, default `https://auth.runsheet.dev`) and sends
-everything to `PUT /mesh/v1/products/<product>/catalogue`:
+`--issuer`/`MESH_PRODUCT_ISSUER`, default `https://auth.latchkey.id`) and
+sends everything to `PUT <gateway>/v1/products/<product>/catalogue` —
+`<gateway>` is `--gateway`/`MESH_GATEWAY`, default Mesh's own API
+`https://api.projectmesh.io`, never runsheet's gateway, which is one
+tenant among Mesh's many:
 
 - Mesh checks the bundle whole: one bad kind or role refuses all of it,
   and the error names every refused field.

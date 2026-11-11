@@ -16,19 +16,18 @@ import (
 	"github.com/spf13/cobra"
 
 	"projectmesh.io/mesh-cli/internal/catalogue"
-	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/latchkey"
+	"projectmesh.io/mesh-cli/internal/meshapi"
 )
 
 // A product publishes its catalogue to Mesh (runsheet ADR 067): the only
 // way its agents get in. `mesh product publish` builds the bundle from
-// the checkout's .mesh/ files and sends it as the product's own Latchkey
-// client, so a product's CI runs it on a merge to main.
-
-// DefaultProductIssuer is where a product's client signs in: the issuer
-// the gateway verifies tokens against. A client minted at another of
-// Latchkey's hosts names that host as issuer, and the gateway refuses it.
-const DefaultProductIssuer = "https://auth.runsheet.dev"
+// the checkout's .mesh/ files and sends it to Mesh's own API
+// (api.projectmesh.io) as the product's own Latchkey client, signed in at
+// Latchkey itself (auth.latchkey.id) — not runsheet's gateway, which is one
+// tenant among Mesh's many. `--gateway`/`MESH_GATEWAY` and
+// `--issuer`/`MESH_PRODUCT_ISSUER` override either for a self-hosted Mesh
+// or a product's CI running against a staging stand-in.
 
 var productCmd = &cobra.Command{
 	Use:   "product",
@@ -39,7 +38,10 @@ var (
 	productPublishDir     string
 	productPublishDryRun  bool
 	productPublishIssuer  string
+	productPublishGateway string
 	productPublishVersion string
+	// productHTTPClient is a test seam: nil runs on the real network.
+	productHTTPClient *http.Client
 )
 
 var productPublishCmd = &cobra.Command{
@@ -49,7 +51,8 @@ var productPublishCmd = &cobra.Command{
 directory (.mesh/roles/ by default), reads each kind's and role's guidance
 from the markdown file its guidance: names and its finish_schema from the
 JSON file its finish_schema: names, and sends the whole catalogue to
-PUT /mesh/v1/products/<product>/catalogue. Mesh checks it whole: one bad kind
+PUT <gateway>/v1/products/<product>/catalogue (default gateway api.projectmesh.io,
+--gateway or MESH_GATEWAY to override). Mesh checks it whole: one bad kind
 or role refuses all of it, and a kind or role the bundle no longer names is
 retired. The first publish of a product registers it to the client.
 
@@ -98,7 +101,7 @@ bundle and the CLI's own checks and sends nothing; it needs no credential.`,
 		if err != nil {
 			return err
 		}
-		out, err := publishCatalogue(ctx, gatewayURL(), token, b)
+		out, err := publishCatalogue(ctx, productGateway(), token, b)
 		if err != nil {
 			return err
 		}
@@ -109,13 +112,13 @@ bundle and the CLI's own checks and sends nothing; it needs no credential.`,
 func init() {
 	productPublishCmd.Flags().StringVar(&productPublishDir, "dir", ".", "the product's checkout")
 	productPublishCmd.Flags().BoolVar(&productPublishDryRun, "dry-run", false, "print the bundle and the CLI's checks; send nothing")
-	productPublishCmd.Flags().StringVar(&productPublishIssuer, "issuer", "", "Latchkey issuer the client signs in at (default "+DefaultProductIssuer+", or MESH_PRODUCT_ISSUER)")
+	productPublishCmd.Flags().StringVar(&productPublishIssuer, "issuer", "", "Latchkey issuer the client signs in at (default "+latchkey.DefaultIssuer+", or MESH_PRODUCT_ISSUER)")
 	productPublishCmd.Flags().StringVar(&productPublishVersion, "version", "", "the product version this catalogue ships with, for the record")
-	productPublishCmd.Flags().StringVar(&gatewayFlag, "gateway", "", "platform gateway URL (default "+gateway.DefaultURL+", or MESH_GATEWAY)")
+	productPublishCmd.Flags().StringVar(&productPublishGateway, "gateway", "", "Mesh's API the catalogue is published to (default "+meshapi.DefaultURL+", or MESH_GATEWAY)")
 	productCmd.AddCommand(productPublishCmd)
 }
 
-// productIssuer is --issuer, else MESH_PRODUCT_ISSUER, else the default.
+// productIssuer is --issuer, else MESH_PRODUCT_ISSUER, else Latchkey itself.
 func productIssuer() string {
 	if v := strings.TrimSpace(productPublishIssuer); v != "" {
 		return v
@@ -123,12 +126,24 @@ func productIssuer() string {
 	if v := strings.TrimSpace(os.Getenv("MESH_PRODUCT_ISSUER")); v != "" {
 		return v
 	}
-	return DefaultProductIssuer
+	return latchkey.DefaultIssuer
+}
+
+// productGateway is --gateway, else MESH_GATEWAY, else Mesh's own API —
+// never runsheet's gateway, which is one tenant among Mesh's many.
+func productGateway() string {
+	if v := strings.TrimSpace(productPublishGateway); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("MESH_GATEWAY")); v != "" {
+		return v
+	}
+	return meshapi.DefaultURL
 }
 
 // productToken signs in as the product's client.
 func productToken(ctx context.Context, issuer, id, secret string) (string, error) {
-	lk := &latchkey.Client{Issuer: issuer}
+	lk := &latchkey.Client{Issuer: issuer, HTTP: productHTTPClient}
 	ep, err := lk.Discover(ctx)
 	if err != nil {
 		return "", err
@@ -158,14 +173,18 @@ func publishCatalogue(ctx context.Context, base, token string, b *catalogue.Bund
 	if err != nil {
 		return nil, err
 	}
-	url := strings.TrimRight(base, "/") + "/mesh/v1/products/" + b.Product + "/catalogue"
+	url := strings.TrimRight(base, "/") + "/v1/products/" + b.Product + "/catalogue"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 2 * time.Minute}).Do(req)
+	client := productHTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 2 * time.Minute}
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
