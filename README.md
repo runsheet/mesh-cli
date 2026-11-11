@@ -3105,7 +3105,8 @@ It reads:
 - `.mesh/product.yml`: `product` (the slug), an optional `display_name`,
   `mcp`, `hooks` and `triggers`.
 - `.mesh/jobs/<kind>.yml`: one kind of job each, with `harness`, `finish`,
-  `access`, `needs`, `pods`.
+  `access`, `needs`, `pods`, and optionally `node_tools`, `tools` and
+  `egress` (below).
 - the manifest's `roles` directory (`.mesh/roles/` by default): one role
   each, a kind with a `trigger`, an `identity` and `powers`.
 
@@ -3121,6 +3122,34 @@ sends its text as the bundle's `finish_schema`, at most 64 KiB; a path
 outside the checkout, a file that is not a JSON object, or one that does
 not resolve as a JSON Schema is refused before anything is sent, and
 `--dry-run` prints it with the rest of the bundle. It is optional.
+
+A kind's `tools:` and `egress:` (projectmesh-io/api ADR 001 amendments
+"tool slots and egress" and "carried access") are sent as written:
+
+```yaml
+node_tools: [result, progress]
+tools:
+  required:
+    - {name: brief, from: product, description: Call first to read the subject.}
+    - {name: result, from: mesh, description: Call to finish.}
+  optional:
+    - {name: web_search, from: connection, description: Search the web.}
+egress:
+  hosts: [api.search.brave.com]   # bare hostnames, never a wildcard
+  mcp: [acme]                     # the kind's own product alone
+  model: true
+```
+
+Absent is not empty: a kind with no `egress:` sends none, `egress: {}`
+sends `{}` (its session reaches nothing beyond git and MCP). The CLI
+refuses what Mesh's publish refuses before sending: a tool name not
+matching `^[a-z0-9_]+$` or named twice, a description over 200
+characters, a `from` other than product, mesh or connection, an
+optional tool that is not a connection slot, a mesh tool `node_tools`
+does not name, more than 10 tools in all, a host that is not a bare
+hostname or is given twice, an `egress.mcp` naming another product, and
+a registry that is not an https prefix ending `/`. Which node tools
+Mesh serves is left to Mesh.
 
 It signs in as the product's own Latchkey client (`client_credentials` at
 `--issuer`/`MESH_PRODUCT_ISSUER`, default `https://auth.latchkey.id`) and
