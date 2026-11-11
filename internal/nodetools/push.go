@@ -41,6 +41,32 @@ const pushTimeout = 5 * time.Minute
 // well as to a remote, so a checkout holding one is refused.
 var rewrites = regexp.MustCompile(`(?i)^url\..*\.(insteadof|pushinsteadof)$`)
 
+// gitRunner adapts the package's hardened git to the signature
+// CheckRewrites and nodev1's own git readers share: a dir and its args,
+// ctx already bound.
+func gitRunner(ctx context.Context) func(dir string, args ...string) (string, error) {
+	return func(dir string, args ...string) (string, error) { return git(ctx, dir, args...) }
+}
+
+// CheckRewrites refuses naming the key when workspace's local git config
+// rewrites a URL (insteadOf or pushInsteadOf): since a rewrite applies to
+// an explicit URL as well as to a named remote (rewrites, above), a
+// session could use one to redirect the node's own post-session reads
+// and pushes — through a lease's grant, an explicit loopback URL, or
+// "origin" — the same way it could redirect a session's own push. Every
+// git the node itself runs against a checkout a session may have
+// written to checks this first: the push tool's own call, NodePush, and
+// nodev1's remoteHead.
+func CheckRewrites(run func(dir string, args ...string) (string, error), workspace string) error {
+	keys, _ := run(workspace, "config", "--local", "--name-only", "--get-regexp", `^url\.`)
+	for _, k := range strings.Fields(keys) {
+		if rewrites.MatchString(k) {
+			return fmt.Errorf("your checkout's git config rewrites URLs (%s): remove it, the node pushes only through its relay", k)
+		}
+	}
+	return nil
+}
+
 // Grant is a lease's grant on the node's git relay: its loopback base,
 // to which a repository's "<owner>/<name>.git" is added.
 type Grant interface {
@@ -224,12 +250,8 @@ func (p *Push) call(ctx context.Context, args map[string]any) (string, error) {
 	}
 	tree, _ := git(ctx, p.Workspace, "rev-parse", "--verify", "-q", sha+"^{tree}")
 	tree = strings.TrimSpace(tree)
-	if keys, _ := git(ctx, p.Workspace, "config", "--local", "--name-only", "--get-regexp", `^url\.`); keys != "" {
-		for _, k := range strings.Fields(keys) {
-			if rewrites.MatchString(k) {
-				return "", fmt.Errorf("your checkout's git config rewrites URLs (%s): remove it, the node pushes only through its relay", k)
-			}
-		}
+	if err := CheckRewrites(gitRunner(ctx), p.Workspace); err != nil {
+		return "", err
 	}
 	start := time.Now()
 	var refused error
@@ -321,6 +343,9 @@ func NodePush(ctx context.Context, grant Grant, pusher Pusher, workspace, repo, 
 	}
 	if grant == nil || repo == "" {
 		return fmt.Errorf("no git relay to push %s through", ref)
+	}
+	if err := CheckRewrites(gitRunner(ctx), workspace); err != nil {
+		return err
 	}
 	target := grant.Base() + repo + ".git"
 	if out, err := git(ctx, workspace, "push", "--porcelain", "--no-verify", target, sha+":"+ref); err != nil {

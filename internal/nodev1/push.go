@@ -115,8 +115,16 @@ func (r *Runtime) finalPin(ctx context.Context, b *meshapi.Brief, grant *gitrela
 
 // remoteHead is ref's current head in the vendor's repository, read
 // through the checkout's own origin remote — the relay's loopback,
-// never a vendor URL — "" when the ref does not exist there.
+// never a vendor URL — "" when the ref does not exist there. A session
+// could otherwise point "origin" elsewhere with a url.*.insteadOf
+// rewrite in the checkout's own config (unaffected by githarden, which
+// clears command drivers but not URL rewrites) the same way it could
+// redirect its own push, so this refuses first (nodetools.CheckRewrites,
+// the push tool's own check).
 func remoteHead(git func(string, ...string) (string, error), workspace, ref string) (string, error) {
+	if err := nodetools.CheckRewrites(git, workspace); err != nil {
+		return "", err
+	}
 	out, err := git(workspace, "ls-remote", "origin", ref)
 	if err != nil {
 		return "", err

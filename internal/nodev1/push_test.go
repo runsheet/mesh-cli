@@ -454,3 +454,73 @@ func TestANodeLeavesASelfPinnedRefUnmovedOnMismatch(t *testing.T) {
 		t.Fatalf("the finish's pin names no mismatch: %+v", pin)
 	}
 }
+
+// remoteHead is finalPin's own read of the vendor's state (both the
+// branch's final head and the pin's current state), through the
+// checkout's "origin" remote. A session could plant a url.*.insteadOf
+// rewrite in the checkout's own config to redirect that read to a repo
+// of its choosing — unaffected by githarden, which clears command
+// drivers but not URL rewrites — making the node believe the vendor
+// holds whatever the session wants, the same redirection the push
+// tool's own call already refuses
+// (TestPushToolIgnoresWhatTheSessionDidToItsCheckout). This proves
+// remoteHead refuses it too, before ls-remote ever runs against the
+// rewritten origin.
+func TestRemoteHeadRefusesAURLRewrite(t *testing.T) {
+	root := t.TempDir()
+	origin := filepath.Join(root, "origin.git")
+	decoy := filepath.Join(root, "decoy.git")
+	for _, d := range []string{origin, decoy} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := sessionGit(d, "init", "-q", "--bare", "-b", "main"); err != nil {
+			t.Fatalf("init %s: %v\n%s", d, err, out)
+		}
+	}
+
+	w := t.TempDir()
+	if out, err := sessionGit(w, "init", "-q", "-b", "main"); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	if out, err := sessionGit(w, "remote", "add", "origin", origin); err != nil {
+		t.Fatalf("remote add: %v\n%s", err, out)
+	}
+	head := commitIn(t, w, "one")
+	if out, err := sessionGit(w, "push", "-q", "origin", "main"); err != nil {
+		t.Fatalf("push: %v\n%s", err, out)
+	}
+	// the decoy answers a different head for the same ref, so a
+	// redirected read would be caught even if CheckRewrites were
+	// removed
+	decoyWork := t.TempDir()
+	if out, err := sessionGit(decoyWork, "init", "-q", "-b", "main"); err != nil {
+		t.Fatalf("init decoy work: %v\n%s", err, out)
+	}
+	if out, err := sessionGit(decoyWork, "remote", "add", "origin", decoy); err != nil {
+		t.Fatalf("remote add decoy: %v\n%s", err, out)
+	}
+	decoyHead := commitIn(t, decoyWork, "decoy")
+	if out, err := sessionGit(decoyWork, "push", "-q", "origin", "main"); err != nil {
+		t.Fatalf("push decoy: %v\n%s", err, out)
+	}
+	if decoyHead == head {
+		t.Fatalf("the decoy's head %s equals the real head; the test proves nothing", decoyHead)
+	}
+
+	git := leaseGitRun(context.Background())
+	got, err := remoteHead(git, w, "refs/heads/main")
+	if err != nil || got != head {
+		t.Fatalf("remoteHead = %q, %v; want %s, nil", got, err, head)
+	}
+
+	// the session plants a rewrite redirecting origin to the decoy, in
+	// the checkout's own local config, as it could before any pin read
+	if out, err := sessionGit(w, "config", "url."+decoy+".insteadOf", origin); err != nil {
+		t.Fatalf("config: %v\n%s", err, out)
+	}
+	got, err = remoteHead(git, w, "refs/heads/main")
+	if err == nil || !strings.Contains(err.Error(), "rewrites URLs") {
+		t.Fatalf("remoteHead with a rewritten origin = %q, %v; want a refusal naming the rewrite", got, err)
+	}
+}
