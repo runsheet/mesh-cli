@@ -69,6 +69,33 @@ func TestSyncMakesAndUpdatesAMirrorWithNoRemote(t *testing.T) {
 	}
 }
 
+// Sync also fetches refs/runsheet/changesets/* — the namespace a
+// finished lease's pin_to points a changeset at (push {ref: pin_to}) —
+// even for a commit on no branch or tag of its own: a resumed lease
+// (checkout.go's resumePushed) reads such a pin directly, and a mirror
+// that answered only branches and tags would have nothing to offer it.
+func TestSyncFetchesTheChangesetPinNamespace(t *testing.T) {
+	src, commit := origin(t)
+	before := gitIn(t, src, "rev-parse", "HEAD")
+	pinned := commit("pinned, then abandoned by main")
+	const pin = "refs/runsheet/changesets/896e0e64-e434-5ef2-b7f7-82a1f623f49f"
+	gitIn(t, src, "update-ref", pin, pinned)
+	// main moves back past it: the pinned commit is now reachable from
+	// no branch or tag, only from the pin ref itself.
+	gitIn(t, src, "update-ref", "refs/heads/main", before)
+
+	m := &Mirrors{Root: t.TempDir(), Env: os.Environ()}
+	key := MirrorKey{Tenant: "acme", Repo: "acme/app"}
+	dir, err := m.Sync(context.Background(), key, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gitIn(t, dir, "rev-parse", pin); got != pinned {
+		t.Fatalf("mirror's %s is %s, want %s", pin, got, pinned)
+	}
+	gitIn(t, dir, "cat-file", "-e", pinned) // fails the test if the object is missing
+}
+
 // Mirrors are per tenant (spec, "Mirrors are per tenant and repo"): the
 // same repository for two tenants is two mirrors, and so is the same
 // name at two vendors or two origins.
