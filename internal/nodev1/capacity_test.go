@@ -124,6 +124,28 @@ func TestALeaseWithNoRoomHandsBack(t *testing.T) {
 	}
 }
 
+// freeOf already excludes a lease's unopened lanes, as the take loop's
+// own free() sees them on its next poll: the lease's own pod-level hold
+// (holdCapacity, taken before openLeasePod in production) plus its 4
+// eagerly-reserved lane holds (reserveLanes, ADR-049 amendment) are both
+// out of the reported free room before any lane has run — 1 pod + 4
+// lanes, 5 holds of the suite's Resources, not just the pod's one.
+func TestFreeAlreadyExcludesAHeldLeasesUnopenedLanes(t *testing.T) {
+	g := newShardRig(t, shardedYML, 400*time.Millisecond, scheduler.Capacity{CPUs: 100, MemGB: 100, Slots: 10})
+	lease := &meshapi.Lease{LeaseID: g.b.LeaseID, JobID: g.b.JobID, N: g.b.LeaseN, RenewEveryS: g.b.RenewEveryS}
+	pod, err := g.rt.holdCapacity(context.Background(), g.b, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pod.Release)
+
+	free := freeOf(g.rt.Scheduler)
+	wantCPUs, wantMem := 100-5*g.b.Resources.CPUs, 100-5*g.b.Resources.MemGB
+	if free.CPUs != wantCPUs || free.MemGB != wantMem {
+		t.Fatalf("free = %+v, want %g CPUs and %g MemGB free (1 pod + 4 lanes held of %+v)", free, wantCPUs, wantMem, g.b.Resources)
+	}
+}
+
 // Without a scheduler the node runs one lease at a time: its takes say
 // one slot free even when its total has no slot limit.
 func TestNoSchedulerTakesOneSlotWithNoSlotLimit(t *testing.T) {
