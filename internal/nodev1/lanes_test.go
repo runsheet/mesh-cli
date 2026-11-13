@@ -32,6 +32,7 @@ import (
 type shardRig struct {
 	f       *sandbox.Fake
 	rt      *Runtime
+	b       *meshapi.Brief
 	lp      *leasePod
 	mesh    *evidenceMesh
 	suite   *nodetools.RunSuite
@@ -78,6 +79,7 @@ func newShardRig(t *testing.T, yml string, shard time.Duration, total scheduler.
 		NodeTools: []string{nodetools.RunSuiteTool}, EvidenceRequired: []string{nodetools.RunSuiteTool},
 		Resources: meshapi.Resources{CPUs: 4, MemGB: 8},
 		Pods:      []json.RawMessage{json.RawMessage(`{"name":"postgres","image":"docker.io/library/postgres:17-alpine"}`)}}
+	g.b = b
 	ctx, cancel := context.WithCancel(context.Background())
 	var closers []func() error
 	t.Cleanup(func() {
@@ -216,11 +218,15 @@ func TestASuitesShardsRunAtOnceEachWithItsOwnServices(t *testing.T) {
 }
 
 // Shards are scheduled against the node's capacity like any exec: on a
-// node with room for two lanes of the lease's resources beside the
-// lease's own pod, the third waits for one to end.
+// node with room for three lanes of the lease's resources, the fourth
+// waits for one to end. 12 CPUs, not 8: since the lease's lanes reserve
+// their room as soon as the lane count is known (reserveLanes), the
+// first lane — the lease's own pod — now holds Resources-worth of the
+// scheduler too, where it once ran free of it; three concurrent lanes
+// need three holds' worth of room, 12 CPUs at this suite's 4 each.
 func TestShardsWaitForTheNodesRoom(t *testing.T) {
 	const shard = 400 * time.Millisecond
-	g := newShardRig(t, shardedYML, shard, scheduler.Capacity{CPUs: 8, MemGB: 64, Slots: 3})
+	g := newShardRig(t, shardedYML, shard, scheduler.Capacity{CPUs: 12, MemGB: 64, Slots: 3})
 	start := time.Now()
 	_, last := g.run(t, map[string]any{"suite": "integration"})
 	wall := time.Since(start)
@@ -229,6 +235,31 @@ func TestShardsWaitForTheNodesRoom(t *testing.T) {
 	}
 	if g.peak != 3 || wall < 2*shard {
 		t.Fatalf("%d shards at once in %s on room for 3, want 3 and two shards' time", g.peak, wall)
+	}
+}
+
+// A lease's lanes reserve their room as soon as the lane count is known
+// (reserveLanes, ADR-049 amendment): a validate lease whose suite shards
+// into 4 lanes holds all 4 of the scheduler's lane holds the moment its
+// pod opens, before run_suite ever opens one — so a later lease already
+// sees no room left for lanes that have not run yet. 16 CPUs and 32
+// MemGB fill exactly on 4 holds of the suite's Resources{4, 8} each: a
+// scheduler close to its cap, as the acceptance asks.
+func TestALeasesLanesHoldRoomAsSoonAsTheLaneCountIsKnown(t *testing.T) {
+	g := newShardRig(t, shardedYML, 400*time.Millisecond, scheduler.Capacity{CPUs: 16, MemGB: 32, Slots: 3})
+
+	var owners []string
+	for _, h := range g.rt.Scheduler.Leases() {
+		owners = append(owners, h.Owner)
+	}
+	slices.Sort(owners)
+	want := []string{"lease-1/lane-1", "lease-1/lane-2", "lease-1/lane-3", "lease-1/lane-4"}
+	if !slices.Equal(owners, want) {
+		t.Fatalf("lane holds taken before any lane ran = %v, want %v", owners, want)
+	}
+
+	if _, err := g.rt.Scheduler.TryTake(scheduler.Ask{Owner: "lease-2", CPUs: 1, MemGB: 1}); err == nil {
+		t.Fatal("a later lease was offered room the lease's unopened lanes already hold")
 	}
 }
 

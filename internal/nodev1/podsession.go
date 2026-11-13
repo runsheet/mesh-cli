@@ -110,6 +110,37 @@ type leasePod struct {
 	// relay, as the lease's pod reaches it (setLaneSocket).
 	mu       sync.Mutex
 	laneSock string
+	// eagerLanes holds reserveLanes's scheduler holds, by lane index,
+	// until suiteLanes opens that lane (popEagerLane) or, for the first
+	// lane, laneSteps.ReleaseFirst gives it back (lanes.go).
+	eagerLanes map[int64]*laneHold
+}
+
+// setEagerLane records an eagerly-reserved lane hold (reserveLanes).
+func (p *leasePod) setEagerLane(idx int64, h *laneHold) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.eagerLanes == nil {
+		p.eagerLanes = map[int64]*laneHold{}
+	}
+	p.eagerLanes[idx] = h
+}
+
+// popEagerLane takes back an eagerly-reserved lane hold, nil when none
+// was reserved (or it was already taken), so the caller falls back to
+// holding it fresh.
+func (p *leasePod) popEagerLane(idx int64) *laneHold {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	h := p.eagerLanes[idx]
+	delete(p.eagerLanes, idx)
+	return h
+}
+
+// releaseEagerLane gives back an eagerly-reserved lane hold still held,
+// nothing when it was never reserved or already taken (nil-safe).
+func (p *leasePod) releaseEagerLane(idx int64) {
+	p.popEagerLane(idx).release()
 }
 
 // setLaneSocket names the socket a lane reaches the lease's relay on:
@@ -182,6 +213,7 @@ func (r *Runtime) openLeasePod(ctx context.Context, b *meshapi.Brief, workspace 
 	if err := r.startServices(ctx, b, p, workspace, "the lease's"); err != nil {
 		return p, err
 	}
+	r.reserveLanes(b, workspace, p)
 	p.lanes = r.suiteLanes(b, workspace, p)
 	return p, nil
 }
