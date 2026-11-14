@@ -1,6 +1,6 @@
 ---
 summary: A session hands its result to the node through one tool, mesh_result, that the node itself serves on mesh-node through the session's proxy (internal/jobresult, sessionproxy.InProcess); its input is the kind's finish shape, the product's finish_schema validates its part, a call that does not fit is refused to the session with the reason, and the node finishes the job on its own credential with what was recorded. The node's text parsers go finish by finish, and each kind's prompt becomes the brief's guidance first, the job's facts, and one fixed finish section — runsheet ADR 067 decision 10 and migration steps 4a and 4b on the node; the step runner for a kind the node has no code for is the same path.
-status: accepted
+status: superseded by ADR-044 (the legacy Loop this described is deleted; the v1 node's own result mechanism is internal/nodetools + internal/finishschema)
 ---
 
 # ADR-041: A session hands its result to the node by tool call

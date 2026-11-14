@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"regexp"
 	"slices"
 	"strconv"
@@ -16,6 +17,14 @@ import (
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/tools"
 )
+
+// Cents rounds a dollar cost to whole cents.
+func Cents(usd float64) int {
+	if usd <= 0 {
+		return 0
+	}
+	return int(math.Round(usd * 100))
+}
 
 // UsageQuery is what `mesh node usage` reads out of node.log: the
 // records logged in [From, To) — node.log's timestamps are read in

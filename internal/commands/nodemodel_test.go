@@ -6,30 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"projectmesh.io/mesh-cli/internal/node"
 )
-
-// The rebase kind is set like every other, for the legacy node:
-// --model-rebase on `mesh node start` wins over node.yaml. (`mesh node
-// model` sets nothing any more: see TestNodeModel.)
-func TestModelsRebaseKind(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	cfg := &node.Config{Name: "n", Slug: "n", Capacity: node.Fixed(1), Models: node.Models{Default: "opus", Rebase: "haiku"}}
-	if err := cfg.Save(); err != nil {
-		t.Fatal(err)
-	}
-	if err := nodeStartCmd.Flags().Set("model-rebase", "sonnet"); err != nil {
-		t.Fatal(err)
-	}
-	if err := nodeStartCmd.Flags().Set("model-research", "haiku"); err != nil {
-		t.Fatal(err)
-	}
-	m := modelsFor(nodeStartCmd, cfg)
-	if m.For("rebase") != "sonnet" || m.For("research") != "haiku" || m.For("build") != "opus" {
-		t.Fatalf("flags: %+v", m)
-	}
-}
 
 // mesh node model is message-only on a v1 node (ADR-044): a lease runs
 // on the model its job brief names, so there is no node.yaml model

@@ -50,7 +50,7 @@ var peersListCmd = &cobra.Command{
 		if err := lc.do(context.Background(), http.MethodGet, path, nil, &resp); err != nil {
 			if strings.Contains(err.Error(), "daemon not running") {
 				fmt.Println("peers: daemon stopped")
-				fmt.Println("  start it with `mesh node start`")
+				fmt.Println("  start it with `mesh node run`")
 				return nil
 			}
 			return err

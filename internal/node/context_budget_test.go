@@ -2,10 +2,8 @@ package node
 
 import (
 	"context"
-	"log"
 	"strings"
 	"testing"
-	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 )
@@ -45,48 +43,6 @@ func TestContextConfigNegativeRefused(t *testing.T) {
 	}
 }
 
-// Reloader carries node.yaml's `context:` as it now stands.
-func TestReloaderCarriesContext(t *testing.T) {
-	f := seed(t)
-	gw := gateway.New(f.URL(), "rs_test")
-	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", Capacity: Fixed(1)}
-	load := func() (*Config, error) {
-		c := *cfg
-		c.Context = ContextConfig{BytesMax: 131072}
-		return &c, nil
-	}
-	reload := Reloader(gw, cfg, scopesOf(cfg), load, func(context.Context, Scope) error { return nil })
-	got, _ := reload(context.Background())
-	if got.Context == nil || *got.Context != (ContextConfig{BytesMax: 131072}) {
-		t.Fatalf("Reloaded.Context = %+v, want bytes_max 131072", got.Context)
-	}
-}
-
-// The context budget a Reload returns is in force after the next tick,
-// with no restart, and the change is logged.
-func TestLoopContextBudgetIsLiveReloaded(t *testing.T) {
-	f := seed(t)
-	gw := gateway.New(f.URL(), "rs_test")
-	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1)}
-	var logs strings.Builder
-	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Log: log.New(&logs, "", 0),
-		Dispatch: func(context.Context, gateway.WorkItem) {}}
-	if got := loop.ContextBudget(); got != (ContextConfig{BytesMax: DefaultContextBytesMax, DocBytesMax: DefaultDocBytesMax}) {
-		t.Fatalf("before reload: %+v, want the defaults", got)
-	}
-	loop.Reload = func(context.Context) (Reloaded, error) {
-		return Reloaded{Context: &ContextConfig{BytesMax: 4096, DocBytesMax: 1024}}, nil
-	}
-	loop.Tick(context.Background())
-	loop.wg.Wait()
-	if got := loop.ContextBudget(); got != (ContextConfig{BytesMax: 4096, DocBytesMax: 1024}) {
-		t.Fatalf("after reload: %+v, want 4096/1024", got)
-	}
-	if !strings.Contains(logs.String(), "context: bytes_max 81920 → 4096, doc_bytes_max 61440 → 1024") {
-		t.Fatalf("the change is not logged:\n%s", logs.String())
-	}
-}
-
 // doc_bytes_max holds each instructions document and nothing else: no
 // PRD or ADR is put on disk whatever it is set to, and an instructions
 // document past it is left whole to the index.
@@ -113,14 +69,4 @@ func TestFetchContextHonoursDocBytesMax(t *testing.T) {
 			t.Fatalf("doc_bytes_max %d: on disk %v", docMax, slugs)
 		}
 	}
-}
-
-// hasLine reports whether s holds want as one whole line.
-func hasLine(s, want string) bool {
-	for _, l := range strings.Split(s, "\n") {
-		if l == want {
-			return true
-		}
-	}
-	return false
 }

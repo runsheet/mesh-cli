@@ -1,13 +1,9 @@
 package node
 
 import (
-	"context"
-	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
 )
 
@@ -65,116 +61,6 @@ func TestChooseAccount(t *testing.T) {
 		if !ok || got.Label != c.want {
 			t.Errorf("%s: chose %q (ok=%v), want %s", c.name, got.Label, ok, c.want)
 		}
-	}
-}
-
-// With no account to run on, the node does not claim: the item stays
-// ready — not failed, not released — and the log says so once per tick.
-// When an account frees up, the next tick claims the item and the
-// session runs on that account's env.
-func TestLoopClaimsNothingWithoutHeadroomThenClaimsOnTheFreedAccount(t *testing.T) {
-	var accounts []AccountConfig
-	for _, l := range []string{"max-a", "max-b"} {
-		accounts = append(accounts, AccountConfig{Label: l, Kind: AccountSubscription})
-	}
-	p := newPriorityFake(t)
-	p.addGoal(orgID, "g", "urgent")
-	p.addItem(orgID, "g", "one", 1, false)
-	p.addItem(orgID, "g", "two", 2, false)
-	p.addPlanning(orgID, "planned", "normal")
-	loop, logs, _ := p.pacedLoop(2, nil)
-	knowAccounts(loop, accounts...)
-	// max-a, past stop, has the later reset: the holdback keeps it, not
-	// max-b once max-b frees up
-	stopped := reading(0.99, 0.1)
-	stopped.SevenDay.ResetsAt = weekOver.Add(time.Hour)
-	loop.Limits.Observe("max-a", stopped)
-	rejected := reading(0.3, 0.3)
-	rejected.Status = "rejected"
-	loop.Limits.Observe("max-b", rejected)
-
-	var mu sync.Mutex
-	tokens := map[string]string{}
-	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
-		a, _ := ChosenAccount(ctx)
-		mu.Lock()
-		tokens[item.ID] = a.Label
-		mu.Unlock()
-	}
-
-	loop.Tick(context.Background())
-	loop.Tick(context.Background())
-	loop.wg.Wait()
-	if n := len(p.CallsNamed("claimWorkItem")) + len(p.CallsNamed("claimPlan")); n != 0 {
-		t.Fatalf("with no headroom the node claimed %d time(s)", n)
-	}
-	if n := len(p.CallsNamed("failWorkItem")) + len(p.CallsNamed("releaseWorkItem")); n != 0 {
-		t.Fatalf("an unclaimed item was failed or released %d time(s)", n)
-	}
-	for _, id := range []string{"one", "two"} {
-		if s := p.Item(id)["status"]; s != "ready" {
-			t.Fatalf("%s = %v, want ready", id, s)
-		}
-	}
-	const line = "accounts: no account has headroom for 2 item(s), 1 plan(s); judged max-a, max-b; left unclaimed until one has"
-	if n := strings.Count(logs.String(), line); n != 2 {
-		t.Fatalf("want the line once per tick (2), got %d:\n%s", n, logs)
-	}
-
-	// max-b's window resets and a session reads it fresh
-	freed := reading(0.2, 0.3)
-	freed.ObservedAt = t0.Add(time.Minute)
-	loop.Limits.Observe("max-b", freed)
-	claimed := p.claimedBy(loop)
-	if strings.Join(claimed, ",") != "one,two" {
-		t.Fatalf("claimed %v once max-b freed up\n%s", claimed, logs)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	for _, id := range claimed {
-		if tokens[id] != "max-b" {
-			t.Fatalf("item %s ran on %q, want max-b", id, tokens[id])
-		}
-	}
-	if n := len(p.CallsNamed("claimPlan")); n != 1 {
-		t.Fatalf("the plan claimed %d time(s) once max-b freed up", n)
-	}
-	if strings.Count(logs.String(), "accounts: no account has headroom") != 2 {
-		t.Fatalf("a tick with headroom logs no wait:\n%s", logs)
-	}
-}
-
-// An evaluation or a rebase of normal work takes a paced subscription
-// before the api account — finishing work never moves it onto money —
-// and falls to the api account only once every subscription is stopped.
-func TestAccountToFinishKeepsTheSpendingOrder(t *testing.T) {
-	maxA := AccountConfig{Label: "max-a", Kind: AccountSubscription}
-	key := AccountConfig{Label: "key", Kind: AccountAPI}
-	for _, c := range []struct {
-		name string
-		rl   *harness.RateLimit
-		want string
-		ok   bool
-	}{
-		{"fresh", reading(0.1, 0.1), "max-a", true},
-		{"paced", reading(0.85, 0.3), "max-a", true},
-		{"stopped", reading(0.3, 0.99), "key", true},
-	} {
-		loop := &Loop{Cfg: &Config{}, Limits: &Limits{}, Now: func() time.Time { return t0 }}
-		knowAccounts(loop, maxA, key)
-		loop.Limits.Observe("max-a", c.rl)
-		ctx, ok := loop.accountToFinish(context.Background(), "normal", "evaluation")
-		a, _ := ChosenAccount(ctx)
-		if ok != c.ok || a.Label != c.want {
-			t.Errorf("%s: chose %q (%v), want %q (%v)", c.name, a.Label, ok, c.want, c.ok)
-		}
-	}
-	// nothing but a stopped subscription: nothing
-	loop := &Loop{Cfg: &Config{}, Limits: &Limits{}, Now: func() time.Time { return t0 }}
-	knowAccounts(loop, maxA)
-	loop.Limits.Observe("max-a", reading(0.3, 0.99))
-	if _, ok := loop.accountToFinish(context.Background(), "normal", "evaluation"); ok {
-		t.Error("a stopped subscription took an evaluation")
 	}
 }
 
@@ -289,55 +175,4 @@ func TestHoldback(t *testing.T) {
 			t.Fatalf("heldBack = %s with one subscription, want none", h.Label)
 		}
 	})
-}
-
-// A node with three issued subscriptions in the holdback state claims
-// no normal item, says the holdback is why, and claims an urgent item
-// on the held account.
-func TestHoldbackLoopKeepsTheLatestResetForUrgentWork(t *testing.T) {
-	var accounts []AccountConfig
-	for _, l := range []string{"max-a", "max-b", "max-c"} {
-		accounts = append(accounts, AccountConfig{Label: l, Kind: AccountSubscription})
-	}
-	p := newPriorityFake(t)
-	p.addGoal(orgID, "steady", "normal")
-	p.addItem(orgID, "steady", "normal-1", 1, false)
-	p.addGoal(orgID, "fire", "urgent")
-	p.addItem(orgID, "fire", "urgent-1", 1, false)
-	loop, logs, _ := p.pacedLoop(2, nil)
-	knowAccounts(loop, accounts...)
-	day, twoDays, fiveDays := t0.Add(24*time.Hour), t0.Add(48*time.Hour), t0.Add(120*time.Hour)
-	for label, r := range map[string]harness.RateLimit{
-		"max-a": holdReading(0.90, day, true),
-		"max-b": holdReading(0.89, twoDays, true),
-		"max-c": holdReading(0.40, fiveDays, false),
-	} {
-		loop.Limits.Observe(label, &r)
-	}
-	var mu sync.Mutex
-	on := map[string]string{}
-	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
-		a, _ := ChosenAccount(ctx)
-		mu.Lock()
-		on[item.ID] = a.Label
-		mu.Unlock()
-	}
-	if claimed := p.claimedBy(loop); strings.Join(claimed, ",") != "urgent-1" {
-		t.Fatalf("claimed %v, want urgent-1 alone\n%s", claimed, logs)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if on["urgent-1"] != "max-c" {
-		t.Fatalf("urgent-1 ran on %q, want max-c, the held account", on["urgent-1"])
-	}
-	if s := p.Item("normal-1")["status"]; s != "ready" {
-		t.Fatalf("normal-1 = %v, want ready", s)
-	}
-	const line = "accounts: max-c held back for urgent work (the others within 10% of stop); 1 item(s) left unclaimed until 2026-09-26T14:00:00Z"
-	if !strings.Contains(logs.String(), line) {
-		t.Fatalf("want %q in the log:\n%s", line, logs)
-	}
-	if strings.Contains(logs.String(), "no account has headroom") {
-		t.Fatalf("a holdback is not no headroom:\n%s", logs)
-	}
 }

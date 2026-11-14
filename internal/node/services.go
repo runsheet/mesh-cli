@@ -43,6 +43,20 @@ func openOrgSessionPod(ctx context.Context, sb *sandbox.Sandbox, l *Layout, scop
 	return OpenSessionPod(ctx, sb, dir, label, kind, git, logf)
 }
 
+// PodCPUs is the CPUs a session's pod at dir reserves against the CPU
+// budget (ADR-043): the sandbox's own --cpus, plus its services' when
+// the checkout declares any that resolve.
+func PodCPUs(sb *sandbox.Sandbox, dir string) float64 {
+	if sb == nil {
+		return 0
+	}
+	n := sb.Config.Limits.CPUs
+	if svcs, err := sandbox.Resolve(dir, sb.Config.Registries); err == nil && len(svcs.Services) > 0 {
+		n += sb.Config.ServicesLimits.CPUs
+	}
+	return n
+}
+
 // OpenSessionPod resolves the services the checkout at dir declares
 // (sandbox.Resolve on the node's registries) and starts them in the
 // session's pod. A nil sandbox (`sandbox: off`) is a nil pod: no

@@ -78,33 +78,6 @@ func ItemModel(ctx context.Context, gw Gateway, item gateway.WorkItem) string {
 	return ""
 }
 
-// BuildModel is what a session that works on the item's branch — the
-// build, and a rebase once the node runs one — runs on: the item's
-// model, then its agent's, then nodeDefault (node.yaml build/default;
-// "" the CLI's own).
-func BuildModel(ctx context.Context, gw Gateway, item gateway.WorkItem, nodeDefault string) string {
-	// a Codex model pins the evaluator (EvaluatorPin); builders stay
-	// on Claude
-	if m := ItemModel(ctx, gw, item); m != "" && !IsCodexModel(m) {
-		return m
-	}
-	return nodeDefault
-}
-
-// EvaluateModel is what the item's evaluator runs on: never below the
-// builder and never below sonnet — the strongest of the node's own
-// evaluate model, the item's build model, the tier the platform chose
-// to evaluate it on, and sonnet. An item that asks for no model (an
-// older platform) evaluates on nodeDefault as it always has.
-func EvaluateModel(ctx context.Context, gw Gateway, item gateway.WorkItem, nodeDefault string) string {
-	build := ItemModel(ctx, gw, item)
-	if build == "" && item.EvaluateModel == "" {
-		return nodeDefault
-	}
-	// nodeDefault first: of two that tie, the operator's own id wins
-	return Strongest(nodeDefault, build, item.EvaluateModel, "sonnet")
-}
-
 // modelName is how a log line or a note names a session's model.
 func modelName(m string) string {
 	if m == "" {

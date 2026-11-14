@@ -113,8 +113,8 @@ var workTools = map[string]bool{
 	"mesh_plan":     true,
 	"mesh_progress": true,
 	"mesh_ask":      true,
-	// the node's own result tool (internal/jobresult, ADR-041): the node
-	// holds what it recorded; the stream's copy is the record of the call
+	// the node's own result tool (ADR-041): the node holds what it
+	// recorded; the stream's copy is the record of the call
 	"mesh_result": true,
 }
 

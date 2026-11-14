@@ -125,6 +125,18 @@ func confineTo(sb *sandbox.Sandbox, dir string) *sandbox.Sandbox {
 	return jobSandbox(sb, dir).WithConfinement(confinementOf(dir))
 }
 
+// PlanDir is where a goal's planner works: <root>/<goal-slug>/plan.
+func PlanDir(root, goalSlug string) string { return filepath.Join(root, goalSlug, "plan") }
+
+// ResearchDir is where one direction's research session works:
+// <root>/<project-slug>/research/<direction-slug>. The checkout is the
+// direction's, not the project's: two directions of one project may be
+// inside their hours at once, and a second session fetching over the
+// first one's working tree would pull the ground from under it.
+func ResearchDir(root, projectSlug, directionSlug string) string {
+	return filepath.Join(root, projectSlug, "research", directionSlug)
+}
+
 // planDirFor is where goal's planner works: <job>/plan in the goal's
 // job, else PlanDir under workRoot.
 func planDirFor(l *Layout, scope Scope, goal gateway.Goal, workRoot string) (string, error) {
@@ -168,16 +180,6 @@ func batchDirFor(l *Layout, scopes Scopes, orgID, id, what string, attempt int, 
 // mainJobID is the job key of a merged item's main validation: its own,
 // beside the item's job, which the sweep may already have removed.
 func mainJobID(itemID string) string { return fmt.Sprintf("%s-main", itemID) }
-
-// validationJobID is the job a validation runs in: the job holding its
-// checkout (an item's, a batch's candidate, a main validation), else
-// its item's.
-func validationJobID(t validationTarget) string {
-	if _, m, ok := jobOf(t.dir); ok {
-		return m.ID
-	}
-	return t.item.ID
-}
 
 // evalSpec puts an evaluation's spec (EvalWorkspaceSpec) in item's job:
 // its own clone at <job>/eval, under the job's locks. Without a Layout,

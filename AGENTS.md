@@ -1,14 +1,29 @@
 # mesh-cli — the node
 
-The operator tool for Mesh. `mesh node start` makes this machine a node of
-the runsheet platform: it speaks to the gateway (`api.runsheet.dev/graphql`,
-`/mesh/v1`, `/mcp`) on the credential in `~/.mesh/token` — the Latchkey
-machine credential `mesh node login` registers for this computer, or the
-operator's `rs_*` console token — claims work items, builds each in a fresh `claude -p`
-session, evaluates it in a second, plans goals in a third. The platform
-side (goals, items, nodes, the scheduler, the integrator) is
-`runsheet/runsheet`; the design is `runsheet/mesh-specs` (prd, trd,
-adr-001, adr-002) and it is binding.
+The operator tool for Mesh. `mesh node run` makes this machine a Mesh v1
+node (`internal/nodev1`, ADR-044): it registers with Mesh
+(`api.projectmesh.io`) on the credential in `~/.mesh/token` — the Latchkey
+machine credential `mesh node login` registers for this computer — takes
+one lease at a time, runs the lease's own harnessed session (a
+`claude -p`) with the brief's product MCP servers through the lease's own
+sessionproxy, renews the lease while the session runs, and finishes or
+hands it back. It speaks only `internal/meshapi`, Mesh's v1 node API; a
+guard test refuses any import of the legacy `internal/gateway` or
+`internal/node` from `internal/nodev1`. This is wave 0's minimal
+runtime — one lease at a time; the job actor, scheduler and supervisor
+(`internal/actor`, `internal/scheduler`, `internal/supervisor`) are wave
+3's. The platform side is Mesh itself (`projectmesh-io/api`); the design
+is the Mesh v1 spec ("The mesh-cli node") and `docs/adr/adr-044-*.md` on
+this repo, and both are binding.
+
+The legacy runtime this superseded — `mesh node start`, a gateway-GraphQL
+claim/build/evaluate/plan loop against `runsheet/runsheet` — is deleted
+(goal `the-v0-node-is-removed-from-mesh-cli`): `internal/jobresult`,
+`internal/session` and `internal/nodecaps`, and the `Loop`/`Runner`/
+`Evaluator`/`Planner`/`Director` types of `internal/node`, are gone.
+`internal/gateway` and parts of `internal/node` survive only as the
+legacy job-API client a person's own `mesh mcp`/`mesh join` still uses
+(below); `runsheet/mesh-specs` is binding for that surviving path alone.
 
 ```sh
 go vet ./... && go build ./cmd/mesh/ && go test ./...
@@ -17,347 +32,78 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
 
 ## How it is shaped
 
-- `internal/jobresult` and `internal/mcptool`: how a session's result
-  reaches the node (ADR-041, runsheet ADR 067 decision 10). A
-  `jobresult.Holder` per job (`New(kind, finish, finishSchema)`) serves
-  the session `mesh_result` and `mesh_fail` on the node's own server
-  `mesh-node` (`harness.NodeWorkMCP`) through the session's proxy
-  (`SessionTools.NodeTools` → `UseVia` → `sessionproxy.InProcess`, an
-  `mcptool.Handler`); `mesh_result` takes the finish's shape (the keys
-  runsheet's finishJob takes: `{answer and/or proposal}`, `{verdict}`,
-  …), validates the product's part against the brief's `finishSchema`
-  (`github.com/google/jsonschema-go`), refuses a call that does not fit
-  with the reason, and holds the accepted one — `Holder.Result()` is
-  what the node's finishJob sends, after its own checks. A kind whose
+- `internal/nodetools` + `internal/finishschema`: how a v1 session's
+  result reaches the node (ADR-044, mesh-specs "Node API", superseding
+  ADR-041's `internal/jobresult` and `jobresult.Holder`, deleted with
+  the legacy Loop): `nodetools.result.go`'s `result` tool is the node's
+  own, named in the job kind's `node_tools`, rather than a product's —
+  the session hands in the job's result, `internal/finishschema`
+  resolves the kind's `finish_schema` (JSON Schema, `projectmesh-io/api`
+  ADR 001's amendment) the result must fit, a value that does not fit is
+  refused with the reason, and a later accepted call replaces an earlier
+  one; the node finishes the lease with it once the session ends.
+  `internal/mcptool` (not deleted — the same generic, typed-MCP-tool
+  framework ADR-041 described, now `internal/nodetools`' and
+  `internal/nodev1`'s shared plumbing rather than
+  `internal/jobresult`'s) serves it, and `push.go`, `handback.go`,
+  `progress.go`, `stopsuite.go`, `runsuite.go` and `applyonto.go` are its
+  siblings — the node's own tools (`push`, `hand_back`, `progress`,
+  `run_suite`, `apply_onto`) a job session calls directly. A kind whose
   finish is the tool runs on the brief's `guidance` first, then the
-  job's facts, then `Holder.FinishSection()`, the one fixed finish
-  section; its built-in role text is gone (goal-chat: `harness.ThreadPrompt`,
-  `GoalChatPrompt` the no-guidance fallback, `ParseThreadReply` deleted;
-  evaluate: `EvaluatePrompt` = guidance, `evaluateSubject`,
-  `evaluateFinishDetail`, the verdict read by `verdictOf` from the
-  holder through `harness.VerdictResult`, `ParseVerdict` and
-  `ParseFailedClauses` deleted, the hosted `mesh_verdict` disallowed
-  (`harness.HostedDisallowed`); plan: `PlanPrompt` = guidance,
-  `planSubject`, `planChecks` (the node's plan-check rules and the model
-  rubric, kept because `plan_check.go` refuses against them),
-  `planFinishDetail`, the graph read by `readPlan` from the holder
-  through `harness.DecodePlan`/`DecodePlanQuestions`/`DecodePlanSplit`/
-  `DecodePlanCheckpoints`, `ParsePlan*`/`PlanCall` deleted; research:
-  `ResearchPrompt` = guidance, the facts with `researchRoom`,
-  `researchFinishDetail`, `readResearch` reading the holder through
-  `DecodeResearchGoals`/`DecodeResearchPitches`, `ParseProposals`,
-  `ParsePitches` and `planCandidates` deleted; rebase: `RebasePrompt` =
-  guidance, the facts and the runbook, `rebasedHeadOf` reading the
-  holder through `DecodeRebasedHead`, its tools on a proxy of their own
-  (`serveNodeToolsAlone`, re-served on the recorded socket at adoption
-  by `serveNodeToolsAt`), `ParseRebase` and the `REBASED:` lines
-  deleted; build: `BuildPrompt` = guidance, the facts, `checkMainFirst`,
-  `testWhatYouTouched`, `buildWorkspace` and `finishByToolCall` — its
-  finish stays the node's `mesh_finish` and push). The node
-  finds a job's brief by `jobBriefOf` (`internal/node/brief.go`): the
-  brief `gateway.Client.JobBriefOf` kept at the claim, else the kind's
-  catalogue row (`JobKindOf`, read every 10 min), else empty — logged once
-  per kind, `brief carries no guidance; running the built-in prompt`.
-  The step runner (ADR-041 decision 5) is the thread path itself: a
-  turn of a kind the node has no code for runs from the brief alone
-  (`ThreadRunner.Run` → `prompterFor` → `harness.ThreadPrompt`, the
-  brief's harness checked against the node's by `stepRunnerTakes`, a
-  brief with no guidance for such a kind answered with why), and the
-  loop takes every raised turn whose kind the catalogue lists on this
-  node's harness (`RunsThreadKind`), not only `ThreadKinds`
-  (`NoGuidance`). A `mesh_result` call the stream recorded but the node
-  never received is read into the holder late (`recoverResult`,
-  `Holder.Recover`), checked the same way; the final message is never
-  read. A session that handed nothing in ends `no result: the session
-  made no mesh_result call`; one that called `mesh_fail` ends `the
-  session gave the <kind> up: <why>`. Tests script a session's result
-  with `fakeHarness.result`, or let `handInScript` (`scripted_test.go`)
-  hand an older `text:` script in as the model would.
-- `internal/harness/prompt.go`: the five prompts — `BuildPrompt`,
-  `EvaluatePrompt`, `PlanPrompt`, `ResearchPrompt`, `RebasePrompt`. Their
-  contract lines are load-bearing only for the build's already_done
-  fallback (`ParseAlreadyDone`, when the node's `mesh_finish` was not
-  reachable); every other kind hands its result to the node's
-  `mesh_result` (ADR-041): the evaluator hands
-  its verdict to `mesh_result` as `{verdict: {passed, notes,
-  failedClauses: [{clause, satisfy}], readings: [{clause, reading}]}}`
-  (the node records the clauses with the verdict as `evaluateWorkItem`'s
-  `failedClauses`, and a retry's
-  evaluator is given the clauses earlier attempts named and judges that
-  attempt on those and on regressions, never on a gap nobody named); a
-  clause that reads the host — load, wall time, a ratio of durations —
-  is judged on its mechanism and its reading recorded, appended to the
-  notes as `READING: <clause> || <what it measured, when, under what load>`
-  (`ClauseReading`, `ParseReadings`), never failed for the host's number,
-  and a retry that fails a clause an earlier attempt failed opens its
-  review with `fails on the same clause as attempt N: <clause>`
-  (`SameClauseLine`; `SameClause` finds the repeat and `NoteSameClause`
-  prepends the line when the model forgot it — the node applies it in
-  `afterEvaluate` on either family before `EvaluateWorkItem` and logs
-  `fails on the same clause as attempt N`, and one `reading recorded:
-  <clause>` line per READING, which rides the notes; ADR-020), the planner hands its graph to `mesh_result` as
-  `{plan: {items, …}}` — `items` and, beside them, `"questions": [{"clause", "question"}]`
-  for a clause no PR can satisfy (`DecodePlanQuestions`; sent with
-  `planGoal` only when its input has `questions`, `TakesPlanQuestions`,
-  else each logged `plan <goal>: question for the person: …`); each
-  item also carries `acceptance_checks`, at least one `{kind, check,
-  expected}` with kind command, test or observable (runsheet ADR 056:
-  the platform refuses an item with none — every plan of 2026-10-24 was,
-  until the node sent them; `planChecksRule`, `missingAcceptanceChecks`
-  flags one on the first answer where the platform takes
-  `acceptanceChecks` (`TakesAcceptanceChecks`), the final answer's
-  itemless check is one observable of its prose, `observableOfProse`,
-  and `PlanGoal` sends `acceptanceChecks` only where taken), its rule
-  3 and re-ask saying an item's acceptance names only what a PR can
-  change and a host reading is a `Measure: …` item (`planHostRule`;
-  the node's `hostReadingAcceptance` flags a threshold on a reading in
-  any other item for the re-ask, ADR-020), and saying a lineage's
-  attempts shrink — a failed item is replaced by two or more items
-  partitioning its acceptance, never recreated at the same acceptance,
-  an item that cannot be halved carrying `"atomic": "<reason>"`
-  (`PlannedSpec.Atomic`) exempt once, a failed item's acceptance and
-  lineage shown in the items so far, and a narrow re-plan's
-  `PlanInput.Replacing` written as `## Split this item` — the planner's narrow mode: a goal carrying `replacingItemId`
-  (`Goal.ReplacingItemID`) is planned as a split of that item alone,
-  its evaluations' failed clauses as `ReplacingClauses`, an answer of
-  fewer than two items and no once-only `atomic` one asked again and
-  then refused, and only the replacements handed in, `PlanGoal`
-  rewiring the dependents (runsheet ADR 023)
-  (`planSplitRule`, ADR-021; the node's `sameAcceptanceAsFailed` flags
-  a new item whose `normaliseAcceptance` equals a failed, superseded or
-  erred-cancelled item's of the goal, naming its lineage from
-  `WorkItem.LineageRootSeq`/`LineageAttempt`, for the re-ask, an
-  `atomic` item let through unless that item's brief opened `atomic:`,
-  and a second answer still re-landing is refused — `PlanGoal` not
-  called, the refusal a `*PlanRefused` (`PlanRefusedOf`); the same
-  refusal twice running for a goal (`normaliseRefusal`, the last kept in
-  `~/.mesh/jobs/.plans/refusals.json`) releases the plan claim
-  with its text, `releaseGoalPlan`, logged `goal <slug>: plan refused
-  twice with the same reason; released, not re-planned: <reason>` (a
-  platform without it `platform has no releaseGoalPlan; held on the
-  node`, once), and `planRequested` passes the goal over and holds it,
-  a `HeldGoal` of kind `plan`, while `Planner.Released` — the goal's
-  `updatedAt` unchanged, else still in planning — says so
-  (`Loop.PlanReleased`; ADR-023, a refused plan is released, not
-  re-planned); the reason rides the brief's first line `atomic: <reason>`,
-  `gateway.BriefWithAtomic`/`AtomicReason`), and its rule 3 and re-ask
-  carrying four more rules after `planSplitRule`: a plan over the
-  project's `maxItems` is answered `split` — goal drafts, each
-  `{slug, title, statement, acceptance, repo}`, each at most `maxItems`
-  items and one repo, for the node to propose as goals (`planSizeRule`,
-  `PlanInput.MaxItems` naming the cap in rule 2, `OverCap` turning the
-  re-ask into an ask for `split`, `GoalDraft`, `ParsePlanSplit` reading
-  `{"split": [...]}` from the same candidates as `ParsePlan`, so a
-  `split` answer with no `items` is not a parse error; the node's
-  `overCap(specs, cap)` flags a graph over `project.ItemCap()`, read at
-  claim time into `MaxItems` — 8 until the platform serves `maxItems` —
-  for the re-ask with `OverCap` set, a final answer still over it
-  refused (`overCapRefusal`), nothing handed in; `readPlan` reads a
-  `split` answer first, each draft with a slug, title and acceptance
-  naming exactly one of the project's repos (`splitDrafts`) or the
-  answer refused naming the cap, and `handInSplit` sends the drafts with
-  `ProposeGoalSplit` when `TakesGoalSplit`, `planGoal` never called,
-  logging `goal <slug>: over the cap (N items > M); proposed a split
-  into K goals: …`, else logs each `plan <goal>: proposed goal <slug>:
-  <title>` and errs, the goal left in planning; ADR-023's amendment
-  2026-10-04); a docs-only
-  close-out item — amending documents alone to say the branches read as
-  one design or describe what landed — is refused, docs landing in the
-  pull request of the change they describe, folded into that item
-  instead (`planCloseOutRule`; the node's `closeOutAcceptance` flags an
-  item whose title or acceptance matches a close-out phrase and whose
-  acceptance names no code or test check — a `go test`/`go build`/`go
-  vet`, a `.go`/`.ts`/`.sh` file, `npm test`, `make`, or a backticked
-  command other than `grep`/`cat`/`ls` on a `.md` — for the re-ask,
-  appended beside `hostReadingAcceptance`; an ADR amended beside its own
-  code or test check is never flagged, ADR-023's amendment); a clause waiting on a person's
-  confirmation or a production observation is never an item, becoming
-  `"precondition": "<clause>"` on the item that depends on it
-  (`PlannedSpec.Precondition`, kept by `ParsePlan`) or a `pr` checkpoint
-  on the goal beside `items` as `"checkpoints": ["pr"]`
-  (`ParsePlanCheckpoints`, read like `ParsePlanQuestions`;
-  release-tag-mirrors item 14's gate no builder could open is the
-  example, `planCutOverRule`; the node's `cutOverAcceptance` flags a
-  sentence waiting on a person or production — "the operator deletes",
-  "in production", "STEP 0 reading", "the gate is closed" and the like,
-  a `Measure:` item exempt — for the re-ask, beside
-  `closeOutAcceptance`; a `precondition` rides the brief's first line
-  `precondition: <clause>`, after `atomic:`'s
-  (`gateway.BriefWithPrecondition`/`PreconditionOf`), and is sent as
-  the item's `precondition` only when `PlannedItemInput` takes it
-  (`TakesItemPrecondition`); a `pr` checkpoint the goal lacks is set by
-  `SetGoalCheckpoints` before `PlanGoal`, logged `goal <slug>: pr
-  checkpoint set: a person approves each pull request`, any other value
-  logged and dropped, ADR-023's amendment); and an item naming a repo other than the
-  goal's is a different goal, left out or drafted into the `split`
-  (`planRepoRule`; ADR-023 (d) — the node's plan check,
-  `internal/node/plan_check.go`'s `otherRepoItems(specs, itemRepo,
-  goalRepo)`, flags each one for the re-ask and, a final answer — the
-  re-ask's, or an adopted session's — still holding one is refused
-  outright like a re-land, `plan names repo <owner/name> outside the
-  goal's <owner/name>; a different goal; refused`, nothing handed in;
-  `goalRepo` is `Goal.RepoID` among the project's repos when the
-  platform names one, else the project's one repo when it has exactly
-  one, else the rule does not apply — `Goal.RepoID` rides no selected
-  field yet, so it is always "" until `fields/GoalIndex.txt` gains
-  `repoId?`, which the gateway's `maxItems`/`ProposeGoalSplit`/
-  `SetGoalCheckpoints` and the hand-in of a `split` answer are later
-  items of the same goal to land); and two more after it, the planner
-  naming each item's files and one writer of the shared documents
-  (ADR-025, `docs/adr/adr-025-items-that-share-a-file-are-planned-in-a-line.md`):
-  `planFilesRule` — each item lists `files`
-  (`PlannedSpec.Files`, json `files`; `ExpectedFiles` reads them, else
-  the paths its brief names; `IsDocumentPath` says which are documents:
-  `.md`/`.mdx`/`.txt`, under `docs/`/`specs/`/`.mesh/`, the bare
-  AGENTS.md/README.md/CLAUDE.md), and `planDependencyRule` says sharing
-  a code file is a dependency the node adds, sharing a document is not —
-  and `planSharedDocsRule` — the ADR, the TRD section, AGENTS.md and
-  README are written by one item marked `"writes_shared_docs": true`
-  (`PlannedSpec.WritesSharedDocs`), every other brief saying not to and
-  to leave a `mesh_progress` note opening `for the docs writer:`; the
-  node's plan check, `readPlan` after `explainedDeps`, runs
-  `sharedCodeFiles(specs)` — two items of one repo naming the same code
-  file (`namesCodeFile`) with no dependency either way, transitively,
-  get one, the later on the earlier, `Depends on #N because the plan
-  check found both name <file>; …` on its brief, documents never
-  chained — and `sharedDocsWriter(specs)` — the marked item, else the
-  highest-seq item nothing depends on, two marked flagged for the
-  re-ask (`sharedDocsWriterFlags`) — whose brief
-  `gateway.BriefWithSharedDocsWriter` stamps with its siblings and every
-  other's `gateway.BriefWithoutSharedDocs`, read back by
-  `gateway.SharedDocsWriterOf`/`SharedDocsSiblings`; `handIn`'s
-  `planned, N items` line ends `, K dependencies added by the plan
-  check (3→2 internal/x.go; …)` or `, none added by the plan check`;
-  and the writer's build prompt carries `PromptInput.FoldNotes`
-  (`harness.ItemNote`), each sibling's `lastNote` opening `for the docs
-  writer:` with its `prUrl`, the runner's `foldNotes` reading
-  `GoalWorkItems`, rendered after the brief as `## Notes to fold in`;
-  no platform half, the mesh-specs TRD §3 paragraph owed to a follow-up),
-  the director hands `{research: {pitches, answers}}` to `mesh_result` for a
-  propose-mode direction, `{research: {goals}}` for a set-mode one, the rebase session
-  hands `{rebasedHead: {headSha, files}}` or gives up by `mesh_fail`
-  (ADR-041; `DecodeResearchGoals`, `DecodeResearchPitches`,
-  `DecodeRebasedHead`), the builder never pushes and checks main
-  first, ending with `ALREADY DONE: <evidence>` when the acceptance
-  already holds there (`ParseAlreadyDone`; the runner then finishes the
-  item `already_done` with no push, adr-003). The builder ends by
-  calling the hosted `mesh_finish(item_id, branch, head_sha)` — or
-  `mesh_finish(item_id, outcome=already_done, evidence)`, or
-  `mesh_fail(item_id, error)` — on `runsheet` (BuildPrompt's
-  `# Finish by tool call`): the harness keeps each mesh-work tool's input
-  (`tools.IsWorkTool`: mesh_finish, mesh_fail, mesh_verdict, mesh_plan,
-  mesh_progress, mesh_ask; each call also reaches the node as it is made
-  on `harness.Progress.WorkCall`, input byte-equal) on `Result.WorkCalls` by tool name, from Claude's
-  `tool_use` and Codex's `mcp_tool_call` alike, and `Runner.afterBuild`
-  takes a `mesh_finish` call as the finish whatever the final message
-  says (`finishCallOf`; the node still pushes and hands in the head it
-  pushed), a `mesh_fail` call as the item's failure, and with no call
-  parses the text as before, logging `item <label>: no mesh_finish call;
-  parsed the final message` once per session; the call records nothing
-  (a build's `mesh_finish` is the node's own `mesh-node` server's), so
-  the node validates, pushes, and only on the sha `Push` returned sends
-  `FinishWorkItem` — a push that fails fails the item `push <branch>:
-  <err>` with no finish sent, and a refused finish is an error (ADR-023,
-  finish by tool call, Decision 2 amended 2026-10-10). The push is
-  `Runner.pushBuild` (the finish step's fallback when the platform takes
-  no changeset, ADR-038): `ItemCred.ForPush` rewrites the checkout's
-  helper (an env-only cred, a sandboxed build's, writes nothing)
-  with the build's own token (issued at claim, or its `Refresh`) just
-  before `Workspacer.Push`, so a token written there since is never
-  used; a push refused for its credential (`IsCredentialRefusal`, `Write
-  access to repository not granted` among them) is `Reissue`d once and
-  retried, and still refused is a `*PushCredentialError` naming the
-  repo, branch and the token's access, issue time and expiry
-  (`TokenFacts`, `gateway.GitHubToken.Access`/`IssuedAt`), never the
-  token; logged `item <label>: pushed <sha>; finished <branch> ($x)` or
-  `item <label>: push refused (<token facts>): <git's words>; not
-  finished` (ADR-014's amendment 2026-10-10: push → attest → finish). The evaluator and the planner end by the node's
-  `mesh_result` (ADR-041, the `internal/jobresult` bullet above): a
-  `{verdict: {passed, notes, failedClauses, readings}}` the node reads
-  through `verdictOf` on the first evaluation and the second opinion of
-  either family (readings appended to the notes as `READING:` lines so
-  `logReadings` and `NoteSameClause` run as before), a `{plan: {items,
-  questions, checkpoints, split, already_done}}` `readPlan` decodes and
-  runs through every plan check. No text of the final message is read;
-  the `VERDICT:` line the node still writes into a verdict's notes
-  (`verdictLine`, `bothNotes`) is the record's format, read back by
-  `failedVerdicts`, never the session's. Both `mesh_finish` calls carry
-  a `description` — the PR body `FinishDescription` renders
-  (`internal/node/finishdesc.go`): a `## Who` section naming who built
-  the item (its actor, model and adapter) and who it was paired with,
-  the evaluator left to `EvaluateWorkItem`'s own actor rather than named
-  here — sent only when the introspected `FinishWorkItemInput` takes
-  `description` (every-actor-has-a-name item 3, adr-015's amendment).
-  Change wording freely; never the contract. (A later goal moves the
-  guidance onto the
-  platform as agent definitions.)
+  job's facts, with no built-in per-kind role text: the five
+  v0 prompts this bullet once described (`BuildPrompt`, `EvaluatePrompt`,
+  `PlanPrompt`, `ResearchPrompt`, `RebasePrompt`, their `VERDICT:`/
+  `REBASED:`/fenced-graph text contracts, the plan-check rules
+  `plan_check.go` ran against a planner's graph, the evaluator's
+  second-opinion and same-clause bookkeeping, and the acceptance-split,
+  docs-writer and close-out rules a planner's answer was checked
+  against) belonged to the deleted v0 Loop's `Planner`/`Evaluator`/
+  `Rebaser`, all gone with it. A v1 job kind's prompt is its product's
+  own `guidance`, published to Mesh and fetched with the brief; the
+  node runs no kind-specific contract on top of it beyond the one
+  finish-schema check (above) and the node's own tools (`push`,
+  `hand_back`, `progress`, `run_suite`, `apply_onto`, `result`). What a
+  kind's guidance should say, and what a product's catalogue validates
+  before publishing it, is `internal/catalogue`'s and the product's own
+  concern, not this node's; see ADR-044 and the Mesh v1 node spec for
+  the job-kind and brief shapes this node actually runs against.
 - `internal/latchkey/` + `internal/auth/token.go`: the machine
   credential — Latchkey's device flow, the rotating refresh grant, and
   the `~/.mesh/token` that holds either shape behind one `TokenSource`
   (latchkey `adr-machine-identity`).
-- `internal/node/`: the loop (`runner`; a workspace that cannot be prepared before the harness starts — `PrepareWithRetry`, `Identify`, `WriteContext` — releases the claim with `workspace: <error>` by `ReleaseOnWorkspace`, never `FailWorkItem` unless the release is refused, and `Declines.HoldFor` keeps the item off the node for `WorkspaceReleaseHold`, ten minutes; ADR-024, a workspace failure releases the claim), the workspace — each job's
-  checkout, evaluation and rebase a git clone of its own inside
-  `~/.mesh/jobs/<id>/` (`checkout/`, `eval/`, `rebase/`; ADR-039,
-  Nothing is shared between jobs), cloned by `Git.cloneCommand`: `git
-  clone` over https on the job's token, the token in each command's
-  `GIT_CONFIG_*` env (`withGitToken`, `OnItemToken`) and never on the
-  command line or in a config file (the operator's `gh repo clone` only
-  with no token on the ctx); a complete clone, not a partial one, since
-  an agent in its pod holds no token to fetch a missing blob; a rework
-  reuses its checkout, and plan and research checkouts are clones of
-  their own too (`Git.reposRootFor` is "" for a dir in a job, so
-  `Git.sharedClone` names none); the credential helper and `Identify`'s
-  `user.name`/`user.email`/`core.hooksPath` go in the clone's own
-  `--local` config, a git lock older than a minute is removed —
-  `removed stale git lock <path> (age <d>)` — and the write retried once
-  (`ClearStaleGitLock`, `withStaleLockRetry`), and a `config.lock`
-  older than five minutes no git process holds is cleared before the
-  write (`preclearStaleLock` at the top of `withStaleLockRetry`,
-  `PreclearGitLockAge`, `gitLockHolder` scanning `/proc`;
-  `TestStaleConfigLockIsCleared`), and a wait on the repo
-  lock logs `repo lock <key>: waiting on <goal>/<seq> (pid <n>, held
-  <d>)` (`WithLockHolder`, `SetRepoLockLogf`); no shared clone, so no
-  worktree registration to prune: the quartermaster's dead-checkout
-  check just removes a dead checkout (`JobDeadCheckoutCheck`), and
-  `Git.RemoveWorkspace` — the sweep's remover — removes a clone by
-  RemoveAll, refusing a dir held live on this node (`HoldWorkspace`/
-  `WorkspaceLive`, `liveworkspaces.go`, held by the Runner, Evaluator
-  and Rebaser); a build's, rebase's and validation's checkout registers
-  no worktree in any shared clone, in a job or the tests' work-root
-  layout alike (`cloneOwn`: `git clone --reference <shared> --dissociate`
-  when a shared clone seeds it; `TestBuildRegistersNoWorktree`,
-  `TestRebaseRegistersNoWorktree`, `-tags e2e`) — `addWorktree`,
-  `lockWorktree` and `RebuildWorktree` are retired, and a stale worktree
-  an older node left is removed and cloned again (`removeStale`), never
-  rebuilt (ADR-028's, ADR-023's and ADR-039's amendments 2026-10-26;
-  the reading, `scripts/validation-residue-reading.sh [--dry DIR]`,
-  closes with `leftover work directories: N` and `shared-clone
-  worktrees: N` over `$MESH_HOME/repos`);
-  the evaluation's own clone at `<job>/eval`
-  (`EvalWorkspaceSpec`, `evalSpec`, ADR-027) never rewrites the build's
-  helper; every clone
-  and `git fetch` `Git` runs going through `fetchLocked` under a
-  per-repo fetch lock (`repolock.go`: a process-wide mutex keyed by
-  lock root and `RepoLockKey` (`repoLockID`), so two jobs' clones of one
-  repo never wait on each other, and an exclusive flock on
-  `<root>/.locks/<owner>--<name>.lock`, `Git.lockRoot`: `Git.LockRoot`
-  else the spec's Root else the job the dir is in — each job's own
-  `<job>/.locks`, since no clone is shared — else the checkout's
-  grandparent, a command on a shared clone under that clone's own root
-  (`sharedLockRoot`), never a job's; released before any checkout, never held across a
-  session or a push; ADR-023, fetches of one repo are serialised on the
-  node) — a main validation takes none of it: it runs in a scratch dir
-  under its job's `.scratch` from the served diff (ADR-034, Main
-  validation below), a clone of its own only as its fallback, so its
-  job holds nothing of a validation's once it ends but
-  an empty `.scratch` — and the project's
-  context (`workspace.go`: `FetchContext`, `RenderIndex`, ADR-015 — on disk only the instructions of the session's own repos (`ContextOptions.Repos`), keyed by repo and path — a slug several repos share, as every AGENTS.md's `agents` is, read from the session's own checkout (`ContextOptions.Checkouts`), never by slug from the gateway, which answers one repo's body for all — each as `instructions-<owner>-<repo>-<path>.md` (`contextFileName`: the path without `.md`, so one repo's two paths of one slug are two files), and, in INDEX.md, its own goal (`ContextOptions.Goal`: statement, acceptance, items; none for research); no ADR, PRD or TRD body is fetched; INDEX.md is a screen with no document table and no other goal — what is on disk, `mesh_search`/`mesh_document`/`mesh_documents`/`mesh_projects`/`mesh_items` for the rest, the ADRs and TRD binding, one count line; node.yaml `context:` (`ContextConfig`, re-read each tick, `Loop.ContextBudget`) `bytes_max` is the cap, default 80KB, INDEX.md included, an instructions document past it left whole to INDEX.md as binding, to fetch (`Context.Dropped`), and the cap held on what is written — `RenderIndex` never past the room the files leave (the goal's item table cut at a row with the rest to `mesh_items`, then its statement and acceptance; at last a cut), `Context.fit` again in `WriteContext`, which measures what it rendered and writes nothing past the cap, and clears `.mesh/context` first, an empty context included; past the 40KB target (`ContextBytesTarget`) a session logs `ContextWritten.TargetWarning`; `doc_bytes_max` holds each instructions document),
-  evaluate, plan and research sessions, the service install (`launchd` /
-  `systemd --user`). A project's repos — for the planner, the director
-  and `mesh goal plan` — are read from `project.repoIds` through
-  `ProjectRepos`, each owned by its own account's login, never the
-  org's account: an org links several GitHub accounts (the runsheet
-  org's loom project lives at go-apis/loom). `internal/gateway/client.go`: the platform client.
+- `internal/node/`: what survives of the legacy runtime now that the
+  v0 Loop types (`Runner`/`Evaluator`/`Planner`/`Director`/`Rebaser`)
+  and the work sweep that ran inside `mesh node start` (`PlanJobSweep`,
+  `ApplyWorkSweep`, their files) are deleted: the legacy gateway client
+  below, which a person's own `mesh mcp`/`mesh join` still calls
+  (ADR-040's "Not yet" — a person's own join, which holds no job, still
+  asks its item token itself through this package, and still reads
+  project context through this package's shared context render,
+  `FetchContext`/`RenderIndex`/`WriteContext` in `workspace.go`, which
+  is live and unchanged), and `ProjectRepos` for `mesh goal plan` (a
+  person's own plan upload, not an autonomous planner). What is not
+  deleted, and not called by anything either: the per-job workspace
+  tree's own layout (`layout.go`'s `Layout`/`JobDirs`, `jobdirs.go`)
+  and the quartermaster, scratch, rebase-worktree and second-opinion
+  helpers that tree once served (`quartermaster.go` and its sibling
+  `quartermaster_*.go` files, `scratch.go`, `rebaseworktree.go`,
+  `second_opinion.go`, `holding.go`) — every exported and unexported
+  func in each still compiles but calls nowhere a built `mesh` binary
+  reaches (`go run golang.org/x/tools/cmd/deadcode@latest ./cmd/mesh`
+  names every one of them unreachable); they are leftover from the v0
+  Loop, not wired to `mesh mcp`/`mesh join` or to `mesh node run`, and a
+  later item should either delete them or give them a caller. The
+  service install (`launchd`/`systemd --user`) installs `mesh node
+  run`. A project's repos — for `mesh goal plan` alone now — are read
+  from `project.repoIds` through `ProjectRepos`, each owned by its own
+  account's login, never the org's account: an org links several
+  GitHub accounts (the runsheet org's loom project lives at
+  go-apis/loom). The v1 node's own per-lease workspace, context and job
+  directory are `internal/nodev1`'s and `internal/actor`'s (ADR-044):
+  each lease owns its own job directory (`leases/<lease_id>`), closed
+  in reverse order the moment the lease ends, no shared clone or shared
+  context tree to sweep.
+  `internal/gateway/client.go`: the platform client.
   Every read — a query, and the `issueItemRepoToken`/`planGitHubToken`/
   `researchGitHubToken` mints — retries a transport error, timeout, 429
   or 5xx (`retryRead`: `ReadRetryFor` 2m, `ReadTryTimeout` 30s,
@@ -410,31 +156,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   example omits, with where, and keys the node sends ahead of runsheet
   (`Ahead`: `environmentKind`, ADR-030, which runsheet does not read
   yet) — both fail their tests once a pull makes
-  the entry stale. The loop's
-  `evaluateHeld` makes it for every `evaluating` item before the
-  evaluation starts — the builder claims its own item's evaluation too,
-  the platform converging for the same node, so the claim is the one
-  lock and two nodes never both evaluate an item — re-reading the item
-  after it, a refusal ordinary and silent; a refusal on an item this
-  node built means another node has it: nothing starts, and it is said
-  once per item, `item <goal>/<seq>: evaluation is node <x>'s; not
-  evaluated here` (`Loop.sayEvaluationElsewhere`). Only when the
-  `Mutation` has it (`TakesEvaluationClaim`, kept an hour), else own
-  items only with no claim, said once per run `the platform takes no
-  evaluation claim; evaluating only what this node holds`; an adopted
-  evaluation is not claimed again (ADR-025, amended 2026-10-14). A
-  `not yours` before the session leaves the item to its holder: the
-  evaluator's `issueItemRepoToken` refused `not yours`
-  (`evaluationNotYours`) starts no session and sends nothing, logged
-  `item <label>: evaluation is another node's (<err>); left to it`, and
-  an `evaluateWorkItem` refused `not yours` with no `mesh_verdict` call
-  is the race lost after a session ran — logged once, `verdict refused:
-  another node holds the evaluation`, the item forgotten, never retried
-  (ADR-001's and ADR-023's amendments). `evaluate_one_node_e2e_test.go`
-  ticks two loops — the builder and an evaluate-only node — on one fake
-  gateway, in both orders and at once, and sees one `evaluate on`, one
-  `evaluateWorkItem` and no `not yours` (goal
-  an-items-evaluation-runs-on-one-node).
+  the entry stale. The claim-converging, one-evaluation-lock mechanics
+  this paragraph once described (`evaluateHeld`, `Loop.sayEvaluationElsewhere`)
+  belonged to the deleted v0 Loop's Evaluator; a v1 lease's `jobAccess`
+  exchange (ADR-040) is the one lock now — an access entry the platform
+  did not serve is the claim's refusal, ordinary and silent.
   `internal/meshmcp/`: the stdio MCP server (`Server`, `Tool`,
   `ObjectSchema`) of `mesh mcp`, whose initialize answers
   `serverInfo.name` `runsheet` (`meshmcp.ServerName`; ADR-023's
@@ -502,1900 +228,115 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   its markers — exiting 1 unless signed in and every report is
   `Healthy`; `--json` is `{"identity": {person, via, projects, error},
   "clients": [...]}` (ADR-025, Doctor).
-  **A draining node claims nothing** (`Loop.Drain`): see the drain
-  below. **A node low on disk claims nothing** (ADR-035,
-  `docs/adr/adr-035-a-node-low-on-disk-claims-nothing.md`,
-  `internal/node/diskfloor.go`): node.yaml's `disk: {free_min_gb,
-  path}` (`DiskConfig`, `free_min_gb` default 10 GiB
-  (`DefaultDiskFreeMinGB`), `path` default the loop's `WorkRoot`; a
-  negative floor refused at load naming `disk.free_min_gb`; re-read
-  each tick, `Loop.DiskThresholds`, logged `disk: free_min_gb <old> →
-  <new>` and `disk: path <old> → <new>`) is read every tick, after
-  `hostBackoff` and before any claim (`Loop.diskFloor`), through the
-  quartermaster's `StatfsFunc` (`Loop.Statfs`, the real statfs when
-  nil, injectable); free space under `FloorBytes()` skips every claim
-  path — `evaluateHeld`, `rebaseRequested`, `planRequested`,
-  `researchDue`, `validateBatches` and `claimReady` — running sessions
-  untouched, logged once on entering, `disk_low: <path> <free> free <
-  floor <floor>; claiming nothing` (at the first tick when the node
-  starts under it), and once on leaving, `disk ok: <path> <free> free
-  >= floor <floor>; claiming again`; a failed read keeps the last
-  judgement, `disk: cannot read <path>: <err>; keeping the last
-  judgement` once per error; while low `Loop.DiskFindings()` is one
-  critical `disk_low` Finding (subject the path, bytes the free space)
-  for the quartermaster's report once its loop wiring folds it in;
-  `disklow_e2e_test.go`'s `TestDiskLowE2E` runs it on `Loop.Run`.
-  **A node short of memory claims nothing** (ADR-037,
-  `docs/adr/adr-037-a-node-short-of-memory-claims-nothing.md`,
-  `internal/node/memfloor.go`): node.yaml's `host: {min_free_memory}`
-  (`HostConfig.MinFreeMemory`: a size, `32g`/`512m`/`1024k`/bytes, or a
-  share of `MemTotal`, `15%`; `HostConfig.MemoryFloor(total)` in bytes,
-  `MinFreeMemory` when left out or a share's total is unread; a zero,
-  a share at 0 or ≥100, or anything unreadable refused at load naming
-  `host.min_free_memory`; reloaded with `host:`, logged `host:
-  min_free_memory <old> → <new>`). While set, `Loop.memFloor` reads
-  `Loop.Machine` every tick after `diskFloor` and, at or under the floor
-  (`MachineReading.ShortOfMemoryAt`, `MemTotal` now read beside
-  `MemAvailable`), skips every claim path as a low disk does, logging
-  `memory_low: <free> free <= floor <floor>; claiming nothing` and
-  `memory ok: <free> free > floor <floor>; claiming again` once per
-  crossing, a critical `memory_low` Finding while low
-  (`Loop.MemoryFindings`). `Scaler`/`AccountsScaler.Host` (set from
-  `HostThresholds` before each `Target`) judge the `low memory` growth
-  cap by the same floor. Left out, the floor does not run and ADR-004's
-  2 GiB growth cap is unchanged. **Capacity counts the live sessions** (ADR-029,
-  `internal/node/liveproc.go`): `Loop.Live` (`LiveProbe{Systemctl,
-  Root, Find, SweepEvery}`) counts the build sessions alive on the host
-  each tick — active `mesh-session-build-*` scopes, else
-  `FoundSessions` of kind build whose pid is alive — and `free =
-  Capacity() − max(Running(), live)`, orphans included, logged once per
-  change `capacity: <n> live agent sessions (<m> orphans) against
-  capacity <c>; claiming nothing` (`Loop.LiveSessions()`); every
-  `SweepEvery` ticks (default 5) an untracked live build whose item is
-  terminal, unknown, or another node's while a state file of ours names
-  it is stopped (`judgeItem`, `stopScope`, `FoundSession.Kill`), logged
-  `capacity: orphan: stopped <unit> (…)`; a sibling node's scope on the
-  same host is neither counted nor stopped. **Lanes are retired**: node.yaml's `capacity.reserve` (runsheet ADR 069 decision 2b's per-kind lanes) is still read without error but ignored, said once (`node.yaml: capacity.reserve is retired and ignored`, `Capacity.ReserveRetired`, `sayReserveRetired`), and not written back. Claims come from Mesh's priority queue, which ranks validations first; without the one claim, `Tick` asks `validateBatches(free)` for batch, main and pull request validations first, in free slots, and logs `main validation: a merge batch candidate waits for a free slot` once per set when none is left. node.yaml's `claim: {unmerged_per_repo: N}` (`ClaimConfig`,
-  re-read each tick, `Loop.UnmergedPerRepo`; absent or 0 is no limit
-  and no read) holds fresh claims for a repo with N items in `review`,
-  counted from the node's own listing, never `RepoIndex.reviewPile`;
-  started work there is still claimed (ADR-017).
-  node.yaml's `takes:` (`Takes`: a list of kinds or a per-kind cap map,
-  re-read each tick, `Loop.Takes`; left out, every kind) skips a kind
-  not taken before its claim path lists anything — `claimReady`,
-  `evaluateHeld`, `rebaseRequested`, `planRequested`, `researchDue`
-  return at `takesKind` — logged on change `takes: <old> → <new>`;
-  a kind's cap (`Takes.Cap`) bounds it inside capacity — `runningOf`/
-  `kindRoom`, the room read once per path and lowered by each start, a
-  build's `free` cut to it in Tick — and what it holds back is passed
-  over as `at node.yaml's takes cap of N <kind>(s)`, logged `takes:
-  <kind> at its cap of N; M waiting` once a tick (ADR-025).
-  **Every org gets its share** (`internal/node/shares.go`, ADR-023,
-  amending ADR-017's order): `claimReady` orders the pooled ready items
-  by `shareOrder(ready, Floors(Capacity(), Scopes, Weights()),
-  heldByOrg())` — floor first, then priority: an org holding fewer
-  sessions than its floor with ready work has its best item (by
-  `claimOrder`) claimed before any other org's whatever the priority,
-  the org furthest below first, then everything left in `claimOrder`.
-  `Floors` splits capacity by weight (keyed by the org's `Name()`,
-  missing or zero is 1, nil equal shares; `Loop.Weights` is node.yaml's
-  `shares:` (`Config.Shares map[string]int`, keyed by a served org's
-  login or slug, re-read every tick like the claim limits and logged
-  on change as `shares <old> → <new>`, each side sorted `a 3, b 1` or
-  `none`; a zero or negative weight refused at load naming the org,
-  `shares: <org>: must be a positive integer`; a weight naming an org
-  this node does not serve logged once, `shares: <org> is not a served
-  org`, and dropped), over by the owner answer's `shares` when the
-  platform's schema carries it (a later item of the goal)), the largest
-  remainder to the orgs in listed order. `Loop.sessionOrg` (subject →
-  org) is set where builds, plans and research are marked —
-  `start`/`Adopt`, `startPlan`/`startResearch`, `AdoptSessions` by the
-  state's node id — and cleared with them; `heldByOrg` counts those
-  three, never evaluations or rebases. A claim for a floor logs
-  `<org>: claimed item N "title" (below its floor of F, holding H)`. Each
-  pass's rows per org — `gateway.HoldingOrg{org, orgId, floor, held,
-  ready}`, ready -1 when the org's read failed — ride the holding report
-  as `holding.orgs` (only when the gateway's holding input takes `orgs`,
-  `takesHoldingOrgs`) and `Loop.Shares` → `RunState.WriteShares` →
-  `~/.mesh/node.shares`, printed by `mesh node status` as `ORG FLOOR
-  HELD READY` (`sharesLines`) or `shares: none recorded` (ADR-023,
-  Reporting).
-- **A session works in its own job directory** (ADR-039,
-  `docs/adr/adr-039-a-session-works-in-its-own-job-directory.md`,
-  superseding ADR-034's per-org roots; `internal/node/layout.go`,
-  `jobdirs.go`, `jobsweep.go`): every unit of work — an item, a goal's
-  plan, a direction's research, a merge batch, a main validation
-  (`<item>-main`) — has `~/.mesh/jobs/<id>/` with a `job.json`
-  (`JobMeta`: unit, connection, org, product, item/goal/direction/batch,
-  label, started; `Layout.OpenJob`, `openJob`, refused for an unserved
-  org, a scope with no `ConnectionID` or another connection), its
-  `checkout/`, `eval/`, `rebase/`, `plan/`, `research/`,
-  `<what>-<attempt>/`, `.scratch/`, `kept-sessions/`, `resume/`, `mcp/`,
-  `homes/`, its own package stores (`store/{pnpm,npm}`) and repo locks
-  (`.locks/`). Nothing is shared between jobs (ADR-039, amended
-  2026-10-22): each checkout, evaluation and rebase, and a candidate's
-  or main validation's fallback checkout (`<job>/candidate-<n>`,
-  `<item>-main/main-<n>`, `addDetachedClone`), is a complete clone of
-  its own; the node keeps nothing per connection, and `job.json` names
-  the connection (`Scope.ConnectionID`, from the node's answer, runsheet
-  ADR 066) only so the sweep can drop a job whose connection is gone.
-  `mesh node start` always sets `Layout` (`nodeLayout`);
-  `WorkRoot` is the jobs tree, and a nil `Layout` is only the tests'
-  work-root layout. Helpers: `itemSpec`/`ItemSpec`/`evalSpec`
-  (`WorkspaceSpec.Job`: `Dir()` is `<job>/checkout`, `Root` the job's
-  dir for its locks, `Repos` ""), `planDirFor`,
-  `researchDirFor`, `batchDirFor`, `scratchRootFor`, `keptRootFor`,
-  `mcpRootFor`, `jobSandbox` (the job's own stores; the node's sandbox
-  has none), `Runner.resumes` (the job's `resume/`); `lockRoot` is the
-  job's dir, and `reposRootFor` "" for a dir in a job, so `sharedClone`
-  names none. A pod is confined to its job's directory alone
-  (`confineTo` → `confinementOf` → `Sandbox.WithConfinement`,
-  `sandbox.Confinement` with one root, `Session.CheckedMounts`: every
-  mount resolved inside it, else `*sandbox.MountOutsideJobError`,
-  `ErrMountOutsideJob`); a multi-org node with no sandbox runs nothing
-  on the host (`HostFallback`, `sandbox_required`). `PlanJobSweep` judges
-  each job by its `job.json` (and drops a job whose connection is gone,
-  `ConnectionsOf`); `JobDeadCheckoutCheck`, `Layout.SweepKeptSessions`
-  and `Layout.ScratchRoots` cover every job. A build's token file holds
-  its own mesh session's bearer (ADR-035,
-  `docs/adr/adr-035-a-session-reads-mesh-context-on-its-own-bearer.md`:
-  `SessionBearers.Open`, `TokenFiles.Bind`/`KeepSession`, under its job's
-  `mcp/`). `two_orgs_sandboxed_e2e_test.go`'s
-  `TestTwoOrgsSandboxedNodeNeitherOrgReadsTheOthersFiles` runs two
-  orgs' builds, plans and research on one sandboxed node and asserts
-  each session's mounts, kept root and token file are its own job's
-  and every mount of the other org's is refused.
-  There is one run mode (ADR-039, One layout and one mode): one
-  `claude -p` session per job; `node start --mode` is deprecated and
-  refuses anything but `poll` (`runPollMode`).
-- **A build is a session's ordered steps** (`internal/session`, ADR-038,
-  `docs/adr/adr-038-a-session-runs-as-ordered-steps.md`; runsheet
-  adr-061 §3–4, ADR 058 step 4): `session.Step{Name, Always, Run}`,
-  `Job`, `Run` → one `Record{Name, Started, Ended, Outcome, Err}` per
-  step — main steps in order, stopping at the first failure, `Always`
-  ones still run; `session.End(err)` ends the job without failing it
-  (`ended`, the rest `skipped`). `Runner.RunItem` runs `checkout`
-  (`PrepareWithRetry`, `Identify`, the context; sandboxed on the real
-  `Git`, `session.Checkout`'s check that no git config of the workspace
-  — `session.ConfigHolding` — names the token), `exchange`
-  (`StepExchange`: model, prompt input, `Credentials.Open`, the
-  session's bearer, tools and proxy), `pod` (`openOrgSessionPod`),
-  `run` (`StepRun`: the harness, then `buildTail.end`), `validate`
-  (`buildTail.validate`: ADR-014's validator), `finish`
-  (`buildTail.finish` over `session.Finish`) and `release`
-  (`StepRelease`, always: the validation, the session dir and every
-  hold, last first, as the defers were), each logged `item <label>:
-  step <n> <name>: <outcome> (<took>)[: <err>]` (`StepLine`,
-  `logSteps`); `afterBuild` runs an adopted build's tail the same way.
-  The credential boundary is the job container's edge: a sandboxed
-  build's `ItemCred` is env-only (`KeepOffCheckout`, `EnvOnly`: the
-  helper removed, `Refresh`/`Reissue`/`ForPush` write nothing,
-  `prepareWithRetry` on `OnItemToken`, `Reauthorize` clearing what it
-  rewrote), it gets no gh config dir or `SessionEnv`, `sandbox.HeldOutEnv`
-  keeps every GitHub variable out of a pod, and the bearer stays on the
-  node (`mcprelay.Serve`, the session proxy); a host session keeps the
-  helper and `GH_TOKEN`. The finish records a changeset from the node —
-  `git add --all`, `write-tree`, the objects differing from
-  `origin/<base>` (else `origin/<default>`) offered to
-  `ChangesetMissing`, the missing `PutChangesetObject`ed,
-  `RecordChangeset`, `FinishWorkItemChangeset` naming `changesetId`
-  and `baseShaAtFinish` — the commit the platform writes the branch on,
-  whose tree is the changeset's `base_tree`: the commit `origin/<base>`
-  was at when the checkout was made (`checkoutBaseSHA`, kept on
-  `State.BaseSHA`) while HEAD descends from it, else the merge-base of
-  HEAD and the base (`session.baseCommit`; a base that moved on since
-  the checkout is logged, not followed) — the validated commit's
-  attestation uploaded between the record and the finish
-  (`Finish.Recorded`, `attestChangeset`), naming the recorded changeset
-  as `changesetId` so the platform reads it from the aggregate rather
-  than its lagging index of the item's latest (runsheet amendment
-  2026-10-25; `gatewaytest.Fake.ChangesetIndexLags`), and a failed
-  build's run, which records no changeset, never sent — logged `item <label>: changeset <id>
-  recorded (<n> path(s), <m> object(s) uploaded) on <base>; finished
-  <branch> ($x)` — only when
-  `gateway.Client.TakesChangesets` (FinishWorkItemInput has
-  `changesetId`, kept `ScalingProbeEvery`), else `Finish.Push` is
-  `pushBuild` and `FinishPushed` attests and `FinishWorkItem`s as
-  before. `gatewaytest.Fake.Changesets` serves the routes
-  (`changeset.go`, `ChangesetsOf`, the item's `latestChangesetId`).
-  `session_steps_e2e_test.go`'s `TestBuildRunsAsSessionStepsE2E`
-  (`-tags e2e`) runs a build on a stand-in GitHub taking only its
-  `ghs_` token: seven records succeeded, no `ghs_` or bearer in the job
-  container's env or mounted files, a changeset recorded, nothing
-  pushed; `scripts/e2e-sandbox.sh` runs it as step 2c, and on podman
-  `TestProbeSessionE2E` and `TestSandboxedSessionsE2E` grep the pod for
-  `ghs_` and `mesh-session`.
-- **A failed check resumes the session that built it** (ADR-030,
-  `docs/adr/adr-030-a-failed-check-resumes-the-session-that-built-it.md`):
-  every build keeps its session in `ResumeStore` (`Runner.resumes`: its
-  job's `resume/<item>/`, `RunState.Resumes()` only with no Layout):
-  `ResumeRecord{sessionId, adapter,
-  credentialId, worktree, transcript, keptAt}` and the transcript's copy,
-  ids and paths only; `Runner.keepSession` before the account and pod
-  go; it goes with the item's job (the work sweep). A failing validation step (ADR-014) and a
-  claim whose last evaluation failed (`retryAfterEvaluation`,
-  `internal/node/retryturn.go`) resume it — `Job.Resume`, the
-  transcript restored by `harness.RestoreTranscript`, same adapter,
-  credential and checkout (`Runner.resumable`) — with one message,
-  `harness.RetryTurnPrompt` (what failed, where, the acceptance); else
-  a fresh session gets the build prompt and the same message, logged
-  and noted `item <label>: session not resumed (<reason>); fresh session
-  with the failure` (`no record`, `adapter changed`, `credential
-  changed`, `worktree gone`, `transcript missing`, `session not found`).
-  Each retry turn is `Loop.NoteRetryTurn`'d: the heartbeat's `resumed
-  [{itemId, kind, sessionId, fresh}]` (`takesResumed`) and one session
-  in `Loop.Running`, each item once. `internal/node/resume_e2e_test.go`
-  runs it end to end. Beside `record.json` each item keeps
-  `record.jsonl` (`ResumeStore.AppendRecord`, `recordwrite.go`'s
-  `recorder`): `{at, kind, text}` lines — `note` (every `mesh_progress`),
-  `question`/`answer`, `check` (a failed step, exit and last 20 lines),
-  `handback`, `turn` (start, end, a hand-back or ask with no `state:`
-  note) — appended, never rewritten, no secret; `ItemRecord` reads it
-  under `RecordBudget` (6,000), oldest whole entries dropped, the first
-  turn kept, `Runner.itemRecord` falling back to the platform's
-  `MeshActivityIndex` rows (`ItemActivity`). A fresh fallback's prompt
-  (`freshRetryPrompt`, both the not-resumable and unknown-session paths)
-  puts `recordSections(freshContext)` — `# What earlier sessions did`
-  (`<at> <kind>: <text>`, the dropped count), `# What the branch holds`
-  (`BranchState`: commits and diff stat past base, the default branch
-  when it is gone) and one continue line — between the brief and the
-  failure; a resumed turn gets neither; logged `item <label>: fresh
-  session with the item's record (N entries, M commits)` or `fresh
-  session with no record (<why>)` (ADR-030's amendment 2026-10).
-- **A session that ends says so** (ADR-042,
-  `docs/adr/adr-042-a-session-that-ends-says-so.md`): a build session
-  that exits at once is failed with its reason, or released for the
-  runtime, inside a minute (`sendReport` within `ReportRetryFor`, a
-  refused fail releasing the claim by `releaseNaming`;
-  `session_exits_e2e_test.go`'s `TestSessionThatExitsAtOnceIsReportedE2E`,
-  `-tags e2e`); an evaluation heartbeats its item from claim to verdict
-  (`evaluate_heartbeat.go`, `evaluate.heartbeat_every`, default 5m,
-  refused at or past the 15-minute stall window;
-  `TestEvaluationOutlivesTheStallWindowE2E` and its `…Control`, `-tags
-  e2e`); and every hand-in — `FinishWorkItem`,
-  `FinishWorkItemAlreadyDone`, `FinishWorkItemChangeset`,
-  `FailWorkItem`, `ReleaseWorkItem`, `ReleasePlan`, `EvaluateWorkItem`,
-  `EvaluateWorkItemNoVerdict` — hands its error to `handInRefused`
-  (`handin.go`), logged `item <label>: <call> refused: <the gateway's
-  answer>` and returned unchanged (`TestHandInRefusalIsLogged`,
-  `TestHandInRefusalIsLoggedByThePlanner`,
-  `TestHandInRefusalIsLoggedByTheEvaluator`).
-  `handin_guard_test.go`'s `TestEveryHandInErrorGoesThroughTheHelper`
-  parses the package's non-test files and fails, naming file:line, on a
-  hand-in whose error neither sits inside a `handInRefused` argument
-  (directly, or through `acct.Carried`/`validationUsage`/`c.carried`)
-  nor is assigned to a variable a later `handInRefused` takes: a new
-  hand-in method goes in its `handInMethods`, a new usage wrapper in
-  `handInWrappers`. gatewaytest's `Fake` records no `Calls` entry for a
-  mutation it answers by `Refuse`, so a refusal test reads the log line,
-  never `CallsNamed`.
-- **A death names itself** (`internal/crash/`): `defer crash.Guard()`
-  at the top of `mesh node start` and of every goroutine the node
+  **A death names itself** (`internal/crash/`): `defer crash.Guard()`
+  at the top of `mesh node run` and of every goroutine the node
   starts turns a panic into one node.log line, `mesh node: fatal:
   <value> (version <v>)`, the stack, and exit 70 (`crash.ExitPanic`),
   never Go's 2 (systemd's `INVALIDARGUMENT`); a new node goroutine
-  defers it first (goal node-yaml-takes-effect-or-says-why-not, The
-  04:00:22Z exit).
-- **The director** (`internal/node/research.go`, runsheet trd §6c): a
-  project carries **directions** — several, each its own aggregate with
-  its own words, window, timezone, gap, ceiling and research claim
-  (`Directions(org, project)` lists them; the id is
-  `direction:<project>:<slug>`). On every tick the loop offers each live
-  direction with room to spare — `ClaimDirectionResearch`; the platform
-  refuses it outside the hours, inside the gap, when the direction is
-  off or archived, or when another node holds it, so *a refusal is the
-  ordinary answer and is not logged as an error*. A session that wins
-  the claim opens its credential first (`Credentials.Open`, before
-  `ProjectRepos` and any `WS.Fetch`): a refused read — none issued
-  (`ErrNoCredential`) or none with headroom (`ErrNoAccount`) — logs
-  `<project>/<direction>: <err>; handing in an empty research` and hands
-  in an empty research costing nothing, no usage, its notes `no issued
-  credential has headroom` or the no-credential text, so the direction
-  is not left claimed while the hold keeps it unclaimed. Then it reads
-  the direction's own GitHub tokens (`researchTokens`, adr-022) — one
-  per repo of the project, each checkout `Authorize`d on its row before
-  `Fetch`, the session's `GH_TOKEN` the first sorted repo's with its own
-  `GH_CONFIG_DIR`, the operator's `gh` never consulted — and a refused
-  read, or a repo with no row, hands in an empty research naming it
-  (`refusedToken`) the same way a refused credential does; it then
-  fetches the repos and reads the context; a `propose`
-  direction's session pitches and answers (`DecodeResearchPitches` on the
-  `research` it handed `mesh_result`: problem,
-  evidence, bet, scope, estimate, risks, alternatives, signal, and its
-  answers to open questions on earlier pitches) and a `set` one
-  proposes goals (`DecodeResearchGoals`); `RecordDirectionResearch` hands
-  them in with the cost — `pitches` and `answers`, or `proposals` — and
-  the platform decides what becomes of them. An older platform without
-  `pitches` gets the pitches as proposals (`ErrNoPitches`), no error,
-  said once per run (`takes no pitches`). A session whose output cannot
-  be read hands in an empty research anyway — otherwise the claim holds
-  the direction for 45 minutes and the night is lost. **Two ceilings
-  hold and `RoomFor` takes the smaller**: the direction's own
-  `maxLiveGoals` less the live goals it set (`Goal.DirectionID`), and
-  the project's `maxLiveGoals` — its total over every direction, on the
-  autonomy policy beside `replanCap` — less every live goal on it. The
-  guard is by the direction's `mode` (runsheet ADR 022,
-  `Direction.Proposes`): a `set` direction — or one with no mode, as an
-  older platform serves it — with no room is not offered at all, since
-  every goal it set would be dropped; a `propose` direction is offered
-  whatever the room, since its pitches (or proposals) wait for a person
-  and take no live-goal slot, and its session is told the room as
-  information (`ResearchInput.Proposes`). Each direction works in
-  its own checkout, `ResearchDir(root, project, direction)`, because two
-  of one project may be inside their hours at once.
-- **The drain** (`Loop.Drain`, trd §3 Drain): `SIGUSR1` or `mesh node
-  drain` (which signals the pid in `~/.mesh/node.pid`) stops every new
-  start — items, plans, research, evaluations, rebases — and `Run` returns nil
-  once no session of *any* kind is left (planners and evaluators do not
-  count against capacity, so `Running()` is not the exit test); the
-  process exits 0 and its service starts the new binary.
-  `~/.mesh/node.draining` marks it for `mesh node status`, and every
-  heartbeat says `draining`. Drain is for taking a machine out of
-  service, not for upgrades: **an upgrade restarts at once and adopts**
-  (`Loop.Restart`, adr-002's amendment) — `SIGHUP` or `mesh node
-  upgrade` cancels every context the node runs sessions in
-  (`Loop.Context`), each `Job.Outlive` session detaches, `Run` returns
-  `ErrRestart` without waiting and `mesh node start` execs its binary
-  again; the new process adopts. `DrainAndWait(ctx)` is a drain that
-  blocks until every session ends — the loop's self-update no longer
-  calls it, sandboxed or not; `Resume` undoes a drain
-  that has not yet ended `Run`. The heartbeat's extras (`gateway.HeartbeatExtras`: `draining`,
-  `updateError`, `limits` — the latest Claude plan limits per
-  account, each with the priorities the known account serves
-  (`priorities`, empty for one serving all; sent only when the
-  gateway's `NodeAccountLimitsInput` has the field, introspected and
-  kept an hour like `scaling` — adr-005's amendment 2026-10,
-  `limits[].priorities`, for the Nodes page's account gauges) — and
-  `scaling` — a ranged node's `{capacity, min, max,
-  reason, accounts}`, the capacity in force, node.yaml's range, why
-  and each account's slots — and a fixed node's too, on any number of
-  accounts, as `{capacity: N, min: N, max: N, reason: fixed}`, so a
-  capacity changed in node.yaml reaches the platform on the next
-  heartbeat and not only at the next registration (mesh-cli ADR-018;
-  before it only a range or several accounts sent it) — and `host
-  {load, cores, temperatureC, hot}` beside `accounts`, the machine's
-  own load average, core count, package temperature and whether
-  either crossed node.yaml's `host:` threshold, nil when the node's
-  own isn't hot (`gateway.HostScaling`, adr-004's amendment
-  2026-10-03; The node backs off a hot host) — sent only when the gateway's
-  schema has the field (introspected, kept an hour: adr-005
-  §Heartbeat, `host` the same way via `takesScaling`); both for runsheet goal
-  `limits-on-the-console` — and `runtimes` and `adapters` — the tool
-  runtimes (npx, uvx, docker) and agent CLIs (claude-code, codex)
-  `Loop.LookPath` finds, probed every tick, for `tools-in-the-console`
-  — and `commit` — the short sha the binary was built from
-  (`Loop.Commit`, `version.Commit()`), beside `version`, which is
-  `version.Resolved()`: the release tag when built from one, else that
-  sha; sent only when the gateway's `HeartbeatNodeInput` has the field,
-  introspected and kept an hour like `scaling` (mesh-specs ADR 013,
-  adr-002's tag-or-sha amendment)),
-  `adopted` (below) and `holding` — the node's holding decision as data,
-  not a log line: each account's status, reset time and what the node
-  still takes on it, the summary judgement (`HoldingReport`, adr-005's
-  amendment, for runsheet goal `node-says-why-work-waits`), and each
-  `holding.unclaimed[]` entry's own `until` beside its reason — the
-  hold's own until when it has one, the earliest when several holds of
-  a goal and kind fold into one entry, folded into the report's own
-  `until` the same way accounts' `resetsAt` are, dropped from an entry
-  whose schema's `unclaimed` element type does not take it
-  (`takesHoldingUnclaimedUntil`, adr-005's amendment 2026-10-03) — are
-  sent only when set,
-  because they are fields the platform half adds. No reloadable field
-  needs a drain: `Reload` (`Reloader` over `LoadConfig`) re-reads
-  node.yaml every tick and the next tick runs on it — the capacity
-  (`capacity N → M`, a range's clamp), the limits thresholds (`limits:
-  pace five-hour a → b, stop c → d`), the accounts (`accounts a, b → a,
-  c` for membership, and one `account <label>: <field> <old> → <new>,
-  …` line per account kept whose kind, token_file, api_key_env,
-  daily_cap, monthly_cap — as in force for its kind, an api key's defaults applied and a subscription's none — or project
-  changed), the session budgets and project budgets (`budget
-  <kind>/<tier> $4.00 → $7.00`, `project budget <project> none →
-  $20.00`, the effective figures with defaults applied), the context
-  budget (`context: bytes_max … → …, doc_bytes_max … → …`), the claim
-  limit (`claim: unmerged_per_repo … → …`) and the orgs restriction
-  (`orgs a, b → a`). Each change is logged once, at the tick it takes
-  effect, with its old and new value; a field left alone logs nothing
-  (`reload_fields_test.go`, a test per field from disk).
-  A reload that cannot be applied — a node.yaml that does
-  not parse, a failing `MyOrgs`, no org left to serve — logs one
-  `reload config: <reason>; <reason>` line per tick while it lasts (the
-  reasons joined with `; `, a cause's own newlines folded in, so it is
-  one physical line) and keeps the last good values: a bad node.yaml
-  keeps the capacity, limits, accounts, context and claim limits, a
-  failed `MyOrgs` keeps the orgs and still applies a good node.yaml.
-- **Adoption** (`internal/node/adopt.go`, mesh-cli ADR-009, mesh-specs
-  ADR 008): a session's unit and output file own it, not the node
-  process. Build, evaluate, plan, research and rebase jobs are
-  `Job.Outlive`: a node shutting down detaches (the unit runs on, its
-  `<workdir>.session` and temp dirs stay) and only the job's own
-  timeout stops it. On `mesh node start`, before the first tick,
-  `FindSessions` walks the jobs tree for `state.json` naming one of the
-  node's ids — then `SweepScopes` (`sweep.go`, ADR-008 The start-up
-  sweep) stops every other active mesh-session scope whose item or goal
-  is terminal or unknown on the platform (`SessionLive`, `GoalLive`; a
-  read error leaves it; `mesh node status` lists the scopes the same way
-  by `ScopeReport`, `sessions: <n> live scope(s), <m> leaked`) — and `Loop.AdoptSessions` takes each up: marked as the
-  loop's own (a build in `Running()`, every kind in the drain's
-  `sessions()`, never claimed or started again, and `Loop.Adopt` skips
-  it), the item heartbeated at once so the stall window never elapses,
-  then `AdoptWith` → `Runner.AdoptItem`, `Evaluator.AdoptEvaluation`,
-  `Planner.AdoptPlan`, `Director.AdoptResearch`, `Rebaser.AdoptRebase`:
-  `ClaudeCode.Attach` follows `output.jsonl` from the saved offset (the
-  offset is saved after every event) with the usual heartbeat ticker,
-  and the end goes through the *same* tail as a live session —
-  `afterBuild`, `afterEvaluate`, `readPlan`/`handIn`, the director's
-  `handIn`, `afterRebase`. A session whose pid is gone is read from its
-  file: a result finishes it, none fails it with its last text. The
-  session dir goes (`harness.RemoveSession`) only once the end is
-  handled. The heartbeat's optional `adopted [{itemId, kind, since}]`
-  lists them while they run. **A sandboxed session outlives the node
-  in its pod** (ADR-009's and ADR-007's amendments 2026-10-13, goal
-  a-sandboxed-session-outlives-the-node): with `ClaudeCode.DetachSandboxed`
-  (set by `mesh node start` with a sandbox) an `Outlive` job's agent
-  runs detached (`Session.StartDetached`, `podman run -d` named
-  `sandbox.AgentName(pod)`, its prompt in `<workdir>.session/.prompt`,
-  removed after the first event, its streams `output.jsonl` and
-  `stderr.log`), `state.json` `runner: podman`
-  (`sessionunit.SandboxRunner`), pid 0, `unit`/`container` the agent's
-  container, `pod` and `home`; a cancel `Session.Detach`es, leaving pod,
-  sidecars and HOME. `FindSessionsIn(root, ids, sb)` judges a sandboxed
-  session by its container (`AgentState`; `Kill` = `StopAgent`;
-  `Remove` = `harness.RemoveSandboxedSession`, the pod, HOME and
-  session dir), `ClaudeCode.Attach` follows it by its container,
-  `Runner.AdoptItem` reattaches pod and HOME (`Sandbox.Reattach`, else
-  `ReattachHome`; `harness.WithPodKept`) so validation runs there and
-  both go after the finish, `SweepSandbox` keeps found sessions' pods,
-  containers and HOMEs (`sandbox.SweepKeeping`), and `LiveProbe.Sandbox`
-  counts a sandboxed build by its container.
-  `sandboxed_swap_e2e_test.go` proves an upgrade mid sandboxed build
-  finishing on the new node. A Codex evaluation on a sandboxed node is
-  `Outlive` the same way (`Codex.DetachSandboxed`, `Codex.runDetached`):
-  `state.json` names `harness: codex`, the pod, container and HOME and
-  the login's `loginFile`/`loginCache` paths (`SessionMeta.LoginCache`,
-  the credential's `CodexLoginCache`), `Codex.Attach` follows the
-  container and parses the Codex stream, writes a refreshed `auth.json`
-  back and removes the pod and HOME, and `AdoptEvaluation` routes by the
-  state's adapter (`TestCodexPodSessionAdopted`); a host Codex session
-  still ends with the node.
-  **Claims outlive the node too** (`claims.go`, ADR-009
-  Claims): a plan or research claim is recorded as a `ClaimRecord` in
-  `<root>/.claims/` (`Loop.ClaimsDir`) the moment it is granted and
-  removed once its session's end is handled (kept when the context is
-  done); after `AdoptSessions`, `FindClaims` + `Loop.ReopenClaims`
-  re-claim each record with no found session by the same node id, log
-  `re-opening the plan claim of goal <slug> held since <t>` (or `the
-  research claim of <project>/<direction>`) and run it fresh; a refused
-  re-claim removes the record and says why.
-- **Self-update** (`internal/node/selfupdate.go`, `internal/selfupdate/`,
-  adr-002): after each heartbeat the loop reads the node's desired
-  version (`GetDesiredVersion`; empty, the running one or `dev` does
-  nothing). A different one is fetched and verified (the signed
-  `SHA256SUMS` of the tag release) first, then the node swaps its
-  resolved executable keeping `<path>.prev` and `Run` returns
-  `ErrRestartForUpdate` at once — no drain, its sessions left for the
-  new binary to adopt — so the process exits 0 for its service to start
-  it — a sandboxed node too, its line ending ` (sandbox: on)`, its pods
-  carried across (ADR-002's amendment 2026-10-13). A refusal heartbeats `updateError`
-  and waits an hour on that version. `mesh node start` counts starts in
-  `~/.mesh/update.json` (`CheckStart`): the third unconfirmed one rolls
-  back to `.prev`, reports it and exits 0; the first heartbeat confirms
-  — unless it serves fewer orgs than `update.json`'s `served` (the
-  names `Begin` recorded at the swap): that is a failed confirm,
-  `*selfupdate.FewerOrgsError` (`serving fewer orgs than before the
-  update: before grapevine, after none`), logged and recorded like a
-  failed heartbeat and sent as `updateError` (adr-002's amendment
-  2026-10-03, an update that serves fewer orgs is not confirmed).
-  The loop's `Update` is an interface; tests inject a fake.
-  **`update.json`'s `State` carries why, not just that**: `startError`
-  (`NoteStartFailure`) is why the last start of the pending update ended
-  before it could confirm — a config it could not read, a panic, an
-  exited process — and `confirmError` (`NoteConfirmError`) is the last
-  error a heartbeat hit while unconfirmed — a refusal or a timeout, the
-  platform being slow rather than the binary failing to start. Neither
-  affects `Pending()`, and `Confirm` clears both. A confirm error naming
-  an id (`registers at <uuid>`, `selfupdate.NamesID`) sets
-  `retryAfterAdopt`, which `Rollback` keeps: that rollback is not final
-  (`StartCheck.RetryNow`, its `Reason` ending ` (owner id adopted; the
-  update is tried again)`) and the loop tries the version again on the
-  next tick, once (`NoteUpdateFailure(…, final, retryNow)`; adr-002's
-  amendment 2026-10-03). `Rollback` takes the
-  confirm window as a parameter and names the real cause when one is
-  recorded — `'<to> did not start: <startError>'`, or `'<to> did not
-  confirm within <window>: <confirmError>'` — falling back to the old
-  `'<to> did not start; rolled back to <from>'` when neither is set.
-  `node.StartCheck` (from `CheckStart`) carries `Pending` and `Attempts`
-  so the caller can say what it is confirming: node.log's first lines,
-  logged by `node.StartLines` immediately after `startUpdates` and
-  before `LoadConfig`, `platformClient` or any platform call, name the
-  version, the pid, the config path and either `'confirming update <from>
-  → <to>: start <n> of 3, rolls back on the third'` or `'no update
-  pending'` — so a silent exit before registration can never happen
-  again. `internal/commands/nodecmd.go`'s `registerNode` is everything a
-  start needs before the loop exists (`LoadConfig`, the accounts'
-  secrets, `platformClient`, the work root, registration); an error or a
-  panic there while an update is pending is recorded with
-  `NoteStartFailure` (a panic is re-raised after recording). node.yaml's
-  `update.confirm_within` (`Config.Update.ConfirmWithin`,
-  `Config.ConfirmWithin()`) is how long a new process keeps trying to
-  confirm before giving up — default 5 minutes
-  (`selfupdate.DefaultConfirmWithin`). **The confirm window** opens at
-  process start (`Loop.Started`): while an update is pending
-  (`Loop.Confirming` = `StartCheck.To`), `registerNode` retries a failed
-  registration (60 s per attempt) on the heartbeat interval
-  (`confirmWindow.retry`) and the loop keeps heartbeating, each failure
-  logged `'self-update: confirming <to>: heartbeat <org>: <err>; retrying
-  for <left> more'` (a timeout adds `(the platform is slow)`,
-  `PlatformSlow`) and recorded by `Updater.NoteConfirmError`. The first
-  heartbeat through confirms. The window elapsing with none through is
-  `ErrUnconfirmed` (`*UnconfirmedError`, naming the last error) from
-  `registerNode` or `Run`; `endRun` logs `'self-update: <to> did not
-  confirm within <window>: <err>; exiting for the service to start it
-  again'` and the process exits 1 — the start count rolls back on the
-  third, naming that error. Only a failure to *run* (`NoteStartFailure`)
-  is "did not start"; a slow platform never is. With no update pending
-  a failed heartbeat or registration is as before. `mesh node upgrade`
-  prints the window and `~/.mesh/node.log` after the restart.
-  `mesh node update [version]` (`internal/commands/nodeupdate.go`) does
-  it by hand on the same `ReleaseUpdater`: verify, drain the pidfile's
-  node, swap; `--verify-only` verifies into a temp dir. `mesh node
-  upgrade` (`internal/commands/nodeupgrade.go`) is the upgrade without
-  a drain: `--version`, the latest release, or `--binary <path>` (once
-  `<path> version` answers), swapped keeping `.prev` for the rollback,
-  then `systemctl --user restart` of the unit, `launchctl kickstart -k`,
-  or `SIGHUP` to the pidfile's node; a sandboxed node only with
-  `--force`. The systemd unit's `KillMode=process` and the
-  LaunchAgent's `AbandonProcessGroup` keep a service stop off the
-  sessions. **The node
-  image** (`images/node/Containerfile`, embedded as
-  `nodeimage.Containerfile`; `internal/sandbox/image.go`, mesh-cli
-  ADR-007): both ensure the *new* version's image after the verify and
-  before the drain (`Loop.Image`, `nodeUpdate.Image` →
-  `SandboxConfig.EnsureImage` → `sandbox.EnsureImage`/`BuildImage` on
-  an injected `Runner`): pull `ghcr.io/runsheet/mesh-node:<version>`
-  (node.yaml `sandbox.image`: empty that, `build` built here, else as
-  given), prune older tags but the running one's. The pull is on the
-  platform's registry credential: `RegistryBrokerOf` asks
-  `nodeRegistryToken(registry)` for the image's registry
-  (`sandbox.RegistryHost`) and `pullImage` passes it by `--authfile` on
-  a temporary `auth.json`, removed after the pull; a platform without the
-  read, or none for the registry, pulls on podman's own login (ADR-007's
-  amendment 2026-10-13). A failed pull is an
-  `updateError` — a refused one opening `image_pull_refused: `
-  (`kindedText`, ADR-030): no drain, no swap, never a silent build. `sandbox:
-  off` pulls nothing. release-tag.yml's `image` job pushes and
-  cosign-signs it before `publish`. The image carries, beside Go, Node
-  LTS with npm, Python, `gh` and the agent CLIs, a Postgres 17 server
-  (`initdb`/`pg_ctl`/`psql` linked into `/usr/local/bin`, the sandbox's
-  own PATH; no cluster made) and Debian's headless `chromium` — what
-  latchkey's conformance, the console's `npm run check` and runsheet's
-  integration shard need — proven inside the built image by
-  `scripts/image-tools-check.sh` (`TestImageToolsE2E`, `-tags e2e`;
-  `docs/e2e-sandbox.md`).
-- **The pace** (`internal/node/limits.go`, trd §3 Pacing by the plan's
-  limits): every session's `rate_limit_event` lands in `Loop.Limits`
-  (latest per account — its `MESH_ACCOUNT` label, else
-  `CLAUDE_CONFIG_DIR` or `default` — fed through `ObserveLimits` around
-  each harness), and
-  `pace` judges each account: *paced* at `limits.pace_five_hour` of the
-  five-hour window (urgent/high work only, no research), *stopped* at
-  `limits.stop` (0.98) of either window or a status not `allowed`
-  (nothing on it) until the window's reset. **Each account is also
-  paced against a clock, not just the brake** (goal
-  every-subscription-lands-full-at-its-reset): `Standing`/`StandingOf`
-  turns a reading into each window's target line — its elapsed fraction
-  less `limits.reserve` (default 0.05), or the credential's own pace
-  point where it has one — and the account's `Distance` from it,
-  negative **behind** the line (room to spend) and positive ahead of it
-  (spent too fast); `Push` marks an account still behind with a fifth or
-  less of the window left before reset. Every start picks its account
-  (`ChooseAccount`, below); the node's own mode (`nodePace`, the most
-  lenient subscription) halves the capacity when paced, and a crossing
-  is logged once. A Codex session's readings land under
-  `codex:<account>` (`CodexLimitsAccount`, `ObserveLimitsAs`):
-  `Limits.Readings` leaves them out, so they never pace, stop, choose,
-  scale or stand against the clock; the heartbeat carries them.
-- **The scale** (`internal/node/headroom.go`, `scaling.go`, adr-004):
-  a node.yaml `capacity: {min, max}` runs the `Scaler` once a minute
-  inside the tick (`Loop.scale`, by `Loop.Now`) on the highest
-  utilization across accounts per window, stepping the capacity in
-  force one slot per 5 minutes; a shrink only stops claiming, at min
-  only urgent/high items are claimed, and Reload clamps into a new
-  range at once. `Loop.Scaling()` is what the heartbeat's `scaling`
-  carries, and `Loop.Scaled` leaves it in `~/.mesh/node.scaling` for
-  `mesh node status` (`in-force/min–max (reason)`). A
-  plain `capacity: N` runs none of it. The hard stops of the pace stay
-  above it. A ranged node that lists `accounts:` runs the
-  `AccountsScaler` instead (`capacity.go`, `spending.go`, adr-005
-  capacity across accounts): each subscription by its own windows, each
-  api key by its money left under `daily_cap`/`monthly_cap` and the
-  project's `project_budgets`, from the spend ledger
-  (`ledger.go`, `~/.mesh/ledger.json`, local time, fed by
-  `ObserveSpend`). **The push**: a subscription window behind its
-  target line (`Standing`'s `Push`, above) with a fifth or less of its
-  length left affords `(stop − utilization) ÷ minutes to reset ÷ burn`
-  in place of the ordinary target's rate, and at least one slot more
-  than unpushed, so it lands near full at reset instead of wasting the
-  window's last hours (`ReasonPush`, `capacity.go`; logged once per
-  crossing, `capacity: pushing <label> (…)`, `Loop.Pushed`).
-  `Loop.spendable` narrows every choice — no key at
-  its cap, the last 10% of a key's day for urgent/high, and for an item
-  only an account with a slot free. **A hot host backs it off**
-  (`hostbackoff.go`, ADR-023, amended by ADR-031): every tick, while
-  `MachineReading.Hot` at node.yaml's `host:` thresholds — the node
-  user's slice's CPU pressure past `host.cpu_some_avg60_max` (default
-  25, `host hot: cpu pressure 31%/25%`) when it is read, else load per
-  core past `load_per_core_max`, then the package temperature — and,
-  once hot, until the pressure or load falls below `host.quiet_fraction`
-  (0.8) of its threshold, `claimReady` is skipped and the capacity in
-  force drops one slot per `HostStepEvery` (1 minute; to max(min, 1), a
-  fixed node's 1);
-  quiet, it climbs one slot per `HostRecoverEvery` back to the plan
-  figure, `Scaling.Host` carrying the reading; the scalers keep only
-  the free-memory cap (`low memory`). **An overloaded host starves a
-  session, and the item is not blamed** (ADR-029,
-  `docs/adr/adr-029-a-session-the-node-gives-up-on-is-stopped.md`):
-  `MachineReading.Overloaded(HostConfig)` is true past node.yaml's
-  `host.overload_per_core` (default 1.0, `PerCore()` = load1 ÷ cores)
-  or, when set, `host.overload_cpu_some_avg60` (`/proc/pressure/cpu`),
-  its reason `host overloaded: load/core 1.44 (138.2 on 96 cores), cpu
-  some avg60 71%`, and the heartbeat's `scaling.host` carries `perCore`
-  and `cpuSomeAvg60` when the schema takes them; a build whose stream
-  (the last event passed on, or `output.jsonl`'s last write) has said
-  nothing for `host.starve_after` (default 15m, `HostConfig.StarveAfter`,
-  reloaded and logged `host: starve_after <old> → <new>`) while the host
-  reads overloaded at that tick (`internal/node/starve.go`,
-  `checkStarved` after `checkClaim`; `Runner.Machine`, `Runner.Host`) is
-  cancelled with `ErrStarved` (an `ErrStopSession`: unit stopped and
-  killed, pod closed, slot freed) and `afterStarved` sends
-  `ReleaseWorkItem` noted `stalled: <reason>` — a release, no attempt
-  charged — logged `item <label>: stalled on an overloaded host;
-  released: <reason>`; a silent build on a host not overloaded runs on.
-  A claim lost while the host is overloaded names it in `afterLost`'s
-  line, `claim lost (item is ready; host overloaded: …)`.
-- **A host session's scratch dies with the session** (ADR-036,
-  `docs/adr/adr-036-a-host-sessions-scratch-dies-with-the-session.md`,
-  `internal/node/scratch.go`, `scratchsweep.go`, `cachetrim.go`): no
-  unsandboxed session or validation writes into the node process's
-  /tmp. Each host validation gets `MakeScratch(<its job's scratch>,
-  "validate", <item|batch>)`, `<job>/.scratch/validate-<subject>-<rand>`
-  (`scratchRootFor(validationJobID)`),
-  set once by `hostValidationEnv`/`scratchEnv` as TMPDIR and GOTMPDIR
-  and removed by `buildValidation.close` (`RemoveScratch`, which chmods
-  read-only module dirs and retries). Each host build, evaluation, plan,
-  rebase and research session gets `sessionScratch`,
-  `<job>/.scratch/<kind>-<subject>-<rand>` in its own job
-  (`scratchRootFor`), carried into `SessionMeta.TempDirs`
-  (`sessionTempDirs`), so `harness.RemoveSession` removes it on every
-  end, adopted or given up included. A no-workspace Claude Code session's
-  `mesh-session-*` dir goes under the job's TMPDIR, else
-  `ClaudeCode.ScratchRoot` (`ScratchRoot("")`, still
-  `~/.mesh/work/.scratch`). Every one shares GOCACHE
-  `BuildCacheDir()` = `<user cache dir>/mesh/cache/go` under the cache
-  root, held under node.yaml's **`validation_cache_max_bytes`** (default
-  20 GiB). `Loop.CacheTrim` (`CacheTrim.RunIfDue`, first tick then
-  hourly) trims an over-cap root below 80% of the cap
-  (`SharedCache.Trim`: LRU entries, then `go clean -cache`), logged
-  `cache: trimmed X to Y`, and leaves the reading at
-  `~/.mesh/node.cachesize` (`RunState.WriteCacheSize`). `mesh node
-  status` prints it as `cache: <size> of <cap> (<root>); scratch <size>
-  (<root>); measured <RFC3339>`, or `cache: size unknown (no reading
-  yet)` (`cacheSizeStatusLine`). A sandboxed session gets none of it; its
-  pod has its own TMPDIR. At start, after `SweepSandbox`, `SweepScratch`
-  (`ScratchSweep`) removes every dir under the scratch root and every
-  `HostScratchPrefixes` dir (`mesh-session-`, `mesh-gh-`, `mesh-claude-`,
-  `mesh-node-pull-/image-/push-`, plus `mesh-home-` on a host node)
-  under `os.TempDir()` that the node's uid owns. It keeps what a found
-  session names (dir, workspace, HOME, TempDirs, token file's dir), what
-  `WorkspaceLive` holds, the process's own HOME (`internal/commands`'
-  `TestMain` gives the package's tests a TMPDIR of their own), and symlinks, and logs `scratch: swept N dirs, M
-  bytes at start (K kept)`. `scripts/host-tmp-reading.sh [--baseline
-  FILE] <user>...` takes the /tmp reading by prefix.
-  `host_scratch_e2e_test.go`'s `TestHostScratchE2E` (`go test
-  ./internal/node -run HostScratch`) runs it end to end.
-- **The quartermaster keeps the node fit** (`internal/node/quartermaster*.go`,
-  ADR-034, `docs/adr/adr-034-the-quartermaster-keeps-the-node-fit.md`):
-  `Loop.Quartermaster` (`Quartermaster{Checks, Every}`) runs from `Tick`
-  after the heartbeat, its checks only once per `Every`
-  (`DefaultQuartermasterEvery`, 10m; `RunIfDue`), each `Check` yielding
-  `Finding{Kind, Severity ok|warn|critical, Subject, Detail, Bytes,
-  Reclaimed, At}`, a panicking check one `critical` `quartermaster`
-  finding. node start's four (`nodeQuartermaster`, nodecmd.go): `disk`
-  (`DiskCheck` over the jobs tree, /tmp and home, by device; warn <15%
-  free, critical <5%), `scratch` (`ScratchCheck`: `runsheet-*`,
-  `latchkey-*`, `go-build*`, `mesh-*` dirs under /tmp of the node's uid
-  past `ScratchMinAge`, 6h, reaped — never a symlink, another uid's, an
-  `InUse` path or `mesh-home-*`, left to `SweepSandbox` run each time
-  keeping found sessions and every session this process has open —
-  `sandbox.Sandbox.Live`, the pods and HOME of each `Open` not yet
-  `Close`d, so a validation between two steps (its pod with only the
-  infra running) is never swept, as 184 were on the dl360 on 2026-10-17;
-  warn past 20G left; the start-up sweep's roots are every job's
-  `.scratch`, `Layout.ScratchRoots`), `dead_checkout`
-  (`JobDeadCheckoutCheck`: an item job's checkout, evaluation clone or
-  rebase clone whose item, read by id, is merged, done,
-  already_done, cancelled, superseded or unknown, idle `DeadCheckoutIdle`
-  (1h) and not `Loop.LiveCheckout`, removed by `Git.RemoveWorkspace` and
-  nothing more — no shared clone, so no worktree registration to prune;
-  a platform that cannot answer removes nothing,
-  warn) and `version` (`VersionCheck`: warn when the desired version has
-  differed an hour or a dev build runs where a release is desired,
-  critical when the same one has failed to update for two). Each run's
-  findings go to `Loop.Findings` → `RunState.WriteFindings` →
-  `~/.mesh/node.findings`, printed by `mesh node status` as `findings:`
-  and `  <kind> <severity> <subject>: <detail>` lines, critical first
-  (`node.FindingsLines`), or `findings: none`; each non-ok one is logged
-  `quartermaster: <kind> <severity> <subject>: <detail>` once per change
-  and each reclaim `quartermaster: reclaimed <bytes> (<kind>)`; the
-  heartbeat's `findings` (`gateway.Finding`) only when
-  `TakesHeartbeatFindings` (introspected, kept `ScalingProbeEvery`),
-  else said once, `platform has no heartbeat findings; kept on the
-  node`. It replaces the dl360's `/etc/cron.d/mesh-tmp-clean` and
-  `/etc/cron.hourly/mesh-home-sweep`. `quartermaster_e2e_test.go`
-  (`-tags e2e`) runs a node full of leftovers end to end.
-- **The work sweep** (`internal/node/jobsweep.go`, `worksweep.go`,
-  ADR-008 The work sweep, over ADR-039's jobs): `PlanJobSweep(ctx, gw,
-  layout, connections, LiveSessions{IDs, Sandbox}, now, logf)` judges
-  each `~/.mesh/jobs/<id>/` by its `job.json`, reading its item or goal
-  by id — an item's job once the item is merged, cancelled or
-  superseded, or failed past `FailedWorkspaceKeep` (7 days of
-  `StatusAt`); a plan's once its goal is not planning; a batch's (a
-  candidate's or main validation's) `BatchJobKeep`, 6h, after it was
-  opened; a research's never (its clones are fetched over); any job
-  whose connection is not in `connections` (`ConnectionsOf(scopes)`,
-  nil when a scope names none) once nothing in it runs; otherwise each
-  job's `kept-sessions/` past `harness.KeepSessionOutput` (14 days) —
-  never a job whose subject is live or whose `.session` is alive, an
-  unread item or goal, a symlink, a dot dir (`.claims`, `.plans`), or a
-  dir with no `job.json` naming it (left and logged);
-  `ApplyWorkSweep` removes it, `sweep: removed <label> (<why>,
-  <bytes>)` and a total, and the plan's `String()` is those lines (the
-  dry run). It runs at start-up in `adoptSessions` right after
-  `SweepScopes` (the found sessions' subjects live), then hourly from
-  the loop (`Loop.WorkSweep`, `WorkSweepEvery`, default
-  `DefaultWorkSweepEvery`, an hour on `Loop.Now`, the first tick only
-  starting the clock; live `Loop.LiveSubjects()`;
-  `TestWorkSweepHourly`), and by hand as `mesh node sweep [--dry-run]`
-  (`internal/commands/nodesweep.go`: `node.DefaultLayout`, no
-  connection rule, live every alive `.session` under the jobs tree,
-  `node.AliveSessionSubjects`; a dry
-  run prints the lines and `sweep: dry run; nothing removed`); a failed
-  removal is logged and in the next pass's plan again.
-- **Held goals are a record** (`internal/node/held.go`, goal
-  a-refused-plan-is-released-not-replanned): `HeldGoal{GoalID, Slug,
-  Org, Kind, Reason, Since, Until}` is a goal this node holds off
-  claiming for — a plan claim released by a refusal that keeps
-  repeating, or an item claim refused for budget, pause or approval,
-  held until the goal's row changes — `Kind` `plan` or `item`.
-  `Loop.NoteHeld` replaces any entry of the same `GoalID` and `Kind`
-  and logs `held: <org> goal <slug> (<kind>): <reason>` the first time
-  a goal and kind is held, not on a later update of the same one;
-  `Loop.ClearHeld` removes it and logs `held: <org> goal <slug>
-  (<kind>) released`; `Loop.HeldGoals()` is every entry, sorted by org,
-  slug, kind. `Loop.Held func([]HeldGoal)` is told them every tick, as
-  `Scaled` is told the capacity in force; `mesh node start` sets it to
-  `RunState.WriteHeld`, which leaves them atomically at
-  `~/.mesh/node.held` beside `node.scaling` (an empty list removes the
-  file, as an unranged `WriteScaling` does), read back by
-  `RunState.Held`; `Stopped` removes it. `mesh node status` prints them,
-  while a node runs here, as a **Held goals** table — org, goal, kind,
-  since, until, why — or `Held goals: none.` with nothing held.
-- **A broken runtime stops claiming** (`internal/node/runtime_broken.go`,
-  `docs/adr/adr-034-a-node-whose-runtime-is-broken-stops-claiming.md`,
-  goal `a-runtime-that-cannot-start-a-session-stops-claiming`, item 3):
-  a session's `RuntimeBroken` hook (the sandbox section, above)
-  and a failed probe both land on `Loop.NoteRuntimeBroken(err)`, which
-  latches `RuntimeState{Status: runtime_broken, Reason, Since}` — the
-  reason podman's own words, scrubbed, one line, truncated
-  (`runtimeWords`) — logging the first note `runtime broken: <words>;
-  claiming nothing until a probe passes (every 5m0s)` and keeping
-  `Since` on a later one. While latched, `Tick` starts nothing new of
-  any kind — items, evaluations, plans, rebases, research, main
-  validations — as a drain does for new starts, while the heartbeat,
-  self-update, adoption and sessions already running go on.
-  `Loop.RuntimeProbe` (`Sandbox.Probe` with a sandbox, nil without one)
-  runs every `RuntimeProbeEvery` (5 minutes, the first tick included so
-  a node started on a broken podman never claims), bounded by
-  `RuntimeProbeTimeout` (a minute): a failing probe sets the latch even
-  before any session has tried, and a passing one clears it, drops
-  every `runtime_broken` hold (`Declines.ForgetPrefix`) so the released
-  work is claimed again the same tick, and logs `runtime healed: broken
-  since <t> (<words>); claiming again, <n> runtime_broken hold(s)
-  lifted`. The heartbeat sends `status: runtime_broken` with podman's
-  words in `reason` only when `gateway.Client.TakesNodeStatus` says the
-  platform's `NodeStatus` enum lists it (kept `ScalingProbeEvery`);
-  without that answer the words ride `reason` alone as `runtime_broken:
-  <words>` and `status` stays online. The holding pass lists every
-  served org's ready items as `Unclaimed` with that same reason and
-  opens its summary `runtime_broken: <words>; nothing claimed until a
-  probe passes; …` (`runtimeHolding`). `Loop.RuntimeChanged` is told the
-  state every tick; `mesh node start` wires it to `RunState.WriteRuntime`,
-  which leaves `~/.mesh/node.runtime` (JSON `status`, `reason`, `since`)
-  beside `node.standing`, removed on healthy/healed and by `Stopped`.
-  `mesh node status` reads it back (`RunState.Runtime`) and, while a
-  node runs here and the latch is set, prints one line `runtime_broken
-  since <RFC3339>: <reason>; the node claims nothing until the runtime
-  heals` (item 4) — nothing when the runtime reads healthy or no node
-  runs here.
-- **A node reports its errors to Tripline** (`internal/tripline/`,
-  `docs/adr/adr-034-a-node-reports-its-errors-to-tripline.md`): node.yaml's
-  `tripline: {dsn, enabled}` (`Config.Tripline`, `tripline.Config`;
-  `MESH_TRIPLINE_DSN` read into `FromEnv`, in force over `dsn`
-  (`DSNInForce`), never saved; `On` is a dsn and enabled not false) makes
-  `tripline.New(cfg, slug, version)` a `Reporter` on its own sentry-go
-  Hub, every event through `NewScrubber`'s BeforeSend (`Scrub`: the
-  harness's and tools' redaction, `Options.Secrets` — the bearer
-  `mesh node start` adds — URL userinfo, query tokens, nested maps,
-  frame vars, fingerprint and tags; `TestScrubberAdversarial`).
-  `Report(class, err, Fields)` sends one event of a closed `Class` —
-  `infrastructure`, `harness_unavailable`, `sandbox_broken`,
-  `session_failed` — tagged node, item, seq, goal, repo, role and class,
-  fingerprinted `[class, Normalise(msg, …)]` so alike failures on
-  different items are one issue; nil or disabled sends nothing.
-  `mesh node start` logs `tripline reporting on (<host>)` or `off`
-  (`node.ReportingStartLine`), sets `Loop.Tripline` and from it the
-  Runner's, Evaluator's and Rebaser's, and `Flush`es on the way out; the
-  node's `reportFailure` (`internal/node/tripline.go`) is called in each
-  `releaseInfrastructure` and `Runner.releaseWorkspace` (infrastructure),
-  on a `harness.AsUnavailable` session error in the Runner and the
-  Evaluator, on the Evaluator's `sandbox broken`, and on the Runner's
-  `session ended without success`. `mesh node status` prints
-  `reportingStatusLine` = `node.ReportingStatusLine`: `reporting: on
-  (tripline <host>)` (`Reporter.Endpoint`, never the key), else `off (no
-  tripline dsn)`, `off (disabled in node.yaml)` or `off (bad tripline
-  dsn)`. `internal/tripline/triplinetest` is the fake ingest
-  (`NewServer`, `DSN`, `Events` with each `Payload`, `Issues` grouped by
-  fingerprint, `Wait`); `tripline_e2e_test.go`'s
-  `TestNodeReportsInfrastructureToTripline` (`-tags e2e`) runs three alike
-  infrastructure releases through the Loop into one Issue, Count 3.
-- **The rebase** (`internal/node/rebase.go`, runsheet ADR 008): an item
-  whose pull request conflicts in a way the integrator could not
-  resolve itself carries `rebase_state: requested`. Every tick the loop
-  lists them in each served org (`RequestedRebases`), in goal priority
-  then seq (`rebaseOrder`), and claims each with `ClaimWorkItemRebase`
-  — a refusal is the ordinary answer, not an error. The session works
-  in a fresh checkout of its own, never the item's build checkout
-  (ADR-028, A rebase gets its own worktree, a clone of its own since the amendment 2026-10-26): `RebaseWorkspaceSpec`'s
-  `<job>/rebase`, made by `Git.AddRebaseWorktree` — a clone of its own
-  checked out detached at `origin/<branch>`, by `addDetachedClone` as a
-  batch candidate's (never `git worktree add`, in the work-root layout
-  too), a stale dir there
-  removed first, nothing run in the item's checkout, deleted or
-  dangling — on the item's token before `NewItemCredAt` `Authorize`s it
-  there; a checkout that cannot be made is a `*WorkspaceError` released
-  as infrastructure (`rebaseRun.releaseInfrastructure`, held in
-  `Declines`, never `FailWorkItemRebase`; a refused release leaves the
-  claim to lapse; ADR-024), and the checkout is removed after
-  `afterRebase` unless left for adoption (`AdoptRebase` keeps the
-  state's workspace). It rebases the detached HEAD onto the base,
-  re-runs the acceptance and pushes `HEAD:refs/heads/<branch>` with
-  `--force-with-lease=<branch>:origin/<branch>`
-  (`TestRebaseRunsInAFreshCheckout`, `-tags e2e`, lands one with the
-  item's checkout deleted and with it dangling;
-  `rebaseworktree_e2e_test.go` the method's own cases). **A conflict
-  only in generated files is regenerated, not rebased by a session**
-  (`docs/adr/adr-038-a-generated-only-conflict-is-regenerated.md`;
-  runsheet ADR 061's rebase kind with harness none): `.runsheet/validate.yml`'s
-  `generated: {paths, generate, check, timeout}` (`validate.Config.Generated`,
-  `Declared()` when paths and generate are set, `Covers(path)` by the
-  suites' globs; paths without generate refused naming `generated`), and
-  `Rebaser.tryRegenerate` (`regenerate_rebase.go`), run after the
-  checkout and its token and before `FetchContext`, the pod, the
-  harness and `Credentials.Open`: the base fetched (`Git.FetchBase`),
-  `regenerateRebase` (`regenerate.go`) through the validation's runner
-  (`validator.start`: host, or a pod of the org's sandbox) rebases onto
-  `origin/<base>`, at each stop with every unmerged path generated takes
-  the base's side (`checkout --ours`, the rebase's swap), runs
-  `generate`, stages the generated paths and continues, then runs
-  `check` — `RegenRegenerated` only when every check passes; on it
-  `Git.PushRebased` (`--force-with-lease=<branch>:origin/<branch>`, the
-  item's token), `PushedHead`, the note `rebased <branch> onto <base> at
-  <sha> by regenerating <paths> (no session)`, `validateRebased` and
-  `FinishWorkItemRebase(item, head, paths, nil)` — no account, session
-  or cost; `RegenNotGenerated`, `RegenCheckFailed`, `RegenClean`, a
-  load, fetch or push error logged and noted `regenerate: <why>; a
-  rebase session instead`, the checkout reset to `origin/<branch>` and
-  cleaned, and the session below run unchanged
-  (`regenerate_e2e_test.go`'s `TestGeneratedConflictIsRegenerated`,
-  `TestNonGeneratedConflictFallsThrough`, `-tags e2e`). The node
-  reads the pushed head back (`Workspacer.PushedHead`) and hands it in
-  with `FinishWorkItemRebase`, or `FailWorkItemRebase` with the reason
-  for *anything* else but `ErrNoCredential` (a wait: the claim lapses)
-  — a held claim waits out the platform's 15-minute timer. Its heartbeat and its cost are
-  `ReportWorkItemProgress`. Like evaluations, rebases do not count
-  against capacity. **The platform does not yet issue the item's token
-  to the rebase holder** (runsheet `gateway/itemtoken.go` refuses an
-  item in `review`; ADR-001 asks for it), so until it does every
-  rebase fails at `github token:` and goes to its builder; the fake
-  mirrors that unless a test sets `RebaseTokens`.
-- **Accounts** (`internal/node/accounts.go`, adr-005): node.yaml's
-  `accounts:` ({label, kind subscription|api, token_file|api_key_env})
-  are the Claude accounts sessions run on; none is the operator's own
-  login, unchanged. `OpenAccount` → `PrepareAccount` gives a session
-  the secret in its env only, a temp `CLAUDE_CONFIG_DIR` removed by
-  `Cleanup`, `Job.Unset` of the inherited auth variables and
-  `Job.Secrets` to redact; `MESH_ACCOUNT` makes `Account` key limits by
-  label. **Which account** (`internal/node/select.go`, adr-005, goal
-  every-subscription-lands-full-at-its-reset): before every claim —
-  item, plan, research, rebase — and every evaluation the loop calls
-  `ChooseAccount` (subscriptions ordered by `Standing`'s `Distance`
-  behind their target line, furthest behind first; an account ahead of
-  its line is chosen only once every other fitting subscription is also
-  ahead or stopped, then the least ahead of them; an account never read
-  stands as full headroom; an api account only for urgent/high work or
-  when every subscription is stopped and work waits) and hands the
-  choice to the session on its context (`WithAccount` → `OpenAccount`).
-  **The holdback**: once every subscription serving the priority but
-  one sits within 10% of `stop`, the one with the latest reset is
-  **held back** — excluded from `ChooseAccount` below urgent priority —
-  so the node is never left with every subscription stopped at once
-  (`heldBack`; logged `accounts: <label> held back for urgent work
-  (the others within 10% of stop); <n> item(s) left unclaimed until
-  <earliest reset>`). **An account serves named
-  priorities** (`AccountConfig.Priorities`, `Serves`; empty serves all,
-  research's `""` runs anywhere): `ChooseAccount`, `accountToFinish`'s
-  fallback and `codexChooser` never pick one for work it does not
-  serve, whatever its headroom — nor does `Credentials.Open` given no
-  chooser, which takes the session's priority from ctx (`withPriority`:
-  an evaluation on Codex room, a held item `Adopt`ed by its goal's
-  priority; `priorities_loop_test.go` proves it per session kind) — and an api key's "every subscription
-  stopped" is judged over the subscriptions serving the priority; its
-  own pace point (`PaceFiveHour`, `PaceSevenDay`, the credential's
-  windowTargets) paces it in place of node.yaml's
-  (`LimitsConfig.For`), `limits.stop` still node-wide (adr-005's
-  amendment 2026-10-02, a credential names the priorities it serves).
-  Both ride the claim-time read: `gateway.Credential` carries
-  `Priorities []string` and `WindowTargets []WindowTarget`
-  (`WindowTarget{Window, Percent}`) from the row's `priorities` and
-  `windowTargets` (`String()` names what it serves, never the secret),
-  `IssuedAccount` copies `Priorities` straight across and turns each
-  `WindowTarget`'s `Percent / 100` into `PaceFiveHour` or `PaceSevenDay`
-  by its window, the known accounts persist both in `accounts.json` so
-  a restart has them before its first claim, and `mesh node start` logs
-  one `accounts: issued <label> (<kind>, serves <urgent, high|all>,
-  paces at <50%> five-hour|node-wide)` line per known issued account
-  (`node.IssuedAccountLines`, adr-005's amendment 2026-10-02, item 2).
-  **No account with headroom
-  means no claim**: the item stays ready, not failed or released, and
-  the tick logs one `accounts: no account has headroom …` line — or,
-  when the accounts with headroom were skipped for their priorities
-  alone, `accounts: no account serves <priority> work (<label> serves
-  urgent and high, …); <n> item(s) left unclaimed until one does`, and
-  the holding reason (`heldReason`, the goal's waiting_reason) says
-  `<label> serves only urgent and high`. When the node's own choice had
-  headroom but the claim-time read refuses every issued credential
-  (`ErrNoHeadroom`), the refusal is **a hold per project, kind and
-  adapter** until the earliest `resets_at` among the refused
-  credentials, else 10 minutes: what was claimed is released (an item by
-  `ReleaseWorkItem`, attempts unchanged; a plan's claim lapses, no try
-  counted), and every claim path — `claimReady` (build),
-  `evaluateHeld` (evaluate, unless Codex has room), `rebaseRequested`
-  (rebase), `planRequested` (plan), `researchDue` (research, the
-  direction not offered) — asks `NoCredentials.Holds` first, passes the
-  work over on `holding.unclaimed` and says the reason once per goal or
-  direction; at the until **one probe** claims and the rest wait on its
-  read (adr-005's amendments 2026-10-03). **A claim refused for
-  budget, pause or approval is a hold** (`internal/node/claimhold.go`,
-  ADR-024): `claimReady` classes a `ClaimWorkItem` refusal by
-  `claimHoldKind` (`budget`, `pause`, `approval`, else `""`), notes the
-  goal in `Loop.ClaimHolds` with its row from the tick's GoalIndex read,
-  records it by `NoteHeld` (kind `item`, reason `<kind>: <message>`)
-  and logs once `claim: <org> goal <slug> held (<kind>): <message>; not
-  asked again until the goal changes`; before `accountFor` an item of a
-  held goal is passed over silently, until the goal's `updatedAt`
-  changes (else its status and paused reason, on an older platform) or
-  the refused item leaves the ready listing for a tick and is listed
-  again — then `ClearHeld` and `claim: <org> goal <slug> hold lifted`,
-  and the item is claimed that tick. Any other refusal is still `not
-  ours`, asked again next tick (`claimhold_loop_test.go`).
-  **The claim-time read** (`internal/node/credentials.go`, adr-005):
-  every one-shot session opens its account through
-  `Credentials.Open`, which asks the platform (`gateway.Session`: the
-  platform's `itemCredentials`/`itemTools`, `planCredentials`/`planTools`
-  or `researchCredentials`/`researchTools`, by what the session works on)
-  for the claimed session's credentials and chooses among them by the
-  loop's own rule (`withChooser`); an api key at its cap is never
-  chosen, and none left releases a build. A read that answers with
-  none for the session's adapter is `ErrNoCredential` (`nocredential.go`,
-  adr-005's amendment 2026-10-02) — `org <org>'s project <project> has
-  no <adapter> credential open to this node`, never the machine's own
-  login: the build is released, and `NoCredentials` (shared with
-  `Loop.NoCredential`) holds that project's items, plans and rebases
-  unclaimed for 10 minutes with the reason on `holding.unclaimed`, said
-  once per goal per run; then one claim probes, the rest still held.
-  A read whose issued credentials for the adapter have no headroom is
-  `ErrNoHeadroom` (adr-005's amendment 2026-10-03): it `Is`
-  `ErrNoAccount`, names the org, project, session kind, adapter, the
-  refused labels and `Until`, the earliest `resumeAt` among their
-  readings (`NoHeadroomOf`), and `NoteHeadroom` holds that (project,
-  kind, adapter) — the store is keyed so, kind `""` being the
-  no-credential hold over every kind — until `Until` (else 10 minutes);
-  `Holds(project, kind, adapter)` gives the reason and its until and
-  lets one probe through when it passes, and a successful open clears
-  it. Only a platform without the read leaves node.yaml,
-  said once per run. At the end
-  the session's `SessionAccount.Report` (`gateway.UsageReport`:
-  credential id and kind, tokens, tool calls, wall time, list and
-  actual cents, windows before and after) rides its finishing command
-  as `usage` — `FinishWorkItem`/`FinishWorkItemAlreadyDone`,
-  `EvaluateWorkItem` (the Codex second opinion folded in), `PlanGoal`,
-  `FinishWorkItemRebase`, `RecordDirectionResearch` — and
-  `SessionAccount.Finish` logs every session's record, carried or not,
-  as one `<label>: usage <kind> {…}` line (`SetLabel`; a carried
-  session's is in its carrier's; `ErrNoUsageLedger` said once per run),
-  and `mesh node usage` (`ReadUsage`, `usagereading.go`) reads them back
-  into sessions, input tokens, cache reads, context bytes and documents
-  fetched by tool (`documentsFetched`: `mesh_document` and `mesh_search`
-  calls, with `toolNames` beside it on the report), and `tool calls` and
-  `tools called` (every tool but the built-in, from `tools`) by kind for a window
-  (adr-016's amendments).
-- **Codex** (`internal/harness/codex.go`, goals `codex-adapter` and
-  `codex-sessions-reach-the-context-tool`): the
-  `codex` harness, `codex exec --json --sandbox workspace-write` in the
-  workspace, the prompt on stdin, the stream read by
-  `ParseCodexStream` (`docs/codex-events.md`). Each run gets a fresh
-  temporary `CODEX_HOME`, removed after it: a plan account's
-  `auth.json` copied in (and written back when Codex refreshed it), or
-  an API key in the environment only (`CODEX_API_KEY` and
-  `OPENAI_API_KEY`), plus the MCP servers as `config.toml`, secrets by
-  variable name (mesh-specs ADR 006): the built-in by `CodexMCPConfig`
-  (a `${VAR}` resolved from the job's env or refused), console tools by
-  `tools.CodexConfig`, every table `default_tools_approval_mode =
-  "approve"` — `exec` under `workspace-write` refuses an unapproved
-  MCP call (docs/codex-events.md, "Why the context tool failed").
-  The sandboxed commands get the network (`-c
-  sandbox_workspace_write.network_access=true`, `harness.SandboxNetwork`,
-  on `exec` and on the probe alike): without it Codex's seccomp filter
-  refuses `socket()` and no test that binds loopback runs — the price
-  is a sandbox that can reach the network (ADR-011's amendment
-  2026-09-29, item 9).
-  A **provider** (docs/adr/adr-015) is an OpenAI-compatible endpoint an
-  account runs against instead of OpenAI: `codex.providers.<name>` in
-  node.yaml gives a `base_url` (vLLM and SGLang serve OpenAI's API under
-  `/v1`), an optional `wire_api` (`chat`, the default, or `responses`)
-  and the list prices of the models it serves; an account names one with
-  `provider:` and must be an api-key account, because the key rides
-  `OPENAI_API_KEY` and a plan login has none to send. The provider is
-  declared first in `config.toml` as `model_provider` and its table, and
-  on its own makes the file worth writing. Its price table is the only
-  one its models are costed at — an unpriced model records tokens and no
-  money — so `CodexPrices` stays OpenAI's alone. An adapter is the CLI
-  and a provider is where the tokens come from: Kimi behind vLLM is a
-  provider, not a third adapter.
-  Each session's event stream and stderr are kept for 24 hours under
-  its job's `kept-sessions/<name>/` (`output.jsonl`, `stderr.log`;
-  `KeepSessionOutput`), as a Claude session's output is. Before a Codex
-  evaluation starts it is preflighted (`Codex.Preflight`, below) and
-  falls back to Claude when the context server cannot be reached.
-  node.yaml's `codex:` block
-  (`CodexConfig`: binary, accounts, `models {opus, sonnet, haiku}`)
-  and `CodexModel` map the Claude tiers to Codex models, by default
-  opus → `gpt-6-sol` and sonnet/haiku → `gpt-6-luna`, astra only when
-  pinned. A session whose context tool failed on every call gives no
-  verdict: a tool failure is never a verdict (the evaluator's
-  `toolBroken`, below). Codex has no
-  budget flag, so `MaxBudgetUSD` is not enforced. An issued openai
-  credential serving `codex` is a Codex account too (adr-005,
-  `PrepareCodexAccount`): `Credentials.Open` with adapter codex chooses
-  among those alone, the login lands as the session's
-  `CODEX_HOME/auth.json` (0600, gone with the home; a refreshed one
-  kept at `CodexLoginCache` per id and secret version), a key as
-  `CODEX_API_KEY`/`OPENAI_API_KEY`, and the harness writes only
-  `config.toml` into a home the job names.
-- **The evaluator's family** (`internal/node/evaluate.go`,
-  `docs/adr/adr-011-evaluations-run-on-the-family-with-headroom.md`,
-  amending `adr-005-codex-second-opinion.md`; goal
-  `codex-sessions-reach-the-context-tool`): `Evaluator.Codex` is the
-  Codex harness (`codexSecondOpinion` in `nodecmd.go`, with or without
-  a `codex:` block, with no account of its own: on a sandboxed node from
-  the node image's codex, `Sandbox.CodexVersion`, never the host's; with
-  the sandbox off from the host binary; neither, none — logged once per
-  start by `codexSourceOf`, `codex: evaluations on Codex from the node
-  image (…)`, `… from the host binary <path> …` or `codex: no Codex
-  evaluations: <why>`; ADR-007's amendment 2026-10-17) and `CodexAccounts` is
-  `Loop.CodexCandidates` — the issued Codex accounts `Known` holds and
-  only those: no Codex session runs on the machine's own login, and a
-  Codex job with no placed `CODEX_HOME` is refused by the harness
-  (`harness.ErrNoIssuedCredential`; ADR-011's amendment 2026-10-02). Before an evaluation starts
-  the evaluator judges them with `ChooseAccount` over
-  `Limits.CodexReadings` for the goal's priority: one with headroom
-  makes it a Codex session on `CodexModel` of the evaluate model
-  (defaults gpt-6-sol for opus, gpt-6-luna for sonnet and haiku — astra
-  costs $1.29 for one evaluation where sol costs about $0.45, so it
-  runs only when pinned), opened by `Credentials.Open`
-  (adapter codex), none issued `ErrNoAccount`; else Claude as before. A full `gpt-…`
-  evaluate/item/agent model pins Codex (`EvaluatorPin`; no headroom is
-  `ErrFamilyWaits`, the item stays in evaluating, said once per item by
-  `Waits`), a `claude-…` one pins Claude; a bare tier pins nothing. The
-  loop starts an evaluation on Codex room (`Loop.CodexRoom`) when no
-  Claude account has any. Before any Codex session starts,
-  `Evaluator.CodexPreflight` (`Codex.Preflight`: `codex mcp get
-  runsheet` and an MCP tools/list handshake in the session's own home
-  and env, then the sandbox probe `codex sandbox -c
-  sandbox_mode="workspace-write" -c
-  sandbox_workspace_write.network_access=true -- mesh sandbox-probe`, the
-  session's own policy on the hidden subcommand that binds 127.0.0.1:0 —
-  a `bwrap:` line or a non-zero exit is `sandbox: <why>`, the bwrap
-  line, else the socket error) must pass: a failure moves an unpinned evaluation to Claude
-  (`Codex preflight failed (<why>); evaluating on Claude`), keeps a
-  pinned one waiting like `ErrFamilyWaits`, and makes a Codex second
-  opinion `unavailable: preflight …`. An item is evaluated again on the other family
-  with the same prompt and workspace by the rule (`secondOpinionWanted`,
-  ADR-005's and ADR-011's amendments 2026-10-02): its goal `urgent` or
-  `high`, a protected touch (`WorkItem.ProtectedFiles`, or a changed
-  file — `Workspacer.ChangedPaths` — matching its `ProtectedRulePaths`,
-  the project's `ProtectedPaths` or the checkout's `.mesh/config.yml`
-  `protected_paths:`, `globMatch`), a first FAIL on a
-  clause that is not a host reading (`hostReadingClause`, the planner's
-  lexical test), or the checkout's `.mesh/config.yml` `second_opinion:
-  always` (`readCheckoutConfig`; default `rule`, until ProjectIndex
-  serves the field) — else one verdict. The second verdict decides:
-  after a first pass a second fail is failed, after a first fail a
-  second fail is failed on the union of clauses and a second pass is
-  passed. The choice is one notes line before the `(evaluated on …)`
-  tail and a node.log line, `evaluators: one — normal/low goal, no
-  protected path` or `evaluators: two — <reason>`, and every
-  `EvaluateWorkItem` carries `EvaluateChoice{EvaluatedModel}`; the notes carry both, `Codex (first evaluation, gpt-6-sol):
-  VERDICT …` and `Claude (second opinion, opus): VERDICT …` (or Claude
-  first, Codex second), truncated together to 4000, and the cost and
-  tokens are the sum — all in the one `EvaluateWorkItem`, whose usage
-  names `adapter: codex` and the gpt-6 model for a Codex evaluation. A
-  second session that errors, times out or reaches no verdict, or no
-  Codex account with headroom, keeps the first verdict with `<Family>
-  second opinion unavailable: <reason>`. After a failed verdict is handed in,
-  an item's second failed evaluation — the earlier records with no
-  `VERDICT: PASS` that are not a no-verdict's reason, plus this one,
-  exactly 2 — asks for a split, `RequestPlanReplacing(goal, node,
-  item)` (`askSplit`; `replaceItem` sent only when `RequestPlanInput`
-  has it, introspected and kept an hour; a refusal logged once per item
-  as `split refused by the platform`, never an error; ADR-021's
-  amendment 2026-10-02). **A tool failure is never a
-  verdict** (`toolBroken`): a session whose context server (or a
-  required console tool) errored and was never reached — no call it
-  answered, clean (`ToolStat.Clean`) or with its own error result
-  (`ToolStat.Answered`: a Codex `failed` call with `error` null and a
-  result, a Claude `is_error` result from a server init named
-  `connected` that is not Claude Code's own refusal) — or, on Codex,
-  every command of which bubblewrap refused, or whose test commands
-  that executed every one refused a socket — a runner's name in quoted
-  text is no test, a declined one or one with no exit code never
-  executed (`Result.SandboxBroken`, `sandbox: <bwrap or socket line>`) — has its verdict discarded; a
-  tool that answered was reached (`ToolStat.Reached`), so the
-  built-in's `not found` for a slug it does not have is the tool
-  working, never a tool failure (ADR-011's amendment 2026-09-29, a tool
-  that answered was reached). For a broken one the same job runs on the other family
-  as the evaluation proper, its notes opening `<Family> (first attempt,
-  <model>): no verdict — <tool>: <error>`; with no other family it
-  is **no verdict** (`Evaluator.noVerdict`, ADR-011's amendment
-  2026-09-29): `EvaluateWorkItemNoVerdict` sends `evaluateWorkItem`
-  `passed: false`, `noVerdict: true` and `noVerdictReason` (runsheet
-  ADR 035; `gateway.NoVerdictField`, `NoVerdictReasonField`) with the
-  reason in `notes` too and the cost and usage, never a fail — as does a
-  deciding session with no `VERDICT:` line. A gateway whose
-  `EvaluateWorkItemInput` lacks `noVerdict` (introspected, kept an hour)
-  gets nothing (`ErrNoVerdictOutcome`, said once per run): the item
-  stays in evaluating (`ErrNoContext`, said once per item by `Blind`).
-  A family blind on the first attempt is not asked for the second
-  opinion: the other family's verdict stands. With neither a `codex:` block nor
-  an issued Codex account the node evaluates as before. Builders on
-  Codex come later, behind a per-project setting.
-- **Tools** (`internal/tools/`, ADR-006, trd §3 Tools): the
-  claim-time read `gateway.Session` hands a session its credentials and
-  its `tools` (`[]tools.Tool`, secrets decrypted for the claiming
-  node); a platform without `tools` gets none and is asked for
-  credentials alone from then on. `Loop.Runtimes()` is what the last
-  probe found. Build, evaluate, plan and research sessions get theirs
-  (`SelectTools` by `tools.RoleFor(kind)` — builder, evaluator, planner,
-  director — and runtimes, `SessionTools.Apply`: runsheet
-  plus each tool in `Job.MCPServers`, secret values in `Job.Env` and
-  `Job.Secrets` only, the tools on `Job.Tools` for Codex); a
-  nice-to-have tool the node cannot start is omitted and noted on the
-  item (logged for a plan or research), a required one releases the
-  item — a plan's claim goes back by `releasePlan` (`ToolsDeclinedError`,
-  no try counted), a research hands in an empty one with the reason as
-  its note — and `Declines` keeps the loop off the item, goal or
-  direction while the runtimes are unchanged, the reason on the plan's
-  holding line. A rebase session keeps runsheet alone.
-  `tools.IsBuiltin(name)`
-  knows the built-in by its name, `runsheet` (`tools.Builtin`), and by
-  its old names, `mesh-context` and the one before it — one declaration,
-  `tools.builtinAliases` (`BuiltinAliases()`, `BuiltinAlias()` the
-  oldest, so no other file spells it) — read only from the stream and
-  state of a session an older node started and this one adopted
-  (`Result.ToolNames`/`DocumentsFetched` folded into runsheet, a
-  `mcp__mesh-context__mesh_finish` a work call like
-  `mcp__runsheet__mesh_finish`, `Evaluator.toolBroken`, `UseNote`); a
-  console tool named `runsheet` clashes, one named as an old name is an
-  ordinary tool (ADR-006's amendment 2026-10-15, goal
-  the-node-calls-the-context-server-runsheet).
-  `internal/node/runsheet_server_e2e_test.go` (`-tags e2e`) runs a build
-  through the real Claude Code harness on the gatewaytest fake: its
-  `--mcp-config` names `runsheet` and no old name, its relay's
-  tools/list reaches the fake's `/mcp` (`Fake.MCPRequestsNamed`), its
-  `mcp__runsheet__mesh_finish` is the finish handed in, and a session
-  adopted with `mesh-context.token` and a stream naming `mesh-context`
-  still finishes.
-- **Tool results** (`internal/harness/trim.go`, node.yaml
-  `tool_results.max_kb`, default 16, 0 off): a host build session gets
-  a `PreToolUse` hook on `Bash` in its `--settings` (`Job.Settings`,
-  `ToolTrimSettings`) — `mesh tool-trim --max-kb N --hook` rewrites the
-  command to `( <cmd>\n) 2>&1 | mesh tool-trim --max-kb N`, which keeps
-  the first 60% and last 40% of the cap (`TrimToolResult`) — and every
-  build session `MAX_MCP_OUTPUT_TOKENS` and `BASH_MAX_OUTPUT_LENGTH`
-  (`ToolResultsEnv`); a sandboxed one gets the env alone.
-  **A builder tests what it touched** (ADR-038,
-  `docs/adr/adr-038-a-builder-tests-what-it-touched.md`): beside the
-  trim, on the same Bash matcher, a host build's settings run the test
-  guard (`BuildSessionSettings`, `harness.TestGuardCommand`: `mesh
-  test-guard --hook`, `internal/commands/testguard.go`), set whatever
-  `max_kb` says — `harness.TestGuardHook` denies a whole-suite run (`go
-  test ./...` in any statement, `cd x && …`, a bare `npm test`/`make
-  test`/`pytest`; a scoped `./internal/foo/...` runs) and any test
-  command with `run_in_background`, its reason naming the
-  `.runsheet/validate.yml` suites the merge-base diff selects
-  (`validate.Select`), else a generic one; an unreadable input lets the
-  call run. Only `Runner.toolResults` sets it: evaluate, plan and rebase
-  sessions run whole suites when their acceptance asks. `BuildPrompt`'s
-  `# Test what you touched` (`testWhatYouTouched`, before `# Services`)
-  says test the packages you touched in the foreground, never `go test
-  ./...` — the rule alone in a pod, which has no mesh binary
-  (`TestGuardHookOnBuildNotEvaluate`, `TestBuildPromptTestsWhatItTouched`).
-- **The hand-back** (`internal/harness/handback.go`, adr-012
-  Hand-back): a host build's turns are priced by tier (`listPrices`,
-  dated); past `Job.HandBackAt` (the runner's
-  `harness.DefaultHandBackAt`, 0.6) of `MaxBudgetUSD` with
-  `Job.HasCommit` false (`HasCommitSince`: `git rev-list --count
-  origin/<base>..HEAD`) the unit is stopped and `--resume`d once on the
-  budget left with `HandBackPrompt`. `Result.HandedBack`/`SpentOn`; the
-  runner notes `SpentOn` on the item, keeps it in
-  `~/.mesh/items/<item>.last-session` (`RunState.RecordLastSession`)
-  and the next claim's `BuildPrompt` renders it as "The last session on
-  this item". No commit still is an empty finish, back to `ready` on
-  the platform. Sandboxed, adopted and Codex sessions do not hand back.
-- **Validation** (`internal/node/validation.go`, `internal/validate/`,
-  docs/adr/adr-013 and adr-014, runsheet ADR 032): after a successful,
-  not already_done build and before the push, `.runsheet/validate.yml`'s
-  suites (the platform's schema: `suites:` with name, kind, command,
-  paths, reports, jobs, plus the node's timeout, always, artifacts,
-  results; `steps:` an alias) the diff affects (`Workspacer.ChangedPaths`;
-  a suite with no paths is every change) plus the always ones run on
-  HEAD — none affected still attests, `commands: []` — and the
-  attestation's `suiteHash` is `validate.SuiteHash`, the platform's
-  `validatespec.SuiteHash` of the file (ADR-013's amendment) — in the session's pod (`sandboxRunner`, runner
-  image by `sandbox.ImageDigest`) or on the host (`host:<hostname>`,
-  the session's env less its secrets). The attestation goes to
-  `<workdir>.session/attestation.json` and, after the push, to
-  `RecordValidationAttestation` on the node's own token —
-  `recordValidationAttestation(workItemId, input)`, the shape of
-  `specs/contracts/recordValidationAttestation.json` (runsheet's,
-  byte for byte), asked of the Mutation's introspection once an hour,
-  no REST path. A failing step
-  gets one retry turn (`harness.ValidationRetryPrompt`, the session
-  resumed when it can be), then `FailWorkItem` with `validation failed:
-  step <name> exited <code>`; per-step ms ride the usage report's
-  `validation`. No validate.yml finishes as before. A rebase re-attests
-  the head it pushed (`Rebaser.validateRebased`, after `PushedHead` and
-  before `FinishWorkItemRebase`; ADR 032 carries no attestation across a
-  rebase): the same steps and upload, a failing step logged and still
-  uploaded, never the rebase's failure (adr-014, After a rebase).
-  After the last push of a build, rework or rebase the node attests
-  exactly the pushed sha (`attestPushed`, validated again when the
-  push is not the commit validated) before the finish, answers a
-  `<sha> is not the head of <branch> (GitHub has X)` refusal once by
-  fetching, validating and attesting X (`answerNewerHead`), and the
-  upload retries a 429/5xx/transport error for `AttestationRetryFor`,
-  2 minutes; an attestation never fails an item. `attestation recorded
-  <sha> <suites> <status>` and `attestation refused <reason>` are
-  counted for the hour (`AttestationCounts`, `ValidationNotices.Counts`,
-  `~/.mesh/node.attestations`): the loop's health line, every
-  `DefaultHealthEvery`, ends `attestations recorded <n> refused <m>
-  (1h)` and `mesh node status` prints `attestations: <n> recorded, <m>
-  refused (last hour)` (adr-014's amendment 2026-10-09; the gateway's
-  half is runsheet goal an-attestation-is-about-a-commit-not-an-item-state).
-  The validator's fetches — the diff's base (`changedPaths`) and a newer
-  head (`fetchHead`) — run on `ItemCred.ForFetch`'s token and the build's
-  push on `ForPush`'s, each by `OnItemToken` (`GIT_CONFIG_COUNT` at the
-  command's scope, never a clone's config), whatever the
-  checkout's helper holds by then (ADR-001's amendment). **An
-  environment failure names its kind** (`internal/validate/envkind.go`,
-  `docs/adr/adr-030-an-environment-failure-names-its-kind.md`): the
-  closed set `validate.EnvironmentKind` — `step_timeout` (a step's exit
-  124), `tool_missing` (127), `credential_refused`
-  (`validate.IsCredentialRefusal`, which `IsCredentialRefusal` reads, or
-  a `*CredentialError`/`*PushCredentialError`) and `image_pull_refused`
-  (`validate.IsImagePullRefusal`: an error, or podman's exit 125, naming
-  a refused pull) — classified by `EnvironmentKindOf(step, err)`, set on
-  a failing `StepResult.EnvironmentKind` by `validate.Run` (its runner
-  error `Classify`d), sent as the attestation command's
-  `environmentKind` (`gateway.ValidationCommand`, the contract's second
-  command; left out for a pass or a code failure), and opening every
-  reason as `<kind>: ` (`validate.WithKind`/`Reason`/`KindOfReason`) —
-  `Runner.fail`'s `failWorkItem`, `ReleaseOnCredential`'s
-  `releaseWorkItem`, a refused pull's `updateError`; node.log's step
-  line ends ` (<kind>)`. A `tool_missing` reason names the missing
-  tool and the command (ADR-030's amendment 2026-10-16):
-  `validationFailure.Error()` renders ``validation failed: step <name>
-  exited 127: command not found: <tool> (in `<command>`)``, the tool
-  read from the step's output by `validate.MissingTool` (sh's, bash's
-  and Go exec's "not found"), else the command alone, on a build's
-  `failWorkItem` and a batch candidate's or main validation's failure
-  alike (`toolmissing_e2e_test.go`'s `TestToolMissingE2E`). Any other
-  non-zero exit carries none; the
-  platform half, runsheet goal
-  an-item-that-fails-on-its-environment-is-parked-not-replanned, parks
-  on it. **A merged dependency's gone branch fails nothing**
-  (`docs/adr/adr-033-a-gone-base-branch-is-read-as-merged.md`): an
-  item built on a dependency's branch that merged and was deleted
-  mid-build is diffed against the repo's default branch. A base fetch
-  that fails is `*BaseGoneError` only when `git ls-remote --exit-code
-  origin refs/heads/<base>` exits 2 (`Git.baseGone`; a credential or
-  network refusal keeps its own error and kind), and then validation's
-  changed paths (`validationTarget.defaultBranch`, `defaultBranchOf`),
-  the evaluation's diff, changed and protected paths and prompt
-  `BaseRef` (`goneBaseFallback`) and the retry turn's changed paths
-  (`retryChangedPaths`) are taken from `origin/<default>`, and
-  `Git.Prepare` continues a branch already on origin — the evaluation's
-  `eval/` checkout, a rework — without its base (a new branch
-  still needs it). Each says so: `item <label>: validation: base <dep>
-  is gone (merged); changed paths from origin/<default>` (once per
-  build, and on the item), `item <label>: evaluate: base <dep> is gone
-  (merged); diff from origin/<default>`, `item <label>: retry turn:
-  base <dep> is gone (merged); changed paths from origin/<default>`,
-  `workspace <dir>: base <dep> is gone (merged); continuing
-  origin/<branch>`. A squash-merged dependency's files count as changed
-  too — a superset of suites; the attestation still names HEAD.
-  `internal/node/basegone_e2e_test.go`'s
-  `TestBaseGoneMergedDependencyValidatesOnMainE2E` (`-tags e2e`) deletes
-  the dependency's branch between the build's commit and validation and
-  sees the head attested, finished and evaluated passing.
-- **Main validation** (`internal/node/mainvalidation.go`,
-  `mainvalidation_loop.go`,
-  `docs/adr/adr-032-a-node-validates-a-merge-batch-candidate.md`; runsheet
-  ADR 048 decision 3, ADR 054's amendment 2026-10-13): the gateway's
-  `internal/gateway/mainvalidation.go` reads `mainValidations(nodeId)`
-  (`MainValidations`: `batches[]` — `MainValidationBatch{MergeBatchID,
-  Number, CandidateBranch, SHA, Attempt, RepoFullName, RepoID, OrgID,
-  DefaultBranch, RequestedAt}` — and `requests[]`, a merged item's
-  `MainValidationRequest`) and sends `Claim`/`Finish`/
-  `FailMergeBatchValidation` (`nodeId` on all three), their WorkItem twins
-  `Claim`/`Finish`/`FailWorkItemMainValidation` (finish and fail take no
-  `nodeId`) and `RecordBatchCandidateAttestation`
-  (`recordValidationAttestation` with `mergeBatchId` as the argument and
-  inside the input; the receipt's `branch` the candidate's), all gated by
-  `TakesMainValidation` (the query and the six mutations, kept
-  `ScalingProbeEvery`; a no sends nothing). The contracts are
-  `specs/contracts/mainValidations.json`, the three batch commands,
-  `recordValidationAttestation-batchCandidate.json` and the three twins —
-  written from the live schema, the `requests[]` shape and the receipt's
-  `branch` still to check against runsheet's. The fake's
-  `SeedMergeBatch`/`SeedMainValidationRequest` serve them, a claim
-  converging on one node and refused for another, a fail releasing it
-  back to `requested`, a finish refusing a sha not the row's.
-  Every tick, after `inUse` and before `claimReady`, while not draining,
-  `Loop.validateBatches` reads each node id's queue and — only when
-  `takes:` takes `evaluate`, a slot is free and the host is not hot —
-  claims each entry of a served org (every batch before any request)
-  under the `evaluate` cap, its run a `mainJob` (`startMainJob`,
-  `runMainJob`) counted in `Running()`, `sessions()` and
-  `runningOf(evaluate)`; a refused claim is ordinary and silent. A batch
-  runs `Loop.ValidateBatch` = `Runner.ValidateCandidate`: the candidate's
-  fallback checkout a clone of its own in its batch job, checked out
-  detached at
-  `~/.mesh/jobs/<mergeBatchId>/candidate-<attempt>` (`batchDirFor`,
-  `Git.AddCandidateWorktree` → `addDetachedClone`; a fetched head other than the batch's sha
-  `*CandidateHeadError`, nothing run), the suites the diff from
-  `origin/<defaultBranch>` selects plus the `always` ones run in an
-  `OpenSessionPod` pod of kind `validate` with its services
-  (`validator.start`/`run`), attested with `mergeBatchId`. A request runs
-  `Loop.ValidateMain` = `Runner.ValidateMainRequest`: the merge commit at
-  `~/.mesh/jobs/<workItemId>-main/main-<attempt>` (`mainJobID`, its own
-  job beside the item's, which the sweep may have removed;
-  `Git.AddCommitWorktree` → `addDetachedClone`, a clone of its own; not
-  on the default branch
-  `*CommitNotOnBranchError`), suites by the merge's diff from its first
-  parent (`validationTarget.diffFrom`), attested as the item's, no
-  `mergeBatchId`. A batch's candidate is fetched on the batch token
-  the platform mints (`gateway.IssueMergeBatchRepoToken`,
-  `issueItemRepoToken(mergeBatchId:)`, read access on its repo for the
-  claim's node; `NewBatchCred` → an `ItemCred` renewed by the same form
-  before each fetch), on every fetch of the run by `OnItemToken`, logged
-  `merge batch <n> (<repo>): candidate fetched on minted token (<repo>,
-  <access>)`; a platform that mints none (`IsUnsupported`) fetches on the
-  operator's login, said once per run (`TokenFallback.NoteBatch`,
-  `Runner.BatchFallback`); a refused mint or renewal — or one
-  `checkBatchToken` refuses, empty, malformed (`tokenShape`) or for
-  another repo — fetches nothing and fails the validation `github token for merge batch <n>: …` (ADR-032's
-  amendment 2026-10-14). A request runs on the operator's credentials.
-  A pull request a person opened by hand on an enrolled repo declaring
-  `.runsheet/validate.yml` is the third queue, `pullRequests[]`
-  (`MainValidationPullRequest`: `pullRequestValidationId`, `number`,
-  `ref` = `refs/pull/<n>/head`, `sha`, `headBranch` for logs), offered
-  after every batch and request (it lands nothing), gated apart by
-  `TakesPullRequestValidation` (`claimPullRequestValidation` and
-  `failPullRequestValidation` on Mutation; a platform without them is
-  said once and its `pullRequests` left alone while batches and requests
-  go on). It runs `Loop.ValidatePullRequest` =
-  `Runner.ValidatePullRequest` on the read token `jobAccess` serves on
-  subject `{type: pull_request}` (`PullRequestValidationToken`; a
-  refused mint fails it): the head read by its sha from the served diff,
-  else `Git.AddPullRequestWorktree` fetching the pull ref from the base
-  repo (so a fork's head comes the same way; a head other than `sha` is
-  `*PullRequestHeadError`), **every** declared suite run
-  (`validationTarget.allSuites`), and the attestation handed back by
-  `finishJob` on subject `pull_request` — the platform records it by
-  `pullRequestValidationId` and sends `finishPullRequestValidation`
-  itself. Log prefix `pr <repo>#<n>@<sha short>`.
-  The checkout is removed on every path. **Both are first validated
-  from the served diff** (`internal/node/serveddiff.go`,
-  `checkoutServed`, ADR-034,
-  `docs/adr/adr-034-a-node-validates-from-a-served-diff-with-a-shared-cache.md`,
-  amending ADR-028 and ADR-032): the commit and `compare
-  <base>...<sha>` read from GitHub's Git Data API
-  (`internal/gitdata`: `Commit`, `Compare`, `Tree`, `Blob`; a capped
-  diff `DiffTooLargeError`, a truncated tree `TruncatedError`) on the
-  run's minted token (`gitdata.WithToken`, `validator.servedToken`), the
-  merge base materialised from the node's one shared tree cache
-  (`internal/node/sharedcache.go`, `SharedCache`: `SharedCacheRoot()`,
-  `<user cache dir>/mesh/cache`, `blobs/`, `trees/`, `commits/` by sha,
-  a miss filled once from the validating job's own clone (`WithClone`,
-  `jobCheckoutOf`; never another job's) else the `BlobSource`,
-  `GitDataSource`; `Runner.ServedDiff`, `NewServedDiffCache`) into
-  `MakeScratch(ScratchRoot(WorkRoot), "served", <subject>)`, the diff
-  applied through the cache (`ApplyDiff`), then made a git repository
-  whose detached HEAD is the served commit itself
-  (`commitServed`: `git init --template=`, `add --all --force` once
-  with hooks off and `.git/info/attributes` unsetting text/eol/filter
-  while it hashes, submodules as gitlinks, `write-tree` compared with
-  the commit's tree — another is a tree mismatch, `checkMaterialized`
-  naming the first path that differs), so a suite that
-  finds the repo root through git (runsheet's loomgen, red on dl360
-  2026-10-25 without one) finds the scratch, and HEAD^ is its real first
-  parent with its real tree, so one that reads `git rev-parse HEAD`,
-  `HEAD^` and HEAD^..HEAD (runsheet's scan.sh and gitleaks, exit 128 on
-  every served validation 2026-10-25 while HEAD was parentless) reads the
-  attested commit (`realHead`, `internal/node/servedhistory.go`): both
-  commit objects rebuilt byte for byte from `gitdata.Commit` — a signed
-  one from GitHub's `verification.payload` with `verification.signature`
-  put back as git's gpgsig header (`withSignature`), an unsigned one from
-  its fields, the zones GitHub does not serve found by hashing
-  (`commitFromFields`) — each written only when it hashes to the real
-  sha; the parent read once (`Commit`, its tree from the shared cache on
-  `withCommitTree`, so a miss is one tree read) and its tree written in
-  an index of its own from cached blobs (`writeServedTree`,
-  `SharedCache.WithBlobs`); `.git/shallow` names the parent; a merge is
-  grafted onto its first parent (`git replace --graft`). What cannot be
-  rebuilt — a root commit, an odd signature or header, an unreadable
-  parent — is `syntheticHead`: `commit-tree` unsigned by the fixed
-  identity `mesh node <node@projectmesh.io>`, its parent a synthetic
-  commit of the merge base's tree. Each validation logs `<prefix>:
-  scratch HEAD is <sha7> itself, HEAD^ its first parent <p7> (shallow)`
-  or `... a synthetic commit of <sha7>'s tree, HEAD^ one of the merge
-  base <b7>'s: <why>`; either way the suites get `HEAD_SHA` and
-  `BASE_SHA`, the real commit and its first parent (`servedTree.env`;
-  in a pod `sandbox.RunSpec.Vars`, set past the allow-list by
-  `sandbox.SetEnv`), and the attestation names the served commit's sha
-  and tree; a sandboxed pod mounts the scratch, `.git` inside it, alone;
-  `.git` is never in a tree check or an artifact digest — logged `<prefix>: materialised
-  <sha7> from <base7> and <n> changed file(s) of the served diff` — no
-  clone, no fetch, no repo lock; the suites chosen by the compare's
-  paths, the scratch removed on every path (`validator.removeScratch`,
-  after a sandboxed run's pod). The cache's hits and misses
-  (`CacheCounts`) persist to `~/.mesh/node.cache`
-  (`RunState.WriteCacheCounts`); `SharedCache.Enforce` holds the cache
-  root, `go/` included, under node.yaml's `validation_cache_max_bytes`
-  (`Config.ValidationCacheCap`, default 20 GiB) after every
-  materialisation and applied diff — least recently used entries
-  evicted, logged `cache: evicted <n> least recently used entries
-  (<size>) to hold the cap of <cap>; <size> now`, then `go clean
-  -cache`, still over the finding `cache over cap: <size> of <cap>`,
-  once until back under. A diff past the cap, a truncated tree, no
-  minted token (a request today), no cache, no parent, a tree
-  mismatch or a scratch repository git could not make takes the clone above, `<prefix>: served diff: <reason>;
-  validating from a worktree (said once per run)` (`servedFallback`,
-  `noteServedFallback`). A sandboxed validation's pod mounts
-  `sandbox.ValidationCache` (`RunSpec.Cache`): its scratch rw (TMPDIR,
-  GOTMPDIR), the Go build cache rw (GOCACHE), the cache's `blobs/`
-  read-only, nothing else of the cache root, the scratch removed by
-  `Sandbox.RemoveTree`. `mesh node status` prints `validation cache: 75%
-  hits (30/40), 1.2 GiB of 20.0 GiB` or `validation cache: no lookups
-  yet`. `internal/node/serveddiff_e2e_test.go`'s
-  `TestServedDiffValidationsShareOneCacheAndLeaveNoResidueE2E` (`go test
-  ./internal/node -run 'ServedDiff|SharedCache'`) runs a request and
-  three candidates on one base: all green, hits rising, GitHub asked
-  only for each diff's new blobs, a 32 KiB cap held by eviction, and
-  nothing left in TMPDIR or the job but an empty `.scratch`. An
-  evaluation's validation still runs on its own checkout. Green and
-  red are both finished on the attested sha (the attestation is the
-  verdict); an environment failure (ADR-030), a classified fetch failure,
-  a required service down or any error is failed with `validate.Reason`,
-  releasing the claim. `watchMainClaim` re-claims every
-  `BatchCheckEvery` (default a minute): refused is the claim lost, the
-  run stopped and nothing sent; past `MainValidationClaimAfter` (10
-  minutes) it is stopped and failed. node.log: `batch <repo>#<n> attempt
-  <a>: claimed candidate <branch>@<sha7>`, `… attested green|red
-  (<suites>)`, `… finished`, `… failed: <reason>`, `… stopped: claim lost
-  …|ran past …`; a request's prefix `main <repo>@<sha7> item <seq>: `,
-  its claim line `claimed`; once per run `the platform serves no main
-  validation; validating no merge batch`.
-  `internal/node/mergebatch_e2e_test.go`'s
-  `TestNodeValidatesAMergeBatchCandidate` runs it end to end on the
-  Loop, and `TestNodeFetchesABatchCandidateOnItsMintedToken` against a
-  `git http-backend` remote that takes the minted token alone (else, on
-  a platform that mints none, the operator's login alone).
-- **Services** (`internal/sandbox/services.go`, mesh-specs ADR 007):
-  `Resolve(repoDir, allowed)` reads what a repository declares, first
-  found wins — `.mesh/services.yml`, else the `services:` of its
-  workflows' test jobs (merged by name, not required), else none — into
-  one `Service` shape with a parsed `HealthCheck`, test tuning for
-  Postgres and MySQL/MariaDB, a postgres or postgis service's own
-  `PGDATA`/`POSTGRES_INITDB_ARGS` defaulted to a path writable under
-  keep-id when it sets neither (`postgresDefaults`, docs/adr/adr-007's
-  2026-10-16 amendment), and a disallowed registry returned `Refused`
-  with a note. Pure parsing; the fixtures are under
-  `internal/sandbox/testdata/` (their `.mesh/` needs `git add -f`).
-- **A session commits as its agent** (`internal/node/identity.go`,
-  docs/adr/adr-024): `AgentIdentity(role, slug)` is `Mesh <role>
-  (<slug>) <mesh-<role>+<slug>@runsheet.dev>`; the Runner and the
-  Rebaser call `Workspacer.Identify` after `Prepare` — `git config
-  --local user.name/user.email`, `core.hooksPath` to `<workdir>.hooks`
-  whose `prepare-commit-msg` first drops every line matching
-  `claudeTrailer` — `Co-Authored-By: Claude … <noreply@anthropic.com>`,
-  any case, POSIX sh and `grep -v -i -E` so it runs in the pod too; a
-  pairer named Claude at another email stays — then adds one
-  `Co-Authored-By` per `Pairers` (node.yaml `pair: [{name, email}]`
-  until the platform serves a paired field) with `git interpret-trailers
-  --if-exists addIfDifferent` — and put `GIT_AUTHOR_*`/`GIT_COMMITTER_*`
-  on `Job.Env`; the sandbox's `.gitconfig` is the same agent
-  (`Sandbox.Open`'s `GitIdentity`, the hooks mounted read-only), never
-  the operator's. Evaluations get none. git runs the hook for `commit
-  -m`, `--no-verify`, the node's own `Git.Commit` and every commit a
-  rebase's sequencer re-creates (a fast-forwarded pick is left as it
-  was). And every Claude Code session, host or sandbox, every role, is
-  started with `--settings` carrying `"attribution": {"commit": "",
-  "pr": "", "sessionUrl": false}` (`harness.NoAttributionSettings`,
-  merged over `Job.Settings` by `harness.SessionSettings`; the
-  empty-string form because `attribution: false` needs CLI v2.1.281+),
-  so Claude Code adds no trailer or PR text of its own: the pairer's is
-  a commit's only Co-Authored-By (ADR-024's amendment 2026-10-15;
-  `TestBuildCommitDropsClaudeCoAuthorTrailer`,
-  `TestBuildSessionCommitCarriesNoCoAuthorClaude`,
-  `TestSessionSettingsCarryNoCoAuthor`).
-- **A session's commands name their actor** (`internal/node/identity.go`,
-  docs/adr/adr-015's amendment 2026-10-03): every command a session
-  sends carries `agent:<role>@<slug>` — its ctx marked once where the
-  session opens with `actorContext(ctx, cfg, role)` over
-  `gateway.WithActor`, the slug `agentSlug` (node.yaml's, else `node`,
-  as `identityFor`'s). The Loop's claim, the Runner, the Rebaser and an
-  adopted build's progress act as `builder`, the Evaluator as
-  `evaluator`, the Planner as `planner`; `mesh mcp`'s pass-through
-  tools as none. A new session kind marks its ctx the same way
-  (`internal/node/actor_test.go`).
-- **Session units** (`internal/sessionunit/`, mesh-specs ADR 008,
-  `docs/adr/adr-008-sessions-in-their-own-unit.md`): a host `claude -p`
-  is not the node's child. `ClaudeCode.Run` starts it through a `Unit`
-  (`Start` → `Handle{PID, UnitName}`, `Alive`, `Stop`):
-  `SystemdScope` (`systemd-run --user --scope
-  --unit=mesh-session-<kind>-<subject>-<rand> --collect`, outside the
-  node service's cgroup) when `systemctl --user` answers, else
-  `Detached` (setsid, its own process group); the sandbox's pod becomes
-  a third later. Its stdout goes to `<workdir>.session/output.jsonl`,
-  stderr to `stderr.log`, and `state.json` (`State`, written
-  atomically: node, item/goal/direction, claim, kind, model, account,
-  pid, unit, startedAt, offset — never the prompt or a secret) from
-  `Job.Meta`; the prompt is an unlinked file on stdin. `Follow` tails
-  the output a line per read until the process is gone and the file
-  stops growing, `ParseStream` reads it, and the offset is saved as it
-  goes. A timeout or cancelled ctx `Stop`s the unit, and every end
-  but a detach `Kill`s it: `Result.Killed` names what the agent left
-  running there (a failed kill goes to Stderr, else `KillError`,
-  never failing the session), and the node logs what it killed, a
-  line per session (`logKilled` on `Result.KilledPerSession()`:
-  `<subject>: session end killed <n> process(es) the agent left
-  running: <pid> <comm>, …`, and `kill: <KillError>`); a build and a
-  rebase also send it as a progress note, an evaluation puts it in the
-  verdict's notes when it records one and only logs it (held for the
-  next verdict, `LeftRunning`) when it records none, a plan and
-  research log only (ADR-008, The session's end) — an adopted session
-  whose subject is no longer the node's is `FoundSession.Kill`ed and
-  logged the same way; the directory is
-  removed when `Run` returns — unless the job is `Outlive`: see the
-  adoption. **A build the node gives up on is stopped, not detached**
-  (ADR-029, `internal/node/lost.go`): every `ProgressEvery` it reads its
-  item back (`lostByRead`: terminal, cancelled, ready/pending, or
-  claimed/running on another node id) and heartbeats only while held,
-  a heartbeat refused as not held (`lostRefusal`) losing it too; the
-  session's ctx is cancelled with `ErrClaimLost`, which `Is`
-  `harness.ErrStopSession`, so `ClaudeCode.follow` kills an `Outlive`
-  unit (`harness.StopRequested`) where a plain cancel still detaches;
-  `afterLost` logs `item <label>: claim lost (<why>); session stopped`
-  and sends nothing, and the slot frees as `RunItem`/`AdoptItem`
-  return, a pod by its deferred `SessionPod.Close`
-  (`gatewaytest.Fake.SetItem` sets a row as the platform would). A
-  build starved on an overloaded host is stopped the same way and
-  released (`ErrStarved`, see the hot host under the scale).
-- **The sandbox** (`internal/sandbox/`, mesh-specs ADR 007,
-  `docs/adr/adr-007-the-sandbox-on-the-node.md`): with a sandbox,
-  `harness.ClaudeCode` runs `claude` in the session's own rootless
-  Podman pod (`Sandbox.Open` → `Session.Run` → `Close`) from the node
-  image: mounts only the workspace and a temporary HOME (the MCP config
-  file, `CLAUDE_CONFIG_DIR`, `GH_CONFIG_DIR`, `.gitconfig`) — a job's
-  workspace a complete clone of its own, so no git dir outside it is
-  mounted (`sandbox.GitCommonDir` "" for a full clone; `worktreeMounts`
-  serves only the tests' work-root worktrees) — and its job's own
-  pnpm store and npm cache, `~/.mesh/jobs/<id>/store/{pnpm,npm}`
-  (`jobSandbox`, `PackageStores`, `sandbox.WithStores`, `sandbox.Stores`;
-  the node's sandbox has no store of its own: `npm_config_store_dir`,
-  `pnpm_config_store_dir`, `PNPM_HOME`, `npm_config_cache` in
-  `BaseEnv`; separate mounts, so pnpm copies rather than hardlinks in
-  a pod, EXDEV, ADR-028) — an env
-  from the allow-list (`AllowedEnv`, `MESH_TOOL_*`, `BaseEnv`; never
-  the node's), `--cpus/--memory/--pids-limit` from node.yaml
-  `sandbox:` (`SandboxConfig.Settings`) with the limit told to the
-  tools inside — `GOMAXPROCS`, `OMP_NUM_THREADS` and `MAKEFLAGS=-j<n>`
-  at the ceiling of `--cpus` (`LimitEnv`, a name the spec's env sets
-  left alone; ADR-031) — and nftables rules an init
-  container loads (`NetworkPolicy.Ruleset`: the LAN, the host and the
-  special ranges refused, 443/80 out). `Runtime` is `Podman` or the
-  test `Fake`. `OpenSandbox` decides at start: `sandbox: off` is nil
-  and today's exec path byte-for-byte; the mode left out is on when
-  `podman --version` answers, else off with a log line; an explicit
-  `on` without podman refuses to start. A limit kill
-  (`*sandbox.LimitError`: OOM, pids, the runtime's timeout) is the
-  node's condition: the runner releases the item, holds it off
-  (`Declines`) and `Loop.NoteCondition` puts the reason on the
-  heartbeat for `ConditionHold`; the heartbeat also carries `sandbox
-  {mode, runtime, image}`. `Session.Close` removes the pods
-  (`RemoveArgs`: the containers with `--volumes`, then the pod) and the
-  HOME (`removeHome`: RemoveAll, u+w, `Runtime.RemoveTree`), logging
-  `sandbox: session <label>: close: <err>`; `mesh node start`, after
-  adoption, runs `node.SweepSandbox` → `sandbox.Sweep` (exited mesh
-  containers, mesh pods with no running container, `mesh-home-*` dirs no
-  running container mounts) and logs `sandbox: swept N homes, M pods, K
-  containers at start (L homes in use)` (ADR-007's amendment
-  2026-10-10). A Codex session runs in its pod too
-  (`harness.Codex.Sandbox`, `runSandboxed`: the image's `codex exec`,
-  the same two mounts, CODEX_HOME at `Session.CodexHome()` inside the
-  HOME, the env by name, the preflight by `Session.Exec` in that pod;
-  ADR-007's amendment 2026-10-17, `TestCodexEvaluationInAPodE2E`).
-  **A runtime that cannot start a pod at all is told apart
-  from the agent's own failure inside one that started fine**
-  (ADR-030's amendment,
-  `docs/adr/adr-034-a-node-whose-runtime-is-broken-stops-claiming.md`,
-  goal `a-runtime-that-cannot-start-a-session-stops-claiming`, item 1):
-  `Podman.CreatePod` (the pod and its network-rules init container),
-  `RunAgent`'s container create and `StartAgent` wrap podman's own
-  refusal — never the agent's non-zero exit, whose stderr is read for
-  runtime words only when podman itself is the one that failed (its own
-  exit 125, or no `*exec.ExitError` at all) — as a `*sandbox.RuntimeError`
-  (`runtime.go`: `Op`, podman's words, `Unwrap`; `validate.IsRuntimeBroken`
-  matches phrases like `error opening storage`, `cannot set up namespace`).
-  `(*Sandbox).Probe(ctx) error` is the cheapest check that the runtime can
-  start a pod at all: its version, then a throwaway `mesh.probe` pod
-  created and removed at once; a runtime that cannot answers the same
-  `*RuntimeError`. `Fake` gains `CreatePodErr` (honoured by `Probe`
-  alongside `VersionErr`) so `internal/node` can break and heal a runtime
-  in a test. A session whose pod cannot start this way is never failed
-  or left evaluating (item 2): `RuntimeErrorOf`/`RuntimeReason`
-  (`internal/node/runtime_release.go`) turn it into each session kind's
-  own release — a build or rebase `ReleaseOnRuntime` (`ReleaseWorkItem`,
-  attempts unchanged), an evaluation `EvaluateWorkItemNoVerdict`, a plan
-  `ReleasePlan` with no try counted, a main validation failed back to
-  `requested` — each holding the item or goal off this node for
-  `WorkspaceReleaseHold` and telling the session's `RuntimeBroken
-  func(error)` hook, which `mesh node start` wires to the loop (**A
-  broken runtime stops claiming**, below).
-- **Sidecars** (`internal/sandbox/sidecars.go`, `internal/node/services.go`,
-  mesh-specs ADR 007 Services): build, evaluate and rebase call
-  `OpenSessionPod` before the agent — `Resolve` the checkout, then
-  `Session.Start`: the pod, each allowed service a sidecar in it
-  (`AddSidecar`, `--pull missing`) under `SplitLimits` of the services
-  budget, then every health check at once (`--health-cmd` by
-  `ExecSidecar`, else `ProbeTCP` on the first port) within
-  `sandbox.service_timeout`; `Run` runs the agent in that pod
-  (`Job.Session`) and the node's `Close` removes it on every path. The
-  prompts' `# Services` section (`ServicesLine`) and
-  `$HOME/.mesh-services` (`ServicesListing`) list them. A missing
-  optional one is a progress note (the verdict's notes for an
-  evaluation); a required one releases a build, declines an evaluation
-  (`Declines`) or fails a rebase, naming it, and no agent starts; a
-  required refused one makes no pod at all.
-- Every session gets the built-in context server, `runsheet`
-  (`tools.Builtin`, `harness.BuiltinMCP`; `mcp__runsheet__*`), as an
-  MCP server — the stdio relay
-  `<mesh> mcp-relay --url <MeshMCPURL> --token-file <path>`
-  (`node.MeshContextMCP` → `harness.MeshContextRelay`; `internal/mcprelay`,
-  NDJSON JSON-RPC POSTed on the file's bearer read per request,
-  `Mcp-Session-Id` carried, a 401 re-reading the file once, a forgotten
-  session re-initialised once, a missing or empty file a JSON-RPC error),
-  in a pod `node <HOME>/runsheet-relay.js <url> <path>`
-  (`harness.RelayScript`, `sandboxRelayServer`), for Codex the same
-  stdio table (`[mcp_servers.runsheet]`) — on `runsheet.token`, 0600 in the session's own
-  directory (`harness.PlaceMeshContext`: `<workdir>.session/`, the pod's
-  HOME, the CODEX_HOME), written
-  from `gw.Bearer` by `node.TokenFiles` (the harnesses' `Tokens`,
-  `sessionTokens` in nodecmd.go),
-  rewritten atomically every `TokenRefreshEvery` (`auth.RefreshSkew`/4,
-  15s) the bearer rotated, a failed start releasing it,
-  removed when the session's end is handled and left on a detach;
-  `state.json`'s `tokenFile` names it and `ClaudeCode.Attach` keeps an
-  adopted session's (`keepAdopted`, an older session's
-  `mesh-context.token` path as its state names it) — no bearer in any config, so a
-  session outlives a rotation (ADR-029,
-  `docs/adr/adr-029-a-sessions-mcp-token-is-refreshed-by-the-node.md`;
-  `meshmcp.Hosted` keeps the http form, `node.MeshContextHTTP`; the
-  gateway's context reads are `/mesh/v1` only, the `/prologue/v1`
-  fallback removed, ADR-006's amendment 2026-10-15) — and
-  the project's context on disk under `.mesh/context/` with `INDEX.md`:
-  its own repos' instructions, then the screen, then `## Goal` — the
-  session's own goal and its items (seq, title, status, repo, branch),
-  read per session through the gateway (adr-003 decision 3, ADR-015).
-  A failed items read leaves the goal's statement and acceptance, with a
-  warning; `.mesh` is excluded from git, so none of it is ever committed.
-  `WriteContext` returns what that cost (`ContextWritten`: bytes on
-  disk with INDEX.md, files, documents left to fetch); each session
-  logs it once (`<label>: context <n> bytes in <k> files, <m> documents
-  to fetch`) and its usage report carries `contextBytes`, dropped for a
-  platform without the field (`ErrNoContextUsage`, said once per run;
-  docs/adr/adr-016).
-- **A session reaches every MCP server through one proxy** (ADR-038,
-  `docs/adr/adr-038-a-session-reaches-every-mcp-server-through-one-proxy.md`,
-  amending ADR-029 and ADR-035; for a node's sessions it supersedes
-  mesh-specs ADR 006 decision 2, secrets in env only — that repo's
-  amendment owed): `internal/sessionproxy`'s `Proxy` serves
-  streamable-HTTP MCP at `/mcp/<server>` on a 0600 unix socket
-  (`Listen`, a stale socket removed first) with one upstream per server
-  — `Remote{URL, Headers}` (the headers the proxy holds; a client's
-  Authorization never forwarded), `Runsheet{URL, Bearer, Key}` (asked per
-  request, in memory; a build's bearer its mesh session's token, minted
-  for audience `mesh-session` DPoP-bound to the node's in-memory key,
-  `SessionBearers.Key`/`TokenFiles.KeyOf`, each request sent
-  `Authorization: DPoP <token>` with a fresh proof; a 401
-  `invalid_token` retried once with a fresh proof, a 401 DPoP
-  `invalid_dpop_proof` (`dpopRefusal`) never retried and answered
-  -32603 `sessionproxy: <name>: DPoP proof refused: <reason>`, the
-  `MachineUntilDPoP` stop-gap gone; ADR-038's and ADR-035's amendments
-  2026-10-26, `TestRelaySignsEachRequest` in both packages) and
-  `Local{Command, Args, Env, Secrets}` (a local tool run by the proxy
-  on the host, lazily, restarted once with initialize replayed, its
-  secrets in the child's env alone, ids of the proxy's own, its process
-  group killed on `Close`) — `Mcp-Session-Id` carried, event streams
-  relayed, every reply, error, log line and child stderr masked, each
-  server's `FirstError` kept. `tools.ProxiedServers` renders every
-  server as a shim entry and returns the `UpstreamSpec`s apart; a host
-  session's entry is `harness.ProxyRelay` (`mesh mcp-relay --socket
-  <s> --server <name>`, no token file), a pod's `harness.ProxiedServer`
-  (`node <HOME>/mcp-proxy-shim.js <s> <name>`, `ProxyShimScript`,
-  rewritten by `podProxied`). `SessionTools.UseVia` with the node's
-  `SessionProxies` (`internal/node/sessionproxy.go`; `mesh node start`'s
-  `newSessionProxies`) opens it for build, evaluation, plan and
-  research at `<org MCP root>/px/<rand>/s` (`ProxySocketName`), the
-  runsheet bearer from `TokenFiles.Source`; the pod mounts the socket's
-  directory alone (`Session.ShareProxyDir`, no `MESH_TOOL_*` admitted),
-  no `runsheet.token` is written, and `SessionProxy.End` stops it with
-  the session. `UseNote` names the proxy's error for a failed server
-  (`runsheet served, never called: sessionproxy: runsheet: POST <url>
-  answered 503`). state.json's `proxy {socket, servers}`
-  (`sessionunit.Proxy`, `harness.ProxyStateOf`) names no secret; a
-  detaching node `Stop`s the proxy and keeps its dir, and the adopter
-  restarts it on the same socket (`SessionProxies.Adopt`, `adoptProxy`,
-  logged `<label>: proxy restarted on <socket> (<servers>)`);
-  `keepAdoptedToken` keeps no file for it. A rebase session keeps the
-  relay on its token file (ADR-029). `TestAgentContainerHoldsNoCredential`
-  checks it on the fake runtime; `session_proxy_sandboxed_e2e_test.go`'s
-  `TestSessionProxySandboxedE2E` (`-tags e2e`, `MESH_SANDBOX_E2E=1`,
-  `scripts/e2e-sandbox.sh` step 2b) in a real pod: each fake upstream
-  gets its credential and `podman exec` greps for `mesh-session` and
-  each secret find nothing.
-- Costs: each session's `total_cost_usd` is reported to the platform per
-  item (`ReportWorkItemProgress`, `EvaluateWorkItem`, `PlanGoal`).
-  Priced tool calls are tool usage records: the harness counts each
-  session's MCP calls per server (`Result.ToolCalls` — Claude's
-  `tool_use` named `mcp__<server>__…`, Codex's completed
-  `mcp_tool_call`, each call's id on `Result.ToolCallIDs`), and after a
-  build or evaluate session `SessionAccount.Finish` sends one
-  `RecordToolUsage(subject, toolCallId, tool, report)` (mutation
-  `recordToolUsage`; the subject the item, else the plan's goal, else
-  the research's direction, ADR-006's amendment 2026-10-03) per call of a rendered tool with
-  `pricePerCallCents > 0` — the session's report at the tool's price,
-  no tokens, no actual cost; runsheet and unpriced tools are none.
-  A platform without `recordToolUsage` is said once per run and each
-  call logged instead; it never fails the item.
-  Every server's calls, errors, ms and first error's text (200 chars,
-  redacted; `Result.ToolReport()`) ride the usage report as `tools`
-  beside the total (`SessionAccount.Add` merges carried sessions' rows,
-  the first error kept); a platform without the field gets it resent
-  without (`ErrNoToolUsage`, said once, the list logged), and an entry's
-  `error` goes only when the introspected `UsageReportInput` takes it
-  (kept an hour). A Codex call's error is its `error.message`, and a
-  server Codex says failed to start is an error with no call. A served
-  console tool never called, or whose first call errored, and any other
-  server that errored — the built-in `runsheet` first — is named by
-  `SessionTools.UseNote` — a build's progress note, the evaluation's
-  notes, the research hand-in's notes and its log line, a plan's log
-  line (`planGoal` takes no notes) (ADR-006 amendments
-  2026-09-28).
-- **Models are per kind of session.** `Models` in `~/.mesh/node.yaml`
-  (`default`, `build`, `evaluate`, `plan`, `research`, `rebase`) or the
-  matching
-  `--model*` flags on `node start`; `mesh node model` shows and sets
-  them. A kind with none takes `default`; no default leaves the CLI's
-  own — except the planner, which without an explicit `plan` runs on
-  the strongest configured (`Models.PlanModel`), else `opus`. The
-  planner names a `model` per item by the rubric in `PlanPrompt`; the
-  node drops one outside haiku/sonnet/opus/`claude-*` with a log line
-  and hands the rest in on `PlannedItem.Model`. The value is an alias the CLI knows (`opus`, `sonnet`, `haiku`)
-  or a full id (`claude-opus-5`). An item's build and rebase run on
-  the item's own `model`, then its agent's, then node.yaml's `build`
-  (or `default`) (`BuildModel`); the evaluator on the stronger of that
-  and `sonnet` (`EvaluateModel`); node.yaml is the fallback. The model
-  used is in node.log and on the item's events.
-- **The node's log** (`internal/node/logfile.go`, goal
-  `node-yaml-takes-effect-or-says-why-not`): `mesh node start` opens
-  `~/.mesh/node.log` (`ServiceLog`) itself through `RotatingFile` —
-  rotated at 10 MB (`NodeLogMaxBytes`) to `node.log.1` … `node.log.5`
-  (`NodeLogKeep`), one already past the cap rotated on open, no write
-  past the cap (one larger is cut to it; one it cannot rotate for is
-  refused with the error, said once on stderr) — and
-  `~/.mesh/sessions.log` (`SessionsLog`, 20 MB, 2 kept) beside it
-  (`OpenNodeLogs`). node.log is the node's own lines, each session's
-  summaries included; what sessions say — `Git.Log`, the harnesses'
-  `Stderr` — goes to
-  `sessionsOut`, sessions.log under `node start`, stderr for every
-  other command. The service templates never append to node.log: the
-  systemd unit's `StandardOutput=journal`/`StandardError=journal`, the
-  LaunchAgent's `~/.mesh/node.crash.log` (`CrashLog`), for a panic's
-  stack and the `restarting: exec` line (written to node.log too). A
-  unit installed earlier keeps its append redirect until `mesh node
-  service install` runs again. `mesh node usage` reads the rotated
-  files oldest first (`LogFiles`).
+  defers it first.
+- **The v0 Loop's architecture — drain, self-update, pace, scale, the
+  work sweep, accounts, Codex, the evaluator's family, tool results,
+  the hand-back, validation, main validation, services, sidecars,
+  session units and the sandbox, all as this section once described
+  them run — is deleted with `internal/node`'s `Loop`/`Runner`/
+  `Evaluator`/`Planner`/`Director`/`Rebaser` types** (goal
+  `the-v0-node-is-removed-from-mesh-cli`); scratch, the quartermaster
+  and held goals are not deleted, only unreferenced leftovers of that
+  Loop (`scratch.go`, `quartermaster.go`, `holding.go` — see
+  `internal/node/`, above).
+  What runs today in their place is `mesh node run`'s v1 runtime
+  (ADR-044, `status: proposed` — wave 0's minimal shape is live; the
+  job-actor/scheduler/supervisor machinery below is wave 3's design and
+  lands behind a node flag, off by default, so read its current state
+  in the code and the ADR before relying on any of it as today's
+  default):
+  - `internal/nodev1`: the entry point `mesh node run` drives — claims
+    one lease at a time (wave 0) against Mesh's v1 node API
+    (`internal/meshapi`, `DefaultURL = "https://api.projectmesh.io"`),
+    runs the lease's harnessed session, renews the lease while it
+    runs, and finishes or hands it back.
+  - `internal/actor`: a lease's own job actor (wave 3) — states
+    taken → preparing → running → reporting → releasing → done,
+    persisted as `actor.json` in the lease's own job directory;
+    releasing is the only way out, including from a panic, so a lease
+    is never left claimed with nothing watching it.
+  - `internal/scheduler`: capacity as TTL'd leases over CPUs, memory,
+    job slots, account slots and the build cache; every take reports
+    the `free` room left.
+  - `internal/supervisor`: watches each lease's `progress_at`,
+    escalates a stalled one through its mailbox and then stops it with
+    cause `stalled` (cancel mode) or only logs it (warn mode);
+    reconciles on a timer — killing orphan or sidecar-only pods and
+    removing job directories and relay grants nothing still claims.
+  - `internal/resources`: resource actors outside any one lease — a
+    self-update drains the node of new claims and hands back
+    `node_update` rather than finishing a lease mid-swap; the build
+    cache is bounded live, evicted by `WatchBuildCache` as entries are
+    added.
+  - `internal/catalogue` + `internal/finishschema`: a job kind's
+    `guidance` and `finish_schema` are the product's, fetched with the
+    brief; the node runs no kind-specific prompt contract of its own
+    beyond the one finish-schema check and its own tools (`push`,
+    `hand_back`, `progress`, `run_suite`, `apply_onto`, `result` —
+    `internal/nodetools`).
+  - The relay (`internal/egress`, `internal/gitrelay`,
+    `internal/relaysidecar`): a job's own sidecar terminates TLS for
+    the hosts a rule names (ADR-045), injects the credentials the job
+    carried rather than placing them in the job's own environment or
+    config (ADR-046), and routes a job's git traffic to the code host
+    its brief names (ADR-047) — the v1 analogue of the v0 item-scoped
+    GitHub token below, scoped per lease rather than per node command.
+  - `internal/sandbox` (shared with the legacy runtime, ADR-007): a v1
+    lease runs its session in its own pod the same way, per ADR-044.
+
+  See `docs/adr/adr-044-a-v1-node-runs-each-lease-as-a-job-actor.md`
+  and the Mesh v1 node spec ("The mesh-cli node") for the job-kind,
+  brief and lease shapes this runtime actually runs against; this
+  AGENTS.md does not restate their detail, to avoid the documentation
+  drifting from the code again (goal
+  `the-v0-node-is-removed-from-mesh-cli`, item 4).
+- **The node's log** (`internal/node/logfile.go`, `internal/node/service.go`):
+  `mesh node run` logs to stderr (`log.New(os.Stderr, …)`); the
+  systemd unit's `StandardOutput=journal`/`StandardError=journal` and
+  the LaunchAgent's crash log capture it. `mesh node usage` reads
+  `~/.mesh/node.log` and its rotated siblings for historical usage
+  records, and `mesh node service install` still names that path; the
+  v0-specific `mesh node start` in-process rotation and the
+  per-node.yaml-field reload logging this bullet once described
+  (capacity, limits, accounts, context budgets, claim limits, shares)
+  belonged to the deleted Loop and are gone with it.
 
 ## Rules
 
 - No third-party integrations in this repo (see CONTRIBUTING.md): no
-  Discord, no email, no API keys. A session reaches GitHub only with its
-  item's own token: a GitHub App installation token the platform mints
-  per item (`issueItemRepoToken`), scoped to the item's one repo,
-  contents write + pull requests read, an hour, renewed near expiry. The
-  node puts it on the checkout's own git credential helper (clearing the
-  operator's `gh auth git-credential`) and gives the session `GH_TOKEN`
-  and an empty, per-session `GH_CONFIG_DIR`, so the operator's gh login
-  is out of reach (adr-001-item-scoped-github-token) — a host session;
-  a sandboxed build's job container gets neither, the token riding the
-  node's own git commands alone (ADR-038). On a platform that
-  does not know the mutation the node falls back to the operator's own
-  `gh`/`git` credentials and logs that once per run (`TokenFallback`) —
-  the rollout is not a flag day; a refused token fails the item instead.
-  `mesh mcp`'s work tools have a second fallback of the same shape: they
-  call the platform's hosted `mesh_claim`, `mesh_progress`, `mesh_ask`,
-  `mesh_finish` and `mesh_release` on `/mcp` when its `tools/list`
-  names all five (`meshmcp.Hosted`, re-probed hourly; the arguments in
+  Discord, no email, no API keys. A v1 lease's job never holds a bare
+  credential of its own: the relay injects what its job offer carried
+  (mesh-specs gap 28; ADR-046, `internal/nodev1/inject.go`). Each
+  Latchkey secret ref in the offer's `access.secrets` and each scoped
+  connection in `access.mint` is asked of Latchkey on the lease's own
+  session token (`POST <Latchkey>/v1/credentials/for-job`, DPoP-proofed)
+  and becomes an `egress.InjectRule` on the lease's tunnel, live only
+  over the hosts the job kind's egress allows; the answer is held in the
+  relay process's memory alone — never on disk, in a log line, an event
+  or evidence, and never in the job's own pod, which sees only
+  `egress.Placeholder` where a tool insists on a variable. A ref Latchkey
+  will not give hands the lease back before the session runs
+  (`credential_timeout` when Latchkey or the vendor could not be
+  reached, `product` when Latchkey refused the configuration); a live
+  one is re-asked past its `expires_at` or past `injectReask` (15
+  minutes) since it was last asked, so a grace-0 rotation reaches a
+  running job, and a re-ask that fails drops what was held and refuses
+  the rule's requests until one succeeds. See ADR-045 (the relay's TLS
+  termination for named hosts) and ADR-047 (git-host routing per the
+  job's brief) for the rest of the tunnel this rides.
+  `mesh mcp`'s work tools (a legacy, gateway-backed path, still live)
+  have a fallback of their own: they call the platform's hosted
+  `mesh_claim`, `mesh_progress`, `mesh_ask`, `mesh_finish` and
+  `mesh_release` on `/mcp` when its `tools/list` names all five
+  (`meshmcp.Hosted`, re-probed hourly; the arguments in
   `specs/contracts/hostedworktools.json`), else today's mutations, said
   once per run on stderr, `the platform serves no hosted work tools;
   using claimWorkItem` (`HostedFallbackLine`; ADR-023, Hosted path).
-  The planner's project-wide fetch runs on the goal's own tokens
-  (`PlanGitHubTokens`, adr-022): each repo's plan checkout
-  `Authorize`d on its row (`PlanRepoSpec`) before `Fetch`, so `git
-  fetch` and never `gh repo clone`, and the session `SessionEnv` of the
-  first sorted repo's row with a fresh `GH_CONFIG_DIR`; a refusal or a
-  repo with no row is the plan's error naming it, before any session; a
-  platform without the read plans on the operator's `gh`, said once per
-  run (`TokenFallback.NotePlan`). A plan that fails there — the token,
-  the `Authorize` or the `Fetch` (`PlanFetchError{Repo, Err}`) — is
-  reported, not left to lapse: `ReleasePlan(goal, node, <err>)`
-  (mutation `releasePlan`, `{nodeId, note}`) releases the plan claim
-  with the error, the goal's `planError` on the platform, logged `goal
-  <slug>: fetch failed: <err>; plan claim released`, no try counted
-  against `MaxPlanAttempts`; a platform without it is said once per run
-  (`takes no plan release`) and the try counted, a refused release
-  logged with its error (adr-022, A fetch that fails is reported). The director's research fetch runs
-  the same way (`Director.researchTokens`, adr-022): each repo's
-  research checkout `Authorize`d on its row before `Fetch`, the
-  session's `SessionEnv` of the first sorted repo's row with a fresh
-  `GH_CONFIG_DIR`, the operator's `gh` never consulted; a refused read,
-  or a repo with no row, hands in an empty research naming the repo
-  (`refusedToken`) rather than failing the claim, the same way a
-  refused credential does, so the direction is not left held; an old
-  platform researches on the operator's `gh` as before, said once per
-  run (`TokenFallback.NoteResearch`).
 - A change to what the node reports or claims changes the platform's
   contract too; land the platform side first (a process reacts only to
   events after its deploy).
@@ -2423,11 +364,23 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   the only signer, builds it; docs-only merges cut none. `git tag` by
   hand is the fallback.
 - Deploying to the mini by hand is the fallback to the release path:
-  build for linux/amd64, `scp` to
-  `~/bin/mesh.new` and `mesh node upgrade --binary ~/bin/mesh.new`: the
-  binary is swapped (`.prev` kept), the node restarts at once and
-  adopts its running `claude -p` sessions (README, "Upgrading a node
-  without ending sessions"). A sandboxed node's build sessions are
-  adopted too (`mesh node upgrade` still asks it for `--force`); for a
-  node whose sessions would end with it, `mv` it over `~/bin/mesh` and
-  `mesh node drain` instead.
+  build for linux/amd64, `scp` to `~/bin/mesh.new` and `mesh node
+  upgrade --binary ~/bin/mesh.new` (`internal/commands/nodeupgrade.go`,
+  adr-002, adr-009, adr-044): the binary is swapped atomically, the
+  previous one kept at `<path>.prev`, and the Mesh v1 node (`mesh node
+  run`) is restarted at once — `SIGHUP` to its own pidfile
+  (`~/.mesh/node-v1/node.pid`) — with nothing drained: every lease it
+  holds is left running, its brief, sidecar, push heads and turn ledger
+  written to `leases/<id>/handoff.json` for the new process to adopt.
+  A lease the hand-off cannot adopt — one with no relay sidecar, or
+  whose tunnel intercepts with no egress process of its own still alive
+  — refuses the upgrade, naming it, unless `--force`, which restarts
+  anyway and ends it. The new process confirms the upgrade on its first
+  heartbeat, retried for node.yaml's `update.confirm_within` (5m by
+  default) while the platform is slow; one that cannot run, or cannot
+  confirm inside the window on three starts, is rolled back to the
+  previous binary, and `~/.mesh/update.json` says why. `mesh node
+  upgrade` then polls the new process's own status and reports how many
+  of the leases left running it actually adopted, failing loudly if
+  fewer arrived than were adoptable. `mesh node drain` stays the way to
+  take a machine out of service instead (no restart, no adoption).
