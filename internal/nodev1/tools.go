@@ -73,7 +73,8 @@ func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace s
 	if slices.Contains(b.NodeTools, nodetools.RunSuiteTool) {
 		rs = &nodetools.RunSuite{Workspace: workspace, Recorder: rec, Run: suites,
 			OnHost: suites == nil && r.hostSuites(), Escalate: escalateOn(ladder, mb, escalate.OnRed),
-			Wait: r.SuiteWait, Context: clock.ctx, Began: clock.began, Budget: r.suiteBudget(b, workspace)}
+			Wait: r.SuiteWait, Context: clock.ctx, Began: clock.began, Budget: r.suiteBudget(b, workspace),
+			OnActivity: func(what string) { r.stepProgress(b.LeaseID, nodetools.RunSuiteTool+": "+what) }}
 		if b.Results != nil {
 			rs.Results = *b.Results
 			if tokens != nil {
@@ -137,7 +138,7 @@ func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace s
 			r.logf("nodev1: lease %s: the kind names node tool %q, which this node does not have", b.LeaseID, name)
 		}
 	}
-	return out, rec
+	return r.reportsWhileRunning(clock.ctx, b.LeaseID, out), rec
 }
 
 // escalateOn is a node tool's escalation on trigger on: when the kind

@@ -21,13 +21,14 @@ import (
 func TestAHandBacksReasonReachesTheNodeLog(t *testing.T) {
 	g := newRig(t, &stubSession{calls: []string{"conform/submit"}})
 	g.rt.Scheduler = scheduler.New(scheduler.Capacity{CPUs: 4, Slots: 1})
-	// a trim holds the build cache past the lease's wait, so the
-	// scheduler has no room left for it
-	trim, err := g.rt.Scheduler.TryTake(scheduler.Ask{Owner: "trim", Cache: scheduler.CacheExclusive})
+	// another holder has the node's CPUs past the lease's wait (and no
+	// slot, so the node still takes): the scheduler has no room left
+	// for it
+	other, err := g.rt.Scheduler.TryTake(scheduler.Ask{Owner: "other", CPUs: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer trim.Release()
+	defer other.Release()
 
 	var mu sync.Mutex
 	var lines []string
@@ -39,7 +40,7 @@ func TestAHandBacksReasonReachesTheNodeLog(t *testing.T) {
 		t.Log(msg)
 	}
 
-	job := g.offer(t, nil)
+	job := g.offer(t, func(b *meshapi.Brief) { b.Resources = meshapi.Resources{CPUs: 2} })
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	run(t, g, ctx)

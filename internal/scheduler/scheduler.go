@@ -341,6 +341,12 @@ func (s *Scheduler) Take(ctx context.Context, ask Ask) (*Lease, error) {
 
 // Free is what no live lease holds: the node's `free` on a take.
 // Accounts are the sessions left of each account named or in use.
+//
+// While the build cache is held exclusively, or an exclusive ask waits
+// for it (a trim pending or running), nothing is free: no lease that
+// builds with the cache can start then, so a node that reported room
+// would be offered work only to hand it back cannot_run (goal
+// a-cache-trim-never-turns-work-away; ADR-044 amendment, 2026-11-16).
 func (s *Scheduler) Free() Capacity {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -348,6 +354,10 @@ func (s *Scheduler) Free() Capacity {
 	u := s.usedLocked()
 	t := s.total
 	f := Capacity{CPUs: math.Max(t.CPUs-u.cpus, 0), MemGB: math.Max(t.MemGB-u.mem, 0), Slots: max(t.Slots-u.slots, 0), AccountSlots: t.AccountSlots}
+	trim := u.exclus > 0 || s.exclusiveWaiting > 0
+	if trim {
+		f.CPUs, f.MemGB, f.Slots = 0, 0, 0
+	}
 	// each account named or in use, with the sessions it has left
 	refs := map[string]bool{}
 	for ref := range t.Accounts {
@@ -362,9 +372,23 @@ func (s *Scheduler) Free() Capacity {
 				f.Accounts = map[string]int{}
 			}
 			f.Accounts[ref] = max(n-u.accounts[ref], 0)
+			if trim {
+				f.Accounts[ref] = 0
+			}
 		}
 	}
 	return f
+}
+
+// Trimming says whether the build cache is held exclusively or an
+// exclusive ask waits for it: a trim pending or running, during which
+// no lease that builds with the cache can start (Free answers nothing
+// free then).
+func (s *Scheduler) Trimming() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lapseLocked(s.now())
+	return s.exclusiveWaiting > 0 || s.usedLocked().exclus > 0
 }
 
 // Leases lists the live leases, oldest first.

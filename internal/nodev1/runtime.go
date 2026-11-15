@@ -312,6 +312,11 @@ type Runtime struct {
 	// actor's, under --actors): the node keeps no other in-flight state
 	// of a lease (ADR-044; guard_test.go)
 	leases actor.Registry[*running]
+	// now is the clock a command step's progress is read on and
+	// stepBeat how often a call in flight says it is still running
+	// (stepprogress.go): time.Now and stepProgressEvery but in a test.
+	now      func() time.Time
+	stepBeat time.Duration
 	// injected are the live leases' injected values, which every log
 	// line and report redacts (canary.go); each lease's own, gone with it
 	injectedMu sync.Mutex
@@ -371,6 +376,11 @@ type Runtime struct {
 type running struct {
 	cancel     context.CancelCauseFunc
 	progressAt time.Time
+	// stepAt is when a command step last moved progressAt
+	// (stepprogress.go), which it does at most once a
+	// stepProgressEvery; step is what it was doing then.
+	stepAt time.Time
+	step   string
 	// cancelled is why Mesh cancelled the lease, once it has
 	cancelled string
 	// mailbox reaches the lease's live session; turnTool is the brief's
