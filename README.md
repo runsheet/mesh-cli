@@ -194,7 +194,7 @@ way your own sign-in is untouched.
 node sends its machine id — the token file's `machineId`, else the
 access token's `sub` after `machine:` — as `credentialId` on every
 `registerNode`; an `rs_*` token sends none. The owner row then names the
-machine, and heartbeats and claims pass only from it (the gateway's
+machine, and claims pass only from it (the gateway's
 `machineIsNode` rule). This needs the gateway at runsheet#2290 or later:
 an older gateway's `RegisterNodeInput` has no `credentialId`, so the
 node probes the schema once, leaves the field out and logs
@@ -222,8 +222,6 @@ credentialId`. To move a node onto its machine credential:
    (runsheet-mini) owned by Grapevine (org), serving grapevine` — the
    `sent as credentialId` line and no `not yours`; node.yaml now holds
    `node_id`, `node_id_source` and, for `owner: org`, `org_id`;
-4. clear the version pin (`desiredVersion`) on the console so the node
-   follows releases again.
 
 `owner: org` needs a gateway that takes `ownerKind` `org` (runsheet goal
 a-node-is-owned-by-an-org, `gateway.OwnerOrgGateway`); on one that does
@@ -256,23 +254,58 @@ moves over (latchkey `adr-machine-identity`, rollout phases 1–3); the
 gateway accepts a machine token only once its own phase has landed, and
 `mesh node login` says so when it does not.
 
-### What a session can reach
+### What a session can reach on GitHub
 
-A `mesh node run` lease never holds a bare credential of its own: the
-relay injects what the job offer carried, live only over the hosts the
-job kind's egress allows, and routes a lease's git traffic to the code
-host its brief names rather than the operator's own `gh`/`git` login
+Not your GitHub login. A `mesh node run` lease never holds a bare
+credential of its own: the relay injects what the job offer carried,
+live only over the hosts the job kind's egress allows, and routes a
+lease's git traffic to the code host its brief names rather than the
+operator's own `gh`/`git` login
 ([ADR-045](docs/adr/adr-045-the-relay-terminates-tls-for-the-hosts-a-rule-names.md),
 [ADR-046](docs/adr/adr-046-the-relay-injects-the-credentials-a-job-carried.md),
 [ADR-047](docs/adr/adr-047-a-jobs-git-reaches-the-code-host-its-brief-names.md)).
-AGENTS.md has the detail; this file does not restate it.
+A push goes out through the node's own `push` tool on the lease's
+relay, judged by the brief's push rules; when the brief names a pin,
+the node pushes the final head to it itself once the session has
+finished
+([ADR-050](docs/adr/adr-050-the-node-pins-a-leases-final-head-itself.md)).
+AGENTS.md has the detail.
 
-The legacy gateway client's own work tools (`mesh mcp`'s `mesh_join`,
-`mesh_finish`, and `mesh goal plan`) still run on the operator's own
-signed-in session and `gh`/`git` login, each scoped to the one item or
-project it is working — see
+A person's own `mesh mcp` `mesh_join` (see
 [Work a goal from Claude Code, Codex or Cursor](#work-a-goal-from-claude-code-codex-or-cursor)
-above.
+above) still asks the platform for the item's own GitHub App token
+(`issueItemRepoToken`), restricted to the item's one repository, and
+puts it on the checkout's own credential helper, so its fetch and push
+use it alone.
+
+### Models
+
+A Mesh v1 node runs every lease on the model its job brief names — the
+platform's choice, sent with the job — never a model configured on this
+machine. node.yaml has no model table, and `mesh node model` only says
+so; it writes nothing.
+
+### Session budgets
+
+A lease's budget is its brief's: `harness.budget.usd` caps the
+session's spend (`--max-budget-usd` on a Claude Code session) and
+`harness.budget.minutes` bounds its wall time — a session that runs past
+it is ended (`the session ran past its N-minute budget`). Neither is
+set on the machine.
+
+### Credentials come from the platform
+
+A node runs a session only on the model account its job carries, never
+on the machine's own login. For each lease the node opens the lease's
+Latchkey session and reads the job's model credential on that session's
+token; the relay injects it, so the agent's environment, config and
+disk hold no account secret
+([ADR-046](docs/adr/adr-046-the-relay-injects-the-credentials-a-job-carried.md)).
+An account the model's API refuses hands the lease back
+`account_refused` rather than failing the job
+([ADR-048](docs/adr/adr-048-a-refused-model-account-is-handed-back-account-refused.md)),
+and a credential that cannot be minted before the session starts hands
+it back `credential_timeout` (see Environment failures below).
 
 ### Who owns a node
 
@@ -342,38 +375,6 @@ registration sends as `ownerId`; `owner_id:` (the person) is left as it
 is. Naming another enterprise in `enterprise:` means deleting
 `enterprise_id:` (`mesh node register --enterprise` does it for you).
 
-The node registers once with its owner and takes the orgs it serves
-from the platform's answer to that registration and to every
-heartbeat since, never by re-reading the person's orgs. An org
-attached to the owner later, or a hand-over from a person to an
-enterprise, is picked up on the next heartbeat, no restart — logged
-`owner changed: Chris → anythink (enterprise)`. `orgs:` in node.yaml still
-restricts which of the answer's orgs the node serves; a name it does
-not meet is logged, never fatal, and a changed served set is logged
-too (`orgs a, b → a, b, c`).
-
-`shares:` in node.yaml divides this node's capacity into a floor per
-served org for a person's node — equal shares when it is left out
-([ADR-023](docs/adr/adr-023-every-org-gets-its-share.md), Floors and
-Every org gets its share above):
-
-```yaml
-shares:
-  acme: 3     # weight, a positive integer — floors by capacity × weight / total
-  globex: 1
-```
-
-A weight is keyed by the org's login, or its slug when it has none, as
-`orgs:` names it; zero or negative is refused at load naming the org
-(`shares: acme: must be a positive integer`), and a weight naming an
-org this node does not serve is logged once (`shares: ghost is not a
-served org`) and ignored. Re-read every tick like the claim limits, so
-an edit needs no restart; a change is logged
-(`shares acme 1, globex 1 → acme 3, globex 1`). An enterprise's own
-`shares` on the owner contract — a later item of the goal — takes it
-over node.yaml's when both are present; node.yaml's is what a person's
-own node, serving the orgs they belong to, sets by hand.
-
 node.yaml records which registration the node made as `contract:`:
 `contract: owner` (one node id, under `node_id:`, shared by every org
 it serves) when the platform answered the owner registration, or
@@ -382,16 +383,12 @@ slug)`) when it did not, because the platform's `RegisterNodeInput`
 has no owner field under either spelling — `ownerKind`, the
 platform's, or `owner`, a platform before it (`OwnerField`); the node
 sends whichever the schema has, with `ownerId` the owner's id (the
-enterprise's for an enterprise). `mesh node status` and the rollback reporter
-(the self-update confirm path) heartbeat the same way the last
-registration recorded: once, under the one id, on the owner contract;
-per org on the legacy one. An org with no GitHub login — `grapevine`,
-an org the platform derives rather than links to a login — is named
-by its tenant slug throughout: in the log, in `mesh node status`, and
-as the name to give `--org`.
+enterprise's for an enterprise). An org with no GitHub login —
+`grapevine`, an org the platform derives rather than links to a login —
+is named by its tenant slug throughout, and as the name to give
+`--org`.
 
-node.log's first line after the start lines names the owner and the
-orgs, on the owner contract:
+The registration names the owner and the orgs, on the owner contract:
 
 ```
 node mini (runsheet-mini) owned by Chris, serving runsheet, wardroomid, grapevine
@@ -414,7 +411,7 @@ retires the node's legacy per-org rows itself (`retireNode`), so an org
 outside the owner — Grapevine, for the Mini — stops listing the node
 the same hour. The ids are the node's own, each derived from `(org,
 slug)` for every org the answer names and every org of the token's
-person; the owned id is never one. One line each, after the start line:
+person; the owned id is never one. One line each:
 
 ```
 retired legacy node 0d6c…-… (org grapevine)
@@ -425,19 +422,8 @@ The second shape is a refusal — already retired, never registered —
 and is not fatal. A restart already on the owner contract, a nil answer
 and the per-org path retire nothing.
 
-`mesh node status` says the same, beside the org's nodes, followed by
-the node id and how it was arrived at — `derived` (`OwnedNodeID`
-computed it), `adopted from the platform` (a refusal named it, see
-above), or `recorded` for a `node_id` saved before `node_id_source`
-existed:
-
-```
-owned by Chris (person); serving runsheet, wardroomid, grapevine
-node id: 18a8b766-18f3-5e73-b4cf-efb91c01946a (adopted from the platform)
-```
-
-and `mesh node register` prints it too, on whichever contract the
-platform answered:
+`mesh node register` prints it, on whichever contract the platform
+answered:
 
 ```
 Registered node mini (runsheet-mini) owned by Chris, serving runsheet, wardroomid, grapevine, capacity 1. Saved ~/.mesh/node.yaml.
@@ -466,10 +452,503 @@ capacity too.
 
 The node id and owner contract above are the legacy gateway client's
 own — what `mesh mcp`'s `mesh_join` claims items under (see
-[Who owns a node](#who-owns-a-node) above), not anything `mesh node
+[Who owns a node](#who-owns-a-node) above) — not anything `mesh node
 run` claims or reports on. `mesh node status` reports only the Mesh
-v1 node running on this machine (see Node above); AGENTS.md has its
+v1 node running on this machine (see Run below); AGENTS.md has its
 shape.
+
+### Run
+
+```bash
+mesh node run [--name <name>] [--connect <tenant>/<product>]… [--unattended] [--sandbox] [--actors]
+```
+
+`mesh node run` makes this machine a Mesh v1 node (`internal/nodev1`,
+ADR-044): it registers with Mesh (`api.projectmesh.io`, or `--url` /
+`MESH_API_URL`) on the machine credential `mesh node login` saved,
+takes a lease, runs the lease's harnessed session with the brief's
+product MCP servers through a sessionproxy of the lease's own, renews
+the lease while it runs, and finishes or hands it back. `--connect`
+offers the node to a tenant for a product (repeatable); Mesh offers a
+node only its connections' jobs. Leases run under the work root,
+`~/.mesh/v1` (`--work-root`), each in a job directory of its own,
+`leases/<lease id>`, removed when the lease ends. The node's pid is in
+`~/.mesh/node-v1/node.pid` while it runs.
+
+`--harness` picks the session (`claude-code`, the default, or `codex`;
+see [Codex on a node](#codex-on-a-node)); `--unattended` adds
+`--dangerously-skip-permissions` so a session never waits on a
+permission prompt — only on a machine you trust with that. `--actors`
+runs each lease as a job actor that owns its directory, room, grant and
+proxy and releases them however the lease ends; `--sandbox` (with
+`--actors`) runs each lease's session and services in a rootless podman
+pod of its own (see [Sandbox](#sandbox)); `--actors-scheduler` lets the
+scheduler own the node's capacity (see
+[Capacity: CPUs, memory and slots](#capacity-cpus-memory-and-slots)); `--supervisor`
+(with `--actors`) watches for quiet sessions; `--self-update` keeps the
+node on the newest release (see [Updating a node](#updating-a-node));
+`--once` stops after the first lease ends. `mesh node run --help` lists
+every flag.
+
+SIGTERM stops the node at once, handing every lease back
+`node_restart` (the job keeps its place, no attempt spent); SIGUSR1
+drains it (see [Drain](#drain-take-a-machine-out-of-service)); SIGHUP
+rereads its capacity, or restarts it for `mesh node upgrade` (see
+[Upgrading a node without ending sessions](#upgrading-a-node-without-ending-sessions)).
+`mesh node service install` runs it as a service of your login
+(`systemd --user` on Linux, launchd on macOS).
+
+### The node's log
+
+`mesh node run` logs to stderr. Under its service that is the journal on
+Linux (the unit's `StandardOutput=journal`; read it with `journalctl
+--user -u io.projectmesh.mesh-node`) and `~/.mesh/node.crash.log` under
+launchd; a node started from a terminal prints to it.
+
+**A node that dies names its death.** A panic anywhere in `mesh node
+run` or in a goroutine the node starts is one line in its log, `mesh
+node: fatal: <panic value> (version <v>)`, followed by its stack, and
+the process exits 70 (systemd: `status=70/SOFTWARE`) — never Go's bare
+2, which systemd shows as `status=2/INVALIDARGUMENT`. The service
+restarts it as on any exit (`Restart=always`, `KeepAlive`).
+
+`~/.mesh/node.log` and its rotated `node.log.1` … `node.log.5` are what
+`mesh node usage` reads (see [Usage](#usage)).
+
+### Drain: take a machine out of service
+
+To take a machine out of service, drain it:
+
+```bash
+mesh node drain          # or: kill -USR1 "$(cat ~/.mesh/node-v1/node.pid)"
+mesh node drain --wait 30m
+```
+
+`mesh node run` writes its pid to `~/.mesh/node-v1/node.pid`; `mesh node
+drain` sends that process `SIGUSR1`, and says so if no node is running.
+The draining node asks Mesh to stop offering it leases (`POST
+/v1/nodes/{id}/drain`), takes nothing new, and lets every lease it is
+running end. When the last one ends the node exits 0, and the service
+(`Restart=always` under systemd, `KeepAlive` under launchd) starts it
+again on the binary and config now on disk; its next start asks Mesh to
+resume it. With `--wait`, what still runs once the wait is up is handed
+back `node_update` (the job keeps its place, no attempt spent) and the
+node exits. `mesh node status` shows that it drains. SIGTERM is not a
+drain: it stops at once, handing every lease back `node_restart`.
+
+Capacity needs no drain: `mesh node set` changes it on the running node
+(see [Capacity: CPUs, memory and slots](#capacity-cpus-memory-and-slots)).
+
+### Upgrading a node without ending sessions
+
+`mesh node upgrade` installs a new binary and restarts the node **at
+once, without a drain**: every lease the node holds is left running
+untouched, its brief, sidecar, push heads and turn ledger written to
+`leases/<id>/handoff.json` under the work root, and the new process
+adopts each one on start (ADR-002, ADR-009, ADR-044).
+
+```sh
+mesh node upgrade                          # the latest release: verify, pull its image, swap, restart
+mesh node upgrade --version v0.5.0         # that release
+mesh node upgrade --binary ./mesh-linux    # a local build, once `./mesh-linux version` answers
+```
+
+A release is verified exactly as by `mesh node update` (signed
+`SHA256SUMS`, its node image pulled); a local build must answer
+`<path> version` with `mesh <version>`. Either replaces the executable
+keeping the old one as `<path>.prev`. The restart is `SIGHUP` to the
+node's own pidfile, `~/.mesh/node-v1/node.pid`; once restarted, the
+command reports how many of the leases left running the new process
+says it adopted, and exits non-zero if fewer than that arrived.
+
+A lease the hand-off cannot adopt — one with no relay sidecar, or one
+whose tunnel intercepts with no egress process of its own still alive —
+refuses the upgrade, naming it; `--force` restarts anyway, ending it.
+`--relay-sidecar` (on by default with `--sandbox`) is what makes a
+sandboxed lease adoptable. Drain (`mesh node drain`) stays for taking a
+machine out of service.
+
+**The confirm window.** The new process confirms the upgrade once it is
+up, retried for node.yaml's `update.confirm_within` (5 minutes by
+default) while the platform is slow; one that cannot run, or cannot
+confirm inside the window on three starts, is rolled back to `.prev`,
+and `~/.mesh/update.json` says why.
+
+### Capacity: CPUs, memory and slots
+
+A v1 node registers with Mesh the capacity it offers — CPUs, memory and
+session slots — and Mesh's take fits each job to it:
+
+```bash
+mesh node run --cpus 64 --mem-gb 128 --slots 4    # the defaults: every CPU, no memory figure, one slot
+mesh node set --cpus 48                          # change it on the running node, no restart
+```
+
+`mesh node set` rewrites node.yaml's `v1.capacity` and signals the
+running node to reread it at once; once node.yaml names a field, it
+wins over `mesh node run`'s matching flag at every later start too:
+
+```yaml
+v1:
+  capacity: {cpus: 48, mem_gb: 128, slots: 4}
+```
+
+`--slots 0` is no slot limit: the node is scheduled on CPUs and memory
+alone. With `--actors-scheduler` the scheduler owns the node's capacity
+(ADR-044): leases hold their CPUs, memory and slot as scheduler leases,
+the node reports what is free on each take and runs up to `--slots`
+leases side by side; `--account-slots` caps sessions at once per model
+account. Without it the node runs one lease at a time.
+
+### Backing off a hot host
+
+`host:` in `~/.mesh/node.yaml` sets the thresholds past which this
+machine is judged too busy to take more — CI and other tenants can share
+it with the node without either knowing:
+
+```yaml
+host:
+  load_per_core_max: 1.5    # the 1-minute load average ÷ CPU count
+  min_free_memory: 32g      # 32g, 512m or 15% — free memory at or under it takes nothing
+```
+
+Before every take the node reads the host (Linux only; elsewhere there
+is no probe and it never backs off). Load per core past
+`load_per_core_max` takes no new lease; running leases are never
+stopped. The node says each crossing once:
+
+```
+nodev1: host hot: load/core 1.62 over 1.50; taking no new lease
+nodev1: host ok; taking leases again
+```
+
+A field left out never gates on that reading. `host:` is read when the
+node starts.
+
+### A node low on disk claims nothing
+
+`cache.min_free_gb` in `~/.mesh/node.yaml` sets the free space under
+which this node takes no new lease, read at the build cache's own path
+(the work root when there is none):
+
+```yaml
+cache:
+  max_gb: 100        # the node's Go build cache, evicted live by least recent use
+  min_free_gb: 10    # free space under it takes nothing
+```
+
+Before every take the node reads the path's free space; under the floor
+it takes no lease of any kind, while what already runs runs on, and says
+so once as it crosses:
+
+```
+nodev1: disk low at /home/mesh/.mesh/v1: 3.0 GB free, floor 10.0 GB; taking no new lease
+nodev1: disk ok; taking leases again
+```
+
+The `cache:` block is reread on SIGHUP (as `mesh node set` sends): an
+edit takes effect without a restart.
+
+### A node short of memory claims nothing
+
+`host.min_free_memory` in `~/.mesh/node.yaml` sets the memory available
+(`/proc/meminfo`'s `MemAvailable`) at or under which this node takes no
+new lease — a size, `32g`, `512m`, `1024k` or bytes, or a share of the
+machine's memory, `15%`:
+
+```yaml
+host:
+  min_free_memory: 32g
+```
+
+Before every take the node reads its memory; at or under the floor it
+takes nothing, as on a full disk, while what already runs runs on, and
+says so once as it crosses (`nodev1: host short of memory: <n> bytes
+free, floor <m>; taking no new lease`, then `nodev1: host ok; taking
+leases again`). Left out, memory never gates. A host whose sessions run
+in large pods sets a floor at least one pod's size, so a take never
+starts a session the memory cannot hold.
+
+### Tools
+
+A lease's session gets the MCP servers its brief names — its product's
+— through a sessionproxy of the lease's own (`internal/sessionproxy`):
+the agent's MCP config names only a shim that knows the proxy's socket
+and a server name, and the proxy holds every credential, so no token or
+secret is in the agent's env, disk or config. Beside them the session
+gets the node's own tools that the job kind's `node_tools` name —
+`push`, `hand_back`, `progress`, `run_suite`, `apply_onto` and `result`
+(`internal/nodetools`) — and finishes through `result`, checked against
+the kind's `finish_schema`. A node tool the kind names that this node
+cannot serve hands the lease back `tool_unavailable`. AGENTS.md has the
+detail.
+
+### Usage
+
+A v1 node reports each lease's usage to Mesh before it finishes the
+lease. `mesh node usage` reads the usage records found in node.log and
+its rotated files (`--log` names another) — `<label>: usage <kind>
+{…}` lines, one per session:
+
+```
+item <goal>/<seq>: usage build {"sessionId":…,"inputTokens":…,"cacheReadTokens":…,"listCostCents":…,"contextBytes":…}
+goal <slug>: usage plan {…}
+project <slug>: usage research {…}
+```
+
+and reads them back into a reading of a window:
+
+```bash
+mesh node usage --from 2026-09-28 --to 2026-09-29 [--log ~/.mesh/node.log] [--goal <slug>] [--kind build]
+```
+
+```
+window 2026-09-28..2026-09-29  records 2026-09-28T09:10:00..2026-09-28T14:00:01
+kind      sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes  documents fetched median  fetched by tool
+build     2         200000               200000             90.0          1000                  1                   4                         1
+evaluate  1         50000                50000              80.0          -                     0                   -                         0
+plan      2         50000                50000              60.0          3000                  2                   -                         0
+unknown   1         7000                 7000               100.0         -                     0                   -                         0
+unparsed 1
+```
+
+`--to` is exclusive and both dates are local, as node.log's timestamps
+are. Input tokens are the report's `inputTokens`, cache reads and
+writes among them; the context-bytes median is over the sessions that
+carry `contextBytes` (`with context bytes`), `-` when none does; the
+documents-fetched median is over the sessions that fetched any document
+by tool (`mesh_document` or `mesh_search`, the record's
+`documentsFetched`), and `fetched by tool` is how many did (ADR-016,
+amendment 2026-10-02).
+`--goal` keeps the records whose label names the goal — its items' and
+its plan's. An older node's unlabelled `usage: {…}` line takes the kind
+and label of the nearest `finished …($x)`, `evaluation …($x)` or
+`rebased …($x)` line within 12 lines whose `$x` is its `listCostCents`,
+else `unknown`; a record whose JSON does not parse is counted as
+`unparsed` and skipped (ADR-016, amendment 2026-09-29).
+
+An evaluate record also carries `priority` (the goal's priority when the
+evaluation ran) and `evaluators` (1 or 2, whether a second opinion ran);
+both are logged, never sent to the gateway, and zero on a record from
+before this change. The reading adds, under the kind table, one row per
+priority present whenever the window holds any evaluate record:
+
+```
+evaluate urgent: 2 items, 1×1 / 1×2, median $0.80/item, total $1.60
+evaluate high: 2 items, 1×1 / 2×2, median $1.15/item, total $2.30
+evaluate normal: 3 items, 2×1 / 1×2, median $0.34/item, total $1.54
+evaluate low: 1 items, 1×1 / 0×2, median $0.20/item, total $0.20
+evaluate unknown: 2 items, 0×1 / 0×2, median $0.80/item, total $1.60
+```
+
+Rows are ordered urgent, high, normal, low, then `unknown` for records
+logged before this change. Items are distinct items; `×1` and `×2`
+count the evaluations run on one evaluator and on two; the median is of
+cost per item (a retried item's evaluations summed into one) and the
+total of every evaluation, at list cost (adr-016, amendment 2026-10-02,
+goal one-evaluator-for-ordinary-work).
+`scripts/evaluation-cost-by-priority.sh --since <date>` (or `--from
+<date> --to <date>`, and `[--log <path>]`) runs `mesh node usage --kind
+evaluate` and prints just these rows, so the goal's before and after
+readings on the mini are one command each.
+
+### Attestations: signed records
+
+A lease's node tools sign the records they hand in through Sigstore:
+certified by a Fulcio and logged in a Rekor (Mesh v1 spec, "Evidence
+signing"). `--fulcio-url` and `--rekor-url` name them, else
+`MESH_FULCIO_URL` and `MESH_REKOR_URL`, else node.yaml's
+`sigstore: {fulcio_url, rekor_url}`; with none, every record is signed
+by the node's own key and marked node-signed. The node logs which at
+start (`sigstore: node tools sign their records through <fulcio> and
+log them in <rekor>`). When a brief names a pin, the node pushes the
+lease's final head to it itself, after the session's finish
+([ADR-050](docs/adr/adr-050-the-node-pins-a-leases-final-head-itself.md)).
+
+### Credentials on fetch, push and pull
+
+Every git command of a lease goes through its relay: the checkout's
+`origin` is the relay's loopback, and the relay reaches the code host
+the brief names on the git credential the job carried, injected per
+request and never written into the checkout's config
+([ADR-046](docs/adr/adr-046-the-relay-injects-the-credentials-a-job-carried.md),
+[ADR-047](docs/adr/adr-047-a-jobs-git-reaches-the-code-host-its-brief-names.md)).
+A push is judged by the brief's push rules and recorded. The sandbox
+image is pulled as in Node image, below.
+
+### Environment failures
+
+A failure that is the node's or its infrastructure's rather than the
+work's is said as a hand-back cause Mesh takes, never as text a product
+must match (`internal/nodev1/causes.go`). Each is a hand-back: the job
+keeps its place and is offered again, perhaps to a node that has what
+this one lacked:
+
+| cause | when |
+|------|-------------|
+| `pod_killed` | a session, its pod or a `run_suite` step killed by SIGKILL or SIGTERM (exit 137 or 143) that the node did not cause; it carries that `exit_code` |
+| `credential_timeout` | a credential the lease needs — its Latchkey session, its model account, its git token — could not be minted before the session started: the session never runs |
+| `tool_unavailable` | a node tool the kind names that this node cannot serve — one it does not have, `run_suite` with nowhere to run its steps, or its runner failing under it |
+
+A `run_suite` step itself says when it failed on its environment with a
+kind (`internal/validate`): `step_timeout` (exit 124, killed at its
+timeout), `tool_missing` (exit 127, the shell found no such command; the
+reason names the missing tool and the step's command, ``command not
+found: <tool> (in `<command>`)``) and `image_pull_refused` (the
+registry refusing an image's pull). Any other non-zero exit is a code
+failure and carries no kind.
+
+### Reporting errors to Tripline
+
+What a lease's relay saw reaches Tripline through Mesh (projectmesh-io/api
+ADR 001 amendment, security events): each lease has a reporter
+(`internal/secreport`) from its take to its release, which posts to
+`POST /v1/leases/{id}/security` on the node's machine token, batched
+every few seconds and flushed once the lease has released — each request
+of the lease's egress tunnel, allowed or refused, by host and rule, and
+a lease's agent or suite step killed by its pod's memory or pids limit.
+The node holds no Tripline DSN of its own.
+
+### Tool results
+
+One `go test ./...` log or file dump can put 100 KB into a session's
+context, and every later turn pays for it again. `mesh tool-trim
+--max-kb N` trims stdin to stdout: output over the cap comes back as its
+first 60% and last 40%, cut at line boundaries, with
+`[mesh: trimmed N KB of M KB; run the command again with a narrower filter if the middle matters]`
+between (0 passes everything through). `mesh tool-trim --max-kb N
+--hook` answers a Claude Code `PreToolUse` hook on `Bash`, rewriting
+each command to `( <cmd>\n) 2>&1 | mesh tool-trim --max-kb N` (a
+command that already pipes to `tool-trim` or runs in the background is
+left as it is).
+
+### Sandbox
+
+With `mesh node run --actors --sandbox`, every lease's session runs in
+its own rootless **Podman** pod (mesh-specs ADR 007; `internal/sandbox/`),
+created when the session starts and removed when it ends, with its
+repository's and its brief's services beside it in the pod (see
+[Services](#services)). A Codex session runs in its pod too, from the
+image's `codex` (see [Codex on a node](#codex-on-a-node)). A node run as
+root refuses `--sandbox`: rootless is the only mode.
+
+- **Runtime.** `podman` on the node's `PATH`, rootless (the operator
+  needs a subuid/subgid range, and the `cpu`, `memory` and `pids` cgroup
+  controllers delegated to their systemd user slice for the limits to
+  bite). The network is pasta. No daemon, no socket.
+- **Node image.** `claude` runs from the node image,
+  `ghcr.io/runsheet/mesh-node:<node version>` (`:dev` on a dev
+  build), which carries the toolchains and the agent CLIs;
+  `sandbox.image` names another or `build`s it here (see
+  [Node image](#node-image)). Its `PATH` is
+  `/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`
+  and it must carry `nft` for the network rules.
+- **Mounts.** Only what lies inside the lease's own job directory (see
+  [Several orgs on one node](#several-orgs-on-one-node)): its checkout,
+  read-write at its own path, and a fresh temporary HOME (removed after
+  the session) holding the MCP config, `CLAUDE_CONFIG_DIR`
+  (`$HOME/.claude`), an empty `GH_CONFIG_DIR` (`$HOME/.config/gh`) and a
+  `.gitconfig` with the commit identity — and, for a Codex session, its
+  `CODEX_HOME` at `$HOME/.codex`. Never the operator's home, `~/.mesh`,
+  a runner's directory or a container socket.
+- **Environment.** Built from an allow-list, never inherited — never
+  `GH_TOKEN`, `GH_CONFIG_DIR` or another GitHub token (`HeldOutEnv`).
+  Values reach podman through its own environment (`--env NAME`), never
+  its command line. The model account and git credentials are injected
+  by the lease's relay, not placed in the pod (see
+  [Credentials come from the platform](#credentials-come-from-the-platform)).
+  With `--relay-sidecar` (the default with `--sandbox`) the relay runs
+  as a sidecar in the pod on the lease's credentials alone, and the pod
+  has no network but its loopback.
+- **Network.** Outbound TCP 443 and 80 and DNS through pasta's
+  forwarder; `192.168.0.0/16`, `10.0.0.0/8`, `172.16.0.0/12`, loopback
+  beyond the pod's own, link-local, CGNAT, IPv6 ULA and link-local, and
+  the host's public addresses are dropped by an nftables table an init
+  container loads into the pod's own network namespace; the agent runs
+  with every capability dropped and `no-new-privileges`.
+- **Limits.** `--cpus`, `--memory` (swap the same) and `--pids-limit`
+  on the agent's container, and the session timeout (the runtime's own
+  `--timeout` is a backstop 30 s after the node's). A session killed by
+  a limit — OOM, the pids cap, the runtime's timeout — is the node's
+  condition, not the work's failure: it is reported to Mesh as a
+  security event (see [Reporting errors to Tripline](#reporting-errors-to-tripline))
+  and the lease handed back.
+- **Cleanup.** A session's HOME, pod, containers and their volumes go
+  when it ends, whichever way: `Session.Close` falls back to `podman
+  unshare rm -rf` for what the agent left the node cannot remove, and
+  logs `sandbox: session <label>: close: <err>` when even that fails.
+  With `--supervisor` at `cancel` or `tidy`, the supervisor's reconcile
+  removes pods, job directories and grants no actor holds.
+
+node.yaml's `sandbox:` — every key optional:
+
+```yaml
+sandbox:
+  cpus: 2              # the agent's --cpus
+  memory: 6g           # the agent's soft limit (memory.high); 2x is the hard guard
+  pids: 4096           # the agent's --pids-limit
+  services_cpus: 2     # the services' budget together
+  services_memory: 4g
+  registries: [docker.io, ghcr.io, "*.pkg.dev", quay.io]   # where service images may come from
+  image: build         # default (empty): ghcr.io/runsheet/mesh-node:<version>; build: that tag built here; else as given
+  service_timeout: 120s  # how long the services' health checks are waited for
+```
+
+| key | default | what |
+|-----|---------|------|
+| `cpus` | `2` | the agent container's CPUs |
+| `memory` | `6g` | the agent container's soft memory limit (cgroup memory.high): past it the kernel reclaims and slows the container; memory.max and swap are twice it, only a runaway guard |
+| `pids` | `4096` | the agent container's process cap |
+| `services_cpus` | `2` | the service sidecars' CPUs, together |
+| `services_memory` | `4g` | the service sidecars' memory, together |
+| `registries` | `docker.io`, `ghcr.io`, `*.pkg.dev`, `quay.io` | registries service images may come from |
+| `image` | `ghcr.io/runsheet/mesh-node:<version>` | the node image sessions run in; `build` builds that tag here from the embedded Containerfile, any other value is used as given |
+| `service_timeout` | `120s` | the bound on the services' health checks before the agent starts |
+
+The flag is the mode: `--sandbox` runs every lease in a pod whatever
+node.yaml's `sandbox.mode` says, and with no podman that answers `mesh
+node run` refuses to start — it never runs a lease unsandboxed on its
+own. Without `--sandbox` the session runs on the host as the node's
+user. `sandbox.cpus`, `memory` and `pids` are reread on SIGHUP: an edit
+changes them for the next lease, no restart.
+
+The probe test runs a real pod: `MESH_SANDBOX_E2E=1
+MESH_SANDBOX_IMAGE=<image> go test ./internal/sandbox -run E2E`.
+`scripts/e2e-sandbox.sh` runs the whole sandbox e2e — the node image
+through `EnsureImage`, then a session in a real pod against runsheet's
+Postgres and a Redis fixture — and checks
+whether anything still uses `latchkey-e2e-pg`: see
+[docs/e2e-sandbox.md](docs/e2e-sandbox.md) for running it, the live run
+on the mini and retiring that container.
+
+Podman's own process keeps the node's `HOME`, `USER`, `LOGNAME`,
+`PATH`, `XDG_*`, `CONTAINERS_*` and `TMPDIR` whatever a session's env
+sets, so rootless podman always looks in the node user's image store;
+the session's temporary `HOME` (and any other of those names it sets)
+reaches the container as `--env HOME=<value>`, every other variable as
+a bare `--env NAME` (ADR-007, Env by name). `TestLocalOnlyImageE2E`
+checks it on a real pod: a session starts from an image only the local
+store holds, under a registry name that cannot resolve, and podman
+never tries to pull it.
+
+### Several orgs on one node
+
+A node may serve several tenants and products, each by its own
+connection (`--connect <tenant>/<product>`, repeatable; Mesh offers a
+node only its connections' jobs). Their leases share a machine and
+nothing else: each lease owns its own job directory under the work
+root, `~/.mesh/v1/leases/<lease id>`, holding its checkout, its
+session's HOME and its hand-off, and closed in reverse order the moment
+the lease ends — no shared clone, package store or context tree
+(ADR-044). With `--sandbox` a lease's pod mounts only what lies inside
+its own job directory.
+
+**Session bearers.** A lease's session reads its product's MCP servers
+and Latchkey on its own mesh-session token — the node makes a P-256 key
+per lease that lives only in its process, asks Mesh to open the
+lease's Latchkey session bound to it, and trades it for DPoP-bound
+session tokens refreshed before they expire — never the node's machine
+bearer (`internal/nodev1/sessiontokens.go`).
 
 ### Node image
 
@@ -515,9 +994,8 @@ Node image: ghcr.io/runsheet/mesh-node:v0.4.0 (pulled); removed ghcr.io/runsheet
 ```
 
 A pull that fails stops the update there: no drain, no swap, the node
-stays on its binary — the command exits non-zero, a self-update puts the
-reason on the heartbeat (`updateError`) and waits an hour on that
-version. Nothing is built in its place unless node.yaml says so.
+stays on its binary — the command exits non-zero, and a self-update
+logs the reason and stays on the version it runs. Nothing is built in its place unless node.yaml says so.
 `sandbox: off` (or no podman and no mode set) pulls nothing.
 
 **`sandbox.image`** in node.yaml:
@@ -536,8 +1014,7 @@ pulls with `--authfile` on a temporary `auth.json`, removed once the
 pull returns, never in an image or a build context. A platform without
 the read, or with no credential for the registry, leaves the pull on
 podman's own login (`podman login ghcr.io`, or `sandbox.image: build`)
-as before. A pull the registry refuses is the update's `updateError`,
-opening `image_pull_refused: ` (below). To
+as before. To
 build it by hand:
 
 ```sh
@@ -582,7 +1059,7 @@ services:
       --health-interval 2s --health-timeout 5s --health-retries 30
     command: []                   # optional: arguments to the image
     required: true                # default true; a required service that
-                                  # cannot start returns the claim
+                                  # cannot start hands the lease back
     tuning: true                  # default true; see below
   redis:
     image: redis:7
@@ -609,15 +1086,149 @@ services:
   `ghcr.io`, `*.pkg.dev`, `quay.io`. A disallowed image is returned as a
   refused service with a note naming its registry, never pulled.
 
-### How a lease gets them
+### How a session gets them
 
 A `mesh node run` lease's session and its services run in one pod of
-the lease's own: the services are what the checkout's declaration
-above resolves, plus the brief's own, each a sidecar health-checked
-before the session starts. A required one that is not ready hands the
-lease back `cannot_run` rather than starting a session without its
-database; the node tools' suites (`run_suite`) run in the same pod,
-beside the services. See ADR-044 and `internal/nodev1` for the detail.
+the lease's own (with `--sandbox`): the services are what the
+checkout's declaration above resolves, plus the brief's own, each a
+sidecar health-checked before the session starts. A required one that
+is not ready hands the lease back `cannot_run` rather than starting a
+session without its database; the node tools' suites (`run_suite`) run
+in the same pod, beside the services. See ADR-044 and `internal/nodev1`
+for the detail.
+
+The sidecar test runs real pods: `MESH_SANDBOX_E2E=1
+go test ./internal/sandbox -run ServicesSidecarsE2E` reaches the Postgres
+and Redis fixtures on `127.0.0.1:5432` and `:6379` from the agent's
+container and finds no pod left after.
+
+## Codex on a node
+
+A node can run OpenAI's Codex CLI in place of Claude Code: `mesh node
+run --harness codex` registers the node with the `codex` harness and
+runs each lease as a streaming `codex app-server` session
+(`internal/nodev1/codexsession.go`), its notifications rewritten into
+the same stream shape a Claude Code session's output carries, so a
+lease's transcript, liveness and account tracking read either the same
+way. A sandboxed lease runs the node image's `codex`; a host lease, the
+one on `PATH`. A session's model ladder has no Codex equivalent, so an
+escalation is logged and otherwise left alone.
+
+### Install the CLI
+
+**A sandboxed node needs none**: its Codex sessions run in their pods
+from the node image's `codex` (ADR-007's amendment 2026-10-17), and a
+host `codex` is never used. Install the CLI on the host only for a node
+run without `--sandbox`.
+
+Verified with **codex-cli 0.157.0**. With Node.js:
+
+```bash
+npm i -g @openai/codex
+codex --version
+```
+
+Without Node.js, take the `codex-package-<arch>-unknown-linux-musl`
+tarball from the [releases](https://github.com/openai/codex/releases)
+and put its binaries on the node's `PATH`. Keep `codex-code-mode-host` beside `codex`. Without it,
+every session starts with a `Code Mode is unavailable` warning.
+
+### The sandbox on Ubuntu
+
+Without `--sandbox` Codex runs on the host, and its
+workspace-write sandbox is its own bundled bubblewrap. On Ubuntu with
+`kernel.apparmor_restrict_unprivileged_userns = 1` (the default since
+23.10) that bubblewrap cannot set up its network namespace and fails
+with `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`.
+Every command and write in the session is blocked — `npm test` never
+runs — and the session still ends "successfully".
+
+**Checking it by hand.** The node's hidden `mesh sandbox-probe` binds a
+loopback socket; run it under Codex's sandbox as the node's user:
+
+```bash
+# exit 0, a 127.0.0.1 address and no `bwrap:` is a pass
+codex sandbox -c sandbox_mode="workspace-write" \
+  -c sandbox_workspace_write.network_access=true -- mesh sandbox-probe
+```
+
+**What the mini has** (since 12:59Z on 2026-09-29, installed by
+Chris): `/etc/apparmor.d/codex-bwrap`, a profile on the bubblewrap
+Codex ships beside itself rather than on `codex`:
+
+```
+abi <abi/4.0>,
+include <tunables/global>
+
+profile codex-bwrap /home/chris/.local/share/codex/codex-resources/bwrap flags=(unconfined) {
+  userns,
+
+  include if exists <local/codex-bwrap>
+}
+```
+
+Its `userns,` line lets that bwrap create its user namespace, so
+`bwrap: loopback: Failed RTM_NEWADDR` is gone and commands run. It does
+**not** give the sandbox loopback: that is the `network_access` key
+above, without which `go test ./...` still dies on `listen tcp6
+[::1]:0: socket: operation not permitted`. The path is in the
+operator's home, so anything the operator's user runs could replace
+that file and gain user namespaces — the same caution as option 1
+below; re-check it after a Codex upgrade moves its resources.
+
+**The fix** is one of these, as root. Run the probe as the node's user
+afterwards; it should print the address it bound (`127.0.0.1:<port>`)
+and exit 0.
+
+1. *An AppArmor profile for Codex alone* (preferred). The bubblewrap is
+   inside the `codex` binary, so the profile names that binary's real
+   path (`readlink -f "$(command -v codex)"`). Put it somewhere only
+   root can write — a profile on a path the node's user can write lets
+   anything that user runs create user namespaces — and put it first on
+   the node's `PATH`:
+
+   ```bash
+   sudo install -m 0755 "$(readlink -f "$(command -v codex)")" /usr/local/bin/codex
+   sudo install -m 0755 "$(dirname "$(readlink -f "$(command -v codex)")")/codex-code-mode-host" /usr/local/bin/
+   sudo tee /etc/apparmor.d/codex >/dev/null <<'PROFILE'
+   abi <abi/4.0>,
+   include <tunables/global>
+
+   profile codex /usr/local/bin/codex flags=(unconfined) {
+     userns,
+     include if exists <local/codex>
+   }
+   PROFILE
+   sudo apparmor_parser -r /etc/apparmor.d/codex
+   ```
+
+   What it costs: `codex` (and what it execs) may create unprivileged
+   user namespaces, which is what its sandbox is built from; every other
+   program on the host stays restricted. Re-install after a Codex
+   upgrade (the profile follows the path, not the file).
+
+2. *Lift the restriction for the whole host*:
+
+   ```bash
+   sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+   echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-mesh-codex-userns.conf
+   ```
+
+   What it costs: every unprivileged process on the machine may create
+   user namespaces again, as before Ubuntu 23.10 — the kernel surface
+   (namespaced networking, mounts) the restriction closed is open to
+   anything a session or the operator runs, not just Codex. Prefer the
+   profile on a shared machine.
+
+### Credentials
+
+A Codex session runs on the model account its job carries, read from
+Latchkey on the lease's session token like any other (see
+[Credentials come from the platform](#credentials-come-from-the-platform));
+the node never runs one on the machine's own login — not `~/.codex`,
+not `$CODEX_HOME`, not the operator's `CODEX_API_KEY` or
+`OPENAI_API_KEY`. What Codex's event stream reports is documented in
+[docs/codex-events.md](docs/codex-events.md).
 
 ## Goals
 
@@ -982,55 +1593,27 @@ nothing.
 
 ### Updating a node
 
-**From the platform.** A node follows the version the platform asks it
-for: after every heartbeat it reads its desired version (the console
-sets it; empty, the version already running, or a `dev` build does
-nothing). For a different one the node downloads that release's binary
-for its OS/arch with `SHA256SUMS` and the Sigstore bundle, and verifies
-them as above, and pulls its [node image](#node-image), *before*
-anything else — a refused release or a failed pull costs no work,
-its reason goes on every heartbeat (`updateError`) and the version is
-left for an hour. A verified one swaps the executable atomically,
-keeping the one it replaced as `<path>.prev`, and exits 0 at once — no
-drain: its sessions run on and the new process adopts them (see
-[ADR-044](docs/adr/adr-044-a-v1-node-runs-each-lease-as-a-job-actor.md);
-a sandboxed node too: its sessions' pods run on and are adopted).
-systemd (`Restart=always`) or launchd
-(`KeepAlive`) starts the new binary, whose first heartbeat reports the
-new version and confirms the update. `~/.mesh/update.json` counts the starts of a new binary: one
-that fails to start twice is rolled back — the third start puts `.prev`
-back, reports the failure on the heartbeat as the old version and exits
-0 for the old binary to start — and that version is not tried again
-until the platform asks for another.
-
-The new process's first log lines — before it loads `node.yaml`, builds
-a platform client or signs in — name its version, its pid, its config
-path and whether an update is pending, so a start that dies before it
-can do anything else is never silent. If it does die there, or panics,
-while an update is pending, `update.json`'s `lastError` (after the third
-start) says why instead of the bare "did not start": `'<to> did not
-start: <the error>'`. `update.confirm_within` in `node.yaml` (below) is
-how long a new process keeps trying to confirm, from its start — default
-5 minutes — so a platform blip does not by itself roll an upgrade back:
-a registration or heartbeat that fails is logged with its error (`self-update:
-confirming <to>: … retrying for <left> more`) and tried again. When the
-window runs out the process logs `<to> did not confirm within <window>:
-<the error>` and exits 1 for its service to start it again; on the third
-such start `update.json` names it `'<to> did not confirm within
-<window>: <the heartbeat error>'`.
+**On its own.** `mesh node run --self-update` keeps the node on the
+newest release (`internal/resources`, ADR-044): when a newer version is
+due it drains the node (no more takes), waits up to 30 minutes for the
+leases running to end on their own, hands back what is still running
+with cause `node_update` — which spends no attempt and keeps each job's
+place in the queue — installs the verified release and exits for the
+service manager (`Restart=always`, `KeepAlive`) to start it.
+`~/.mesh/update.json` counts the starts of a new binary: one that fails
+to start twice is rolled back to `.prev`, and `update.json`'s
+`lastError` says why. `update.confirm_within` in `node.yaml` is how long
+a new process keeps trying to confirm, from its start — default 5
+minutes — so a platform blip does not by itself roll an upgrade back.
 
 ```yaml
 update:
   confirm_within: 5m   # how long a new process keeps trying to confirm; default 5m
 ```
 
-**By hand — the fallback.** The ordinary way a node gets a new
-version is the one above: a merge cuts a release and the platform asks
-the node for it. Upgrading by hand is for when that path cannot run —
-a platform that cannot reach the node, a build that is not a release,
-a sandboxed node. `mesh node upgrade` installs a release (or a local build)
-and restarts at once, as the platform's update does (see
-[ADR-044](docs/adr/adr-044-a-v1-node-runs-each-lease-as-a-job-actor.md)).
+**By hand.** `mesh node upgrade` installs a release (or a local build)
+and restarts at once, as the platform's update does (see [Upgrading a
+node without ending sessions](#upgrading-a-node-without-ending-sessions)).
 `mesh node update [version]` is the draining variant, for a node whose
 sessions would end with it (the latest release that is not a prerelease
 when no version is given):
@@ -1048,11 +1631,12 @@ It verifies first and refuses anything not signed by `runsheet/mesh-cli`'s
 or whose hash does not match, printing the reason and exiting non-zero
 with the executable and `.prev` untouched. It then pulls the release's
 [node image](#node-image) — a failed pull is refused the same way. A
-verified release drains the node running here, as `mesh node drain`
-does (with none running there is nothing to drain), swaps the executable keeping
-`<path>.prev`, and says how the service will start it: the node exits
-once its sessions end and the service starts the new binary, under the
-same two-failed-starts rollback. It needs no platform, so it works when
+verified release drains the
+node running here (`~/.mesh/node-v1/node.pid`, as `mesh node drain`;
+with none running there is nothing to drain), swaps the executable
+keeping `<path>.prev`, and says how the service will start it: the node
+exits once its leases end and the service starts the new binary, under
+the same two-failed-starts rollback. It needs no platform, so it works when
 the console cannot reach the node — or `mesh node update --verify-only`
 checks a release from any machine.
 
