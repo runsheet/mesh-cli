@@ -209,10 +209,13 @@ func (r *Runtime) adoptOne(ctx context.Context, id, dir string, st *handoffState
 	mb.turns = restoreTurnLedger(st.Turns)
 	fin := &finishCapture{tool: b.FinishTool, learningsTool: b.LearningsTool, onFinish: mb.Finish}
 
+	// the hand-off's egress process is the lease's to the supervisor
+	// from here, while its adoption decides whether to keep it
+	// (setEgressStarting)
 	r.mu.Lock()
 	r.leases.Put(id, &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: turnToolFor(b),
 		jobID: b.JobID, kind: b.Kind, started: time.Now(), actor: a, brief: b,
-		pushHeads: st.PushHeads, sidecarDir: st.SidecarDir})
+		pushHeads: st.PushHeads, sidecarDir: st.SidecarDir, egressStarting: st.EgressPID})
 	r.mu.Unlock()
 	r.publishStatus()
 	var sec = r.openSecurity(id)

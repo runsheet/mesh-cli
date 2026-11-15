@@ -480,6 +480,14 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		if gate != nil {
 			keep("the stop gate", func() error { gate.close(); return nil })
 		}
+		// the egress process is named to the actor and the supervisor the
+		// moment it starts, not once rs.open returns (relaypod.go)
+		rs.onEgressStart = func(pid int, control string) {
+			if a != nil {
+				a.NoteEgress(pid, control)
+			}
+			r.setEgressStarting(b.LeaseID, pid)
+		}
 		if servers, err = rs.open(ctx, tools, observeBoth(fin.observe, tnt.observe), gate, account, sl, workspace, tnt.Tainted); err != nil {
 			return outcome{err: fmt.Errorf("the lease's relay sidecar: %w", err), cause: context.Cause(ctx)}
 		}
@@ -491,7 +499,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 			r.setEgress(b.LeaseID, rs.egressCmd.Process.Pid, control)
 			r.setDisownEgress(b.LeaseID, rs.disownEgress)
 			// the lease's egress process dying on its own, never stopped by
-			// the actor, ends the lease egress_died (leaseegress.go)
+			// the actor, ends the lease pod_killed (leaseegress.go)
 			go rs.watchEgress(ctx, endLease)
 		}
 		if outOfProcess && len(rs.caPEM) > 0 {
@@ -932,15 +940,17 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) (end actor.End)
 		return actor.End{Report: actor.ReportHandBack, Cause: meshapi.CauseParked, Reason: reason}
 	}
 	// the lease's egress process dying on its own is the node's condition
-	// too, never the work's (ADR-051 decision 3): handed back
-	// egress_died, writes or not
+	// too, never the work's (ADR-051 decision 3): handed back pod_killed —
+	// Mesh's cause for a lease's process killed under it, which it counts
+	// as the node's, not the work's — the egress process named in the
+	// reason, writes or not (ADR-044 amendment, 2026-11-16)
 	if why, ok := egressDied(o); ok && r.Actors {
 		r.postAccess(id, o.access)
 		r.postUsage(id, o)
 		reason := afterWrites(why, writes)
 		r.logf("nodev1: lease %s: %s", id, reason)
-		r.handBack(id, meshapi.CauseEgressDied, reason, o.result.SessionID)
-		return actor.End{Report: actor.ReportHandBack, Cause: meshapi.CauseEgressDied, Reason: reason}
+		r.handBack(id, meshapi.CausePodKilled, reason, o.result.SessionID)
+		return actor.End{Report: actor.ReportHandBack, Cause: meshapi.CausePodKilled, Reason: reason}
 	}
 	// a job actor's session, its pod or a run_suite step killed from
 	// outside is the node's condition, never the work's (ADR-044): handed
@@ -1074,6 +1084,7 @@ func (r *Runtime) handBackExit(id, cause, reason, sessionRef string, exitCode in
 	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
 	defer cancel()
 	clipped := clip(r.redact(reason), maxReason)
+	cause = meshapi.MeshCause(cause)
 	st, err := r.API.HandBack(ctx, id, meshapi.HandBackRequest{Cause: cause, Reason: clipped, SessionRef: sessionRef, ExitCode: exitCode})
 	if err != nil && meshapi.LeaseGone(err) {
 		r.logf("nodev1: lease %s was no longer the node's to hand back (%s)", id, cause)

@@ -732,3 +732,86 @@ node handed back `cannot_run` after `roomWait`.
 
 `TestFreeIsZeroWhileATrimIsPendingOrRunning` (internal/scheduler) and
 `TestANodeTakesNothingWhileATrimIsPending` (internal/nodev1) hold it.
+
+## Amendment, 2026-11-16: the reconcile spares new leases, an egress death is handed back pod_killed, and login keeps node.yaml
+
+On dl360 (v1, `--actors --actors-scheduler --sandbox --supervisor
+cancel`) three faults showed on 16 November.
+
+**The reconcile took new leases' egress processes and pods for
+leftovers.** The first reconcile after each start (06:51, 07:02) stopped
+38 egress processes and removed pods of leases taken in the minute
+before, and later in the day single leases were handed back seconds
+after they began running. Two causes, both fixed:
+
+1. **The live leases were read before the listings.** `Reconcile` read
+   the fleet once, then listed pods (two podman calls, seconds on a
+   loaded node), lease-egress processes, job directories and grants,
+   and judged each listing against that early read. A lease the node
+   took in between was judged unheld. Each part now reads the live
+   leases again after its own listing is in hand.
+2. **A lease named its egress process only once its relay sidecar had
+   started.** `setEgress` ran when `rs.open` returned. The process
+   itself had started well before that, before the sidecar's start,
+   install and readiness wait. `relaySidecar.onEgressStart` now names
+   it the moment `cmd.Start` returns, to the actor (`NoteEgress`, so
+   actor.json carries it from then) and to the supervisor
+   (`running.egressStarting`, read by `fleet.Live`). It names it
+   cleared again if the start then fails. `egressPID`, which an
+   upgrade's adoptability and hand-off read, is still set where it was.
+   An adopted lease counts its hand-off's egress process from the
+   moment it is put among the leases.
+3. **As a defence, a young lease is spared.** Nothing of a lease
+   younger than `YoungAge` (`supervisor.DefaultYoungAge`, 5 minutes) is
+   taken: not a pod whose lease's job directory or actor.json was
+   written within it, and not an egress process that started within it
+   (`EgressProcess.StartedAt`, read from `/proc/<pid>/stat`). The
+   reconcile line adds `spared N pod(s) and M egress process(es) of
+   leases too young to judge` when it spares any.
+
+**`egress_died` was never a cause Mesh took.** Mesh's hand-back enum
+(projectmesh-io/api `service/meshgen/models_gen.go`, enforced in
+`server/leases.go`) has no `egress_died`, so every such hand-back was
+refused 422 and the lease was left to expire. This amends the
+2026-11-08 amendment's point 1:
+
+4. **An egress process dying on its own is handed back `pod_killed`.**
+   Mesh documents that cause as the node's own fault, one the job may
+   have caused (adr-001-amendment-infra-handbacks). It is counted, and
+   it feeds the kind breaker. That fits a lease process killed under
+   the lease. The reason names the egress process and its exit
+   ("the lease's egress process died: it exited 1"). `CauseEgressDied`
+   stays only so an older node's actor.json can be read back.
+   `meshapi.MeshCause` sends it as `pod_killed`.
+5. **The egress process exiting while its own lease is already ending
+   is not a death.** `watchEgress` raises nothing once the lease's
+   context is done, even when the exit and the cancel are seen at the
+   same moment. The lease reports the cause that really ended it.
+6. **Every cause the node sends is in Mesh's set.**
+   `meshapi.HandBackCauses` and `meshapi.FailCauses` mirror Mesh's
+   lists. `TestEveryCauseTheNodeSendsIsOneMeshTakes` reads every
+   `meshapi.Cause*` that the node's source names, and checks each one
+   against a copy of Mesh's enum. It also checks the session's
+   `hand_back` causes.
+
+**`mesh node login` rewrote node.yaml through the v0 `Config`.** That
+struct knows nothing of `v1:`, `cache:` and the v1 node's other
+sections, and it marshals `capacity` as a plain number. A login
+therefore dropped `v1.capacity` and `cache` and wrote `capacity: 0`.
+
+7. **Login edits only its two keys.** `node.SaveLatchkey` edits
+   node.yaml as a YAML tree (`setTopLevelKeys`). It sets `latchkey` and
+   `latchkey_client` where they stand, or appends them, and keeps every
+   other key, its order and its comments. When nothing changed, it does
+   not write. When it does write, it writes atomically through a temp
+   file and a rename. `mesh node register` still saves through
+   `Config` (v0 registration, unchanged here).
+
+`TestReconcileReadsTheLiveLeasesAfterListing`,
+`TestReconcileSparesYoungLeases` (internal/supervisor),
+`TestAReconcileWhileALeaseIsPreparedSparesItsEgressAndPod`,
+`TestAReconcileMidPreparationSparesTheStartingEgressProcess` (linux),
+`TestTheLeasesEgressProcessKilledEndsTheLeasePodKilled` (linux),
+`TestAnEgressExitAfterItsLeaseEndedIsNotAnEgressDeath`,
+`TestEveryCauseTheNodeSendsIsOneMeshTakes` (internal/nodev1) and
+`TestSaveLatchkeyKeepsEverythingElse` (internal/node) hold it.

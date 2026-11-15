@@ -1,6 +1,7 @@
 package nodev1
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"time"
@@ -38,10 +39,12 @@ func (f fleet) Live() []supervisor.Live {
 		if l.actor == nil {
 			continue
 		}
+		// an egress process still starting is the lease's as much as one
+		// named for its hand-off (setEgressStarting)
 		out = append(out, supervisor.Live{
 			LeaseID: id, Running: l.actor.State() == actor.Running,
 			ProgressAt: l.progressAt, EscalatedAt: l.escalatedAt, Pod: l.pod,
-			EgressPID: l.egressPID,
+			EgressPID: cmp.Or(l.egressPID, l.egressStarting),
 		})
 	}
 	return out

@@ -174,7 +174,7 @@ func TestStopEgressRemovesTheSocketDirectory(t *testing.T) {
 	}
 }
 
-// watchEgress ends the lease egress_died when the egress
+// watchEgress ends the lease (handed back pod_killed) when the egress
 // process exits on its own -- an external kill, never stopEgress
 // (ADR-051 decision 3).
 func TestWatchEgressEndsTheLeaseWhenItExitsOnItsOwn(t *testing.T) {

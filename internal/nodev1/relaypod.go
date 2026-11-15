@@ -192,6 +192,14 @@ type relaySidecar struct {
 	// egressStopping is set before stopEgress signals the process, so
 	// its own exit is not read as an unexpected death.
 	egressStopping bool
+	// onEgressStart hears the lease's egress process the moment it
+	// starts — its pid and control socket — and again with (0, "") if
+	// it is stopped before startEgressProcess returns: the lease names
+	// it to its actor and the supervisor at once, long before rs.open
+	// returns (the relay sidecar's start can take tens of seconds when
+	// the node starts many leases), so a reconcile in between never
+	// takes it for one no lease holds (ADR-051 amendment, 2026-11-16).
+	onEgressStart func(pid int, control string)
 
 	mu     sync.Mutex
 	minted []gitrelay.Token
@@ -705,6 +713,18 @@ func (rs *relaySidecar) startEgressProcess(ctx context.Context, policy *egress.P
 		os.RemoveAll(dir)
 		return err
 	}
+	if rs.onEgressStart != nil {
+		rs.onEgressStart(cmd.Process.Pid, ctlSock)
+		// every return below that is not success has stopped it
+		defer func() {
+			rs.mu.Lock()
+			started := rs.egressCmd == cmd
+			rs.mu.Unlock()
+			if !started {
+				rs.onEgressStart(0, "")
+			}
+		}()
+	}
 	// cmd.Wait is called exactly once, here, for the process's whole
 	// life: stopEgress and watchEgress both only ever read done.
 	done := make(chan struct{})
@@ -928,15 +948,15 @@ func (rs *relaySidecar) stopEgress() error {
 }
 
 // disownEgress leaves the egress process running but no longer this
-// node's: its exit from then on is the adopter's to judge, never an
-// egress_died here (watchEgress).
+// node's: its exit from then on is the adopter's to judge, never a
+// death this node hands back (watchEgress).
 func (rs *relaySidecar) disownEgress() {
 	rs.mu.Lock()
 	rs.egressStopping = true
 	rs.mu.Unlock()
 }
 
-// watchEgress ends the lease egress_died (leaseegress.go) when the lease's
+// watchEgress ends the lease pod_killed (leaseegress.go) when the lease's
 // egress process exits on its own (ADR-051 decision 3: the actor
 // watches it as it watches the pod) — never when stopEgress stopped
 // it, and never past ctx ending (the lease ending some other way).
@@ -951,6 +971,12 @@ func (rs *relaySidecar) watchEgress(ctx context.Context, cancel context.CancelCa
 	case <-ctx.Done():
 		return
 	case <-done:
+	}
+	// the lease already ending some other way — its context cancelled
+	// with its own cause, the two ready at once — is that end, never an
+	// egress death: the lease reports what really ended it
+	if ctx.Err() != nil {
+		return
 	}
 	rs.mu.Lock()
 	stopping := rs.egressStopping
