@@ -67,6 +67,29 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   before publishing it, is `internal/catalogue`'s and the product's own
   concern, not this node's; see ADR-044 and the Mesh v1 node spec for
   the job-kind and brief shapes this node actually runs against.
+- **Validation** (`internal/validate`, run through `run_suite`;
+  ADR-013, ADR-049): the repository's `.runsheet/validate.yml` names the
+  suites, and `validate.Run` runs them — groups and shards at once, each
+  in a lane (pod) of its own — and supervises the tests they run
+  (`supervise.go`, ADR-049's amendment of 2026-11-15), so a session
+  never re-runs a test to see if it is flaky, watches for a hung shard
+  or reads "0 tests" as green. Four policy keys on a suite's entry, none
+  in the suite hash and none a command: `retries: N` (default 1, 0 off,
+  at most 5) — a red unit's failing top-level tests are run again by the
+  node once the unit has ended, with the unit's own command under
+  `MESH_SUITE_TESTS` (the one way to run a test by name), inside what is
+  left of the step's timeout and at most ten tests a run; one that
+  passes is `flaky` (`tests_flaky`, `flaky_tests`, `retries` on its
+  entry) and does not fail its unit, one that fails again is a confirmed
+  failure; `run_to_end: true` — otherwise a confirmed failure stops the
+  run as `fail_fast` does; `stall: 5m` (default; `0` or `off` for none) —
+  a started test with no event for that long is named `stalled` and its
+  unit stopped through stop_suite's own stop func; `min_tests: N`
+  (default 1 for kind unit and integration where the node can count the
+  tests, else 0) — a unit that exits 0 under it is red, reason "ran 0
+  tests". `Normalise` carries all of it into run_suite's answer and the
+  signed record's blob. A suite's command must honour
+  `MESH_SUITE_TESTS`, or say `retries: 0`.
 - `internal/latchkey/` + `internal/auth/token.go`: the machine
   credential — Latchkey's device flow, the rotating refresh grant, and
   the `~/.mesh/token` that holds either shape behind one `TokenSource`

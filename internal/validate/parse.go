@@ -12,7 +12,10 @@ import (
 
 // TestResult is one test's outcome, read from a go test -json stream:
 // Action is pass, fail, skip, or timeout for a test the stream never
-// closed — still "run" when the step was killed at its timeout.
+// closed — still "run" when the step was killed at its timeout — or,
+// from the node's supervisor (supervise.go), flaky for a test that
+// failed and then passed when the node re-ran it by name, and stalled
+// for the test whose silence had its unit stopped.
 // ElapsedMs is the terminating event's own elapsed time, or, for a
 // timeout, the stream's last event's time less the test's "run" event's
 // (never zero, so a timed-out test is told apart from one that genuinely
@@ -25,6 +28,11 @@ type TestResult struct {
 	Action    string `json:"action"`
 	ElapsedMs int64  `json:"elapsedMs"`
 	Output    string `json:"output,omitempty"`
+	// Retries is how many times the node re-ran the test by name after
+	// it failed: on a flaky test, the retry it passed on; on a fail, the
+	// retries it failed again on — a confirmed failure. Zero for a test
+	// never retried.
+	Retries int `json:"retries,omitempty"`
 }
 
 // ParseGoTestJSON counts `go test -json` events: each Action of pass,

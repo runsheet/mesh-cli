@@ -226,3 +226,12 @@ attestation's shape is unchanged.
   `internal/sessionunit/proc_unix.go`/`proc_windows.go`); a future
   sandboxed `Runner` needs no such handling since Podman itself owns
   the process tree.
+
+## Amended 2026-11-15: a suite's entry carries the supervisor's policy
+
+A suite may also state `retries`, `run_to_end`, `stall` and `min_tests`:
+how the node supervises the tests the suite runs (a failing test run
+again by name, a confirmed failure stopping the run, a stalled test
+named, "0 tests" red). They are the node's own keys, as `timeout`,
+`results`, `group` and `shards` are, and stay out of the suite hash.
+ADR-049's amendment of the same day decides what each does.

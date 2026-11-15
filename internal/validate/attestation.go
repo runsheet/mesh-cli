@@ -19,6 +19,11 @@ type StepResult struct {
 	TestsRun    int    `json:"testsRun,omitempty"`
 	TestsPassed int    `json:"testsPassed,omitempty"`
 	TestsFailed int    `json:"testsFailed,omitempty"`
+	// TestsFlaky counts the tests that failed and then passed when the
+	// node re-ran them by name (supervise.go): named in Tests with
+	// Action "flaky", never counted in TestsFailed, and no reason for a
+	// non-zero ExitCode.
+	TestsFlaky int `json:"testsFlaky,omitempty"`
 	// Tests is every test the step's go test -json stream named, read
 	// from the full, untruncated stream — never cut by reportCap as
 	// Report is. A test still "run" when the step ended (a timeout) is
@@ -42,6 +47,10 @@ type StepResult struct {
 	Stopped bool `json:"stopped,omitempty"`
 	// StopReason is who stopped it and why (Stopped alone).
 	StopReason string `json:"stopReason,omitempty"`
+	// Reason is why the node's supervisor called the step red when its
+	// command's own exit did not: "ran 0 tests" for a unit that exited 0
+	// under its suite's min_tests.
+	Reason string `json:"reason,omitempty"`
 	// Tail is a failing step's last TailLines lines of its combined
 	// stdout and stderr, redacted, for the node's log; never part of the
 	// signed attestation (Output carries its share there).

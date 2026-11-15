@@ -320,6 +320,21 @@ type ran struct {
 	duration       time.Duration
 	stopped        bool
 	stopReason     string
+
+	// what the supervisor read and decided once the command ended
+	// (supervise.go): the unit's results, parsed then; the tests whose
+	// silence stopped it; whether a failure stood after its retries;
+	// why it is red though its command exited 0; and what it did, for
+	// the step's output.
+	run, passed, failed, flaky int
+	report                     string
+	tests                      []TestResult
+	parseErr                   error
+	counted                    bool
+	stalled                    []testKey
+	confirmed                  bool
+	reason                     string
+	notes                      strings.Builder
 }
 
 // unitStop is one unit's Options.OnLane stop func, and whether it was
@@ -453,6 +468,14 @@ func shardCommand(cmd string, u unit) string {
 // exit and the runner's error), and a runner's error is returned
 // classified (Classify). Each step's report is cut to what is left of
 // reportCap after the steps before it.
+//
+// Run supervises what its units run (supervise.go): a red unit's
+// failing tests are run again by name once the unit has ended
+// (Step.Retries), one that passes then named flaky and no longer
+// failing its unit, one that fails again a confirmed failure, which
+// stops the run as fail fast does unless its suite says RunToEnd; a
+// started test silent for Step.Stall is named stalled and its unit
+// stopped; and a unit that exits 0 under Step.MinTests is red.
 func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]StepResult, error) {
 	lr, split := runner.(LaneRunner)
 	ls := lanes(steps, split)
@@ -468,6 +491,7 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 	if onLane == nil {
 		onLane = OnLaneFunc(ctx)
 	}
+	sup := &supervisor{dir: opts.Dir, budget: &retryBudget{left: MaxRetriedTests}, onTest: onTest, selected: SelectionAsked(ctx)}
 	// rctx is what the units run on: cancelled, with fail fast, at the
 	// first failing command, the rest of the run's lanes with it
 	rctx, stop := context.WithCancel(ctx)
@@ -496,21 +520,37 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 			}
 			out := &ran{}
 			start := time.Now()
-			stdout := io.Writer(&out.stdout)
-			if onTest != nil {
-				stdout = io.MultiWriter(&out.stdout, newTestEventWriter(onTest))
-			}
-			out.exitCode, out.runErr = r.Run(uctx, shardCommand(st.Command, u), st.Timeout, stdout, &out.stderr)
-			cancelUnit()
-			out.duration = time.Since(start)
-			if reason, didStop := ls.stopped(); didStop {
-				out.stopped = true
-				out.stopReason = reason
-				if out.exitCode == 0 {
-					out.exitCode = -1
+			cmd := shardCommand(st.Command, u)
+			out.exitCode, out.runErr, out.stalled = sup.command(uctx, r, cmd, st.Timeout, st.Stall, ls, true, &out.stdout, &out.stderr)
+			markStopped := func() {
+				if reason, didStop := ls.stopped(); didStop {
+					out.stopped = true
+					out.stopReason = reason
+					if out.exitCode == 0 {
+						out.exitCode = -1
+					}
 				}
 			}
+			markStopped()
+			// the command has ended and its stream is drained: only now
+			// does the supervisor read its results, run its failing
+			// tests again and hold it to its floor
+			sh := st
+			if u.total > 1 {
+				sh = st.shard(u.shard)
+			}
+			sup.parse(sh, out)
+			if !cancelled() {
+				sup.retry(uctx, r, sh, cmd, start, ls, out)
+				markStopped()
+			}
+			sup.floor(sh, out)
+			cancelUnit()
+			out.duration = time.Since(start)
 			failed := out.runErr != nil || out.exitCode != 0
+			// a confirmed failure stops the run as fail fast does,
+			// unless its suite runs to the end
+			stopRun := failFast || (out.confirmed && !st.RunToEnd)
 			mu.Lock()
 			if stopped && ctx.Err() == nil && rctx.Err() != nil && (out.runErr != nil || out.exitCode < 0) {
 				// stopped by another lane's failure: not run
@@ -518,12 +558,12 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 				return
 			}
 			done[u] = out
-			if failed && failFast && !stopped {
+			if failed && stopRun && !stopped {
 				stopped = true
 				stop()
 			}
 			mu.Unlock()
-			if out.stopped || out.runErr != nil || (out.exitCode != 0 && (!opts.ContinueOnFailure || failFast)) {
+			if out.stopped || out.runErr != nil || (out.exitCode != 0 && (!opts.ContinueOnFailure || stopRun)) {
 				return
 			}
 		}
@@ -575,33 +615,31 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 	for i, st := range steps {
 		n := max(st.Shards, 1)
 		var shards []ShardResult
+		counted := false
 		for k := range n {
 			out, ok := done[unit{step: i, shard: k, total: n}]
 			if !ok {
 				continue
 			}
-			sh := st
-			if n > 1 {
-				sh = st.shard(k)
-			}
 			artifacts, err := digestArtifacts(opts.Dir, st.Artifacts)
 			if err != nil {
 				return results, err
 			}
-			run, passed, failed, report, tests, err := parseResults(opts.Dir, sh, out.stdout.Bytes())
-			if err != nil {
-				return results, err
+			if out.parseErr != nil {
+				return results, out.parseErr
 			}
 			sr := StepResult{
 				Name:        st.Name,
 				Command:     st.Command,
 				ExitCode:    out.exitCode,
 				DurationMs:  out.duration.Milliseconds(),
-				TestsRun:    run,
-				TestsPassed: passed,
-				TestsFailed: failed,
-				Report:      report,
-				Tests:       tests,
+				TestsRun:    out.run,
+				TestsPassed: out.passed,
+				TestsFailed: out.failed,
+				TestsFlaky:  out.flaky,
+				Report:      out.report,
+				Tests:       out.tests,
+				Reason:      out.reason,
 				TimedOut:    out.exitCode == 124,
 				Artifacts:   artifacts,
 				Stopped:     out.stopped,
@@ -611,6 +649,7 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 			if opts.Redact != nil {
 				combined = opts.Redact(combined)
 			}
+			combined += out.notes.String()
 			if out.exitCode != 0 || out.runErr != nil {
 				sr.Output = failTail(combined)
 				sr.Tail = failureTail(combined)
@@ -627,11 +666,20 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 				runErr = Classify(out.runErr)
 			}
 			shards = append(shards, ShardResult{Index: k, Total: n, StepResult: sr})
+			counted = counted || out.counted
 		}
 		if len(shards) == 0 {
 			continue
 		}
 		sr := merge(shards, split)
+		if sup.selected && sr.ExitCode == 0 {
+			// under a selection a shard may rightly be empty: the
+			// suite's floor is the step's shards' together
+			if reason := belowFloor(st, sr.TestsRun, counted); reason != "" {
+				sr.ExitCode, sr.Reason = 1, reason
+				sr.Output += fmt.Sprintf("supervisor: %s: the suite's min_tests is %d\n", reason, st.MinTests)
+			}
+		}
 		if len(sr.Report) > room {
 			sr.Report = sr.Report[:room]
 		}
@@ -678,6 +726,7 @@ func merge(shards []ShardResult, concurrent bool) StepResult {
 		out.TestsRun += s.TestsRun
 		out.TestsPassed += s.TestsPassed
 		out.TestsFailed += s.TestsFailed
+		out.TestsFlaky += s.TestsFlaky
 		out.Tests = append(out.Tests, s.Tests...)
 		out.TimedOut = out.TimedOut || s.TimedOut
 		report.WriteString(s.Report)
@@ -699,7 +748,7 @@ func merge(shards []ShardResult, concurrent bool) StepResult {
 		f := shards[failed]
 		// a failing shard's tail is the step's: what the node logs
 		out.ExitCode, out.EnvironmentKind, out.Tail = f.ExitCode, f.EnvironmentKind, f.Tail
-		out.Stopped, out.StopReason = f.Stopped, f.StopReason
+		out.Stopped, out.StopReason, out.Reason = f.Stopped, f.StopReason, f.Reason
 		lines.WriteString(fmt.Sprintf("shard %d/%d failed:\n", f.Index+1, f.Total))
 		lines.WriteString(f.Output)
 		out.Output = failTail(lines.String())
