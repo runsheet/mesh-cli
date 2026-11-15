@@ -617,3 +617,48 @@ not fully deleted — the legacy gateway client `mesh mcp`, `mesh join`
 and `mesh goal plan` still use, and a few of the old Loop's unreferenced
 leftovers not yet swept up — but none of what remains there is a second
 node; AGENTS.md has the detail.
+
+## Amendment, 2026-11-15: a run_suite lane starts from the lease's warm cache
+
+Goal `a-run-suite-lane-starts-from-the-leases-warm-cache`. A lease's
+pod starts from a warm cache (`internal/nodev1/cachemount.go`, goal
+`a-v1-lease-starts-from-a-warm-cache`): its tenant's GOMODCACHE, npm
+cache and pnpm store are overlays whose read-only lower is the tenant's
+shared cache and whose upper and work dirs are the lease's own, and the
+node's one Go build cache is mounted read-write as GOCACHE. Those
+mounts and their variables were set on the lease's pod alone
+(`openLeasePod`). A lane opened beside it for run_suite (ADR-049) got
+the lease's HOME and none of them: its `go test` read
+`$HOME/go/pkg/mod` and `$HOME/.cache/go-build`, which the lease's pod
+no longer fills, so every shard but the first started from an empty
+module cache and an empty build cache.
+
+1. **A lane mounts what its lease's pod mounts**
+   (`Runtime.laneCacheMounts`): each tenant cache overlay at the same
+   path over the same lower, the node's shared GOCACHE as it is, and
+   the same `GOMODCACHE`, `GOCACHE`, `npm_config_cache` and
+   `pnpm_config_store_dir`. They are read off the lease's session
+   (`sandbox.Session.SharedMounts`, `ExtraEnv`), so a lease that runs
+   without its tenant cache — the runtime refused the overlay
+   (`cacheMountIsOff`, `runAgentRetryingCache`) — has lanes without it
+   too, on the build cache alone.
+2. **Each lane's overlay has an upper and work dir of its own**, under
+   `<lease dir>/lanes/<n>/cache/<gomod|npm|pnpm>/`: an overlay's upper
+   is never two pods' at once, so not the lease's and not another
+   lane's. A lane therefore sees the tenant's shared cache, not what
+   its lease's pod or another lane wrote since the lease began; a
+   module the change itself adds is fetched once per lane, through the
+   lease's relay. A lane's writes are not promoted to the tenant's
+   cache (`PromoteAll` reads the lease's own upper): the lease's pod,
+   which fetches the same modules, is what warms it.
+3. **A lane's end removes its directory, and the lease's end removes
+   every lane's with its own** (`removeLaneDirs`, from the lane's
+   release and from the lease's pod's close, before the actor removes
+   the job directory): through `sandbox.RemoveTree`, since an upper
+   holds Go's module cache, read-only directories a plain `RemoveAll`
+   leaves behind.
+
+`sandbox.OpenBeside` itself still copies none of this: an overlay's
+dirs are its caller's to make. `TestALaneMountsTheLeasesWarmCache`,
+`TestALaneOfALeaseWithoutItsTenantCacheHasNone` and
+`TestTheLeasesEndRemovesEveryLanesOverlayDirs` hold it.

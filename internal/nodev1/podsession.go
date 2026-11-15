@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -95,7 +96,11 @@ type leasePod struct {
 	// lanes, set, opens a pod beside this one for a suite group or shard
 	// that run_suite runs at once with the others (lanes.go); nil runs
 	// every step here, one after another.
-	lanes func(ctx context.Context, name string) (*leasePod, func(), error)
+	// size is the room the lane's suite asks for (validate.LaneSizes).
+	lanes func(ctx context.Context, name string, size validate.Resources) (*leasePod, func(), error)
+	// hold, set beside lanes, holds the node's room for a lane that runs
+	// in this pod, the run's first (lanes.go, firstLane).
+	hold func(ctx context.Context, name string, size validate.Resources) (*laneHold, error)
 	// lane is a lane's pod (lanes.go), on the lease's HOME, which
 	// writes nothing there of its own.
 	lane bool
@@ -110,37 +115,50 @@ type leasePod struct {
 	// relay, as the lease's pod reaches it (setLaneSocket).
 	mu       sync.Mutex
 	laneSock string
-	// eagerLanes holds reserveLanes's scheduler holds, by lane index,
-	// until suiteLanes opens that lane (popEagerLane) or, for the first
-	// lane, laneSteps.ReleaseFirst gives it back (lanes.go).
-	eagerLanes map[int64]*laneHold
+	// eagerLanes holds reserveLanes's scheduler holds, by lane name,
+	// until a run opens that lane (holdLane, popEagerLane) or the lease
+	// ends (releaseEagerLanes) (lanes.go).
+	eagerLanes map[string]*laneHold
 }
 
-// setEagerLane records an eagerly-reserved lane hold (reserveLanes).
-func (p *leasePod) setEagerLane(idx int64, h *laneHold) {
+// setEagerLane records an eagerly-reserved lane hold (reserveLanes); a
+// second of one name is given back.
+func (p *leasePod) setEagerLane(name string, h *laneHold) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if p.eagerLanes == nil {
-		p.eagerLanes = map[int64]*laneHold{}
+		p.eagerLanes = map[string]*laneHold{}
 	}
-	p.eagerLanes[idx] = h
+	if _, held := p.eagerLanes[name]; held {
+		p.mu.Unlock()
+		h.release()
+		return
+	}
+	p.eagerLanes[name] = h
+	p.mu.Unlock()
+}
+
+// releaseEagerLanes gives back every eagerly-reserved lane hold no run
+// took: the lease's end, where a hold left renewing would hold the
+// node's room for as long as the node runs.
+func (p *leasePod) releaseEagerLanes() {
+	p.mu.Lock()
+	held := p.eagerLanes
+	p.eagerLanes = nil
+	p.mu.Unlock()
+	for _, h := range held {
+		h.release()
+	}
 }
 
 // popEagerLane takes back an eagerly-reserved lane hold, nil when none
 // was reserved (or it was already taken), so the caller falls back to
 // holding it fresh.
-func (p *leasePod) popEagerLane(idx int64) *laneHold {
+func (p *leasePod) popEagerLane(name string) *laneHold {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	h := p.eagerLanes[idx]
-	delete(p.eagerLanes, idx)
+	h := p.eagerLanes[name]
+	delete(p.eagerLanes, name)
 	return h
-}
-
-// releaseEagerLane gives back an eagerly-reserved lane hold still held,
-// nothing when it was never reserved or already taken (nil-safe).
-func (p *leasePod) releaseEagerLane(idx int64) {
-	p.popEagerLane(idx).release()
 }
 
 // setLaneSocket names the socket a lane reaches the lease's relay on:
@@ -203,6 +221,10 @@ func (r *Runtime) openLeasePod(ctx context.Context, b *meshapi.Brief, workspace 
 		if err := sess.Close(); err != nil {
 			r.logf("nodev1: lease %s: %s", b.LeaseID, sandbox.CloseLine(b.LeaseID, err))
 		}
+		// the lanes' room no run took, and every lane's own directory (its
+		// cache overlays' upper and work dirs) a lane's own end left
+		p.releaseEagerLanes()
+		r.removeLaneDirs(b.LeaseID, filepath.Join(sb.TempDir, lanesDirName))
 		return nil
 	}
 	if a != nil {
@@ -215,6 +237,9 @@ func (r *Runtime) openLeasePod(ctx context.Context, b *meshapi.Brief, workspace 
 	}
 	r.reserveLanes(b, workspace, p)
 	p.lanes = r.suiteLanes(b, workspace, p)
+	p.hold = func(ctx context.Context, name string, size validate.Resources) (*laneHold, error) {
+		return r.holdLane(ctx, b, p, name, size, true)
+	}
 	return p, nil
 }
 
@@ -518,7 +543,10 @@ func bridgeGitConfig(base string, port int) []string {
 func (p *leasePod) suites(ctx context.Context, workspace string, steps []validate.Step, env []string) ([]validate.StepResult, error) {
 	var run validate.Runner = podSteps{p: p, dir: workspace, env: env, logf: p.logf}
 	if p.lanes != nil {
-		run = laneSteps{podSteps: podSteps{p: p, dir: workspace, env: env, logf: p.logf}}
+		ls := newLaneSteps(p, steps, podSteps{p: p, dir: workspace, env: env, logf: p.logf})
+		// a run of one lane never reaches ReleaseFirst
+		defer ls.first.release()
+		run = ls
 	}
 	return validate.Run(ctx, steps, run, validate.Options{Dir: workspace, ContinueOnFailure: true})
 }
@@ -533,6 +561,10 @@ type podSteps struct {
 	// logf, set, hears a step that failed (logFailedStep).
 	lane string
 	logf func(format string, args ...any)
+	// limits, set, are the steps' own CPUs and memory in place of the
+	// pod's session's: the first lane's room, in the lease's own pod
+	// (lanes.go, laneSteps.Run).
+	limits sandbox.Limits
 }
 
 func (s podSteps) Run(ctx context.Context, cmd string, timeout time.Duration, stdout, stderr io.Writer) (int, error) {
@@ -547,7 +579,7 @@ func (s podSteps) Run(ctx context.Context, cmd string, timeout time.Duration, st
 
 func (s podSteps) run(ctx context.Context, cmd string, timeout time.Duration, stdout, stderr io.Writer) (int, error) {
 	command := append(slices.Clone(s.p.bridge), "sh", "-c", cmd)
-	err := s.p.sess.Exec(ctx, sandbox.RunSpec{Workspace: s.dir, Command: command, Timeout: timeout, Stdout: stdout, Stderr: stderr, Vars: append(append(append([]string{"GIT_TERMINAL_PROMPT=0"}, s.p.proxyEnv...), s.p.registryEnv...), s.env...)})
+	err := s.p.sess.Exec(ctx, sandbox.RunSpec{Workspace: s.dir, Command: command, Timeout: timeout, Limits: s.limits, Stdout: stdout, Stderr: stderr, Vars: append(append(append([]string{"GIT_TERMINAL_PROMPT=0"}, s.p.proxyEnv...), s.p.registryEnv...), s.env...)})
 	var ee *sandbox.ExitError
 	var le *sandbox.LimitError
 	switch {

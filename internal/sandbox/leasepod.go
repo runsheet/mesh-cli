@@ -171,7 +171,11 @@ func (s *Session) RunAgent(ctx context.Context, spec RunSpec) error {
 // limits and reservation are s's. Close removes its pods and never the
 // HOME, which is parent's to remove. Two sessions on one HOME at once
 // are what Go's caches are made for; a tool whose state in HOME is not
-// safe for concurrent use is not.
+// safe for concurrent use is not. The mounts and variables ShareMount
+// and SetExtraEnv gave parent (a v1 lease's warm cache) are not copied
+// here: its caller gives the new session its own, since an overlay's
+// upper and work dirs are never two sessions' at once
+// (internal/nodev1/lanes.go, laneCacheMounts).
 func (s *Sandbox) OpenBeside(parent *Session, label string) (*Session, error) {
 	if parent == nil {
 		return nil, fmt.Errorf("sandbox: no session to open beside")

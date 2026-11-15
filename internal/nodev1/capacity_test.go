@@ -129,9 +129,10 @@ func TestALeaseWithNoRoomHandsBack(t *testing.T) {
 // (holdCapacity, taken before openLeasePod in production) plus its 4
 // eagerly-reserved lane holds (reserveLanes, ADR-049 amendment) are both
 // out of the reported free room before any lane has run — 1 pod + 4
-// lanes, 5 holds of the suite's Resources, not just the pod's one.
+// lanes, 5 holds of 4 CPUs and 8 GB (the lease's allowance, and what
+// the suite asks for each lane), not just the pod's one.
 func TestFreeAlreadyExcludesAHeldLeasesUnopenedLanes(t *testing.T) {
-	g := newShardRig(t, shardedYML, 400*time.Millisecond, scheduler.Capacity{CPUs: 100, MemGB: 100, Slots: 10})
+	g := newShardRig(t, sizedYML, 400*time.Millisecond, scheduler.Capacity{CPUs: 100, MemGB: 100, Slots: 10})
 	lease := &meshapi.Lease{LeaseID: g.b.LeaseID, JobID: g.b.JobID, N: g.b.LeaseN, RenewEveryS: g.b.RenewEveryS}
 	pod, err := g.rt.holdCapacity(context.Background(), g.b, lease)
 	if err != nil {

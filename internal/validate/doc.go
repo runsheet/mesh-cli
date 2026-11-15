@@ -5,7 +5,8 @@
 //
 // The file is the platform's (runsheet ADR 032, The file:
 // .runsheet/validate.yml; platform/validatespec) plus the node's own
-// keys — timeout, always, artifacts, results:
+// keys — timeout, always, artifacts, results, and cpus and memory, the
+// room a suite asks for (resources.go):
 //
 //	suites:
 //	  - name: vet

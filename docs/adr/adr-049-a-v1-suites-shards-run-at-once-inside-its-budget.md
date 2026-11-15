@@ -1,5 +1,5 @@
 ---
-summary: On a v1 node run_suite runs a sharded suite's shards (and its groups) at once, the first in the lease's pod and each other in a pod of its own beside it with its own copy of the lease's services, on the lease's HOME, network and egress (amended 2026-11-02: a lane sees what its lease's pod sees), on the lease's resources held of the node's scheduler; a run longer than the call's wait (10 minutes) answers {run_id, status: running}, which the session polls with run_suite {run_id}, never an MCP timeout; fail_fast stops the other shards at the first failure; a validate lease is held to its validate.yml budget from the lease's start, past which the run is stopped and answered red, out_of_time, with its signed record; the record stays one per run, its output blob naming each shard.
+summary: On a v1 node run_suite runs a sharded suite's shards (and its groups) at once, the first in the lease's pod and each other in a pod of its own beside it with its own copy of the lease's services, on the lease's HOME, network and egress (amended 2026-11-02: a lane sees what its lease's pod sees), on the room its suite asks for in validate.yml (cpus, memory; the node's sandbox default when it names none), held of the node's scheduler and the limit of its steps (amended 2026-11-15; before, the lease's resources), and on the lease's warm cache (ADR-044, amended 2026-11-15); a run longer than the call's wait (10 minutes) answers {run_id, status: running}, which the session polls with run_suite {run_id}, never an MCP timeout; fail_fast stops the other shards at the first failure; a validate lease is held to its validate.yml budget from the lease's start, past which the run is stopped and answered red, out_of_time, with its signed record; the record stays one per run, its output blob naming each shard.
 status: accepted
 ---
 
@@ -255,3 +255,77 @@ restarted and the stopped shard is not re-run. A reason naming no open
 unit (it has not opened yet, or has already ended — queued behind
 another that stopped the lane first, among other reasons) is refused,
 so a session stopping a unit always knows whether it took.
+
+## Amendment 2026-11-15: a lane takes the room its suite asks for
+
+Goal `test-runs-get-the-room-their-suite-needs`. Replaces the
+Decision's "the lease's resources" for a lane, and the 2026-11-02
+amendment's "but for its pod, its own services and its scheduler hold"
+gains the room.
+
+**What was wrong.** Every lane held its lease's whole allowance of the
+node's scheduler (`laneAsk`: the brief's CPUs and memory) and its steps
+were limited to the same, whatever ran in it. One runsheet validation
+(six lanes on a 4-CPU kind) held 24 CPUs for lint and unit as much as
+for integration, so dl360 ran one validation where it had room for
+several; and a suite that needed more than its kind's allowance (an
+integration suite inside a 2-CPU build lease) could not ask for it.
+
+**Decision.**
+
+- **`cpus:` and `memory:` on a suite** in `.runsheet/validate.yml` are
+  the room it asks for (the keys and their parsing are #1653's: a
+  number, and a podman size such as `24g`; a negative `cpus` or a
+  `memory` that is no size is refused at parse). Neither is hashed:
+  how much room a suite runs with is not what it runs.
+- **A lane's room is its suites'** (`validate.LaneSizes`): a shard's
+  lane has its suite's; a group's lane, whose suites run one after
+  another in the one pod, has the most any of them asks, CPUs and
+  memory each on their own.
+- **A suite that names no size gets the node's default**, the
+  sandbox's own `sandbox.cpus` and `sandbox.memory` in node.yaml (read
+  live, `sandbox.AgentLimits`) — not the kind's allowance, which is the
+  lease's agent's. It is a setting, not a constant.
+- **The lease's allowance does not bound it.** A lane inside a 2-CPU
+  build lease whose suite asks for 8 CPUs runs on 8. What bounds it is
+  the node: an ask the scheduler could never fit beside the lease
+  itself (its total less the lease's own hold) is lowered to that, with
+  a line in node.log, rather than wait for room that cannot come.
+- **The hold is the limit.** One figure (`Runtime.laneRoom`) is both
+  what the lane holds of the scheduler (`laneAsk`, owner
+  `<lease>/lane-<lane name>`) and what its steps' containers are
+  limited to (`limitsOf` of the hold's room). A hold `reserveLanes`
+  took early that no longer matches what the lane asks (the
+  validate.yml changed since) is given back and taken afresh.
+- **The first lane too.** It runs in the lease's own pod, whose session
+  is limited to the lease's allowance, so its steps carry their own
+  limits (`sandbox.RunSpec.Limits`, honoured by `Session.Exec`) and it
+  holds its room from its first step to its last (`firstLane`), in
+  every kind, not only a validation's. One exception keeps a full node
+  moving: with no room for it right now, a first lane asking for no
+  more than its lease's allowance does not wait — it runs under the
+  lease's own hold, as every first lane did before lanes had sizes —
+  since the agent beside it is waiting on it. One asking for more than
+  its lease has waits, as any lane does.
+- **A lease's end gives back the holds no run took**
+  (`leasePod.releaseEagerLanes`). They were renewed for as long as the
+  node ran when a run_suite selected only some of the suites, or never
+  ran.
+
+#1653 also proposed `sandbox.max_cpus` and `sandbox.max_memory` for the
+legacy node, which paced by host load and had no per-job count. A v1
+node has one, its scheduler, and the scheduler's total is the bound;
+those two keys are not added.
+
+`TestALaneInATwoCPULeaseGetsTheEightItsSuiteAsksFor`,
+`TestASuiteNamingNoSizeGetsTheNodesDefaultNotTheKindsAllowance`,
+`TestALanesAskIsLoweredToWhatTheNodeCouldGive`,
+`TestLaneSizesFollowTheirSuites` and `TestASuiteNamesItsOwnRoom` hold
+it.
+
+**Consequences.** A repository that declared nothing sees its lanes on
+the node's default (node.yaml's `sandbox.cpus` and `sandbox.memory`)
+where they had the kind's allowance: a suite that needs more says so in its
+validate.yml. Scheduler owners for lanes are named by lane, not
+numbered. A lane's cache is the lease's warm cache: ADR-044's amendment
+of the same day.
