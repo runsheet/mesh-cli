@@ -585,3 +585,43 @@ the secret-seen callback told once naming the shape and host, and the
 lease's exposure nil;
 `TestCanaryExposureIsUnchangedBySecretSeen` that a lease's own value is
 still an exposure that fails the lease `credential_exposed`.
+
+## Amendment 2026-11-16: a vendor's own short-lived credential goes on untouched
+
+Point 5 refused every Cloudflare Worker deploy with static assets.
+`wrangler deploy` asks `POST /client/v4/accounts/<id>/workers/scripts/<name>/assets-upload-session`
+on the API token, which the relay injects, and Cloudflare answers a
+short-lived JWT. wrangler then uploads the assets to
+`/client/v4/accounts/<id>/workers/assets/upload` (and `/upload/<hash>`)
+with `Authorization: Bearer <jwt>`. That endpoint takes the JWT and
+never the API token. The relay saw an `Authorization` header that was
+not the placeholder and refused the upload `credential_preset`.
+`wrangler pages deploy` does the same with the JWT from
+`.../pages/projects/<name>/upload-token` on `/client/v4/pages/assets/*`.
+
+1. **`InjectSpec.Untouched`.** These are paths on the rule's hosts that
+   the rule never writes on, even when they are under its `paths`. A
+   request under one goes on exactly as sent: it is not refused
+   `credential_preset` and it is not given the credential. A `*`
+   segment matches any one non-empty segment. A path with a dot
+   segment, or whose escaped form (`%2F`) does not match too, is never
+   untouched. Only the node sets it (`json:"-"`, like `Overwrite`).
+2. **Cloudflare's JWT-only endpoints.** The node sets
+   `/client/v4/accounts/*/workers/assets/upload` and
+   `/client/v4/pages/assets` as untouched on a connection whose service
+   is `cloudflare`, or on any rule on `api.cloudflare.com`.
+   `nodev1.untouchedPaths` holds this, next to the placeholder variables
+   by service. Every other Cloudflare call is still the rule's,
+   including the upload session and the script upload, which carries
+   the completion JWT in its body. A JWT sent to one of those calls is
+   still refused.
+3. **Why this is safe.** The relay never writes the token on these
+   paths, so the token cannot leak there. The JWT the sandbox sends can
+   only come from a call the relay authenticated, so the sandbox
+   chooses nothing it could not already do. Every other host and path
+   keeps point 5 unchanged.
+
+`TestARequestUnderAnUntouchedPathGoesOnAsSent` (`internal/egress`)
+tests the matching and its edges. `TestWranglerDeploysAWorkerWithAssetsThroughTheRelay`
+(`internal/nodev1`) replays wrangler's sequence through a lease's relay
+to a fake Cloudflare.

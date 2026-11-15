@@ -213,6 +213,10 @@ func (h *heldCredential) Credential(ctx context.Context) (*egress.Credential, er
 		return nil, injectRefusal(h.ref, err)
 	}
 	h.lastErr = nil
+	if ans.Service != "" {
+		h.service = ans.Service
+	}
+	ans.Inject.Untouched = untouchedPaths(h.service, ans.Inject)
 	c := &egress.Credential{Ref: h.ref, Spec: ans.Inject, Fields: ans.Fields, Version: ans.version(), ExpiresAt: ans.ExpiresAt}
 	if h.held != nil {
 		h.held(h.ref, c)
@@ -221,9 +225,6 @@ func (h *heldCredential) Credential(ctx context.Context) (*egress.Credential, er
 		h.logf("nodev1: credential %s is now version %s (was %s)", h.ref, c.Version, h.version)
 	}
 	h.spec, h.cred, h.asked, h.version = ans.Inject, c, now, c.Version
-	if ans.Service != "" {
-		h.service = ans.Service
-	}
 	return c, nil
 }
 
@@ -251,6 +252,40 @@ func placeholderEnv(service string) []string {
 		return []string{"GH_TOKEN", "GITHUB_TOKEN"}
 	case "gitlab":
 		return []string{"GITLAB_TOKEN"}
+	}
+	return nil
+}
+
+// cloudflareAPIHost is Cloudflare's API host: a rule on it is
+// Cloudflare's whichever vendor Latchkey named (a Secret names none).
+const cloudflareAPIHost = "api.cloudflare.com"
+
+// cloudflareUntouched are Cloudflare's endpoints that take only a
+// short-lived JWT Cloudflare hands back to a call on the API token —
+// never the token — so the relay neither writes the token on them nor
+// refuses the JWT the tool sends as a preset credential:
+//
+//   - workers/assets/upload (and /upload/<hash>): wrangler deploy's
+//     static assets, on the JWT that POST .../assets-upload-session
+//     answered
+//   - pages/assets/*: wrangler pages deploy's check-missing, upload and
+//     upsert-hashes, on the JWT that GET .../upload-token answered
+//
+// Every other call (the upload session, the script upload carrying the
+// completion JWT in its body, the Pages deployment) is on the token,
+// which the relay writes as ever.
+var cloudflareUntouched = []string{
+	"/client/v4/accounts/*/workers/assets/upload",
+	"/client/v4/pages/assets",
+}
+
+// untouchedPaths are the paths a rule for service's credential never
+// writes on (egress.InjectSpec.Untouched): Cloudflare's JWT-only
+// endpoints for a Cloudflare connection or a rule on Cloudflare's API
+// host, none for any other.
+func untouchedPaths(service string, spec egress.InjectSpec) []string {
+	if strings.EqualFold(service, "cloudflare") || spec.MatchesHost(cloudflareAPIHost) {
+		return slices.Clone(cloudflareUntouched)
 	}
 	return nil
 }

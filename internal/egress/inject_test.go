@@ -243,3 +243,48 @@ func TestAnOverwritingRuleReplacesThePresetHeader(t *testing.T) {
 		t.Fatalf("without Overwrite: %v", err)
 	}
 }
+
+// A request under one of the rule's Untouched paths goes on as sent: the
+// credential it carries is neither refused credential_preset nor
+// replaced, and none is written when it carries none. Every other path
+// on the rule's hosts is the rule's as ever: a preset there is refused.
+func TestARequestUnderAnUntouchedPathGoesOnAsSent(t *testing.T) {
+	src := &fixedSource{cred: &Credential{Ref: "conn_cf", Spec: InjectSpec{Hosts: []string{"api.cloudflare.com"}, Header: "Authorization", Prefix: "Bearer ",
+		Untouched: []string{"/client/v4/accounts/*/workers/assets/upload", "/client/v4/pages/assets/"}},
+		Fields: map[string]string{"access_token": "cf-child-123456"}}}
+	r := NewInjectRule("conn_cf", "connection", src, []string{"api.cloudflare.com"})
+	for _, tc := range []struct{ method, url, auth string }{
+		{"POST", "https://api.cloudflare.com/client/v4/accounts/abc/workers/assets/upload?base64=true", "Bearer upload-session-jwt"},
+		{"POST", "https://api.cloudflare.com/client/v4/accounts/abc/workers/assets/upload/0123abcd", "Bearer upload-session-jwt"},
+		{"POST", "https://api.cloudflare.com/client/v4/pages/assets/check-missing", "Bearer pages-jwt"},
+		{"POST", "https://api.cloudflare.com/client/v4/pages/assets/upsert-hashes", "Bearer pages-jwt"},
+		{"POST", "https://api.cloudflare.com/client/v4/accounts/abc/workers/assets/upload", ""},
+	} {
+		req := injectReq(tc.method, tc.url, "Authorization", tc.auth)
+		if ap, err := r.Apply(req); ap != nil || err != nil || req.Header.Get("Authorization") != tc.auth {
+			t.Fatalf("%s %s: %+v %v, Authorization %q", tc.method, tc.url, ap, err, req.Header.Get("Authorization"))
+		}
+	}
+	// beside, above, or reached by a dot segment or an escaped slash: the
+	// rule's, so a preset is refused
+	for _, url := range []string{
+		"https://api.cloudflare.com/client/v4/accounts/abc/workers/scripts/qr",
+		"https://api.cloudflare.com/client/v4/accounts/abc/workers/scripts/qr/assets-upload-session",
+		"https://api.cloudflare.com/client/v4/accounts/abc/workers/assets/uploadx",
+		"https://api.cloudflare.com/client/v4/accounts/abc/workers/assets",
+		"https://api.cloudflare.com/client/v4/accounts//workers/assets/upload",
+		"https://api.cloudflare.com/client/v4/accounts/abc/workers/assets/upload/../../scripts/qr",
+		"https://api.cloudflare.com/client/v4/accounts/a%2Fb/workers/assets/upload",
+		"https://api.cloudflare.com/client/v4/pages/projects/portal/deployments",
+	} {
+		_, err := r.Apply(injectReq("POST", url, "Authorization", "Bearer upload-session-jwt"))
+		var ref *Refusal
+		if !errors.As(err, &ref) || ref.Code != CodePreset {
+			t.Fatalf("%s: %v", url, err)
+		}
+	}
+	req := injectReq("POST", "https://api.cloudflare.com/client/v4/accounts/abc/workers/scripts/qr/assets-upload-session", "Authorization", "Bearer mesh")
+	if _, err := r.Apply(req); err != nil || req.Header.Get("Authorization") != "Bearer cf-child-123456" {
+		t.Fatalf("the upload session: %v %q", err, req.Header.Get("Authorization"))
+	}
+}
