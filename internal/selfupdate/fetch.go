@@ -116,3 +116,44 @@ func Fetch(ctx context.Context, src Source, version, goos, goarch string) (*Rele
 	}
 	return rel, nil
 }
+
+// RunsheetReleaseBaseURL is runsheet's release store for mesh-cli (runsheet
+// ADR 082): where a release shipped through runsheet is published, read
+// with no token (the bytes are vouched for by SHA256SUMS and Sigstore).
+const RunsheetReleaseBaseURL = "https://api.runsheet.dev/releases/mesh/"
+
+// Channel is where a node finds a release: runsheet's release store first,
+// then the GitHub mirror for a tag released there before the cut-over (ADR
+// 002 amendment 2026-11-15). Latest still reads the mirror's latest
+// release until runsheet's channel answers it.
+type Channel struct {
+	// Runsheet reads runsheet's store; its BaseURL is RunsheetReleaseBaseURL
+	// when empty.
+	Runsheet GitHub
+	// GitHub reads the mirror.
+	GitHub GitHub
+}
+
+// DefaultChannel is the channel production reads.
+func DefaultChannel() Channel {
+	return Channel{Runsheet: GitHub{BaseURL: RunsheetReleaseBaseURL}}
+}
+
+// Asset is name of version from runsheet's store, or the mirror's when the
+// store does not hold it.
+func (c Channel) Asset(ctx context.Context, version, name string) ([]byte, error) {
+	rs := c.Runsheet
+	if rs.BaseURL == "" {
+		rs.BaseURL = RunsheetReleaseBaseURL
+	}
+	b, err := rs.Asset(ctx, version, name)
+	if err == nil || !errors.Is(err, ErrMissingAsset) {
+		return b, err
+	}
+	return c.GitHub.Asset(ctx, version, name)
+}
+
+// Latest is the mirror's latest release.
+func (c Channel) Latest(ctx context.Context) (string, error) {
+	return c.GitHub.Latest(ctx)
+}

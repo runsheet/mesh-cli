@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"crypto/subtle"
+	_ "embed"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/sigstore/sigstore-go/pkg/fulcio/certificate"
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/tuf"
 	"github.com/sigstore/sigstore-go/pkg/verify"
@@ -30,12 +32,28 @@ const (
 	PreTransferIdentityPrefix = "https://github.com/projectmesh-io/mesh-cli/.github/workflows/release-tag.yml@refs/tags/"
 	// Issuer is GitHub Actions' OIDC issuer.
 	Issuer = "https://token.actions.githubusercontent.com"
-	// RunsheetIssuer is runsheet's OIDC issuer, the platform-held identity
-	// a release shipped from a node is signed under (mesh-specs ADR 017).
-	RunsheetIssuer = "https://oidc.runsheet.dev"
-	// RunsheetIdentityPrefix + the tag is the SAN of a release a node
-	// shipped: runsheet's release unit of runsheet/mesh-cli on that tag.
-	RunsheetIdentityPrefix = "https://runsheet.dev/releases/runsheet/mesh-cli@refs/tags/"
+	// PlatformIssuer is the issuer our own Sigstore (Fulcio and Rekor on
+	// dl360, mesh-specs ADR 068) names on a certificate it issues to a
+	// Mesh job session: Latchkey's session issuer, whose ID token for
+	// audience sigstore is the job's signing token (ADR 002 amendment
+	// 2026-11-15: releases ship through runsheet).
+	PlatformIssuer = "https://auth.runsheet.dev"
+	// PlatformSANPattern is the SAN of that certificate for a runsheet
+	// job: the session token's subject, mesh:<tenant>/<product>:job:<job>
+	// :lease:<n> (Latchkey oidc/sessiontoken.go sessionSubject). It names
+	// the job, not the tag, so a platform release binds its version
+	// through VersionAsset instead.
+	PlatformSANPattern = `^mesh:[a-z]+/runsheet:job:[0-9A-Za-z-]+:lease:[0-9]+$`
+	// PlatformRepository and PlatformBuildConfig are the certificate's
+	// SourceRepositoryURI and BuildConfigURI extensions for a deploy job
+	// of runsheet/mesh-cli (Fulcio's runsheet-mesh CI template): the
+	// repository the job checked out and the kind it ran.
+	PlatformRepository  = "https://github.com/runsheet/mesh-cli"
+	PlatformBuildConfig = "https://projectmesh.io/products/runsheet/kinds/deploy"
+	// VersionAsset is the file a platform release lists in SHA256SUMS
+	// whose bytes are the version alone (no newline): the signed sums so
+	// name the version the certificate does not.
+	VersionAsset = "mesh-version"
 )
 
 // preTransferTags are the tags released under the old owner, signed by
@@ -65,20 +83,43 @@ type Policy struct {
 	// withoutSCTs drops the embedded-SCT requirement. Only tests set it:
 	// a virtual Sigstore's leaf certificates carry no SCTs, Fulcio's do.
 	withoutSCTs bool
+
+	// Platform is the second way a release is accepted: signed through our
+	// own Sigstore by a runsheet deploy job (ADR 002 amendment
+	// 2026-11-15). Nil accepts only Identities.
+	Platform *PlatformTrust
+}
+
+// PlatformTrust is a release signed through our own Sigstore: a
+// certificate from its Fulcio (no CT log, so no SCTs), logged in its
+// Rekor, for PlatformIssuer and a SAN matching SANPattern, carrying the
+// Repository and BuildConfig extensions; the sums list VersionAsset for
+// the release's version.
+type PlatformTrust struct {
+	Issuer      string
+	SANPattern  string
+	Repository  string
+	BuildConfig string
+	// TrustedMaterial yields our Sigstore's root (embedded at build time).
+	TrustedMaterial func() (root.TrustedMaterial, error)
+
+	// withoutExtensions drops the extension match. Only tests set it: a
+	// virtual Sigstore's leaf certificates carry none.
+	withoutExtensions bool
 }
 
 // ReleasePolicy is the policy for version: signed by runsheet/mesh-cli's
-// release-tag.yml on the tag version, issued to GitHub Actions, or by
-// runsheet's release unit on that tag, issued by RunsheetIssuer — both
-// accepted through ADR 017's cut-over, for N=3 node-shipped releases —
-// (and, for a tag released before the transfer, the old owner's
-// release-tag.yml: PreTransferIdentityPrefix), chained to Sigstore's
-// public good instance (its trusted root fetched over TUF from the root
-// embedded in sigstore-go, cached under ~/.mesh/sigstore).
+// release-tag.yml on the tag version, issued to GitHub Actions, chained to
+// Sigstore's public good instance (its trusted root fetched over TUF from
+// the root embedded in sigstore-go, cached under ~/.mesh/sigstore) — and,
+// for a tag released before the transfer, the old owner's release-tag.yml
+// (PreTransferIdentityPrefix) — or signed through our own Sigstore by a
+// runsheet deploy job of runsheet/mesh-cli, with the version in the
+// signed sums (Platform; ADR 002 amendment 2026-11-15). Releases cut by
+// Actions before the cut-over keep verifying.
 func ReleasePolicy(version string) Policy {
 	ids := []Identity{
 		{Issuer: Issuer, SAN: IdentityPrefix + version},
-		{Issuer: RunsheetIssuer, SAN: RunsheetIdentityPrefix + version},
 	}
 	if preTransferTags[version] {
 		ids = append(ids, Identity{Issuer: Issuer, SAN: PreTransferIdentityPrefix + version})
@@ -86,7 +127,25 @@ func ReleasePolicy(version string) Policy {
 	return Policy{
 		Identities:      ids,
 		TrustedMaterial: publicGoodRoot,
+		Platform: &PlatformTrust{
+			Issuer:          PlatformIssuer,
+			SANPattern:      PlatformSANPattern,
+			Repository:      PlatformRepository,
+			BuildConfig:     PlatformBuildConfig,
+			TrustedMaterial: platformRoot,
+		},
 	}
+}
+
+//go:embed runsheet_trusted_root.json
+var platformRootJSON []byte
+
+// platformRoot is our own Sigstore's trusted root, as Latchkey publishes
+// it at auth.runsheet.dev/.well-known/sigstore/trusted_root.json, embedded
+// when the binary is built: a node needs no network to trust it, and a
+// rotated root ships in the release that follows the rotation.
+func platformRoot() (root.TrustedMaterial, error) {
+	return root.NewTrustedRootFromJSON(platformRootJSON)
 }
 
 // WithoutSCTs is p without the embedded-SCT requirement, for tests in
@@ -122,10 +181,22 @@ func Verify(rel *Release, p Policy) error {
 			return refuse(ErrMissingAsset, nil, "release %s has no %s", rel.Version, a.name)
 		}
 	}
-	if len(p.Identities) == 0 || p.TrustedMaterial == nil {
+	if (len(p.Identities) == 0 || p.TrustedMaterial == nil) && p.Platform == nil {
 		return refuse(ErrSignature, nil, "no signing policy")
 	}
-	if err := verifySignature(rel, p); err != nil {
+	// The certificate's issuer says which way the release was signed:
+	// our own Sigstore's (PlatformIssuer) is judged against Platform alone,
+	// anything else against the public-good identities alone, so a refusal
+	// names the way the release was actually meant to verify.
+	var err error
+	if p.Platform != nil && bundleIssuer(rel.Bundle) == p.Platform.Issuer {
+		err = verifyPlatform(rel, p.Platform)
+	} else if len(p.Identities) > 0 && p.TrustedMaterial != nil {
+		err = verifySignature(rel, p)
+	} else {
+		err = refuse(ErrIdentity, nil, "%s is not signed by a runsheet deploy job of runsheet/mesh-cli on %s", SumsAsset, rel.Version)
+	}
+	if err != nil {
 		return err
 	}
 	return verifyChecksum(rel)
@@ -170,6 +241,77 @@ func verifySignature(rel *Release, p Policy) error {
 		return refuse(ErrIdentity, err, "%s is not signed by release-tag.yml on %s", SumsAsset, rel.Version)
 	}
 	return refuse(ErrSignature, err, "%s signature does not verify", SumsAsset)
+}
+
+// bundleIssuer is the OIDC issuer the bundle's signing certificate names,
+// or "" when it has none or cannot be read (the full verification then
+// says why).
+func bundleIssuer(raw []byte) string {
+	b, err := parseBundle(raw)
+	if err != nil {
+		return ""
+	}
+	vc, err := b.VerificationContent()
+	if err != nil || vc.Certificate() == nil {
+		return ""
+	}
+	sum, err := certificate.SummarizeCertificate(vc.Certificate())
+	if err != nil {
+		return ""
+	}
+	return sum.Issuer
+}
+
+// verifyPlatform accepts rel's bundle when it is a signature over the sums
+// by a certificate from our own Sigstore for t's identity, logged in its
+// Rekor (no SCTs: our Fulcio keeps no CT log), and the sums name
+// rel.Version in VersionAsset.
+func verifyPlatform(rel *Release, t *PlatformTrust) error {
+	b, err := parseBundle(rel.Bundle)
+	if err != nil {
+		return refuse(ErrSignature, err, "%s is not a valid Sigstore bundle", BundleAsset)
+	}
+	if t.TrustedMaterial == nil {
+		return refuse(ErrSignature, nil, "no signing policy")
+	}
+	tm, err := t.TrustedMaterial()
+	if err != nil {
+		return fmt.Errorf("platform sigstore trusted root: %w", err)
+	}
+	v, err := verify.NewVerifier(tm, verify.WithTransparencyLog(1), verify.WithObserverTimestamps(1))
+	if err != nil {
+		return fmt.Errorf("platform sigstore verifier: %w", err)
+	}
+	san, err := verify.NewSANMatcher("", t.SANPattern)
+	if err != nil {
+		return fmt.Errorf("platform sigstore identity: %w", err)
+	}
+	iss, err := verify.NewIssuerMatcher(t.Issuer, "")
+	if err != nil {
+		return fmt.Errorf("platform sigstore identity: %w", err)
+	}
+	var ext certificate.Extensions
+	if !t.withoutExtensions {
+		ext = certificate.Extensions{SourceRepositoryURI: t.Repository, BuildConfigURI: t.BuildConfig}
+	}
+	id, err := verify.NewCertificateIdentity(san, iss, ext)
+	if err != nil {
+		return fmt.Errorf("platform sigstore identity: %w", err)
+	}
+	_, err = v.Verify(b, verify.NewPolicy(verify.WithArtifact(bytes.NewReader(rel.Sums)), verify.WithCertificateIdentity(id)))
+	if err != nil {
+		var mismatch *verify.ErrNoMatchingCertificateIdentity
+		if errors.As(err, &mismatch) {
+			return refuse(ErrIdentity, err, "%s is not signed by release-tag.yml on %s, nor by a runsheet deploy job of runsheet/mesh-cli", SumsAsset, rel.Version)
+		}
+		return refuse(ErrSignature, err, "%s signature does not verify", SumsAsset)
+	}
+	want, ok := sumFor(rel.Sums, VersionAsset)
+	got := sha256.Sum256([]byte(rel.Version))
+	if !ok || subtle.ConstantTimeCompare(got[:], want) != 1 {
+		return refuse(ErrIdentity, nil, "%s signed by a runsheet deploy job does not name %s in %s", SumsAsset, rel.Version, VersionAsset)
+	}
+	return nil
 }
 
 func verifyChecksum(rel *Release) error {
