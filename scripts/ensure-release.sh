@@ -2,12 +2,11 @@
 # ensure-release.sh <tag> <sha> <release-dir>
 #
 # `gh release create` fails outright when the tag's release already
-# exists ("release already exists"), which turned re-running the
-# publish job after a mirror failure into deleting the release by hand
-# (run 36499785802, 2026-09-29, "release exists"). This is the
-# idempotent replacement release-tag.yml's "Create release on
-# runsheet/mesh-cli" step and scripts/mirror-release.sh both call in
-# place of a bare `gh release create`:
+# exists ("release already exists"), which turned re-running a publish
+# step after a partial failure into deleting the release by hand (run
+# 36499785802, 2026-09-29, "release exists"). This is the idempotent
+# replacement a release's publish step calls in place of a bare `gh
+# release create`:
 #
 #   - no release for <tag> on GH_REPO yet: create it exactly as
 #     before — the five files in <release-dir>, --prerelease when the

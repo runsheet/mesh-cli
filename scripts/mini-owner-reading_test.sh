@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Tests scripts/mini-owner-reading.sh against a fake `curl` on PATH (the
-# fake-gh pattern of mirror-release_test.sh, adapted to one gateway
-# endpoint distinguished by the query it carries) serving fixture
+# Tests scripts/mini-owner-reading.sh against a fake `curl` on PATH (a
+# fake-gh pattern adapted to one gateway endpoint distinguished by the
+# query it carries) serving fixture
 # answers under scripts/testdata/mini-owner-reading/: nodeIndexs with
 # ownerKind served, the "Cannot query field" refusal and its fallback
 # without it, enterpriseIndexs, and workItemIndexs per org and status.

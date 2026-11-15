@@ -862,6 +862,46 @@ Tests: `internal/selfupdate/verify_test.go` (`TestVerifyPlatformRelease`,
 `TestPlatformRootIsEmbedded`), `internal/selfupdate/fetch_test.go`
 (`TestChannelPrefersRunsheetsStore`).
 
+## Amendment: the deploy.yml cut-over (goal releases-ship-through-runsheet, 2026-11-15)
+
+The platform release identity above (goal `releases-ship-from-a-node`)
+was only the verifier's half; this is the workflow's. `release-on-merge.yml`,
+`release-tag.yml` and `release.yml` are **deleted**, along with the
+scripts that existed only for `release-tag.yml`'s mirror-to-`runsheet/mesh`
+step — `scripts/mirror-release.sh`, `scripts/exchange-workflow-token.sh`,
+`scripts/mirror-token.sh` and `scripts/mirror-token-reading.sh` (and
+their tests and fixtures) — and `.runsheet/validate.yml`'s `scripts`
+suite drops them from its list.
+
+`.runsheet/deploy.yml` is what replaces them: a declarative description
+of the release path, in the shape `.runsheet/validate.yml` already set
+for validation (`adr-013-validation-runs-from-a-declared-config`). For
+a node-changing merge to main it describes tagging the next version;
+cross-building the three binaries and the two-arch node image; signing
+`SHA256SUMS` keyless through runsheet's own Fulcio and Rekor — not
+GitHub Actions' OIDC, and not public-good's — under the platform
+release identity the amendment above names; uploading the five assets
+to runsheet's own release store; and pushing the signed node image. It
+names no GitHub workflow and no mirror step: the mirror to the public
+`runsheet/mesh` repository, and the token exchange that published it,
+are not part of this path — runsheet's own release store is now where
+a release's assets live. As written today `.runsheet/deploy.yml` is
+the description alone; no node code runs it yet, the way `internal/validate`
+already runs `.runsheet/validate.yml` — that is `internal/release`'s to
+do, a later item of this goal.
+
+`scripts/ensure-release.sh` stays: the idempotent-create behaviour it
+documents (an identical existing release kept, a differing one refused)
+is still what a release's publish step does, even once its caller is
+`.runsheet/deploy.yml` rather than `release-tag.yml`.
+
+**Owed as a follow-up.** `release.yml` was the Shipper's trigger
+(`gh workflow run release.yml --field version=<semver>`, Spec 31 OQ-2)
+for an unsigned, run-artifact-only build when a work item shipped.
+Deleting it drops that trigger with nothing yet in its place; giving
+the Shipper a way to raise a release unit against `.runsheet/deploy.yml`
+instead is a later item.
+
 ## Consequences
 
 - Renaming an asset, the workflow file, or the repo breaks every

@@ -1,3 +1,0 @@
-{
-  "query": "mutation { exchangeWorkflowToken(repository: \"runsheet/mesh\", binding: \"mesh-cli-release\") { token expiresAt repository permissions } }"
-}
