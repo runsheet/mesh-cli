@@ -65,10 +65,13 @@ type Source struct {
 // Manifest is the bundle's manifest: product.yml less the product, its
 // client and its directories.
 type Manifest struct {
-	DisplayName string   `json:"display_name"`
-	MCP         *MCP     `json:"mcp,omitempty"`
-	Hooks       *Hooks   `json:"hooks,omitempty"`
-	Triggers    []string `json:"triggers,omitempty"`
+	DisplayName string `json:"display_name"`
+	MCP         *MCP   `json:"mcp,omitempty"`
+	Hooks       *Hooks `json:"hooks,omitempty"`
+	// Triggers is read from product.yml for the CLI's own checks (a
+	// role's trigger must be one the manifest names) but not sent: Mesh's
+	// catalogue has no triggers field and decodes strictly.
+	Triggers []string `json:"-"`
 }
 
 // MCP is the product's own MCP server and the audience a session token
