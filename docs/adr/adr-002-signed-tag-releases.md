@@ -771,6 +771,62 @@ Tests: `internal/selfupdate/verify_test.go`
 `TestReleasePolicyPreTransferTags`, `TestVerifyPlatformReleaseIdentity`,
 `TestVerifyActionsReleaseUnderReleasePolicy`).
 
+## Amendment: the platform identity chains to its own root (goal runsheet-verifies-its-own-sigstore-root, 2026-11-15)
+
+The amendment above still had both identities chaining to the same
+trusted root: `Policy.TrustedMaterial` alone, Sigstore's public-good
+instance. That was never right for the platform identity — a node's
+release unit is signed keyless on runsheet's own Sigstore instance, not
+the public-good one, so a certificate forged or mis-issued on *any*
+Sigstore the public-good root recognizes could never have passed the
+platform's identity check, but it was only the exact-SAN match that
+stopped it, not the chain.
+
+`Policy` now carries the two issuers' roots apart:
+`TrustedMaterial` for the Actions issuer (and the pre-transfer one,
+both still Sigstore's public-good instance, fetched over TUF as
+before), and a new `RunsheetTrustedMaterial` for `RunsheetIssuer`
+alone — runsheet's own Fulcio and Rekor. `verifySignature` groups
+`Policy.Identities` by issuer and runs each group's chain-and-identity
+check against only its own root (`verifyAgainst`); a certificate from
+one instance is never offered the other's root to chain to, so a
+mismatch there fails as a chain error before identity is even
+considered. `Identity` itself is unchanged — still a plain
+`{Issuer, SAN}` pair, comparable with `==`; the split lives in `Policy`
+instead.
+
+`RunsheetTrustedMaterial`'s production implementation,
+`runsheetRoot`, is an **embedded copy alone**:
+`internal/selfupdate/testdata/runsheet_trusted_root.json`, read with
+`//go:embed`. There is no TUF repository of runsheet's own to fetch a
+refresh from yet — that is a later amendment here, the way the
+Actions/public-good split between `publicGoodRoot` (TUF-fetched,
+cached under `~/.mesh/sigstore`) and this embedded copy stays open
+until it lands. Until then, the only way a rotation of runsheet's own
+Fulcio or Rekor key reaches a node is a new mesh-cli binary carrying
+the updated embed.
+
+**The dl360 bootstrap.** dl360 is today's only node, and it is already
+running pre-split mesh-cli. Because there is no fetch path, the first
+binary carrying this split cannot reach dl360 through `mesh node
+upgrade`'s normal self-update chain — that chain itself verifies the
+incoming release against the *old*, single-root policy, which it still
+satisfies, so the swap itself is unaffected; what changes is only that
+this one build is the first one dl360 runs with a `RunsheetTrustedMaterial`
+at all. It is installed the same way any by-hand deploy is (this
+repo's AGENTS.md, "Deploying to the mini by hand"): built for
+linux/amd64, `scp`'d to dl360 as `~/bin/mesh.new`, and swapped in with
+`mesh node upgrade --binary ~/bin/mesh.new`. No separate bootstrap step
+exists or is needed beyond that one ordinary upgrade; it is called out
+here only because it is the one time this embed changes a running
+node's trust from "none for this issuer" to "runsheet's own root",
+rather than rotating an already-present one.
+
+Tests: `internal/selfupdate/verify_test.go`
+(`TestVerifyRunsheetIdentityUsesItsOwnTrustedRoot`,
+`TestVerifyPlatformReleaseIdentity`,
+`TestVerifyActionsReleaseUnderReleasePolicy`).
+
 ## Amendment: a sandboxed node swaps without a drain too (goal a-sandboxed-session-outlives-the-node, 2026-10-13)
 
 The two places above that keep a drain for a sandboxed node — the

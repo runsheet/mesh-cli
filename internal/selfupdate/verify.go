@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"crypto/subtle"
+	_ "embed"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/sigstore/sigstore-go/pkg/bundle"
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/tuf"
 	"github.com/sigstore/sigstore-go/pkg/verify"
@@ -59,8 +61,14 @@ type Policy struct {
 	// must match one of them exactly, issuer and SAN alike.
 	Identities []Identity
 	// TrustedMaterial yields the Sigstore roots (Fulcio, Rekor, CT logs,
-	// TSAs) the bundle must chain to.
+	// TSAs) a bundle from Issuer (GitHub Actions) must chain to.
 	TrustedMaterial func() (root.TrustedMaterial, error)
+	// RunsheetTrustedMaterial yields the roots a bundle from RunsheetIssuer
+	// must chain to: runsheet's own Sigstore instance, not the public-good
+	// one TrustedMaterial chains Actions-issued bundles to. Each identity
+	// is checked only against the material for its own issuer, so a
+	// certificate from one instance never passes on the other's root.
+	RunsheetTrustedMaterial func() (root.TrustedMaterial, error)
 
 	// withoutSCTs drops the embedded-SCT requirement. Only tests set it:
 	// a virtual Sigstore's leaf certificates carry no SCTs, Fulcio's do.
@@ -68,13 +76,15 @@ type Policy struct {
 }
 
 // ReleasePolicy is the policy for version: signed by runsheet/mesh-cli's
-// release-tag.yml on the tag version, issued to GitHub Actions, or by
-// runsheet's release unit on that tag, issued by RunsheetIssuer — both
+// release-tag.yml on the tag version, issued to GitHub Actions and chained
+// to Sigstore's public good instance (its trusted root fetched over TUF
+// from the root embedded in sigstore-go, cached under ~/.mesh/sigstore),
+// or by runsheet's release unit on that tag, issued by RunsheetIssuer and
+// chained to runsheet's own trusted root (runsheetRoot) instead — both
 // accepted through ADR 017's cut-over, for N=3 node-shipped releases —
 // (and, for a tag released before the transfer, the old owner's
-// release-tag.yml: PreTransferIdentityPrefix), chained to Sigstore's
-// public good instance (its trusted root fetched over TUF from the root
-// embedded in sigstore-go, cached under ~/.mesh/sigstore).
+// release-tag.yml: PreTransferIdentityPrefix, chained to the public good
+// root alongside Actions').
 func ReleasePolicy(version string) Policy {
 	ids := []Identity{
 		{Issuer: Issuer, SAN: IdentityPrefix + version},
@@ -84,8 +94,9 @@ func ReleasePolicy(version string) Policy {
 		ids = append(ids, Identity{Issuer: Issuer, SAN: PreTransferIdentityPrefix + version})
 	}
 	return Policy{
-		Identities:      ids,
-		TrustedMaterial: publicGoodRoot,
+		Identities:              ids,
+		TrustedMaterial:         publicGoodRoot,
+		RunsheetTrustedMaterial: runsheetRoot,
 	}
 }
 
@@ -105,6 +116,22 @@ func publicGoodRoot() (root.TrustedMaterial, error) {
 	return root.FetchTrustedRootWithOptions(opts)
 }
 
+// embeddedRunsheetTrustedRoot is runsheet's own Sigstore instance's
+// trusted root (Fulcio and Rekor alone — the release unit signs no
+// certificate-transparency entry and asks no timestamp authority): the
+// amendment below names it.
+//
+//go:embed testdata/runsheet_trusted_root.json
+var embeddedRunsheetTrustedRoot []byte
+
+// runsheetRoot is runsheet's own trusted root, distinct from Sigstore's
+// public good instance publicGoodRoot fetches: the copy embedded here.
+// There is no fetched refresh yet (the amendment below); a rotation of
+// runsheet's own Fulcio or Rekor key ships a new mesh-cli instead.
+func runsheetRoot() (root.TrustedMaterial, error) {
+	return root.NewTrustedRootFromJSON(embeddedRunsheetTrustedRoot)
+}
+
 // Verify accepts rel only when (1) its Sigstore bundle is a valid signature
 // over SHA256SUMS by p's identity and issuer, chained to p's trusted root
 // and logged in its transparency log, and (2) the binary's sha256 is its
@@ -122,7 +149,7 @@ func Verify(rel *Release, p Policy) error {
 			return refuse(ErrMissingAsset, nil, "release %s has no %s", rel.Version, a.name)
 		}
 	}
-	if len(p.Identities) == 0 || p.TrustedMaterial == nil {
+	if len(p.Identities) == 0 {
 		return refuse(ErrSignature, nil, "no signing policy")
 	}
 	if err := verifySignature(rel, p); err != nil {
@@ -131,18 +158,66 @@ func Verify(rel *Release, p Policy) error {
 	return verifyChecksum(rel)
 }
 
+// verifySignature checks rel's bundle against each of p's two issuer
+// groups — RunsheetIssuer against p.RunsheetTrustedMaterial, every other
+// issuer (GitHub Actions, and the pre-transfer identity, both issued by
+// Issuer) against p.TrustedMaterial — rather than one trust material for
+// every identity: a certificate from runsheet's own Sigstore instance must
+// chain to runsheet's own root, never the public-good one, and the
+// reverse. The bundle's single certificate chains to at most one of the
+// two, so at most one group's chain ever validates.
 func verifySignature(rel *Release, p Policy) error {
 	b, err := parseBundle(rel.Bundle)
 	if err != nil {
 		return refuse(ErrSignature, err, "%s is not a valid Sigstore bundle", BundleAsset)
 	}
-	tm, err := p.TrustedMaterial()
+	var runsheetIDs, otherIDs []Identity
+	for _, ident := range p.Identities {
+		if ident.Issuer == "" || ident.SAN == "" {
+			return refuse(ErrSignature, nil, "no signing policy")
+		}
+		if ident.Issuer == RunsheetIssuer {
+			runsheetIDs = append(runsheetIDs, ident)
+		} else {
+			otherIDs = append(otherIDs, ident)
+		}
+	}
+	var errs []error
+	if len(otherIDs) > 0 {
+		errs = append(errs, verifyAgainst(b, rel, p.TrustedMaterial, otherIDs, p.withoutSCTs))
+	}
+	if len(runsheetIDs) > 0 {
+		errs = append(errs, verifyAgainst(b, rel, p.RunsheetTrustedMaterial, runsheetIDs, p.withoutSCTs))
+	}
+	for _, e := range errs {
+		if e == nil {
+			return nil
+		}
+	}
+	// The group whose root the certificate actually chains to is the one
+	// whose verdict matters; prefer its ErrIdentity (a real mismatch)
+	// over the other group's ErrSignature (its root never matched at all).
+	for _, e := range errs {
+		if errors.Is(e, ErrIdentity) {
+			return e
+		}
+	}
+	return errs[0]
+}
+
+// verifyAgainst runs one issuer group's chain-and-identity check against
+// its own trusted material.
+func verifyAgainst(b *bundle.Bundle, rel *Release, material func() (root.TrustedMaterial, error), ids []Identity, withoutSCTs bool) error {
+	if material == nil {
+		return refuse(ErrSignature, nil, "no signing policy")
+	}
+	tm, err := material()
 	if err != nil {
 		// Not a verdict on the release: the roots could not be had.
 		return fmt.Errorf("sigstore trusted root: %w", err)
 	}
 	opts := []verify.VerifierOption{verify.WithTransparencyLog(1), verify.WithObserverTimestamps(1)}
-	if !p.withoutSCTs {
+	if !withoutSCTs {
 		opts = append(opts, verify.WithSignedCertificateTimestamps(1))
 	}
 	v, err := verify.NewVerifier(tm, opts...)
@@ -151,10 +226,7 @@ func verifySignature(rel *Release, p Policy) error {
 	}
 	// Each identity is an exact issuer and SAN; the certificate must match one.
 	popts := []verify.PolicyOption{}
-	for _, ident := range p.Identities {
-		if ident.Issuer == "" || ident.SAN == "" {
-			return refuse(ErrSignature, nil, "no signing policy")
-		}
+	for _, ident := range ids {
 		id, err := verify.NewShortCertificateIdentity(ident.Issuer, "", ident.SAN, "")
 		if err != nil {
 			return fmt.Errorf("sigstore identity: %w", err)

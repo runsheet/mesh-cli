@@ -68,6 +68,7 @@ func newFixtureFor(t *testing.T, testVersion string) fixture {
 	})
 	p := ReleasePolicy(testVersion)
 	p.TrustedMaterial = func() (root.TrustedMaterial, error) { return vs, nil }
+	p.RunsheetTrustedMaterial = func() (root.TrustedMaterial, error) { return vs, nil }
 	p.withoutSCTs = true
 	return fixture{
 		vs:     vs,
@@ -270,5 +271,50 @@ func TestVerifyActionsReleaseUnderReleasePolicy(t *testing.T) {
 	f.rel.Bundle = signSumsIssuer(t, f.vs, IdentityPrefix+"v0.2.300", RunsheetIssuer, f.rel.Sums)
 	if err := Verify(f.rel, f.policy); !errors.Is(err, ErrIdentity) {
 		t.Fatalf("the Actions SAN under the runsheet issuer: Verify = %v, want ErrIdentity", err)
+	}
+}
+
+// A release signed on runsheet's own virtual Sigstore chains to
+// RunsheetTrustedMaterial alone, never TrustedMaterial (here a separate
+// virtual Sigstore of its own, so a chain check against the wrong root
+// fails outright rather than merely mismatching identity): it verifies
+// for its own tag, is refused for another tag's SAN, and is refused when
+// the same SAN is signed under the Actions issuer instead.
+func TestVerifyRunsheetIdentityUsesItsOwnTrustedRoot(t *testing.T) {
+	vs, err := ca.NewVirtualSigstore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	actionsOnly, err := ca.NewVirtualSigstore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const version = "v1.2.3"
+	bin := []byte("#!/bin/sh\necho mesh " + version + "\n")
+	sums := sumsFor(map[string][]byte{"mesh-linux-amd64": bin})
+	policy := func() Policy {
+		p := ReleasePolicy(version)
+		p.TrustedMaterial = func() (root.TrustedMaterial, error) { return actionsOnly, nil }
+		p.RunsheetTrustedMaterial = func() (root.TrustedMaterial, error) { return vs, nil }
+		p.withoutSCTs = true
+		return p
+	}
+	rel := func(bundle []byte) *Release {
+		return &Release{Version: version, Asset: "mesh-linux-amd64", Binary: bin, Sums: sums, Bundle: bundle}
+	}
+
+	bundle := signSumsIssuer(t, vs, RunsheetIdentityPrefix+version, RunsheetIssuer, sums)
+	if err := Verify(rel(bundle), policy()); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	bundle = signSumsIssuer(t, vs, RunsheetIdentityPrefix+"v1.2.4", RunsheetIssuer, sums)
+	if err := Verify(rel(bundle), policy()); !errors.Is(err, ErrIdentity) {
+		t.Fatalf("another tag's SAN: Verify = %v, want ErrIdentity", err)
+	}
+
+	bundle = signSumsIssuer(t, vs, RunsheetIdentityPrefix+version, Issuer, sums)
+	if err := Verify(rel(bundle), policy()); !errors.Is(err, ErrIdentity) {
+		t.Fatalf("the runsheet SAN under the Actions issuer: Verify = %v, want ErrIdentity", err)
 	}
 }

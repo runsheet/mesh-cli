@@ -1,0 +1,40 @@
+{
+  "mediaType": "application/vnd.dev.sigstore.trustedroot+json;version=0.1",
+  "tlogs": [
+    {
+      "baseUrl": "https://rekor.runsheet.dev",
+      "hashAlgorithm": "SHA2_256",
+      "publicKey": {
+        "rawBytes": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEnqsggjM/9foafVyOjJw1bzbpxzprTHPOIUivNRLvxnapapL0bKovmrjkDPV/Nzn8GzNBirdwBBVuYpecKGTuyw==",
+        "keyDetails": "PKIX_ECDSA_P256_SHA_256",
+        "validFor": {
+          "start": "2026-10-10T00:00:00Z"
+        }
+      },
+      "logId": {
+        "keyId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+      }
+    }
+  ],
+  "certificateAuthorities": [
+    {
+      "subject": {
+        "organization": "runsheet.dev",
+        "commonName": "runsheet"
+      },
+      "uri": "https://fulcio.runsheet.dev",
+      "certChain": {
+        "certificates": [
+          {
+            "rawBytes": "MIIBhjCCASugAwIBAgIBATAKBggqhkjOPQQDAjAqMRUwEwYDVQQKEwxydW5zaGVldC5kZXYxETAPBgNVBAMTCHJ1bnNoZWV0MB4XDTI2MTAxMDAwMDAwMFoXDTM2MTAxMDAwMDAwMFowKjEVMBMGA1UEChMMcnVuc2hlZXQuZGV2MREwDwYDVQQDEwhydW5zaGVldDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABKCHvo17fP2F6bSEnunOqbvSC4nIPIEcDOK43Ra1XQflHk7MNCVZAftPfHmrconjJosrKZfYNf/ANpnUuyEJeRCjQjBAMA4GA1UdDwEB/wQEAwIChDAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBRDD7o5D6b58rAcXRCHHXca/HVndTAKBggqhkjOPQQDAgNJADBGAiEAzgCriGpfUfsXms+CEXj5Ih2S/3uJghLIKhVkXvDVEtkCIQC101mPGZWLJy1GjyQ2vAYcE/svGkhdC0cqfLA/4ZG/lw=="
+          }
+        ]
+      },
+      "validFor": {
+        "start": "2026-10-10T00:00:00Z"
+      }
+    }
+  ],
+  "ctlogs": [],
+  "timestampAuthorities": []
+}
