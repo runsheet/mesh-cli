@@ -89,7 +89,7 @@ type Record struct {
 // non-work cause Mesh takes as a hand-back), a hand-back with a cause,
 // or none — the lease was no longer the node's to report.
 type End struct {
-	// Report is finish, fail, hand_back or none.
+	// Report is finish, fail, hand_back, no_longer_needed or none.
 	Report string `json:"report"`
 	Cause  string `json:"cause,omitempty"`
 	Reason string `json:"reason,omitempty"`
@@ -101,6 +101,10 @@ const (
 	ReportFail     = "fail"
 	ReportHandBack = "hand_back"
 	ReportNone     = "none"
+	// ReportNoLongerNeeded is a lease whose job the node ended before it
+	// started: a precondition of the job no longer held (ADR-052). It is
+	// neither a failure nor a hand-back.
+	ReportNoLongerNeeded = "no_longer_needed"
 )
 
 // hold is one thing the actor releases.

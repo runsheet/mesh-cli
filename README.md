@@ -269,6 +269,11 @@ relay, judged by the brief's push rules; when the brief names a pin,
 the node pushes the final head to it itself once the session has
 finished
 ([ADR-050](docs/adr/adr-050-the-node-pins-a-leases-final-head-itself.md)).
+When the brief names preconditions (a ref or a pull request's head that
+must still be at a commit), the node reads them through the same relay
+before the checkout, and a job whose head has moved ends
+`no_longer_needed` without starting: not a failure, not a hand-back
+([ADR-052](docs/adr/adr-052-the-node-checks-a-job-is-still-needed-before-it-starts.md)).
 AGENTS.md has the detail.
 
 A person's own `mesh mcp` `mesh_join` (see

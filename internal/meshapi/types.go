@@ -225,7 +225,43 @@ type Brief struct {
 	// MESH_REGISTRY (projectmesh-io/api ADR 001 amendment, registry
 	// through the relay); nil when the kind names none.
 	Registry *Registry `json:"registry,omitempty"`
+	// Preconditions are what the offer said must still be true when the
+	// job starts (projectmesh-io/api ADR 001 amendment, a job is still
+	// needed or ends quietly): the node checks each against the code
+	// host before it starts the lease's work, and ends the job
+	// no_longer_needed when one no longer holds (ADR-052). Nil when the
+	// offer named none.
+	Preconditions []Precondition `json:"preconditions,omitempty"`
 }
+
+// The precondition types a brief carries.
+const (
+	// PreconditionRefHead holds while Repo's Ref still points at SHA.
+	PreconditionRefHead = "ref_head"
+	// PreconditionPRHead holds while the head of Repo's pull request
+	// Number is still SHA.
+	PreconditionPRHead = "pr_head"
+)
+
+// Precondition is one thing that must still be true when a job starts:
+// {type: ref_head, repo, ref, sha} or {type: pr_head, repo, number, sha}.
+type Precondition struct {
+	Type   string `json:"type"`
+	Repo   string `json:"repo"`
+	Ref    string `json:"ref,omitempty"`
+	Number int    `json:"number,omitempty"`
+	SHA    string `json:"sha"`
+}
+
+// NoLongerNeededRequest is POST /v1/leases/{id}/no-longer-needed: which
+// precondition no longer holds, in the node's words.
+type NoLongerNeededRequest struct {
+	Reason string `json:"reason,omitempty"`
+}
+
+// EndNoLongerNeeded is the end of a job whose node found, before it
+// started, that a precondition no longer held: no hand-back, no failure.
+const EndNoLongerNeeded = "no_longer_needed"
 
 // Registry is a brief's artifact registry: its https origin, serving the
 // OCI Distribution API at /v2/ and binaries at /artifacts/.

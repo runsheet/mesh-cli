@@ -309,6 +309,15 @@ func (c *Client) HandBack(ctx context.Context, leaseID string, req HandBackReque
 	return c.end(ctx, leaseID, "hand-back", req)
 }
 
+// NoLongerNeeded ends the job as no longer needed: POST
+// /v1/leases/{id}/no-longer-needed. The lease's node found, before it
+// started the work, that a precondition of the job no longer holds
+// (projectmesh-io/api ADR 001 amendment, a job is still needed or ends
+// quietly). It is no hand-back and no failure.
+func (c *Client) NoLongerNeeded(ctx context.Context, leaseID string, req NoLongerNeededRequest) (*JobState, error) {
+	return c.end(ctx, leaseID, "no-longer-needed", req)
+}
+
 func (c *Client) end(ctx context.Context, leaseID, route string, body any) (*JobState, error) {
 	var out JobState
 	if _, _, err := c.do(ctx, http.MethodPost, leasePath(leaseID, route), body, &out); err != nil {

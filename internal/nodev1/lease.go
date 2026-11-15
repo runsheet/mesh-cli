@@ -81,6 +81,10 @@ type outcome struct {
 	// exposed is an injected value seen where it must not go: the job
 	// ends credential_exposed (canary.go)
 	exposed *credentialExposed
+	// notNeeded is the precondition of the job that no longer held when
+	// the node came to start it: the lease's work never started, and the
+	// job ends no_longer_needed (needed.go)
+	notNeeded string
 }
 
 // runLease runs one lease to its report: the lease's directory and
@@ -306,6 +310,12 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 			}
 			return nil
 		})
+		// what the job said must still be true is checked now, through
+		// the grant, before the checkout, the pod and the session: a job
+		// whose pull request's head moved never starts (needed.go)
+		if why := r.notNeeded(ctx, grant, b, dir); why != "" {
+			return outcome{notNeeded: why}
+		}
 		if resume != "" {
 			if err := reattach(ctx, grant, b, workspace); err != nil {
 				r.logf("nodev1: lease %s: the parked thread's checkout is not reused (%v); starting afresh", b.LeaseID, err)
@@ -840,6 +850,14 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) (end actor.End)
 	case errors.Is(o.cause, errLeaseGone):
 		r.logf("nodev1: lease %s ended without a report: %v", id, o.cause)
 		return actor.End{Report: actor.ReportNone, Reason: o.cause.Error()}
+	case o.notNeeded != "":
+		// a precondition of the job no longer held before its work
+		// started: the job ends no_longer_needed, which is neither a
+		// hand-back nor a failure, whatever else was happening to the
+		// node (needed.go; ADR-052)
+		r.postAccess(id, o.access)
+		r.noLongerNeeded(id, o.notNeeded)
+		return actor.End{Report: actor.ReportNoLongerNeeded, Reason: o.notNeeded}
 	case errors.Is(o.cause, errNodeUpdate):
 		r.postAccess(id, o.access)
 		r.postUsage(id, o)
