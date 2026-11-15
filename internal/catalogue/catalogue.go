@@ -52,7 +52,7 @@ type Bundle struct {
 	Source   Source   `json:"source"`
 	Manifest Manifest `json:"manifest"`
 	Kinds    []Kind   `json:"kinds"`
-	Roles    []Role   `json:"roles"`
+	Roles    []Role   `json:"roles,omitempty"`
 }
 
 // Source is where the bundle came from, for the record.
@@ -135,6 +135,27 @@ type Kind struct {
 	NodeTools []string `json:"node_tools,omitempty"`
 	Tools     *Tools   `json:"tools,omitempty"`
 	Egress    *Egress  `json:"egress,omitempty"`
+	// Class (1 merge path … 5 background), Resources and Model are the
+	// kind's place in Mesh's queue, its pod size and its model policy
+	// (projectmesh-io/api catalogue.Kind); Mesh refuses a kind with no
+	// class or no model.default.
+	Class     int64          `json:"class,omitempty"`
+	Resources *KindResources `json:"resources,omitempty"`
+	Model     *KindModel     `json:"model,omitempty"`
+}
+
+// KindResources is a kind's pod size as Mesh's catalogue takes it.
+type KindResources struct {
+	CPUs  float64 `json:"cpus" yaml:"cpus"`
+	MemGB float64 `json:"mem_gb" yaml:"mem_gb"`
+}
+
+// KindModel is a kind's model policy as Mesh's catalogue takes it.
+type KindModel struct {
+	Default  string   `json:"default" yaml:"default"`
+	Escalate []string `json:"escalate,omitempty" yaml:"escalate"`
+	On       []string `json:"on,omitempty" yaml:"on"`
+	Max      string   `json:"max,omitempty" yaml:"max"`
 }
 
 // Tool is one tool a kind's session is served, named as the model sees
@@ -202,29 +223,33 @@ func (h *harness) UnmarshalYAML(n *yaml.Node) error {
 // kindFile is a kind file as written (runsheet ADR 061 §2); a role file
 // is one with the role fields beside it.
 type kindFile struct {
-	Kind         string   `yaml:"kind"`
-	Harness      harness  `yaml:"harness"`
-	Finish       string   `yaml:"finish"`
-	Access       []string `yaml:"access"`
-	Needs        string   `yaml:"needs"`
-	Pods         string   `yaml:"pods"`
-	Guidance     string   `yaml:"guidance"`
-	FinishSchema string   `yaml:"finish_schema"`
-	FinishTool   string   `yaml:"finish_tool"`
-	BriefTool    string   `yaml:"brief_tool"`
-	NodeTools    []string `yaml:"node_tools"`
-	Tools        *Tools   `yaml:"tools"`
-	Egress       *Egress  `yaml:"egress"`
-	Trigger      string   `yaml:"trigger"`
-	Identity     string   `yaml:"identity"`
-	Powers       []string `yaml:"powers"`
+	Kind         string         `yaml:"kind"`
+	Harness      harness        `yaml:"harness"`
+	Finish       string         `yaml:"finish"`
+	Access       []string       `yaml:"access"`
+	Needs        string         `yaml:"needs"`
+	Pods         string         `yaml:"pods"`
+	Guidance     string         `yaml:"guidance"`
+	FinishSchema string         `yaml:"finish_schema"`
+	FinishTool   string         `yaml:"finish_tool"`
+	BriefTool    string         `yaml:"brief_tool"`
+	NodeTools    []string       `yaml:"node_tools"`
+	Tools        *Tools         `yaml:"tools"`
+	Egress       *Egress        `yaml:"egress"`
+	Class        int64          `yaml:"class"`
+	Resources    *KindResources `yaml:"resources"`
+	Model        *KindModel     `yaml:"model"`
+	Trigger      string         `yaml:"trigger"`
+	Identity     string         `yaml:"identity"`
+	Powers       []string       `yaml:"powers"`
 }
 
 // bundled is the kind as the bundle sends it.
 func (k kindFile) bundled() Kind {
 	return Kind{Kind: k.Kind, Harness: k.Harness, Finish: k.Finish, Access: k.Access, Needs: k.Needs, Pods: k.Pods,
 		Guidance: k.Guidance, FinishSchema: k.FinishSchema, FinishTool: k.FinishTool, BriefTool: k.BriefTool,
-		NodeTools: k.NodeTools, Tools: k.Tools, Egress: k.Egress}
+		NodeTools: k.NodeTools, Tools: k.Tools, Egress: k.Egress,
+		Class: k.Class, Resources: k.Resources, Model: k.Model}
 }
 
 // MaxTools bounds the tools a kind's session is served: required,
@@ -395,6 +420,12 @@ func Load(root string, src Source) (*Bundle, error) {
 			}
 			if k.Finish == "" {
 				add("%s: `finish` is required", rel)
+			}
+			if k.Class < 1 || k.Class > 5 {
+				add("%s: `class` is required, 1 (merge path) to 5 (background): Mesh orders its queue by it", rel)
+			}
+			if k.Model == nil || strings.TrimSpace(k.Model.Default) == "" {
+				add("%s: `model.default` is required: each product sets its kind's model", rel)
 			}
 			text, err := guidance(root, rel, k)
 			if err != nil {
