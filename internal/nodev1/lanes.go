@@ -357,8 +357,7 @@ func roomLine(room meshapi.Resources) string {
 // laneRoom is the room lane name of b's lease runs on: what its suite
 // asks for (validate.yml's cpus and memory, each on its own), else the
 // node's sandbox default (node.yaml's sandbox.cpus and sandbox.memory,
-// read live: sandbox.AgentLimits) — never the lease's allowance, which
-// is its agent's. An ask the node could never fit beside the lease
+// read live: sandbox.AgentLimits) capped at the lease's own allowance. An ask the node could never fit beside the lease
 // itself (its scheduler's total less the lease's own hold) is lowered
 // to that, with a line in the log, rather than wait for room that
 // cannot come. It is both what the lane holds of the scheduler
@@ -366,11 +365,22 @@ func roomLine(room meshapi.Resources) string {
 func (r *Runtime) laneRoom(b *meshapi.Brief, name string, want validate.Resources) meshapi.Resources {
 	def := r.Pods.AgentLimits()
 	room := meshapi.Resources{CPUs: want.CPUs, MemGB: gb(want.MemoryBytes())}
+	// A suite that names no size gets the sandbox default, but never more
+	// than its lease's own allowance: a validate lease's unsized lanes stay
+	// at the kind's 4 CPUs, as they were, instead of dl360's 8, which
+	// reserved the whole node for repos that had declared nothing
+	// (2026-11-16). Only a suite that asks gets more than its lease.
 	if room.CPUs <= 0 {
 		room.CPUs = def.CPUs
+		if b.Resources.CPUs > 0 && b.Resources.CPUs < room.CPUs {
+			room.CPUs = b.Resources.CPUs
+		}
 	}
 	if room.MemGB <= 0 {
 		room.MemGB = gb(validate.MemoryBytes(def.Memory))
+		if b.Resources.MemGB > 0 && b.Resources.MemGB < room.MemGB {
+			room.MemGB = b.Resources.MemGB
+		}
 	}
 	if r.Scheduler == nil {
 		return room
