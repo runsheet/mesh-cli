@@ -1,6 +1,7 @@
 package nodev1
 
 import (
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -134,5 +135,25 @@ func TestEveryCauseTheNodeSendsIsOneMeshTakes(t *testing.T) {
 	}
 	if seen["CauseEgressDied"] {
 		t.Error("the node still names meshapi.CauseEgressDied")
+	}
+}
+
+// A checkout that failed because its git token was not minted says why
+// first: the reason Mesh hears is clipped to maxReason, and git's own
+// stderr ("no such relay, or its token expired") is the long, useless
+// part (dl360, 2026-11-16).
+func TestAMintFailedCheckoutKeepsTheMintErrorWhenClipped(t *testing.T) {
+	gitErr := errors.New("git clone: exit status 128: remote: gitrelay: no such relay, or its token expired\nfatal: repository 'http://127.0.0.1:36409/j/" + strings.Repeat("c", 4000) + "/git/runsheet/runsheet' not found")
+	mintErr := errors.New("latchkey: source token: 401 invalid_token: audience auth.runsheet.dev")
+	err := credentialFailed(mintFailedCheckout("runsheet/runsheet", mintErr, gitErr))
+	got := clip(err.Error(), maxReason)
+	if !strings.Contains(got, mintErr.Error()) {
+		t.Fatalf("clipped reason lost the mint error: %q", got)
+	}
+	if !errors.Is(err, gitErr) {
+		t.Fatal("the git error is no longer wrapped")
+	}
+	if infrastructureCause(err) != meshapi.CauseCredentialTimeout {
+		t.Fatalf("cause %q, want credential_timeout", infrastructureCause(err))
 	}
 }

@@ -486,4 +486,16 @@ func TestReconcileReadsTheLiveLeasesAfterListing(t *testing.T) {
 	if len(f.closed) != 0 {
 		t.Fatalf("closed %v: the new lease's grant", f.closed)
 	}
+
+	// and a grant whose lease's job directory is young is never closed,
+	// named by a live lease or not
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "lse_young"), 0o700)
+	os.Chtimes(filepath.Join(root, "lse_young"), t0, t0)
+	f2 := &fleet{now: func() time.Time { return t0 }, grants: []string{"lse_young", "lse_old"}}
+	s2 := &Supervisor{Fleet: f2, Mode: Cancel, LeaseRoot: root, Now: func() time.Time { return t0 }}
+	s2.Reconcile(context.Background())
+	if !slices.Equal(f2.closed, []string{"lse_old"}) {
+		t.Fatalf("closed %v, want only the grant with no young lease", f2.closed)
+	}
 }

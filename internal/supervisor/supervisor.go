@@ -376,6 +376,11 @@ func (s *Supervisor) Reconcile(ctx context.Context) Reconciled {
 		if _, ok := byLease[id]; ok {
 			continue
 		}
+		// a grant closed under a checkout answers its git "no such
+		// relay": a young lease's is never closed
+		if s.youngLease(id) {
+			continue
+		}
 		out.Grants = append(out.Grants, id)
 		if act {
 			s.Fleet.CloseGrant(id)

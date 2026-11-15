@@ -293,6 +293,10 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 			if err == nil {
 				// redacted and a canary before the relay first sends it
 				vals.addGitToken(b.Git, repo, tok)
+			} else {
+				// in full, on its own line: the checkout's reason is clipped
+				// and git's own stderr says only "no such relay"
+				r.logf("nodev1: lease %s: minting its git token for %s (%s access) failed: %v", b.LeaseID, repo, access, err)
 			}
 			mintMu.Lock()
 			mintErr = err
@@ -326,10 +330,13 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		}
 		if resume == "" {
 			if resumed, err = checkout(ctx, grant, b, workspace, r.mirrors, r.logf); err != nil {
-				err = fmt.Errorf("checking out %s: %w", b.Git.Repo, err)
 				mintMu.Lock()
 				if mintErr != nil {
-					err = credentialFailed(fmt.Errorf("%w (its git token was not minted: %v)", err, mintErr))
+					// the mint error first: the reason is clipped from its
+					// end (maxReason), and git's stderr is the long part
+					err = credentialFailed(mintFailedCheckout(b.Git.Repo, mintErr, err))
+				} else {
+					err = fmt.Errorf("checking out %s: %w", b.Git.Repo, err)
 				}
 				mintMu.Unlock()
 				return outcome{err: err, cause: context.Cause(ctx)}
@@ -1198,4 +1205,11 @@ func clip(s string, n int) string {
 		return s
 	}
 	return s[:n]
+}
+
+// mintFailedCheckout is a checkout that failed because its git token was
+// not minted: the mint's error leads, git's after it, so a reason
+// clipped to maxReason still says why the token was not minted.
+func mintFailedCheckout(repo string, mintErr, gitErr error) error {
+	return fmt.Errorf("checking out %s: its git token was not minted: %v; git: %w", repo, mintErr, gitErr)
 }

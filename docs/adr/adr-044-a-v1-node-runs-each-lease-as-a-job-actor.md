@@ -748,8 +748,12 @@ after they began running. Two causes, both fixed:
    the fleet once, then listed pods (two podman calls, seconds on a
    loaded node), lease-egress processes, job directories and grants,
    and judged each listing against that early read. A lease the node
-   took in between was judged unheld. Each part now reads the live
-   leases again after its own listing is in hand.
+   took in between was judged unheld: its egress process was stopped
+   (the lease was handed back `egress_died` seconds into running), and
+   its git grant was closed under its checkout, so git answered
+   `gitrelay: no such relay, or its token expired` and the lease went
+   back `credential_timeout`. Each part now reads the live leases again
+   after its own listing is in hand.
 2. **A lease named its egress process only once its relay sidecar had
    started.** `setEgress` ran when `rs.open` returned. The process
    itself had started well before that, before the sidecar's start,
@@ -765,7 +769,8 @@ after they began running. Two causes, both fixed:
    younger than `YoungAge` (`supervisor.DefaultYoungAge`, 5 minutes) is
    taken: not a pod whose lease's job directory or actor.json was
    written within it, and not an egress process that started within it
-   (`EgressProcess.StartedAt`, read from `/proc/<pid>/stat`). The
+   (`EgressProcess.StartedAt`, read from `/proc/<pid>/stat`), and not a
+   grant whose lease's job directory is that young. The
    reconcile line adds `spared N pod(s) and M egress process(es) of
    leases too young to judge` when it spares any.
 
@@ -807,6 +812,17 @@ therefore dropped `v1.capacity` and `cache` and wrote `capacity: 0`.
    file and a rename. `mesh node register` still saves through
    `Config` (v0 registration, unchanged here).
 
+**A failed git mint was invisible.** A checkout whose git token was
+not minted carried the mint's error after git's stderr. The reason is
+clipped to 2000 bytes from its end, so the mint's error was cut off.
+
+8. **The mint's error leads, and is logged on its own.** Every failed
+   `MintSource` is logged in full, with the lease, repository, access
+   and error. A checkout that failed for want of a token reads
+   `checking out <repo>: its git token was not minted: <error>; git:
+   <git's error>` (`mintFailedCheckout`).
+
+`TestAMintFailedCheckoutKeepsTheMintErrorWhenClipped`,
 `TestReconcileReadsTheLiveLeasesAfterListing`,
 `TestReconcileSparesYoungLeases` (internal/supervisor),
 `TestAReconcileWhileALeaseIsPreparedSparesItsEgressAndPod`,
