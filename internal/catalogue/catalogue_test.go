@@ -256,3 +256,41 @@ func TestLoadTakesAGoodSlotList(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestLoadSendsOnlyTheHooksMeshTakes: Mesh's catalogue has one hook,
+// `jobs`, and decodes strictly. product.yml's older `reply` (a URL, or a
+// map of url and auth, as Wardroom writes it) and `confirm_callback`
+// parse but stay out of the bundle; `jobs` goes as written.
+func TestLoadSendsOnlyTheHooksMeshTakes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		hooks string
+		want  string
+	}{
+		"reply as a map":    {"hooks:\n  reply:\n    url: https://hooks.acme.test/hooks/\n    auth: latchkey\n", ""},
+		"reply as a string": {"hooks:\n  reply: https://hooks.acme.test/hooks/\n  confirm_callback: true\n", ""},
+		"jobs":              {"hooks:\n  jobs: https://api.acme.test/mesh/jobs\n  reply: https://hooks.acme.test/hooks/\n", `{"jobs":"https://api.acme.test/mesh/jobs"}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			files := acme()
+			files[".mesh/product.yml"] = "product: acme\ndisplay_name: Acme\ntriggers: [thread]\n" + tc.hooks
+			b, err := Load(checkout(t, files), Source{})
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			raw, err := json.Marshal(b.Manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.want == "" {
+				if b.Manifest.Hooks != nil || strings.Contains(string(raw), "hooks") {
+					t.Fatalf("manifest carries hooks Mesh has no field for: %s", raw)
+				}
+				return
+			}
+			got, _ := json.Marshal(b.Manifest.Hooks)
+			if string(got) != tc.want {
+				t.Fatalf("hooks = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}

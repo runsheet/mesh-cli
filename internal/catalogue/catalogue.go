@@ -78,10 +78,32 @@ type MCP struct {
 	Audience string `json:"audience" yaml:"audience"`
 }
 
-// Hooks is where Mesh posts the product's replies.
+// Hooks is the product's hooks as Mesh's catalogue takes them
+// (projectmesh-io/api catalogue.Hooks): `jobs`, the URL Mesh posts a
+// job's changes to, signed with the product's hook secret. Mesh decodes
+// a catalogue strictly, so the bundle carries nothing else here.
 type Hooks struct {
-	Reply           string `json:"reply" yaml:"reply"`
-	ConfirmCallback bool   `json:"confirm_callback,omitempty" yaml:"confirm_callback"`
+	Jobs string `json:"jobs"`
+}
+
+// hooksFile is product.yml's hooks as written. `reply` and
+// `confirm_callback` are the runsheet platform's earlier thread-reply
+// path (a reply URL, or a map of url and auth): Mesh has no such hook and
+// would refuse the catalogue if they were sent, so they are read, in
+// either shape, and left out of the bundle.
+type hooksFile struct {
+	Jobs            string `yaml:"jobs"`
+	Reply           any    `yaml:"reply"`
+	ConfirmCallback bool   `yaml:"confirm_callback"`
+}
+
+// bundleHooks is the Hooks the bundle sends for h: only `jobs`, and none
+// at all when product.yml names no jobs hook.
+func bundleHooks(h *hooksFile) *Hooks {
+	if h == nil || strings.TrimSpace(h.Jobs) == "" {
+		return nil
+	}
+	return &Hooks{Jobs: strings.TrimSpace(h.Jobs)}
 }
 
 // Kind is one kind of job, its guidance the text itself and its
@@ -148,14 +170,14 @@ type Role struct {
 // manifestFile is .mesh/product.yml as written (runsheet ADR 060 §2),
 // plus display_name, which the bundle needs.
 type manifestFile struct {
-	Product        string   `yaml:"product"`
-	DisplayName    string   `yaml:"display_name"`
-	LatchkeyClient string   `yaml:"latchkey_client"`
-	MCP            *MCP     `yaml:"mcp"`
-	Hooks          *Hooks   `yaml:"hooks"`
-	Roles          string   `yaml:"roles"`
-	Playbooks      string   `yaml:"playbooks"`
-	Triggers       []string `yaml:"triggers"`
+	Product        string     `yaml:"product"`
+	DisplayName    string     `yaml:"display_name"`
+	LatchkeyClient string     `yaml:"latchkey_client"`
+	MCP            *MCP       `yaml:"mcp"`
+	Hooks          *hooksFile `yaml:"hooks"`
+	Roles          string     `yaml:"roles"`
+	Playbooks      string     `yaml:"playbooks"`
+	Triggers       []string   `yaml:"triggers"`
 }
 
 // harness takes `harness: none` and `harness: [claude-code, codex]`.
@@ -326,7 +348,7 @@ func Load(root string, src Source) (*Bundle, error) {
 		add("%s: product %q is not lowercase letters, digits and hyphens", ManifestPath, m.Product)
 	}
 	b := &Bundle{Product: m.Product, Source: src, Manifest: Manifest{
-		DisplayName: strings.TrimSpace(m.DisplayName), MCP: m.MCP, Hooks: m.Hooks, Triggers: m.Triggers,
+		DisplayName: strings.TrimSpace(m.DisplayName), MCP: m.MCP, Hooks: bundleHooks(m.Hooks), Triggers: m.Triggers,
 	}}
 	if b.Manifest.DisplayName == "" {
 		b.Manifest.DisplayName = m.Product
