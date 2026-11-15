@@ -469,3 +469,38 @@ works (a long compile before the first test) should print as it goes.
 
 `TestRunTellsOfEachWriteAndOfNoneWhenSilent` and
 `TestBusySaysSoUntilDone` (internal/validate) hold it.
+
+## Amendment 2026-11-16: a repeat call answers the running run
+
+On 2026-11-11 a session called run_suite again and again for one
+suite, naming no run_id — lane sets 25 seconds apart, three more within
+43 seconds — and each call opened a fresh set of lanes beside the live
+ones. Whole 5–13 minute shards ran about 16 times and dl360's load
+reached ~150. Only the tool description asked the session not to.
+
+run_suite is now idempotent per lease and suite selection
+(`RunSuite.startOrJoin`, under one lock). A call naming no run_id:
+
+- whose suites are the same set, and whose targets and tests are the
+  same (in any order; fail_fast does not count), as a run of this lease
+  still going opens no lane and answers that run exactly as a call with
+  its run_id would: status running with the tests so far, the run_id
+  and how to wait, or the run's result if it ends within the wait;
+- for that same selection, when the run has ended but no call has yet
+  answered its end (its caller gave up), answers that result rather
+  than running it again; once a call has answered the end, the same
+  call runs the suites afresh, as a rerun after a fix should;
+- whose suites overlap a running run's in any suite, whatever targets
+  or tests either names, starts nothing and answers that run (the
+  oldest, when several) with a note naming what is already running and
+  saying to call again once it ends. Two runs of one suite would open
+  conflicting lanes, and a narrowed rerun of a suite that is running is
+  better asked for once it ends;
+- that overlaps no running run starts its own beside them.
+
+A repeat call never answers an empty or error answer that would prompt
+yet another start. `TestRunSuiteRepeatCallAnswersTheRunningRun`
+(no lane opened by a second call, same run_id, tests so far),
+`TestRunSuiteDifferentSuiteStillStarts` and
+`TestRunSuiteUnansweredEndAnswersTheRepeatCall` (internal/nodetools)
+hold it.

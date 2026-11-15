@@ -172,10 +172,16 @@ const DefaultSuiteWait = 10 * time.Minute
 type suiteRun struct {
 	id      string
 	suites  []string
+	sel     *Selection
 	started time.Time
 	done    chan struct{}
 	answer  string
 	err     error
+	// delivered is whether a call has answered the run's end: a run
+	// that ended unanswered is what a repeat call for the same
+	// selection answers, instead of running it again. Guarded by
+	// RunSuite.mu.
+	delivered bool
 
 	liveMu sync.Mutex
 	// live is each test's result as it streamed in (validate.WithOnTest),
@@ -382,7 +388,9 @@ func (s *RunSuite) Tool() mcptool.Tool {
 			"which stops the rest of the run unless its suite says run_to_end; a test silent past its suite's stall limit is named with outcome stalled and its step or shard stopped; " +
 			"and a step that exits 0 having run no tests is red with reason \"ran 0 tests\". " +
 			"A run still going after a while answers {run_id, status: running} instead: call run_suite {run_id} again to wait for it, as often as it takes; " +
-			"never start the same suites again while it runs. A run past the repository's budget is stopped and answered red with out_of_time: finish red, saying it ran out of time.",
+			"a call naming no run_id while a run of the same suites is still going on this lease starts nothing: it answers that run, exactly as run_suite {run_id} would (and a run that ended unanswered answers its result to a call for the same suites, targets and tests). " +
+			"Two runs of one suite never run at once: a call whose suites overlap a running run's — whatever targets or tests either names — answers that run with a note, and you call again once it ends to run your own selection; " +
+			"suites that overlap no running run start their own run beside it. A run past the repository's budget is stopped and answered red with out_of_time: finish red, saying it ran out of time.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -516,12 +524,133 @@ func (s *RunSuite) call(ctx context.Context, args map[string]any) (string, error
 	if len(steps) == 0 {
 		return "", fmt.Errorf("%s declares no suites", source)
 	}
-	r := s.start(steps)
+	r, fresh, note := s.startOrJoin(steps, sel)
+	if !fresh {
+		// a repeat call: the same suites are already running on this
+		// lease, so no lane opens and the call answers that run, as a
+		// call naming its run_id would
+		return s.awaitJoined(ctx, r, s.wait(), note)
+	}
 	go func() {
 		defer close(r.done)
 		r.answer, r.err = s.execute(r, run, steps, sel, failFast, profile)
 	}()
 	return s.await(ctx, r, s.wait())
+}
+
+// sameSelection is whether a and b name the same targets and tests,
+// in any order; nil names none.
+func sameSelection(a, b *Selection) bool {
+	norm := func(s *Selection) (targets, tests []string) {
+		if s == nil {
+			return nil, nil
+		}
+		targets, tests = slices.Clone(s.Targets), slices.Clone(s.Tests)
+		slices.Sort(targets)
+		slices.Sort(tests)
+		return targets, tests
+	}
+	at, ax := norm(a)
+	bt, bx := norm(b)
+	return slices.Equal(at, bt) && slices.Equal(ax, bx)
+}
+
+// startOrJoin is run_suite idempotent per lease (ADR-049 amendment
+// 2026-11-16, a repeat call answers the running run). Under one lock it
+// either registers a fresh run of steps — fresh true — or names the run
+// the call joins instead:
+//
+//   - a run of this lease still going whose suites are the same set and
+//     whose targets and tests are the same (fail_fast aside) is the
+//     call's own run again: it is joined, note empty;
+//   - one that ended but whose end no call has answered yet, for that
+//     same selection, is joined too, so a session that lost its handle
+//     gets the result rather than a second run;
+//   - otherwise a run still going that runs any of the same suites —
+//     whatever targets or tests either names, since two runs of one
+//     suite would open conflicting lanes — is joined, the oldest first,
+//     note saying the call's own selection did not start;
+//   - only a call overlapping no running run starts its own.
+func (s *RunSuite) startOrJoin(steps []validate.Step, sel *Selection) (r *suiteRun, fresh bool, note string) {
+	names := stepNames(steps)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ids := make([]string, 0, len(s.runs))
+	for id := range s.runs {
+		ids = append(ids, id)
+	}
+	// oldest first: run-N's N is its order
+	slices.SortFunc(ids, func(a, b string) int { return s.runs[a].seq() - s.runs[b].seq() })
+	same := func(o *suiteRun) bool {
+		a, b := slices.Clone(o.suites), slices.Clone(names)
+		slices.Sort(a)
+		slices.Sort(b)
+		return slices.Equal(a, b) && sameSelection(o.sel, sel)
+	}
+	var overlap []*suiteRun
+	for _, id := range ids {
+		o := s.runs[id]
+		running := !o.ended()
+		if same(o) && (running || !o.delivered) {
+			return o, false, ""
+		}
+		if running && slices.ContainsFunc(o.suites, func(n string) bool { return slices.Contains(names, n) }) {
+			overlap = append(overlap, o)
+		}
+	}
+	if len(overlap) > 0 {
+		o := overlap[0]
+		var shared []string
+		for _, n := range names {
+			if slices.Contains(o.suites, n) {
+				shared = append(shared, n)
+			}
+		}
+		note = "started nothing: " + strings.Join(shared, ", ") + " already running on this lease as " + o.id +
+			", so this answers that run; once it has ended, call run_suite again to run your own selection"
+		if len(overlap) > 1 {
+			var others []string
+			for _, x := range overlap[1:] {
+				others = append(others, x.id)
+			}
+			note += " (also running: " + strings.Join(others, ", ") + ")"
+		}
+		return o, false, note
+	}
+	return s.startLocked(steps, sel), true, ""
+}
+
+// ended is whether the run has ended.
+func (r *suiteRun) ended() bool {
+	select {
+	case <-r.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// seq is the run's order on its lease, the N of run-N.
+func (r *suiteRun) seq() int {
+	n, _ := strconv.Atoi(strings.TrimPrefix(r.id, "run-"))
+	return n
+}
+
+// awaitJoined is await for a call that joined a run it did not start:
+// its answer is the run's own, with note added to a running handle when
+// the call asked for a different selection than the run's.
+func (s *RunSuite) awaitJoined(ctx context.Context, r *suiteRun, wait time.Duration, note string) (string, error) {
+	ans, err := s.await(ctx, r, wait)
+	if err != nil || note == "" {
+		return ans, err
+	}
+	var m map[string]any
+	if json.Unmarshal([]byte(ans), &m) != nil || m["status"] != "running" {
+		return ans, err
+	}
+	m["note"] = note
+	b, _ := json.Marshal(m)
+	return string(b), nil
 }
 
 // wait is how long a call waits on its run.
@@ -553,15 +682,13 @@ func (s *RunSuite) waitArg(args map[string]any) (time.Duration, error) {
 	return min(time.Duration(n*float64(time.Second)), s.wait()), nil
 }
 
-// start registers a run of steps under a new id.
-func (s *RunSuite) start(steps []validate.Step) *suiteRun {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// startLocked registers a run of steps under a new id; s.mu is held.
+func (s *RunSuite) startLocked(steps []validate.Step, sel *Selection) *suiteRun {
 	if s.runs == nil {
 		s.runs = map[string]*suiteRun{}
 	}
 	s.n++
-	r := &suiteRun{id: "run-" + strconv.Itoa(s.n), suites: stepNames(steps), started: time.Now(), done: make(chan struct{})}
+	r := &suiteRun{id: "run-" + strconv.Itoa(s.n), suites: stepNames(steps), sel: sel, started: time.Now(), done: make(chan struct{})}
 	s.runs[r.id] = r
 	return r
 }
@@ -590,14 +717,14 @@ func (s *RunSuite) await(ctx context.Context, r *suiteRun, wait time.Duration) (
 	defer t.Stop()
 	select {
 	case <-r.done:
-		return r.answer, r.err
+		return s.delivered(r)
 	case <-ctx.Done():
 		return "", ctx.Err()
 	case <-t.C:
 	}
 	select {
 	case <-r.done:
-		return r.answer, r.err
+		return s.delivered(r)
 	default:
 	}
 	handle := map[string]any{"run_id": r.id, "status": "running", "suites": r.suites,
@@ -615,6 +742,14 @@ func (s *RunSuite) await(ctx context.Context, r *suiteRun, wait time.Duration) (
 	}
 	b, _ := json.Marshal(handle)
 	return string(b), nil
+}
+
+// delivered is the ended run's answer, marked as answered to a call.
+func (s *RunSuite) delivered(r *suiteRun) (string, error) {
+	s.mu.Lock()
+	r.delivered = true
+	s.mu.Unlock()
+	return r.answer, r.err
 }
 
 // deadline is when the lease's budget runs out; zero for none.
