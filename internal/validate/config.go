@@ -90,7 +90,8 @@ func (k Kind) Valid() bool {
 
 // Step is one suite of validate.yml: the platform's name, kind, command,
 // paths, reports and jobs (runsheet ADR 032, The file), and this node's
-// own timeout, always, artifacts and results.
+// own timeout, always, artifacts, results, group, shards and the
+// supervisor's policy (retries, run_to_end, stall, min_tests).
 type Step struct {
 	Name    string
 	Kind    Kind
@@ -138,7 +139,48 @@ type Step struct {
 	// much room a suite runs with is not what it runs.
 	CPUs   float64
 	Memory string
+	// Retries is how many times the node re-runs a red unit's failing
+	// tests by name (`retries:`, supervise.go; ADR-049's amendment of
+	// 2026-11-15): Parse reads 1 when the file leaves it out, 0 turns
+	// the retry — and the early stop on a confirmed failure — off, and
+	// never more than MaxRetries.
+	Retries int
+	// RunToEnd keeps the run going past this suite's confirmed failure
+	// (`run_to_end: true`); otherwise a confirmed failure stops the run
+	// as fail_fast does.
+	RunToEnd bool
+	// Stall is how long a started test may go without an event before
+	// it is named stalled and its unit stopped (`stall:`): Parse reads
+	// DefaultStall when the file leaves it out; 0 (`stall: 0` or
+	// `off`) never stops one.
+	Stall time.Duration
+	// MinTests is the fewest tests a unit that exits 0 must have
+	// reported (`min_tests:`): fewer is red, "ran 0 tests". Parse reads
+	// 1 for a unit or integration suite that leaves it out, and that
+	// implied floor holds only where the node can count the suite's
+	// tests (minTestsImplied); 0 is no floor.
+	MinTests int
+	// minTestsImplied says MinTests is the kind's default, not the
+	// file's own word: it then holds only for a unit whose tests the
+	// node could count (a results: line, or go test -json on stdout),
+	// so a suite that prints no results the node reads is not turned
+	// red by a floor it never asked for.
+	minTestsImplied bool
 }
+
+// The supervisor's defaults and bounds (supervise.go).
+const (
+	// DefaultRetries is a suite's retries when the file leaves it out.
+	DefaultRetries = 1
+	// MaxRetries bounds a suite's retries.
+	MaxRetries = 5
+	// DefaultStall is a suite's stall limit when the file leaves it out.
+	DefaultStall = 5 * time.Minute
+	// MaxRetriedTests is how many failing tests one run retries, over
+	// all its units: a run with more is not flaky, the change is broken,
+	// and nothing more is retried.
+	MaxRetriedTests = 10
+)
 
 // MaxShards bounds a suite's shards: each is a pod with its own
 // services on the one node.
@@ -184,6 +226,10 @@ type rawStep struct {
 	Shards    int      `yaml:"shards"`
 	CPUs      float64  `yaml:"cpus"`
 	Memory    string   `yaml:"memory"`
+	Retries   *int     `yaml:"retries"`
+	RunToEnd  bool     `yaml:"run_to_end"`
+	Stall     string   `yaml:"stall"`
+	MinTests  *int     `yaml:"min_tests"`
 }
 
 // Load reads <dir>/.runsheet/validate.yml. A missing file is
@@ -239,6 +285,9 @@ func Parse(data []byte) (Config, error) {
 			Shards:    s.Shards,
 			CPUs:      s.CPUs,
 			Memory:    strings.TrimSpace(s.Memory),
+			Retries:   DefaultRetries,
+			RunToEnd:  s.RunToEnd,
+			Stall:     DefaultStall,
 		}
 		if step.Name == "" {
 			return Config{}, fmt.Errorf("suite %d has no name", i+1)
@@ -273,6 +322,33 @@ func Parse(data []byte) (Config, error) {
 				return Config{}, fmt.Errorf("suite %s: timeout: %w", step.Name, err)
 			}
 			step.Timeout = d
+		}
+		if s.Retries != nil {
+			if *s.Retries < 0 || *s.Retries > MaxRetries {
+				return Config{}, fmt.Errorf("suite %q has retries %d, not 0 to %d", step.Name, *s.Retries, MaxRetries)
+			}
+			step.Retries = *s.Retries
+		}
+		if v := strings.TrimSpace(s.Stall); v != "" {
+			switch v {
+			case "0", "off":
+				step.Stall = 0
+			default:
+				d, err := time.ParseDuration(v)
+				if err != nil || d <= 0 {
+					return Config{}, fmt.Errorf("suite %q has stall %q, not a positive duration, 0 or off", step.Name, v)
+				}
+				step.Stall = d
+			}
+		}
+		switch {
+		case s.MinTests != nil:
+			if *s.MinTests < 0 {
+				return Config{}, fmt.Errorf("suite %q has min_tests %d, not 0 or more", step.Name, *s.MinTests)
+			}
+			step.MinTests = *s.MinTests
+		case step.Kind == KindUnit || step.Kind == KindIntegration:
+			step.MinTests, step.minTestsImplied = 1, true
 		}
 		cfg.Steps = append(cfg.Steps, step)
 	}

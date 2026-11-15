@@ -41,7 +41,10 @@ type SuiteRunner func(ctx context.Context, workspace string, steps []validate.St
 // one that ignores them runs whole, which is still correct.
 const (
 	SuiteTargetsEnv = "MESH_SUITE_TARGETS"
-	SuiteTestsEnv   = "MESH_SUITE_TESTS"
+	// SuiteTestsEnv is also how the node's supervisor names the failing
+	// tests it runs again (validate.SuiteTestsEnv): one way to run a
+	// test by name.
+	SuiteTestsEnv = validate.SuiteTestsEnv
 )
 
 // HostSuites runs steps on the host, in the workspace, every step run
@@ -220,19 +223,26 @@ type SuiteOutput struct {
 // shards:) also each shard's, the step's exit the first failing
 // shard's and its duration the longest shard's.
 type SuiteStep struct {
-	Name        string       `json:"name"`
-	Command     string       `json:"command"`
-	Exit        int          `json:"exit"`
-	DurationMs  int64        `json:"duration_ms"`
-	TestsRun    int          `json:"tests_run"`
-	TestsPassed int          `json:"tests_passed"`
-	TestsFailed int          `json:"tests_failed"`
-	Shards      []SuiteShard `json:"shards,omitempty"`
+	Name        string `json:"name"`
+	Command     string `json:"command"`
+	Exit        int    `json:"exit"`
+	DurationMs  int64  `json:"duration_ms"`
+	TestsRun    int    `json:"tests_run"`
+	TestsPassed int    `json:"tests_passed"`
+	TestsFailed int    `json:"tests_failed"`
+	// TestsFlaky counts the tests that failed and passed when the node
+	// ran them again by name (validate's supervisor): no failure of the
+	// step's, and named in the tests list with action flaky.
+	TestsFlaky int          `json:"tests_flaky,omitempty"`
+	Shards     []SuiteShard `json:"shards,omitempty"`
 	// Stopped is whether the step (or, for a sharded step, the shard
 	// whose exit the step took) was ended on purpose by stop_suite,
 	// never by failing on its own; its Exit is still non-zero.
 	Stopped    bool   `json:"stopped,omitempty"`
 	StopReason string `json:"stop_reason,omitempty"`
+	// Reason is why the node called the step red when its command's own
+	// exit did not: "ran 0 tests" under the suite's min_tests.
+	Reason string `json:"reason,omitempty"`
 }
 
 // SuiteShard is one shard of a sharded step: its index (0-based, as
@@ -246,15 +256,21 @@ type SuiteShard struct {
 	TestsRun    int   `json:"tests_run"`
 	TestsPassed int   `json:"tests_passed"`
 	TestsFailed int   `json:"tests_failed"`
+	TestsFlaky  int   `json:"tests_flaky,omitempty"`
 	NotRun      bool  `json:"not_run,omitempty"`
 	// Stopped is whether this shard was ended on purpose, mid-run, by a
 	// stop_suite call naming its lane, rather than by failing on its
 	// own: its Exit is still non-zero, never 0, and StopReason names why.
 	Stopped    bool   `json:"stopped,omitempty"`
 	StopReason string `json:"stop_reason,omitempty"`
+	Reason     string `json:"reason,omitempty"`
 }
 
-// TestResult is one test's (or, Test empty, one package's) final event.
+// TestResult is one test's (or, Test empty, one package's) final event:
+// go test's pass, fail or skip, timeout for a test still running when
+// its step was killed, and the node's supervisor's flaky (failed, then
+// passed when the node ran it again by name) and stalled (its silence
+// had its unit stopped).
 type TestResult struct {
 	Package string  `json:"package"`
 	Test    string  `json:"test"`
@@ -266,6 +282,11 @@ type TestResult struct {
 	// empty for a step whose report predates it, read instead by
 	// goTestEvents' Report reparse.
 	Output string `json:"output,omitempty"`
+	// Retries is how many times the node ran the test again by name
+	// after it failed (validate.TestResult.Retries): on a flaky test the
+	// retry it passed on, on a fail the retries it failed again on — a
+	// confirmed failure.
+	Retries int `json:"retries,omitempty"`
 }
 
 // answerTestsCap bounds run_suite's answer's "tests" list in marshaled
@@ -282,6 +303,7 @@ type answerTest struct {
 	Outcome    string `json:"outcome"`
 	DurationMs int64  `json:"duration_ms"`
 	Output     string `json:"output,omitempty"`
+	Retries    int    `json:"retries,omitempty"`
 }
 
 // answerTestsOf is tests (a step's own TestResult, a package-level
@@ -293,7 +315,7 @@ func answerTestsOf(tests []TestResult) ([]answerTest, bool) {
 			continue
 		}
 		list = append(list, answerTest{Name: t.Test, Package: t.Package, Outcome: t.Action,
-			DurationMs: int64(math.Round(t.Elapsed * 1000)), Output: t.Output})
+			DurationMs: int64(math.Round(t.Elapsed * 1000)), Output: t.Output, Retries: t.Retries})
 	}
 	truncated := false
 	for marshaledLen(list) > answerTestsCap {
@@ -337,6 +359,10 @@ func (s *RunSuite) Tool() mcptool.Tool {
 			"a failing or still-running test's own output is kept whole until the tests list would pass a size cap, after which the rest are named with their output stripped and tests_truncated is set. " +
 			"and the evidence id of the node's signed record of the run: pass that id on, never your own account of it. " +
 			"A run of named targets or tests is recorded as that selection, never as the suite's full run. " +
+			"The node supervises the tests itself, so never re-run a failing test to see whether it is flaky: a failing test is run again by name once its step or shard ends, " +
+			"one that then passes is named with outcome flaky (in flaky_tests) and does not fail its step, and one that fails again (retries on its entry) is a confirmed failure, " +
+			"which stops the rest of the run unless its suite says run_to_end; a test silent past its suite's stall limit is named with outcome stalled and its step or shard stopped; " +
+			"and a step that exits 0 having run no tests is red with reason \"ran 0 tests\". " +
 			"A run still going after a while answers {run_id, status: running} instead: call run_suite {run_id} again to wait for it, as often as it takes; " +
 			"never start the same suites again while it runs. A run past the repository's budget is stopped and answered red with out_of_time: finish red, saying it ran out of time.",
 		Schema: map[string]any{
@@ -595,6 +621,10 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 	ctx = validate.WithOnTest(ctx, func(tr validate.TestResult) {
 		r.addLive(TestResult{Package: tr.Package, Test: tr.Name, Action: tr.Action, Elapsed: float64(tr.ElapsedMs) / 1000, Output: tr.Output})
 	})
+	if sel != nil {
+		// a shard the selection leaves empty is no "ran 0 tests"
+		ctx = validate.WithSelection(ctx)
+	}
 	ctx = validate.WithOnLane(ctx, func(name string, stop func(reason string)) {
 		r.registerLane(name, stop)
 	})
@@ -621,8 +651,9 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 	if err != nil {
 		return "", err
 	}
-	passed, failed, skipped, timedOut, exit := 0, 0, 0, 0, 0
+	passed, failed, skipped, timedOut, flaky, stalled, exit := 0, 0, 0, 0, 0, 0, 0
 	var failing []string
+	flakyTests, stalledTests := []string{}, []string{}
 	for _, st := range out.Steps {
 		if st.Exit != 0 {
 			exit = 1
@@ -647,11 +678,32 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 			skipped++
 		case "timeout":
 			timedOut++
+		case validate.ActionFlaky:
+			flaky++
+			if len(flakyTests) < 20 {
+				flakyTests = append(flakyTests, t.Package+"."+t.Test)
+			}
+		case validate.ActionStalled:
+			stalled++
+			if len(stalledTests) < 20 {
+				stalledTests = append(stalledTests, t.Package+"."+t.Test)
+			}
 		}
 	}
 	summary := fmt.Sprintf("%d of %d steps passed; %d tests passed, %d failed, %d skipped", countOK(out.Steps), len(steps), passed, failed, skipped)
 	if timedOut > 0 {
 		summary += fmt.Sprintf(", %d still running at the timeout", timedOut)
+	}
+	if flaky > 0 {
+		summary += fmt.Sprintf(", %d flaky (failed, then passed when the node ran them again)", flaky)
+	}
+	if stalled > 0 {
+		summary += fmt.Sprintf(", %d stalled", stalled)
+	}
+	for _, st := range out.Steps {
+		if st.Reason != "" {
+			summary += fmt.Sprintf("; %s %s", st.Name, st.Reason)
+		}
 	}
 	if sel != nil {
 		summary += fmt.Sprintf(" (a selection: %d targets, %d tests)", len(sel.Targets), len(sel.Tests))
@@ -689,6 +741,12 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 	if testsTruncated {
 		answer["tests_truncated"] = true
 	}
+	if len(flakyTests) > 0 {
+		answer["flaky_tests"] = flakyTests
+	}
+	if len(stalledTests) > 0 {
+		answer["stalled_tests"] = stalledTests
+	}
 	if sel != nil {
 		answer["selection"] = sel
 	}
@@ -714,13 +772,15 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 
 // Normalise is the steps' outcomes and, from each step's go test -json
 // report, every test's and package's final event (pass, fail or skip):
-// run_suite's output blob.
+// run_suite's output blob. What the node's supervisor found is carried
+// whole — a flaky or stalled test's action and its retries, a step's
+// flaky count and its reason — so the signed record's blob says it.
 func Normalise(results []validate.StepResult) SuiteOutput {
 	out := SuiteOutput{Steps: []SuiteStep{}, Tests: []TestResult{}}
 	for _, r := range results {
 		out.Steps = append(out.Steps, SuiteStep{Name: r.Name, Command: r.Command, Exit: r.ExitCode, DurationMs: r.DurationMs,
-			TestsRun: r.TestsRun, TestsPassed: r.TestsPassed, TestsFailed: r.TestsFailed, Shards: shardsOf(r.Shards),
-			Stopped: r.Stopped, StopReason: r.StopReason})
+			TestsRun: r.TestsRun, TestsPassed: r.TestsPassed, TestsFailed: r.TestsFailed, TestsFlaky: r.TestsFlaky, Shards: shardsOf(r.Shards),
+			Stopped: r.Stopped, StopReason: r.StopReason, Reason: r.Reason})
 		if len(r.Tests) > 0 {
 			out.Tests = append(out.Tests, testResultsFrom(r.Tests)...)
 		} else {
@@ -738,7 +798,7 @@ func Normalise(results []validate.StepResult) SuiteOutput {
 func testResultsFrom(tests []validate.TestResult) []TestResult {
 	out := make([]TestResult, len(tests))
 	for i, t := range tests {
-		out[i] = TestResult{Package: t.Package, Test: t.Name, Action: t.Action, Elapsed: float64(t.ElapsedMs) / 1000, Output: t.Output}
+		out[i] = TestResult{Package: t.Package, Test: t.Name, Action: t.Action, Elapsed: float64(t.ElapsedMs) / 1000, Output: t.Output, Retries: t.Retries}
 	}
 	return out
 }
@@ -759,8 +819,8 @@ func shardsOf(shards []validate.ShardResult) []SuiteShard {
 			continue
 		}
 		out[sh.Index] = SuiteShard{Index: sh.Index, Total: total, Exit: sh.ExitCode, DurationMs: sh.DurationMs,
-			TestsRun: sh.TestsRun, TestsPassed: sh.TestsPassed, TestsFailed: sh.TestsFailed,
-			Stopped: sh.Stopped, StopReason: sh.StopReason}
+			TestsRun: sh.TestsRun, TestsPassed: sh.TestsPassed, TestsFailed: sh.TestsFailed, TestsFlaky: sh.TestsFlaky,
+			Stopped: sh.Stopped, StopReason: sh.StopReason, Reason: sh.Reason}
 	}
 	return out
 }

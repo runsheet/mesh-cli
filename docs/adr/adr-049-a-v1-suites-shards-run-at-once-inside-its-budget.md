@@ -1,5 +1,5 @@
 ---
-summary: On a v1 node run_suite runs a sharded suite's shards (and its groups) at once, the first in the lease's pod and each other in a pod of its own beside it with its own copy of the lease's services, on the lease's HOME, network and egress (amended 2026-11-02: a lane sees what its lease's pod sees), on the room its suite asks for in validate.yml (cpus, memory; the node's sandbox default when it names none), held of the node's scheduler and the limit of its steps (amended 2026-11-15; before, the lease's resources), and on the lease's warm cache (ADR-044, amended 2026-11-15); a run longer than the call's wait (10 minutes) answers {run_id, status: running}, which the session polls with run_suite {run_id}, never an MCP timeout; fail_fast stops the other shards at the first failure; a validate lease is held to its validate.yml budget from the lease's start, past which the run is stopped and answered red, out_of_time, with its signed record; the record stays one per run, its output blob naming each shard.
+summary: On a v1 node run_suite runs a sharded suite's shards (and its groups) at once, the first in the lease's pod and each other in a pod of its own beside it with its own copy of the lease's services, on the lease's HOME, network and egress (amended 2026-11-02: a lane sees what its lease's pod sees), on the room its suite asks for in validate.yml (cpus, memory; the node's sandbox default when it names none), held of the node's scheduler and the limit of its steps (amended 2026-11-15; before, the lease's resources), and on the lease's warm cache (ADR-044, amended 2026-11-15); a run longer than the call's wait (10 minutes) answers {run_id, status: running}, which the session polls with run_suite {run_id}, never an MCP timeout; fail_fast stops the other shards at the first failure; a validate lease is held to its validate.yml budget from the lease's start, past which the run is stopped and answered red, out_of_time, with its signed record; the record stays one per run, its output blob naming each shard. run_suite also supervises its units: a red unit's failed tests are retried by name, a confirmed failure stops the run, a stalled test is named and a unit that ran 0 tests is red (amended 2026-11-15).
 status: accepted
 ---
 
@@ -329,3 +329,121 @@ where they had the kind's allowance: a suite that needs more says so in its
 validate.yml. Scheduler owners for lanes are named by lane, not
 numbered. A lane's cache is the lease's warm cache: ADR-044's amendment
 of the same day.
+
+## Amendment 2026-11-15: run_suite supervises the tests it runs
+
+A session that asked for a run was also its supervisor: it re-ran a
+failing test by hand to learn whether it was flaky, watched a poll for a
+shard that had gone quiet and called stop_suite on it, and read "exit
+0, 0 tests" as green. Each of those is a model's turn spent on a
+question the node can answer from the stream it already reads, and each
+was got wrong often enough to cost a lease: a flake redriven as a
+failure, a hung shard held to its whole step timeout, a suite whose
+every shard ran nothing merged on.
+
+**Decision.** `validate.Run` supervises its units (a step, or one shard
+of it) itself (`internal/validate/supervise.go`). A suite's entry in
+`validate.yml` carries the policy and nothing else, each key optional
+and none of them in the suite hash:
+
+```yaml
+suites:
+  - name: integration
+    kind: integration
+    command: go test -json ${MESH_SUITE_TESTS:+-run "^(${MESH_SUITE_TESTS// /|})$"} ./e2e
+    shards: 4
+    retries: 1        # default 1; 0 turns the retry off; at most 5
+    run_to_end: false # default false
+    stall: 5m         # default 5m; 0 or off never stops a silent test
+    min_tests: 1      # default 1 for kind unit and integration, else 0
+```
+
+**Retry by name, by the node.** A unit that ends red on failing tests
+has those tests run again: the unit's own command, with
+`MESH_SUITE_TESTS=<the failing top-level tests>` exported before it —
+the selection variable run_suite's `tests` already sets
+(`validate.SuiteTestsEnv`), so a suite has one way to be told which
+tests to run and a repository writes no retry command. The retry:
+
+- runs **after the unit's command has ended** and its stream has been
+  read to the end, never from inside the stream's reader: the other
+  units' streams drain and their timeouts count as they did;
+- runs in **the unit's own lane** (its pod, its services), which the
+  unit no longer occupies, on the unit's own ctx, so stop_suite, fail
+  fast and the budget end it as they end the unit;
+- is given **what is left of the step's `timeout`**, not a new one, and
+  happens at most `retries` times, only the tests still failing run
+  again each time;
+- names a **failing subtest's parent once**: `TestA/sub` and `TestA`
+  both failing is one test, `TestA`, run once;
+- is **capped for the run**: a run retries at most ten failing tests
+  over all its units (`validate.MaxRetriedTests`). A unit whose failing
+  tests would pass that is not retried at all — that many failures is a
+  broken change, not a flake;
+- is **not offered where it could not be a fair hearing**: a test that
+  panicked (the tests after it never ran), a test left running, a
+  package that failed with no failing test (it did not build, or its
+  binary died), a unit that timed out or was stopped. Those failures
+  stand as they are.
+
+A test that passes when run again is **flaky**: its entry's action
+(`outcome` in the answer) is `flaky`, with `retries` the retry it passed
+on and its first failure's output kept; it is counted in the step's
+`tests_flaky`, not `tests_failed`, and named in the answer's
+`flaky_tests`. A unit whose every failure was flaky exits 0: the step is
+green and the summary says how many tests were flaky. A test that fails
+again keeps action `fail` with `retries` set: a **confirmed failure**.
+`Normalise` carries all of it, so the output blob the record signs by
+digest and the record's summary say what the answer says. The retry's
+own events are not streamed to a poll's live `tests`.
+
+**A confirmed failure stops the run.** A unit with a confirmed failure
+(a test failed again, or its failures were not retried for the reasons
+above) stops the run exactly as `fail_fast` does, by the same code: the
+units still running are cancelled and named not run. A suite that says
+`run_to_end: true` does not stop it. A red with no failing test named
+(a lint, a build, a JUnit report) is not the supervisor's to confirm:
+`fail_fast` and the lane's own order decide as before, and so they do
+for a suite with `retries: 0`.
+
+**A stalled test is named.** While a unit runs the node knows from its
+go test -json events which tests are running: started, not paused for a
+parallel sibling, with no subtest of their own still open. One of those
+with no event (its own or a subtest's) for the suite's `stall` is
+stalled: the unit is stopped through its own stop func — the one
+`validate.Options.OnLane` hands stop_suite, so it reads as any stopped
+unit does (`stopped`, non-zero exit, never an environment failure) with
+`stop_reason` "stalled: <package>.<test> produced no event for 5m
+(validate.yml stall:)" — and the test's action is `stalled` (the other
+tests it left open stay `timeout`), named in the answer's
+`stalled_tests`. A stalled unit is not retried. A suite whose output is
+not go test -json has no tests to watch and is bounded by its timeout
+alone.
+
+**"0 tests" is never green.** A unit that exits 0 having reported fewer
+tests than its suite's `min_tests` is red: exit 1 and `reason: "ran 0
+tests"` on its step and shard (or "ran 3 tests, fewer than min_tests
+40"), and in the summary. A skipped test is a test run. `min_tests`
+stated in the file holds whatever the suite prints. Left out, it is 1
+for kind `unit` and `integration` and holds where the node can count
+the suite's tests — a `results:` line, or go test -json events on its
+stdout — so a suite whose runner prints nothing the node reads (a shell
+loop, a Jest run with no report) is not turned red by a floor it never
+stated; such a suite states `min_tests` to have one. Under a call's
+selection (`targets`, `tests`: `validate.WithSelection`) a shard may
+rightly run nothing, so the floor is held against the step's shards
+together.
+
+**What a suite must do.** Honour `MESH_SUITE_TESTS`, as run_suite's
+`tests` already asks. A command that ignores it runs whole when
+retried, inside what is left of its timeout: correct, and slow. A suite
+whose tests cannot be re-run alone says `retries: 0`.
+
+`TestRunRetriesFailingTestsByName`,
+`TestARetryRunsAfterItsUnitEndsWhileTheOtherShardsStream`,
+`TestTheRetryCapIsTheRunsNotAUnits`,
+`TestAStalledTestIsNamedAndItsUnitStopped`,
+`TestAUnitThatRanNoTestsIsRed` and
+`TestTheFloorUnderASelectionIsTheStepsNotAShards` (internal/validate)
+and `TestRunSuiteAnswersWhatTheSupervisorFound` (internal/nodetools)
+hold it.
