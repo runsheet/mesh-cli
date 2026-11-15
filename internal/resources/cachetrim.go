@@ -9,6 +9,14 @@ package resources
 // 2026-10-28 failures, `go clean -cache` mid-validation failing every Go
 // step, cannot happen here. A wait that runs out skips this round and
 // says so; the next round tries again.
+//
+// No node constructs this today: a v1 node bounds its build cache with
+// nodev1's WatchBuildCache, which evicts least-recently-used entries
+// through EvictLRU (buildcache.go) beside live builds and never takes
+// the scheduler (ADR-044 amendment 2026-11-08). While an exclusive ask
+// like this one waits or holds, the scheduler answers nothing free
+// (scheduler.Free), so whatever runs one is offered no work it would
+// hand back (ADR-044 amendment 2026-11-16).
 
 import (
 	"context"

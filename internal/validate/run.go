@@ -176,6 +176,74 @@ func OnLaneFunc(ctx context.Context) func(name string, stop func(reason string))
 	return fn
 }
 
+type onActivityKey struct{}
+
+// WithOnActivity is ctx asking Run to call fn whenever the run shows it
+// is working: a unit's command wrote to its stdout or stderr (a test
+// event is a line of stdout), or a lane is opening (Busy). what names
+// which, for a log. fn is called from whichever goroutine saw it, as
+// often as the run writes; the caller throttles. A run that writes
+// nothing and opens nothing calls it never: that silence is what the
+// caller's stall limit is for (ADR-049 amendment, step progress).
+func WithOnActivity(ctx context.Context, fn func(what string)) context.Context {
+	return context.WithValue(ctx, onActivityKey{}, fn)
+}
+
+// OnActivityFunc is the callback ctx carries (WithOnActivity), nil when
+// none was set.
+func OnActivityFunc(ctx context.Context) func(what string) {
+	fn, _ := ctx.Value(onActivityKey{}).(func(what string))
+	return fn
+}
+
+// busyEvery is how often Busy says its work is still going.
+var busyEvery = 30 * time.Second
+
+// Busy tells ctx's OnActivity that what is under way, now and every
+// busyEvery until the func it answers is called or ctx ends: for work
+// that is the node's own and writes nothing while it goes, a lane
+// opening or waiting for its room. Without an OnActivity it does
+// nothing.
+func Busy(ctx context.Context, what string) (done func()) {
+	fn := OnActivityFunc(ctx)
+	if fn == nil {
+		return func() {}
+	}
+	fn(what)
+	end := make(chan struct{})
+	var once sync.Once
+	go func() {
+		t := time.NewTicker(busyEvery)
+		defer t.Stop()
+		for {
+			select {
+			case <-end:
+				return
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				fn(what)
+			}
+		}
+	}()
+	return func() { once.Do(func() { close(end) }) }
+}
+
+// activityWriter passes a unit's output on to w and tells fn of every
+// write that carried something.
+type activityWriter struct {
+	w    io.Writer
+	fn   func(what string)
+	what string
+}
+
+func (a activityWriter) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		a.fn(a.what)
+	}
+	return a.w.Write(p)
+}
+
 // outputCap is the total bytes of a step's combined stdout+stderr kept
 // on its StepResult — the head and the tail, split evenly for a passing
 // step, and mostly the tail for a failing one, where the cause is.
@@ -491,7 +559,7 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 	if onLane == nil {
 		onLane = OnLaneFunc(ctx)
 	}
-	sup := &supervisor{dir: opts.Dir, budget: &retryBudget{left: MaxRetriedTests}, onTest: onTest, selected: SelectionAsked(ctx)}
+	sup := &supervisor{dir: opts.Dir, budget: &retryBudget{left: MaxRetriedTests}, onTest: onTest, onActivity: OnActivityFunc(ctx), selected: SelectionAsked(ctx)}
 	// rctx is what the units run on: cancelled, with fail fast, at the
 	// first failing command, the rest of the run's lanes with it
 	rctx, stop := context.WithCancel(ctx)
@@ -586,7 +654,9 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 					}
 					return
 				}
+				opened := Busy(lctx, "opening lane "+l.name)
 				r, release, err := lr.Lane(lctx, l.name)
+				opened()
 				if err != nil {
 					if cancelled() {
 						return

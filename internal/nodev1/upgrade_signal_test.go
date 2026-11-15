@@ -129,6 +129,13 @@ func TestUpgradeSignalWaitsForHandBackBeforeExit(t *testing.T) {
 		t.Fatal("UpgradeExit ran while the lease's actor.json was still Cancelling or unreported")
 	}
 	onlyHandBack(t, g, job)
+	// UpgradeSignal waits for the hand-back's report, not for the
+	// actor's release, which follows it on the lease's own goroutine:
+	// the directory goes last (actor.Release), a moment later
+	waitFor(t, "the actor's release", func() bool {
+		_, err := os.Stat(dir)
+		return os.IsNotExist(err)
+	})
 	assertReleased(t, g, job)
 
 	select {

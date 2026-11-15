@@ -22,6 +22,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/relaysidecar"
 	"projectmesh.io/mesh-cli/internal/scheduler"
+	"projectmesh.io/mesh-cli/internal/sockettest"
 )
 
 // fakeSidecarControl stands in for a lease's relay sidecar's control
@@ -39,6 +40,16 @@ type fakeSidecarControl struct {
 	block chan struct{}
 	ln    net.Listener
 	srv   *http.Server
+}
+
+// socketDir is a directory named name for a test's unix sockets, short
+// enough to bind under (sockettest.Dir): t.TempDir carries the test's
+// name, and on a Mac, whose TMPDIR is long and whose sun_path is 104
+// bytes, a long-named test's socket under it is `bind: invalid
+// argument`.
+func socketDir(t *testing.T, name string) string {
+	t.Helper()
+	return filepath.Join(sockettest.Dir(t, "ad"), name)
 }
 
 func startFakeSidecarControl(t *testing.T, dir string) *fakeSidecarControl {
@@ -147,7 +158,7 @@ func TestNodeAdoptsHandoffAtStart(t *testing.T) {
 		t.Fatalf("opening the lease's original session: %v", err)
 	}
 
-	sidecarDir := filepath.Join(t.TempDir(), "sidecar")
+	sidecarDir := socketDir(t, "sidecar")
 	sidecar := startFakeSidecarControl(t, sidecarDir)
 
 	if err := os.MkdirAll(g.rt.leaseDir(leaseID), 0o700); err != nil {
@@ -276,10 +287,10 @@ func TestNodeAdoptsHandoffAtStart(t *testing.T) {
 			t.Fatalf("expected one pre-upgrade session JKT, got %v", preUpgrade)
 		}
 
-		sidecarDir := filepath.Join(t.TempDir(), "sidecar")
+		sidecarDir := socketDir(t, "sidecar")
 		startFakeSidecarControl(t, sidecarDir)
 
-		egressDir := filepath.Join(t.TempDir(), "egress")
+		egressDir := socketDir(t, "egress")
 		const marker = "through the egress tunnel\n"
 		egressProc := startFakeEgressProcess(t, egressDir, marker)
 
@@ -367,10 +378,10 @@ func TestNodeAdoptsHandoffAtStart(t *testing.T) {
 			t.Fatalf("opening the lease's original session: %v", err)
 		}
 
-		sidecarDir := filepath.Join(t.TempDir(), "sidecar")
+		sidecarDir := socketDir(t, "sidecar")
 		startFakeSidecarControl(t, sidecarDir)
 
-		egressDir := filepath.Join(t.TempDir(), "egress")
+		egressDir := socketDir(t, "egress")
 		egressProc := startFakeEgressProcess(t, egressDir, "unreachable through a refused tunnel\n")
 		egressProc.setRefuse("the egress process's own credentials policy")
 
@@ -413,7 +424,7 @@ func TestNodeAdoptsHandoffAtStart(t *testing.T) {
 			t.Fatalf("opening the lease's original session: %v", err)
 		}
 
-		sidecarDir := filepath.Join(t.TempDir(), "sidecar")
+		sidecarDir := socketDir(t, "sidecar")
 		startFakeSidecarControl(t, sidecarDir)
 
 		cmd := startThrowawayProcessGroup(t)
@@ -656,7 +667,7 @@ func TestNodeHandsBackUnadoptableHandoff(t *testing.T) {
 		g.rt.Scheduler = scheduler.New(scheduler.Capacity{CPUs: 4, MemGB: 8, Slots: 1})
 		leaseID, brief := mintLease(t, g, nil)
 
-		sidecarDir := filepath.Join(t.TempDir(), "sidecar")
+		sidecarDir := socketDir(t, "sidecar")
 		sidecar := startFakeSidecarControl(t, sidecarDir)
 		sidecar.mu.Lock()
 		sidecar.refuse = "this node is not who it was"
@@ -717,7 +728,7 @@ func TestAdoptHandoffsLogsAggregateCountWithHandoffs(t *testing.T) {
 	g := newRig(t, nil)
 
 	adoptableID, brief := mintLease(t, g, func(b *meshapi.Brief) { b.FinishTool = "submit" })
-	sidecarDir := filepath.Join(t.TempDir(), "sidecar")
+	sidecarDir := socketDir(t, "sidecar")
 	sidecar := startFakeSidecarControl(t, sidecarDir)
 	block := make(chan struct{})
 	sidecar.mu.Lock()
@@ -791,7 +802,7 @@ func TestAdoptedLeaseSurvivesReleaseLeftovers(t *testing.T) {
 
 	leaseID, brief := mintLease(t, g, func(b *meshapi.Brief) { b.FinishTool = "submit" })
 
-	sidecarDir := filepath.Join(t.TempDir(), "sidecar")
+	sidecarDir := socketDir(t, "sidecar")
 	sidecar := startFakeSidecarControl(t, sidecarDir)
 	block := make(chan struct{})
 	sidecar.mu.Lock()
@@ -893,7 +904,7 @@ func TestStatusDistinguishesStillAdoptingFromAdoptionCompleteAtStart(t *testing.
 
 	leaseID, brief := mintLease(t, g, func(b *meshapi.Brief) { b.FinishTool = "submit" })
 
-	sidecarDir := filepath.Join(t.TempDir(), "sidecar")
+	sidecarDir := socketDir(t, "sidecar")
 	sidecar := startFakeSidecarControl(t, sidecarDir)
 	block := make(chan struct{})
 	sidecar.mu.Lock()

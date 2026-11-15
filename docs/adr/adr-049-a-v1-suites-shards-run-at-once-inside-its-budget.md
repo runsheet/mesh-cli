@@ -447,3 +447,25 @@ whose tests cannot be re-run alone says `retries: 0`.
 `TestTheFloorUnderASelectionIsTheStepsNotAShards` (internal/validate)
 and `TestRunSuiteAnswersWhatTheSupervisorFound` (internal/nodetools)
 hold it.
+
+## Amendment 2026-11-16: a run's output is its lease's progress
+
+Mesh hands back a lease that shows no progress for its stall limit
+(projectmesh-io/api #192), and a run_suite run is a lease's longest
+stretch with no model event. `validate.Run` now tells its caller when
+the run shows it is working (`validate.WithOnActivity`): on every write
+a unit's command makes to stdout or stderr — the first run's and a
+retry's, a test event being a line of stdout — and, through
+`validate.Busy`, every 30 seconds while a lane opens or waits for its
+room. `nodetools.RunSuite.OnActivity` passes it to the node, which
+moves the lease's `progress_at` at most once a minute (ADR-044's
+amendment of the same day).
+
+A run that writes nothing tells nothing. The poll that waits on it is
+not progress either, so a hung suite — alive, silent — is handed back
+at Mesh's limit. A suite's own `stall:` still names a stalled test
+sooner. A command that is quiet for longer than the limit while it
+works (a long compile before the first test) should print as it goes.
+
+`TestRunTellsOfEachWriteAndOfNoneWhenSilent` and
+`TestBusySaysSoUntilDone` (internal/validate) hold it.

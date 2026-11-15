@@ -154,7 +154,8 @@ func TestRunStartsTheBuildCacheWatcherOnTheMountedCache(t *testing.T) {
 		if err != nil {
 			t.Fatalf("DirSize: %v", err)
 		}
-		if size <= 270 {
+		// the eviction's log line follows its removals: wait for both
+		if size <= 270 && strings.Contains(logs.all(), "nodev1: build cache: evicted ") {
 			break
 		}
 		if time.Now().After(deadline) {

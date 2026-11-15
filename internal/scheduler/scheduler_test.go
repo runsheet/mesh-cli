@@ -253,3 +253,67 @@ func TestExclusiveWaitEnds(t *testing.T) {
 		t.Fatalf("after the trim gave up: %v", err)
 	}
 }
+
+// Free capacity reported during a pending trim is zero, and during a
+// running one: no lease that builds with the cache can start then, so
+// the node offers Mesh no room it would only hand back cannot_run. What
+// was free is free again when the trim ends, or gives up.
+func TestFreeIsZeroWhileATrimIsPendingOrRunning(t *testing.T) {
+	s := New(Capacity{CPUs: 8, MemGB: 16, Slots: 4, Accounts: map[string]int{"acct": 2}})
+	build, err := s.TryTake(Ask{Owner: "lease-1", CPUs: 2, MemGB: 4, Slot: true, Account: "acct", Cache: CacheShared})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := s.Free(); f.CPUs != 6 || f.MemGB != 12 || f.Slots != 3 || f.Accounts["acct"] != 1 || s.Trimming() {
+		t.Fatalf("before the trim: free %+v, trimming %v", f, s.Trimming())
+	}
+	got := make(chan *Lease, 1)
+	go func() {
+		l, err := s.Take(context.Background(), Ask{Owner: "trim", Cache: CacheExclusive})
+		if err != nil {
+			t.Error(err)
+		}
+		got <- l
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for !s.Trimming() {
+		if time.Now().After(deadline) {
+			t.Fatal("the trim never waited")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	zero := func(when string) {
+		t.Helper()
+		if f := s.Free(); f.CPUs != 0 || f.MemGB != 0 || f.Slots != 0 || f.Accounts["acct"] != 0 {
+			t.Fatalf("free capacity while the trim is %s: %+v, want none", when, f)
+		}
+	}
+	zero("pending")
+	build.Release()
+	var trim *Lease
+	select {
+	case trim = <-got:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the trim never got the cache")
+	}
+	if !s.Trimming() {
+		t.Fatal("a running trim is not trimming")
+	}
+	zero("running")
+	trim.Release()
+	if f := s.Free(); f.CPUs != 8 || f.MemGB != 16 || f.Slots != 4 || f.Accounts["acct"] != 2 || s.Trimming() {
+		t.Fatalf("after the trim: free %+v, trimming %v", f, s.Trimming())
+	}
+
+	// a trim that gives up frees the node again
+	held, _ := s.TryTake(Ask{Owner: "lease-2", Cache: CacheShared})
+	defer held.Release()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if _, err := s.Take(ctx, Ask{Cache: CacheExclusive}); err == nil {
+		t.Fatal("the trim got the cache past a build")
+	}
+	if f := s.Free(); f.CPUs != 8 || s.Trimming() {
+		t.Fatalf("after the trim gave up: free %+v, trimming %v", f, s.Trimming())
+	}
+}

@@ -110,7 +110,11 @@ func (s laneSteps) Lane(ctx context.Context, name string) (validate.Runner, func
 // node's scheduler from the first of them (firstLane.open), not on the
 // lease's allowance.
 func (s laneSteps) Run(ctx context.Context, cmd string, timeout time.Duration, stdout, stderr io.Writer) (int, error) {
+	// waiting for the first lane's room is the node's own work and
+	// writes nothing: the lease's progress moves while it does
+	opening := validate.Busy(ctx, "opening lane "+s.first.name)
 	limits, err := s.first.open(ctx)
+	opening()
 	if err != nil {
 		return -1, fmt.Errorf("waiting for the node's room for lane %s: %w", s.first.name, err)
 	}

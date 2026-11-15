@@ -662,3 +662,73 @@ module cache and an empty build cache.
 dirs are its caller's to make. `TestALaneMountsTheLeasesWarmCache`,
 `TestALaneOfALeaseWithoutItsTenantCacheHasNone` and
 `TestTheLeasesEndRemovesEveryLanesOverlayDirs` hold it.
+
+## Amendment, 2026-11-16: a command step moves the lease's progress, and a trim leaves nothing free
+
+Two leftovers of Mesh's queue goals (projectmesh-io/api #192).
+
+**Step progress.** Mesh hands back a lease whose `progress_at` is its
+stall limit old (`MESH_STALL_LIMIT`, 30 minutes; a heartbeat is not
+progress). The node moved `progress_at` on a model session's stream
+events alone (`Runtime.touch`), so a lease inside a 25-minute run_suite,
+or a session waiting on one long node tool call, looked stalled while
+it worked, and the limit could not be switched on.
+
+1. **A command step moves `progress_at` too** (`Runtime.stepProgress`,
+   `internal/nodev1/stepprogress.go`), at most once a minute per lease
+   (`stepProgressEvery`), and the next heartbeat carries it. It moves:
+   - while a run_suite unit writes to its stdout or stderr, a retry's
+     output included, and on each test event
+     (`validate.WithOnActivity`, `nodetools.RunSuite.OnActivity`;
+     ADR-049's amendment of the same day);
+   - while a lane opens or waits for its room (`validate.Busy`, every
+     30 seconds until it has opened);
+   - while any other node tool's call is in flight — push, apply_onto,
+     sign_release and the rest — "still running <tool>" once a minute
+     until the call answers, the session gives up on it or the lease
+     ends (`Runtime.reportsWhileRunning`).
+2. **A lease doing nothing moves nothing.** run_suite's call is left
+   out of 1's last case on purpose: its call waits on a run that may be
+   hung, and a command that is alive and silent is what a hung one
+   looks like. A run that writes nothing shows Mesh no progress and the
+   stall limit hands it back. The same holds for a suite that compiles
+   for longer than the limit without a line of output: it states
+   nothing the node can read, and should print as it goes.
+3. **The supervisor reads the same clock.** `quiet_after` (decision 4)
+   is measured from `progress_at`, so a session waiting on a suite that
+   is writing is no longer escalated as quiet.
+
+Not covered: a session's own long tool call (its Bash, not a node
+tool), which the node sees only as silence between two stream events.
+
+`TestARunSuiteWithOutputReportsProgressThroughout`,
+`TestASilentRunSuiteReportsNoProgress`,
+`TestARunSuiteThatGoesQuietStopsReporting` and
+`TestANodeToolCallInFlightReportsProgressUntilItAnswers`
+(internal/nodev1) and `TestRunTellsOfEachWriteAndOfNoneWhenSilent` and
+`TestBusySaysSoUntilDone` (internal/validate) hold it.
+
+**A trim never turns work away** (goal
+`a-cache-trim-never-turns-work-away`, node half). What a v1 node runs
+today is the build-cache watcher of the 2026-11-08 amendment:
+`WatchBuildCache` evicts least-recently-used entries through
+`resources.EvictLRU`, never takes the scheduler and so neither blocks
+nor fails a running build. That half was already so. The exclusive trim
+(`resources.CacheTrim`: wait up to 10 minutes for the cache alone, then
+`go clean -cache`) is constructed nowhere in the node; only its type
+and the scheduler's exclusive hold remain.
+
+What was missing is the scheduler's half, for whatever holds the cache
+exclusively: while an exclusive ask waited, shared asks were refused
+but `Free` still answered the node's room, so Mesh offered leases the
+node handed back `cannot_run` after `roomWait`.
+
+4. **`Scheduler.Free` answers nothing free while a trim is pending or
+   running** — CPUs, memory, slots and every account's sessions are 0
+   while an exclusive ask waits or holds (`Scheduler.Trimming`) — and
+   the take loop's `waitForSlot` waits it out, whatever the node's slot
+   limit. The node asks Mesh for nothing during a trim, so nothing is
+   handed back for one.
+
+`TestFreeIsZeroWhileATrimIsPendingOrRunning` (internal/scheduler) and
+`TestANodeTakesNothingWhileATrimIsPending` (internal/nodev1) hold it.

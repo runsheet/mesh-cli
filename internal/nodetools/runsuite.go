@@ -117,6 +117,13 @@ type RunSuite struct {
 	// "red"), and answers the model the session moves to, "" when it
 	// does not; nil never escalates.
 	Escalate func(why string) string
+	// OnActivity hears the run working (ADR-049 amendment, step
+	// progress): each write a unit's command makes, each test event and
+	// a lane opening (validate.WithOnActivity), unthrottled — the node
+	// moves the lease's progress on it, at most once a minute. A run
+	// that writes nothing calls it never, so a silent run shows Mesh no
+	// progress and its stall limit can end it. Nil hears nothing.
+	OnActivity func(what string)
 
 	// Results is the brief's results location (meshapi.Brief.Results):
 	// when it names an UploadURL, a run's complete raw output goes there
@@ -618,7 +625,13 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 	if failFast {
 		ctx = validate.WithFailFast(ctx)
 	}
+	if s.OnActivity != nil {
+		ctx = validate.WithOnActivity(ctx, s.OnActivity)
+	}
 	ctx = validate.WithOnTest(ctx, func(tr validate.TestResult) {
+		if s.OnActivity != nil {
+			s.OnActivity("test event")
+		}
 		r.addLive(TestResult{Package: tr.Package, Test: tr.Name, Action: tr.Action, Elapsed: float64(tr.ElapsedMs) / 1000, Output: tr.Output})
 	})
 	if sel != nil {

@@ -103,13 +103,16 @@ func TestNoSlotLimitSchedulesOnCPUsAndMemory(t *testing.T) {
 func TestALeaseWithNoRoomHandsBack(t *testing.T) {
 	g := newRig(t, &stubSession{calls: []string{"conform/submit"}})
 	g.rt.Scheduler = scheduler.New(scheduler.Capacity{CPUs: 4, Slots: 1})
-	// a trim holds the build cache past the lease's wait
-	trim, err := g.rt.Scheduler.TryTake(scheduler.Ask{Owner: "trim", Cache: scheduler.CacheExclusive})
+	// another holder has the node's CPUs past the lease's wait, and no
+	// slot: a slot is free, so the node takes. (A trim holding the cache
+	// no longer shows this: the node takes nothing during one,
+	// TestANodeTakesNothingWhileATrimIsPending.)
+	other, err := g.rt.Scheduler.TryTake(scheduler.Ask{Owner: "other", CPUs: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer trim.Release()
-	job := g.offer(t, nil)
+	defer other.Release()
+	job := g.offer(t, func(b *meshapi.Brief) { b.Resources = meshapi.Resources{CPUs: 2} })
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	run(t, g, ctx)
@@ -156,5 +159,59 @@ func TestNoSchedulerTakesOneSlotWithNoSlotLimit(t *testing.T) {
 	}
 	if r.Node.CapacityTotal.Slots != 0 {
 		t.Fatal("free changed the node's total")
+	}
+}
+
+// While a trim of the build cache is pending or running the node asks
+// Mesh for nothing — it takes no lease, so none is handed back
+// cannot_run for the trim — and the free capacity it would report is
+// zero. The trim over, it takes the job that waited.
+func TestANodeTakesNothingWhileATrimIsPending(t *testing.T) {
+	g := newRig(t, &stubSession{calls: []string{"conform/submit"}})
+	g.rt.Scheduler = scheduler.New(scheduler.Capacity{CPUs: 4, MemGB: 8, Slots: 1})
+	// a build holds the cache, so the trim waits for it: pending
+	build, err := g.rt.Scheduler.TryTake(scheduler.Ask{Owner: "build", Cache: scheduler.CacheShared})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trimCtx, stopTrim := context.WithCancel(context.Background())
+	defer stopTrim()
+	trimmed := make(chan struct{})
+	go func() {
+		defer close(trimmed)
+		if l, err := g.rt.Scheduler.Take(trimCtx, scheduler.Ask{Owner: "trim", Cache: scheduler.CacheExclusive}); err == nil {
+			l.Release()
+		}
+	}()
+	waitFor(t, "the trim to wait", g.rt.Scheduler.Trimming)
+	if f := g.rt.free(); f.CPUs != 0 || f.MemGB != 0 || f.Slots != 0 {
+		t.Fatalf("free capacity reported during a pending trim: %+v, want zero", f)
+	}
+	job := g.offer(t, nil)
+	done := make(chan error, 1)
+	go func() { done <- g.rt.Run(context.Background()) }()
+	time.Sleep(300 * time.Millisecond)
+	if n := len(g.fake.Calls("take")); n != 0 {
+		t.Fatalf("the node asked Mesh for work %d times during a pending trim", n)
+	}
+	if n := len(g.fake.Calls("hand-back")); n != 0 {
+		t.Fatalf("%d leases handed back during a pending trim", n)
+	}
+	// the build ends, the trim runs and ends: the node takes the job
+	build.Release()
+	<-trimmed
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the node never took the job once the trim ended")
+	}
+	if n := len(g.fake.Calls("hand-back")); n != 0 {
+		t.Fatalf("%d leases handed back", n)
+	}
+	if calls := g.fake.Calls("finish"); len(calls) != 1 || calls[0].LeaseID != g.fake.LeaseOf(job) {
+		t.Fatalf("finishes %+v", calls)
 	}
 }

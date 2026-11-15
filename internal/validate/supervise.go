@@ -232,10 +232,13 @@ func notRetried(failed []testKey, tests []TestResult, stream []byte) string {
 
 // supervisor is one Run's supervision of its units.
 type supervisor struct {
-	dir      string
-	budget   *retryBudget
-	onTest   func(TestResult)
-	selected bool
+	dir    string
+	budget *retryBudget
+	onTest func(TestResult)
+	// onActivity hears every write a unit's command makes
+	// (WithOnActivity); nil hears none.
+	onActivity func(what string)
+	selected   bool
 }
 
 // command runs cmd in r for a unit, its stdout kept on out (the first
@@ -260,7 +263,13 @@ func (s *supervisor) command(ctx context.Context, r Runner, cmd string, timeout,
 	if len(ws) > 1 {
 		w = io.MultiWriter(ws...)
 	}
-	exit, err = r.Run(ctx, cmd, timeout, w, stderr)
+	var errw io.Writer = stderr
+	if s.onActivity != nil {
+		// a retry's output is the unit working as much as its first run's
+		w = activityWriter{w: w, fn: s.onActivity, what: "output"}
+		errw = activityWriter{w: errw, fn: s.onActivity, what: "output"}
+	}
+	exit, err = r.Run(ctx, cmd, timeout, w, errw)
 	stop()
 	if watch != nil {
 		stalled = watch.fired()

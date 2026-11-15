@@ -59,14 +59,17 @@ func (r *Runtime) holdCapacity(ctx context.Context, b *meshapi.Brief, lease *mes
 }
 
 // waitForSlot waits until the scheduler has a job slot free, so the node
-// takes no lease it has no slot for; at once without a scheduler.
+// takes no lease it has no slot for; at once without a scheduler. A
+// trim of the build cache pending or running is no slot free, whatever
+// the node's slots: the node asks Mesh for nothing it would hand back
+// cannot_run (goal a-cache-trim-never-turns-work-away).
 func (r *Runtime) waitForSlot(ctx context.Context) {
 	if r.Scheduler == nil {
 		return
 	}
 	for ctx.Err() == nil {
 		ch := r.Scheduler.Changed()
-		if r.Scheduler.Total().Slots <= 0 || r.Scheduler.Free().Slots > 0 {
+		if !r.Scheduler.Trimming() && (r.Scheduler.Total().Slots <= 0 || r.Scheduler.Free().Slots > 0) {
 			return
 		}
 		// a lease that lapses frees its slot without a change to wake on

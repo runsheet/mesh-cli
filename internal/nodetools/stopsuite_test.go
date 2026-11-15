@@ -79,6 +79,20 @@ func TestStopSuiteStopsOneShardLeavesTheOthersRunning(t *testing.T) {
 		t.Fatalf("first answer %v, want a running handle", first)
 	}
 
+	// the handle answers after the call's wait, not after the lanes
+	// open: each shard registers its lane from its own goroutine, so
+	// stop_suite is called once the lane it names has opened
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, open := rs.find(id).laneStop("e2e-1"); open {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the lane e2e-1 never opened")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
 	stopAns := answerOf(t)(stopTool.Call(context.Background(), map[string]any{
 		"run_id": id, "step": "e2e", "index": 1, "reason": "test: stopping shard 1",
 	}))
