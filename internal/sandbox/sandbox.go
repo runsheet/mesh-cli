@@ -518,6 +518,28 @@ func (s *Session) SetExtraEnv(vars []string) {
 	s.extraEnv = append(s.extraEnv, vars...)
 }
 
+// SharedMounts are the mounts ShareMount added under what, in the order
+// added: what a lane opened beside this session copies, each overlay
+// with an upper and work dir of the lane's own (internal/nodev1/lanes.go).
+func (s *Session) SharedMounts(what string) []Mount {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []Mount
+	for _, m := range s.extraMounts {
+		if m.what == what {
+			out = append(out, m.Mount)
+		}
+	}
+	return out
+}
+
+// ExtraEnv are the variables SetExtraEnv set, less any DropEnv dropped.
+func (s *Session) ExtraEnv() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.extraEnv...)
+}
+
 // DropMounts removes every mount ShareMount added under what, leaving
 // every other mount (another what, and namedMounts' own) untouched: a
 // v1 lease retrying its agent without its tenant cache alone, never its
@@ -936,9 +958,16 @@ type RunSpec struct {
 	Cache   *ValidationCache
 	Command []string
 	Timeout time.Duration
-	Stdin   io.Reader
-	Stdout  io.Writer
-	Stderr  io.Writer
+	// Limits are an Exec's own CPUs and Memory, each in place of the
+	// session's when set (Session.SetLimits): a v1 run_suite's first
+	// lane, which runs in the lease's pod on the room its suite asks
+	// for, not the lease's (mesh-cli ADR-049 amendment). The zero value
+	// is the session's own; Pids is always the session's. Run and
+	// RunAgent ignore it.
+	Limits Limits
+	Stdin  io.Reader
+	Stdout io.Writer
+	Stderr io.Writer
 }
 
 // pidsExhausted is what a process says when it cannot fork past the
@@ -1071,6 +1100,13 @@ func (s *Session) Exec(ctx context.Context, spec RunSpec) error {
 	if spec.Stderr != nil {
 		stderr = io.MultiWriter(spec.Stderr, tail)
 	}
+	limits := s.limits()
+	if spec.Limits.CPUs > 0 {
+		limits.CPUs = spec.Limits.CPUs
+	}
+	if spec.Limits.Memory != "" {
+		limits.Memory = spec.Limits.Memory
+	}
 	start := time.Now()
 	name := ExecName(pod, n)
 	exit, err := s.sb.Runtime.RunAgent(ctx, pod, AgentSpec{
@@ -1080,7 +1116,7 @@ func (s *Session) Exec(ctx context.Context, spec RunSpec) error {
 		Mounts:         mounts,
 		Env:            SetEnv(s.Env(spec.Env), spec.Vars),
 		Command:        spec.Command,
-		Limits:         s.limits(),
+		Limits:         limits,
 		TimeoutSeconds: runtimeTimeout(spec.Timeout),
 		Stdin:          spec.Stdin,
 		Stdout:         spec.Stdout,
@@ -1096,7 +1132,7 @@ func (s *Session) Exec(ctx context.Context, spec RunSpec) error {
 	if err != nil {
 		return fmt.Errorf("sandbox: exec: %w", err)
 	}
-	return classify(exit, time.Since(start), spec.Timeout, s.limits(), tail.String())
+	return classify(exit, time.Since(start), spec.Timeout, limits, tail.String())
 }
 
 // removeRun removes a cancelled Run's container from the services pod

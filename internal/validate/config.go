@@ -131,6 +131,13 @@ type Step struct {
 	// 0 (the file leaving it out) and 1 are one run; never more than
 	// MaxShards.
 	Shards int
+	// CPUs and Memory are the room the suite asks for (`cpus: 8`,
+	// `memory: 24g`): what the lane it runs in is limited to and holds
+	// of the node (Resources, LaneSizes). 0 and "" (the file leaving
+	// them out) are the node's small default. Neither is hashed: how
+	// much room a suite runs with is not what it runs.
+	CPUs   float64
+	Memory string
 }
 
 // MaxShards bounds a suite's shards: each is a pod with its own
@@ -175,6 +182,8 @@ type rawStep struct {
 	Results   string   `yaml:"results"`
 	Group     string   `yaml:"group"`
 	Shards    int      `yaml:"shards"`
+	CPUs      float64  `yaml:"cpus"`
+	Memory    string   `yaml:"memory"`
 }
 
 // Load reads <dir>/.runsheet/validate.yml. A missing file is
@@ -228,6 +237,8 @@ func Parse(data []byte) (Config, error) {
 			Results:   s.Results,
 			Group:     strings.TrimSpace(s.Group),
 			Shards:    s.Shards,
+			CPUs:      s.CPUs,
+			Memory:    strings.TrimSpace(s.Memory),
 		}
 		if step.Name == "" {
 			return Config{}, fmt.Errorf("suite %d has no name", i+1)
@@ -244,6 +255,12 @@ func Parse(data []byte) (Config, error) {
 		}
 		if s.Shards < 0 || s.Shards > MaxShards {
 			return Config{}, fmt.Errorf("suite %q has shards %d, not 1 to %d", step.Name, s.Shards, MaxShards)
+		}
+		if s.CPUs < 0 {
+			return Config{}, fmt.Errorf("suite %q has cpus %g, not a positive number", step.Name, s.CPUs)
+		}
+		if step.Memory != "" && !memorySize.MatchString(step.Memory) {
+			return Config{}, fmt.Errorf("suite %q has memory %q, not a size such as 24g or 512m", step.Name, s.Memory)
 		}
 		paths, err := cleanPaths(s.Paths)
 		if err != nil {

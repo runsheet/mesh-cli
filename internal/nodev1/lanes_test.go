@@ -43,6 +43,13 @@ type shardRig struct {
 
 func newShardRig(t *testing.T, yml string, shard time.Duration, total scheduler.Capacity) *shardRig {
 	t.Helper()
+	return newShardRigFor(t, yml, shard, total, nil)
+}
+
+// newShardRigFor is newShardRig with the brief changed by brief before
+// the lease's pod opens.
+func newShardRigFor(t *testing.T, yml string, shard time.Duration, total scheduler.Capacity, brief func(*meshapi.Brief)) *shardRig {
+	t.Helper()
 	g := &shardRig{f: &sandbox.Fake{}}
 	g.f.Agent = func(ctx context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
 		if !strings.Contains(spec.Name, "-exec-") {
@@ -79,6 +86,9 @@ func newShardRig(t *testing.T, yml string, shard time.Duration, total scheduler.
 		NodeTools: []string{nodetools.RunSuiteTool}, EvidenceRequired: []string{nodetools.RunSuiteTool},
 		Resources: meshapi.Resources{CPUs: 4, MemGB: 8},
 		Pods:      []json.RawMessage{json.RawMessage(`{"name":"postgres","image":"docker.io/library/postgres:17-alpine"}`)}}
+	if brief != nil {
+		brief(b)
+	}
 	g.b = b
 	ctx, cancel := context.WithCancel(context.Background())
 	var closers []func() error
@@ -153,6 +163,9 @@ func (g *shardRig) lanePods() []string {
 
 const shardedYML = "budget: 80m\nsuites:\n  - name: integration\n    kind: integration\n    command: go test ./e2e\n    timeout: 60m\n    shards: 4\n"
 
+// sizedYML is shardedYML whose suite asks for 4 CPUs and 8 GB a shard.
+const sizedYML = shardedYML + "    cpus: 4\n    memory: 8g\n"
+
 // A sharded suite's shards run at once (mesh-specs gap 36): the first in
 // the lease's own pod, each other in a pod of its own beside the
 // lease's with its own Postgres, on the lease's resources held of the
@@ -218,15 +231,15 @@ func TestASuitesShardsRunAtOnceEachWithItsOwnServices(t *testing.T) {
 }
 
 // Shards are scheduled against the node's capacity like any exec: on a
-// node with room for three lanes of the lease's resources, the fourth
-// waits for one to end. 12 CPUs, not 8: since the lease's lanes reserve
-// their room as soon as the lane count is known (reserveLanes), the
-// first lane — the lease's own pod — now holds Resources-worth of the
+// node with room for three lanes of the room the suite asks for, the
+// fourth waits for one to end. 12 CPUs, not 8: since the lease's lanes
+// reserve their room as soon as the lane count is known (reserveLanes),
+// the first lane — the lease's own pod — now holds its room of the
 // scheduler too, where it once ran free of it; three concurrent lanes
 // need three holds' worth of room, 12 CPUs at this suite's 4 each.
 func TestShardsWaitForTheNodesRoom(t *testing.T) {
 	const shard = 400 * time.Millisecond
-	g := newShardRig(t, shardedYML, shard, scheduler.Capacity{CPUs: 12, MemGB: 64, Slots: 3})
+	g := newShardRig(t, sizedYML, shard, scheduler.Capacity{CPUs: 12, MemGB: 64, Slots: 3})
 	start := time.Now()
 	_, last := g.run(t, map[string]any{"suite": "integration"})
 	wall := time.Since(start)
@@ -243,23 +256,29 @@ func TestShardsWaitForTheNodesRoom(t *testing.T) {
 // into 4 lanes holds all 4 of the scheduler's lane holds the moment its
 // pod opens, before run_suite ever opens one — so a later lease already
 // sees no room left for lanes that have not run yet. 16 CPUs and 32
-// MemGB fill exactly on 4 holds of the suite's Resources{4, 8} each: a
-// scheduler close to its cap, as the acceptance asks.
+// MemGB fill exactly on 4 holds of the suite's own 4 CPUs and 8 GB
+// each: a scheduler close to its cap, as the acceptance asks. The
+// lease's end gives back a hold no run took.
 func TestALeasesLanesHoldRoomAsSoonAsTheLaneCountIsKnown(t *testing.T) {
-	g := newShardRig(t, shardedYML, 400*time.Millisecond, scheduler.Capacity{CPUs: 16, MemGB: 32, Slots: 3})
+	g := newShardRig(t, sizedYML, 400*time.Millisecond, scheduler.Capacity{CPUs: 16, MemGB: 32, Slots: 3})
 
 	var owners []string
 	for _, h := range g.rt.Scheduler.Leases() {
 		owners = append(owners, h.Owner)
 	}
 	slices.Sort(owners)
-	want := []string{"lease-1/lane-1", "lease-1/lane-2", "lease-1/lane-3", "lease-1/lane-4"}
+	want := []string{"lease-1/lane-integration-0", "lease-1/lane-integration-1", "lease-1/lane-integration-2", "lease-1/lane-integration-3"}
 	if !slices.Equal(owners, want) {
 		t.Fatalf("lane holds taken before any lane ran = %v, want %v", owners, want)
 	}
 
 	if _, err := g.rt.Scheduler.TryTake(scheduler.Ask{Owner: "lease-2", CPUs: 1, MemGB: 1}); err == nil {
 		t.Fatal("a later lease was offered room the lease's unopened lanes already hold")
+	}
+
+	g.lp.releaseEagerLanes()
+	if free := g.rt.Scheduler.Free(); free.CPUs != 16 || free.MemGB != 32 {
+		t.Fatalf("the lease's end left its unopened lanes' room held: %+v free", free)
 	}
 }
 
