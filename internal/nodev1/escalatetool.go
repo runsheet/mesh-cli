@@ -17,11 +17,16 @@ import (
 // all, and the step is reported with the lease's usage.
 const EscalateTool = "escalate"
 
-// escalateTool is the lease's escalate tool: escalate {reason}. It
-// answers the model the session moves to and leaves the step in the
-// lease's mailbox for the session's loop, which moves the live session
-// with set_model.
-func escalateTool(ladder *escalate.Ladder, mb *Mailbox) mcptool.Tool {
+// escalateTool is the lease's escalate tool: escalate {reason}. codex
+// says the lease's session is a Codex one (internal/harness/codexsession;
+// app-server has no set_model, codexsession.go's own doc comment), which
+// has no way to move mid-session: the call refuses up front, naming why,
+// rather than answering "escalating: true" and then silently dropping the
+// step once posted, as CodexSession.loop's own MsgEscalate case used to
+// leave it. A Claude session's call answers the model the session moves
+// to and leaves the step in the lease's mailbox for the session's loop,
+// which moves the live session with set_model.
+func escalateTool(ladder *escalate.Ladder, mb *Mailbox, codex bool) mcptool.Tool {
 	return mcptool.Tool{
 		Name: EscalateTool,
 		Description: "Ask for a stronger model when the job is beyond the one you run on: the node moves this session up the job's model ladder. " +
@@ -38,6 +43,9 @@ func escalateTool(ladder *escalate.Ladder, mb *Mailbox) mcptool.Tool {
 			reason = strings.TrimSpace(reason)
 			if reason == "" {
 				return "", fmt.Errorf("reason is required")
+			}
+			if codex {
+				return "", fmt.Errorf("this session has no capability to change model mid-session: codex's app-server has no set_model")
 			}
 			to, err := ladder.Peek(escalate.OnAsked)
 			if err != nil {
