@@ -20,7 +20,7 @@ func writeMinimalCatalogue(t *testing.T, root string) {
 	t.Helper()
 	for rel, content := range map[string]string{
 		".mesh/product.yml":         "product: acme\n",
-		".mesh/jobs/review.yml":     "kind: review\nharness: claude-code\nfinish: result\nguidance: .mesh/agents/review.md\nfinish_schema: .mesh/schemas/review.json\n",
+		".mesh/jobs/review.yml":     "kind: review\nclass: 3\nmodel: {default: sonnet}\nharness: claude-code\nfinish: result\nguidance: .mesh/agents/review.md\nfinish_schema: .mesh/schemas/review.json\n",
 		".mesh/agents/review.md":    "You review one change.\n",
 		".mesh/schemas/review.json": `{"type": "object", "required": ["severity"]}`,
 	} {
@@ -74,7 +74,7 @@ func TestProductPublishSendsTheBundleAsTheClient(t *testing.T) {
 	root := t.TempDir()
 	for rel, content := range map[string]string{
 		".mesh/product.yml":         "product: acme\ntriggers: [thread]\n",
-		".mesh/jobs/review.yml":     "kind: review\nharness: claude-code\nfinish: verdict\nguidance: .mesh/agents/review.md\nfinish_schema: .mesh/schemas/review.json\n",
+		".mesh/jobs/review.yml":     "kind: review\nclass: 3\nmodel: {default: sonnet}\nharness: claude-code\nfinish: verdict\nguidance: .mesh/agents/review.md\nfinish_schema: .mesh/schemas/review.json\n",
 		".mesh/agents/review.md":    "You review one change.\n",
 		".mesh/schemas/review.json": `{"type": "object", "required": ["severity"]}`,
 	} {
@@ -174,7 +174,7 @@ func TestProductPublishDryRunShowsTheFinishSchema(t *testing.T) {
 		}
 	}
 	write(".mesh/product.yml", "product: acme\n")
-	write(".mesh/jobs/triage.yml", "kind: triage\nharness: claude-code\nfinish: result\nguidance: .mesh/agents/triage.md\nfinish_schema: .mesh/schemas/triage.json\n")
+	write(".mesh/jobs/triage.yml", "kind: triage\nclass: 3\nmodel: {default: sonnet}\nharness: claude-code\nfinish: result\nguidance: .mesh/agents/triage.md\nfinish_schema: .mesh/schemas/triage.json\n")
 	write(".mesh/agents/triage.md", "You triage one report.\n")
 	write(".mesh/schemas/triage.json", `{"type": "object", "required": ["severity"]}`)
 	set(t, &productPublishDir, root)

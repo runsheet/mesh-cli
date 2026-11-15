@@ -27,11 +27,11 @@ func checkout(t *testing.T, files map[string]string) string {
 func acme() map[string]string {
 	return map[string]string{
 		".mesh/product.yml":         "product: acme\ndisplay_name: Acme\ntriggers: [thread]\nmcp:\n  url: https://api.acme.test/mcp\n  audience: https://api.acme.test/mcp\n",
-		".mesh/jobs/review.yml":     "kind: review\nharness: [claude-code, codex]\nfinish: verdict\naccess: [acme]\nguidance: .mesh/agents/review.md\n",
-		".mesh/jobs/triage.yml":     "kind: triage\nharness: claude-code\nfinish: result\nguidance: .mesh/agents/review.md\nfinish_schema: .mesh/schemas/triage.json\n",
+		".mesh/jobs/review.yml":     "kind: review\nclass: 3\nmodel: {default: sonnet}\nharness: [claude-code, codex]\nfinish: verdict\naccess: [acme]\nguidance: .mesh/agents/review.md\n",
+		".mesh/jobs/triage.yml":     "kind: triage\nclass: 3\nmodel: {default: sonnet}\nharness: claude-code\nfinish: result\nguidance: .mesh/agents/review.md\nfinish_schema: .mesh/schemas/triage.json\n",
 		".mesh/schemas/triage.json": "{\n  \"type\": \"object\",\n  \"required\": [\"severity\"],\n  \"properties\": {\"severity\": {\"enum\": [\"low\", \"high\"]}}\n}\n",
-		".mesh/jobs/deploy.yml":     "kind: deploy\nharness: none\nfinish: deploy-record\n",
-		".mesh/roles/assistant.yml": "kind: assistant\nharness: claude-code\nfinish: answer-or-proposal\ntrigger: thread\nidentity: Acme's assistant\npowers: [answer]\nguidance: .mesh/agents/assistant.md\n",
+		".mesh/jobs/deploy.yml":     "kind: deploy\nclass: 3\nmodel: {default: sonnet}\nharness: none\nfinish: deploy-record\n",
+		".mesh/roles/assistant.yml": "kind: assistant\nclass: 3\nmodel: {default: sonnet}\nharness: claude-code\nfinish: answer-or-proposal\ntrigger: thread\nidentity: Acme's assistant\npowers: [answer]\nguidance: .mesh/agents/assistant.md\n",
 		".mesh/agents/review.md":    "You review one change for Acme.\n",
 		".mesh/agents/assistant.md": "You answer one thread.\n",
 	}
@@ -77,10 +77,10 @@ func TestLoadBuildsTheBundle(t *testing.T) {
 // answered at once.
 func TestLoadNamesEveryProblem(t *testing.T) {
 	files := acme()
-	files[".mesh/jobs/review.yml"] = "kind: review\nharness: claude-code\nfinish: verdict\nguidance: agent:builder\n"
-	files[".mesh/jobs/plan.yml"] = "kind: plan\nharness: claude-code\nfinish: plan\nguidance: .mesh/agents/plan.md\n"
-	files[".mesh/jobs/other.yml"] = "kind: something\nharness: none\nfinish: verdict\n"
-	files[".mesh/jobs/odd.yml"] = "kind: odd\nharness: none\nfinish: verdict\ncolour: blue\n"
+	files[".mesh/jobs/review.yml"] = "kind: review\nclass: 3\nmodel: {default: sonnet}\nharness: claude-code\nfinish: verdict\nguidance: agent:builder\n"
+	files[".mesh/jobs/plan.yml"] = "kind: plan\nclass: 3\nmodel: {default: sonnet}\nharness: claude-code\nfinish: plan\nguidance: .mesh/agents/plan.md\n"
+	files[".mesh/jobs/other.yml"] = "kind: something\nclass: 3\nmodel: {default: sonnet}\nharness: none\nfinish: verdict\n"
+	files[".mesh/jobs/odd.yml"] = "kind: odd\nclass: 3\nmodel: {default: sonnet}\nharness: none\nfinish: verdict\ncolour: blue\n"
 	files[".mesh/roles/assistant.yml"] = strings.Replace(files[".mesh/roles/assistant.yml"], "trigger: thread", "trigger: request", 1)
 	_, err := Load(checkout(t, files), Source{})
 	probs, ok := err.(Problems)
@@ -104,7 +104,7 @@ func TestLoadNamesEveryProblem(t *testing.T) {
 // out of the checkout.
 func TestLoadRefusesGuidanceOutsideTheCheckout(t *testing.T) {
 	files := acme()
-	files[".mesh/jobs/review.yml"] = "kind: review\nharness: claude-code\nfinish: verdict\nguidance: ../../etc/passwd.md\n"
+	files[".mesh/jobs/review.yml"] = "kind: review\nclass: 3\nmodel: {default: sonnet}\nharness: claude-code\nfinish: verdict\nguidance: ../../etc/passwd.md\n"
 	if _, err := Load(checkout(t, files), Source{}); err == nil || !strings.Contains(err.Error(), "outside the checkout") {
 		t.Fatalf("want outside the checkout, got %v", err)
 	}
@@ -254,5 +254,43 @@ func TestLoadTakesAGoodSlotList(t *testing.T) {
 	files[".mesh/jobs/triage.yml"] += "node_tools: [result, a, b, c, d, e]\ntools:\n  required:\n    - {name: result, from: mesh, description: d}\n    - {name: g, from: product, description: d}\n    - {name: h, from: product, description: d}\n    - {name: i, from: product, description: d}\n  optional:\n    - {name: j, from: connection, description: d}\negress:\n  hosts: [localhost, abr.business.gov.au]\n"
 	if _, err := Load(checkout(t, files), Source{Commit: "c1"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestLoadSendsOnlyTheHooksMeshTakes: Mesh's catalogue has one hook,
+// `jobs`, and decodes strictly. product.yml's older `reply` (a URL, or a
+// map of url and auth, as Wardroom writes it) and `confirm_callback`
+// parse but stay out of the bundle; `jobs` goes as written.
+func TestLoadSendsOnlyTheHooksMeshTakes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		hooks string
+		want  string
+	}{
+		"reply as a map":    {"hooks:\n  reply:\n    url: https://hooks.acme.test/hooks/\n    auth: latchkey\n", ""},
+		"reply as a string": {"hooks:\n  reply: https://hooks.acme.test/hooks/\n  confirm_callback: true\n", ""},
+		"jobs":              {"hooks:\n  jobs: https://api.acme.test/mesh/jobs\n  reply: https://hooks.acme.test/hooks/\n", `{"jobs":"https://api.acme.test/mesh/jobs"}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			files := acme()
+			files[".mesh/product.yml"] = "product: acme\ndisplay_name: Acme\ntriggers: [thread]\n" + tc.hooks
+			b, err := Load(checkout(t, files), Source{})
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			raw, err := json.Marshal(b.Manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.want == "" {
+				if b.Manifest.Hooks != nil || strings.Contains(string(raw), "hooks") {
+					t.Fatalf("manifest carries hooks Mesh has no field for: %s", raw)
+				}
+				return
+			}
+			got, _ := json.Marshal(b.Manifest.Hooks)
+			if string(got) != tc.want {
+				t.Fatalf("hooks = %s, want %s", got, tc.want)
+			}
+		})
 	}
 }
