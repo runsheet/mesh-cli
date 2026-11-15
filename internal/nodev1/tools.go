@@ -10,6 +10,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/mcptool"
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/nodetools"
+	"projectmesh.io/mesh-cli/internal/release"
 	"projectmesh.io/mesh-cli/internal/validate"
 )
 
@@ -106,6 +107,19 @@ func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace s
 			}
 			out = append(out, (&nodetools.ApplyOnto{Grant: g, Repo: repo, Workspace: workspace, Code: b.Code, Vendor: vendor, Recorder: rec,
 				Escalate: escalateOn(ladder, mb, escalate.OnConflict)}).Tool())
+		case nodetools.SignReleaseTool:
+			sr := &nodetools.SignRelease{Workspace: workspace}
+			if tokens != nil && r.Sigstore.Enabled() {
+				fulcio, rekor := r.Sigstore.FulcioURL, r.Sigstore.RekorURL
+				sr.Sign = func(ctx context.Context, sums []byte) ([]byte, error) {
+					tok, err := tokens.SigningToken(ctx)
+					if err != nil {
+						return nil, err
+					}
+					return release.Sign(ctx, sums, tok, release.SignOptions{FulcioURL: fulcio, RekorURL: rekor})
+				}
+			}
+			out = append(out, sr.Tool())
 		case EscalateTool:
 			out = append(out, escalateTool(ladder, mb))
 		case RequestTimeTool:
