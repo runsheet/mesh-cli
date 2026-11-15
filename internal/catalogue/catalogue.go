@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path"
 	"path/filepath"
@@ -102,6 +103,38 @@ type Kind struct {
 	// what either does.
 	FinishTool string `json:"finish_tool,omitempty"`
 	BriefTool  string `json:"brief_tool,omitempty"`
+	// NodeTools, Tools and Egress are the kind's tool slots and where its
+	// session may reach (projectmesh-io/api ADR 001 amendments "tool
+	// slots and egress" and "carried access"). Absent is not empty: a
+	// kind with no `egress:` key sends none, `egress: {}` sends {}.
+	NodeTools []string `json:"node_tools,omitempty"`
+	Tools     *Tools   `json:"tools,omitempty"`
+	Egress    *Egress  `json:"egress,omitempty"`
+}
+
+// Tool is one tool a kind's session is served, named as the model sees
+// it; From says what serves it: product, mesh or connection.
+type Tool struct {
+	Name        string `json:"name" yaml:"name"`
+	From        string `json:"from" yaml:"from"`
+	Description string `json:"description" yaml:"description"`
+}
+
+// Tools are a kind's required tools and the optional connection slots a
+// tenant may fill.
+type Tools struct {
+	Required []Tool `json:"required,omitempty" yaml:"required"`
+	Optional []Tool `json:"optional,omitempty" yaml:"optional"`
+}
+
+// Egress is where a kind's session may reach through the relay beyond
+// its git and MCP routes: bare hostnames, its own product's MCP, the
+// model, and registry prefixes the relay signs.
+type Egress struct {
+	Hosts      []string `json:"hosts,omitempty" yaml:"hosts"`
+	MCP        []string `json:"mcp,omitempty" yaml:"mcp"`
+	Model      bool     `json:"model,omitempty" yaml:"model"`
+	Registries []string `json:"registries,omitempty" yaml:"registries"`
 }
 
 // Role is a kind with a trigger, an identity and powers.
@@ -154,9 +187,121 @@ type kindFile struct {
 	FinishSchema string   `yaml:"finish_schema"`
 	FinishTool   string   `yaml:"finish_tool"`
 	BriefTool    string   `yaml:"brief_tool"`
+	NodeTools    []string `yaml:"node_tools"`
+	Tools        *Tools   `yaml:"tools"`
+	Egress       *Egress  `yaml:"egress"`
 	Trigger      string   `yaml:"trigger"`
 	Identity     string   `yaml:"identity"`
 	Powers       []string `yaml:"powers"`
+}
+
+// bundled is the kind as the bundle sends it.
+func (k kindFile) bundled() Kind {
+	return Kind{Kind: k.Kind, Harness: k.Harness, Finish: k.Finish, Access: k.Access, Needs: k.Needs, Pods: k.Pods,
+		Guidance: k.Guidance, FinishSchema: k.FinishSchema, FinishTool: k.FinishTool, BriefTool: k.BriefTool,
+		NodeTools: k.NodeTools, Tools: k.Tools, Egress: k.Egress}
+}
+
+// MaxTools bounds the tools a kind's session is served: required,
+// node_tools and optional together, each name once.
+const MaxTools = 10
+
+// MaxToolDescription bounds a tool's description, in characters.
+const MaxToolDescription = 200
+
+var (
+	toolNameRule  = regexp.MustCompile(`^[a-z0-9_]+$`)
+	hostnameLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+)
+
+// bareHostname is Mesh's rule (api service/aggregates BareHostname):
+// lowercase DNS labels joined by dots, at most 253 characters, and not
+// an IP address.
+func bareHostname(h string) bool {
+	if h == "" || len(h) > 253 {
+		return false
+	}
+	if _, err := netip.ParseAddr(h); err == nil {
+		return false
+	}
+	for _, label := range strings.Split(h, ".") {
+		if !hostnameLabel.MatchString(label) {
+			return false
+		}
+	}
+	return true
+}
+
+// slotProblems checks a kind's node_tools, tools and egress as Mesh's
+// publish does (ADR 001 amendment "tool slots and egress"), so a bad one
+// is refused before anything is sent. Which node tools Mesh serves is
+// Mesh's to say, and is left to it.
+func slotProblems(product string, k kindFile) []string {
+	var out []string
+	add := func(format string, args ...any) { out = append(out, fmt.Sprintf(format, args...)) }
+	served := map[string]bool{}
+	for _, n := range k.NodeTools {
+		if served[n] {
+			add("node_tools names %q twice", n)
+		}
+		served[n] = true
+	}
+	if k.Tools != nil {
+		check := func(list string, tools []Tool) {
+			for _, t := range tools {
+				at := fmt.Sprintf("tools.%s[%s]", list, t.Name)
+				if !toolNameRule.MatchString(t.Name) {
+					add("%s: a tool's name must match ^[a-z0-9_]+$", at)
+				}
+				if n := len([]rune(t.Description)); n > MaxToolDescription {
+					add("%s: the description is %d characters; at most %d", at, n, MaxToolDescription)
+				}
+				switch {
+				case t.From != "product" && t.From != "mesh" && t.From != "connection":
+					add("%s: from %q is not one of product, mesh, connection", at, t.From)
+				case list == "optional" && t.From != "connection":
+					add("%s: an optional tool is a connection slot (from: connection)", at)
+				case t.From == "mesh" && !slices.Contains(k.NodeTools, t.Name):
+					add("%s: a mesh tool must also be in node_tools", at)
+				}
+				if t.From == "mesh" {
+					continue // counted once, with node_tools
+				}
+				if served[t.Name] {
+					add("%s: %q is named twice", at, t.Name)
+				}
+				served[t.Name] = true
+			}
+		}
+		check("required", k.Tools.Required)
+		check("optional", k.Tools.Optional)
+	}
+	if n := len(served); n > MaxTools {
+		add("tools: a job of the kind is served %d tools (required, node_tools and optional together); at most %d", n, MaxTools)
+	}
+	if e := k.Egress; e != nil {
+		hosts := map[string]bool{}
+		for _, h := range e.Hosts {
+			if !bareHostname(h) {
+				add("egress.hosts names %q, which is not a bare hostname (like proxy.golang.org: no scheme, port, path, wildcard or address)", h)
+			}
+			if hosts[h] {
+				add("egress.hosts names %q twice", h)
+			}
+			hosts[h] = true
+		}
+		for _, p := range e.MCP {
+			if p != product {
+				add("egress.mcp names %q: a kind reaches its own product's MCP alone (%s)", p, product)
+			}
+		}
+		for _, r := range e.Registries {
+			if !strings.HasPrefix(r, "https://") || !strings.HasSuffix(r, "/") {
+				add("egress.registries names %q, which is not an https prefix ending \"/\" (like https://api.runsheet.dev/npm/)", r)
+			}
+		}
+	}
+	return out
 }
 
 // Problems is every reason a checkout's catalogue cannot be published.
@@ -236,6 +381,9 @@ func Load(root string, src Source) (*Bundle, error) {
 				add("%s", err)
 			}
 			k.FinishSchema = schema
+			for _, p := range slotProblems(m.Product, k) {
+				add("%s: %s", rel, p)
+			}
 			out = append(out, k)
 		}
 		return out
@@ -244,7 +392,7 @@ func Load(root string, src Source) (*Bundle, error) {
 		if k.Trigger != "" || k.Identity != "" || len(k.Powers) > 0 {
 			add("%s%s.yml: a kind has no trigger, identity or powers: a role lives in the roles directory", JobsDir, k.Kind)
 		}
-		b.Kinds = append(b.Kinds, Kind{Kind: k.Kind, Harness: k.Harness, Finish: k.Finish, Access: k.Access, Needs: k.Needs, Pods: k.Pods, Guidance: k.Guidance, FinishSchema: k.FinishSchema, FinishTool: k.FinishTool, BriefTool: k.BriefTool})
+		b.Kinds = append(b.Kinds, k.bundled())
 	}
 	rolesDir := strings.TrimSuffix(cleanDir(m.Roles, DefaultRolesDir), "/") + "/"
 	for _, k := range read(rolesDir) {
@@ -259,7 +407,7 @@ func Load(root string, src Source) (*Bundle, error) {
 			add("%s: `identity` is required", rel)
 		}
 		b.Roles = append(b.Roles, Role{
-			Kind:    Kind{Kind: k.Kind, Harness: k.Harness, Finish: k.Finish, Access: k.Access, Needs: k.Needs, Pods: k.Pods, Guidance: k.Guidance, FinishSchema: k.FinishSchema, FinishTool: k.FinishTool, BriefTool: k.BriefTool},
+			Kind:    k.bundled(),
 			Trigger: k.Trigger, Identity: k.Identity, Powers: k.Powers,
 		})
 	}
