@@ -74,7 +74,10 @@ func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace s
 		rs = &nodetools.RunSuite{Workspace: workspace, Recorder: rec, Run: suites,
 			OnHost: suites == nil && r.hostSuites(), Escalate: escalateOn(ladder, mb, escalate.OnRed),
 			Wait: r.SuiteWait, Context: clock.ctx, Began: clock.began, Budget: r.suiteBudget(b, workspace),
-			OnActivity: func(what string) { r.stepProgress(b.LeaseID, nodetools.RunSuiteTool+": "+what) }}
+			OnActivity: func(what string) { r.stepProgress(b.LeaseID, nodetools.RunSuiteTool+": "+what) },
+			Logf: func(format string, args ...any) {
+				r.logf("nodev1: lease %s: "+format, append([]any{b.LeaseID}, args...)...)
+			}}
 		if b.Results != nil {
 			rs.Results = *b.Results
 			if tokens != nil {

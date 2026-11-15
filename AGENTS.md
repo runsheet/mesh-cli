@@ -69,7 +69,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   the job-kind and brief shapes this node actually runs against.
 - **Validation** (`internal/validate`, run through `run_suite`;
   ADR-013, ADR-049): the repository's `.runsheet/validate.yml` names the
-  suites, and `validate.Run` runs them — groups and shards at once, each
+  suites — or, with no file, the node infers them from go.mod, go.work,
+  package.json scripts and a Makefile's test/check targets
+  (`internal/validate/infer`, ADR-053; a declared file wins whole) — and `validate.Run` runs them — groups and shards at once, each
   in a lane (pod) of its own — and supervises the tests they run
   (`supervise.go`, ADR-049's amendment of 2026-11-15), so a session
   never re-runs a test to see if it is flaky, watches for a hung shard

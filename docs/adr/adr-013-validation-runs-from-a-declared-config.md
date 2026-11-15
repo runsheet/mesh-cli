@@ -235,3 +235,14 @@ again by name, a confirmed failure stopping the run, a stalled test
 named, "0 tests" red). They are the node's own keys, as `timeout`,
 `results`, `group` and `shards` are, and stay out of the suite hash.
 ADR-049's amendment of the same day decides what each does.
+
+## Amended 2026-11-16: a missing file is inferred, not refused
+
+A repository with no `.runsheet/validate.yml` is no longer
+`ErrNoValidation` at run_suite. Instead, the node infers its suites from
+go.mod, go.work, package.json and a Makefile (`internal/validate/infer`),
+writes them as a validate.yml and reads that back through `Parse`. A
+declared file still wins whole. `validate.Load` itself is unchanged and
+still answers `ErrNoValidation`, so that `infer.Load` can tell a missing
+file from a declared one. ADR-053 has the rules and what they do not
+handle.

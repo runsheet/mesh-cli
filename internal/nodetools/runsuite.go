@@ -19,11 +19,14 @@ import (
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	rawresults "projectmesh.io/mesh-cli/internal/results"
 	"projectmesh.io/mesh-cli/internal/validate"
+	"projectmesh.io/mesh-cli/internal/validate/infer"
 )
 
 // RunSuiteTool is the run_suite node tool's name. It runs the
 // checkout's declared validation (.runsheet/validate.yml, through
-// internal/validate) — every suite, or the ones named — on the node, and
+// internal/validate), or, when it declares none, the suites the node
+// infers from the checkout itself (internal/validate/infer, ADR-053) —
+// every suite, or the ones named — on the node, and
 // records the result: its output blob is every step's outcome and every
 // test's final event, go test -json normalised to {package, test,
 // action, elapsed}.
@@ -124,6 +127,9 @@ type RunSuite struct {
 	// that writes nothing calls it never, so a silent run shows Mesh no
 	// progress and its stall limit can end it. Nil hears nothing.
 	OnActivity func(what string)
+	// Logf hears what the node's log should: the suites it inferred for
+	// a checkout with no validate.yml (ADR-053). Nil logs nothing.
+	Logf func(format string, args ...any)
 
 	// Results is the brief's results location (meshapi.Brief.Results):
 	// when it names an UploadURL, a run's complete raw output goes there
@@ -224,6 +230,11 @@ func (r *suiteRun) laneStop(name string) (func(reason string), bool) {
 type SuiteOutput struct {
 	Steps []SuiteStep  `json:"steps"`
 	Tests []TestResult `json:"tests"`
+	// Inferred is what the node inferred the suites from, and the
+	// validate.yml it wrote, when the checkout declares none (ADR-053):
+	// what a product may store to run the same suites again. Absent for
+	// a declared validate.yml.
+	Inferred *infer.Profile `json:"inferred,omitempty"`
 }
 
 // SuiteStep is one step's outcome; a sharded step's (validate.yml
@@ -359,7 +370,7 @@ func (s *RunSuite) Tool() mcptool.Tool {
 	}
 	return mcptool.Tool{
 		Name: RunSuiteTool,
-		Description: "Run the repository's declared validation (.runsheet/validate.yml) on your checkout as it stands, " +
+		Description: "Run the repository's declared validation (.runsheet/validate.yml) on your checkout as it stands — or, when it declares none, the suites the node infers from go.mod, package.json or a Makefile, named in the answer's inferred — " +
 			"every suite or the one you name, whole or only the targets and tests you name. A sharded suite's shards run at once, each beside its own services. " +
 			"Answers each step's exit and test counts, the failing tests, " +
 			"and every test's own name, package, outcome and duration (a test still running when a step was killed at its timeout named outcome timeout); " +
@@ -475,12 +486,21 @@ func (s *RunSuite) call(ctx context.Context, args map[string]any) (string, error
 			return "", errors.New("fail_fast is true or false")
 		}
 	}
-	cfg, err := validate.Load(s.Workspace)
-	if errors.Is(err, validate.ErrNoValidation) {
-		return "", errors.New("the repository declares no validation (.runsheet/validate.yml)")
+	// an explicit validate.yml wins whole; with none, the node infers
+	// the suites from the checkout (ADR-053)
+	cfg, profile, err := infer.Load(s.Workspace)
+	if errors.Is(err, infer.ErrNothingToInfer) {
+		return "", fmt.Errorf("the suites cannot run: %w", err)
 	}
 	if err != nil {
 		return "", err
+	}
+	source := "validate.yml"
+	if profile != nil {
+		source = "the inferred suites (" + strings.Join(profile.Suites, ", ") + ")"
+		if s.Logf != nil {
+			s.Logf("run_suite: no validate.yml: %s", profile.Summary())
+		}
 	}
 	steps := cfg.Steps
 	if len(names) > 0 {
@@ -488,18 +508,18 @@ func (s *RunSuite) call(ctx context.Context, args map[string]any) (string, error
 		for _, n := range names {
 			i := slices.IndexFunc(cfg.Steps, func(st validate.Step) bool { return st.Name == n })
 			if i < 0 {
-				return "", fmt.Errorf("validate.yml has no suite %q", n)
+				return "", fmt.Errorf("%s has no suite %q", source, n)
 			}
 			steps = append(steps, cfg.Steps[i])
 		}
 	}
 	if len(steps) == 0 {
-		return "", errors.New("validate.yml declares no suites")
+		return "", fmt.Errorf("%s declares no suites", source)
 	}
 	r := s.start(steps)
 	go func() {
 		defer close(r.done)
-		r.answer, r.err = s.execute(r, run, steps, sel, failFast)
+		r.answer, r.err = s.execute(r, run, steps, sel, failFast, profile)
 	}()
 	return s.await(ctx, r, s.wait())
 }
@@ -607,7 +627,7 @@ func (s *RunSuite) deadline() time.Time {
 
 // execute runs the steps to their end — or to the lease's budget — and
 // records the run: its answer, as the call that sees it end returns it.
-func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, sel *Selection, failFast bool) (string, error) {
+func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, sel *Selection, failFast bool, profile *infer.Profile) (string, error) {
 	base := s.Context
 	if base == nil {
 		base = context.Background()
@@ -660,6 +680,7 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 		return "", fmt.Errorf("the suites could not run: %v", runErr)
 	}
 	out := Normalise(results)
+	out.Inferred = profile
 	blob, err := json.Marshal(out)
 	if err != nil {
 		return "", err
@@ -721,6 +742,9 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 	if sel != nil {
 		summary += fmt.Sprintf(" (a selection: %d targets, %d tests)", len(sel.Targets), len(sel.Tests))
 	}
+	if profile != nil {
+		summary = "no .runsheet/validate.yml: " + profile.Summary() + "; " + summary
+	}
 	if outOfTime {
 		summary = fmt.Sprintf("ran out of time: the lease ran past the repository's validation budget of %s (validate.yml budget:) and the run was stopped; ",
 			s.Budget) + summary
@@ -729,6 +753,10 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 	if sel != nil {
 		// two selections of one suite are two inputs
 		input["selection"] = sel
+	}
+	if profile != nil {
+		// an inferred run is its inferred file's, as a declared one is its file's
+		input["inferred"] = profile.SuiteHash
 	}
 	rec := Record{Tool: RunSuiteTool, StartedAt: start, EndedAt: ended, Exit: exit, Summary: summary,
 		InputDigest: InputDigest(input), Selection: sel}
@@ -753,6 +781,9 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 	}
 	if testsTruncated {
 		answer["tests_truncated"] = true
+	}
+	if profile != nil {
+		answer["inferred"] = profile
 	}
 	if len(flakyTests) > 0 {
 		answer["flaky_tests"] = flakyTests
