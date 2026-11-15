@@ -1,0 +1,92 @@
+# .runsheet/deploy.yml — the release path for a node-changing merge to
+# main (docs/adr/adr-002-signed-tag-releases.md's amendment "the
+# deploy.yml cut-over"; mesh-specs ADR "Releases ship from a node").
+#
+# No GitHub Actions workflow ships a release any more:
+# release-on-merge.yml, release-tag.yml and release.yml are gone. In
+# their place, a push to main whose diff touches `cmd/**`,
+# `internal/**`, `images/node/**`, `go.mod` or `go.sum` raises a
+# runsheet release unit on this repo, which a node runs on the merge
+# commit, entirely on runsheet's own infrastructure:
+#
+#   1. tag     — the next version: the patch after the highest vX.Y.Z
+#                tag (the minor instead, on the merged PR's
+#                `release:minor` label or a touched goal doc's
+#                `release: minor` frontmatter), tagged and pushed on
+#                the merge commit.
+#   2. build   — cross-build the three binaries
+#                (`mesh-linux-amd64`, `mesh-linux-arm64`,
+#                `mesh-darwin-arm64`, `CGO_ENABLED=0 -trimpath`,
+#                `internal/version.Version` the tag and `Sha` the
+#                commit) and the two-arch node image
+#                (`linux/amd64`, `linux/arm64`) from
+#                `images/node/Containerfile`.
+#   3. sign    — `SHA256SUMS` over the three binaries, signed keyless
+#                through our own Fulcio and Rekor (not public-good's,
+#                and not GitHub Actions' OIDC), under the runsheet
+#                release identity below; the node image's digest is
+#                signed under the same identity.
+#   4. publish — the five assets (the three binaries, `SHA256SUMS`,
+#                `SHA256SUMS.sigstore.json`) uploaded to runsheet's own
+#                release store, and the signed node image pushed to
+#                `ghcr.io/runsheet/mesh-node:<tag>`.
+#
+# The Shipper's `gh workflow run release.yml --field version=<semver>`
+# trigger has no home here: release.yml is gone with the rest, and
+# giving the Shipper a way to raise a release unit instead is a
+# follow-up (docs/adr/adr-002-signed-tag-releases.md's amendment,
+# "What is owed").
+
+trigger:
+  branch: main
+  paths:
+    - "cmd/**"
+    - "internal/**"
+    - "go.mod"
+    - "go.sum"
+    - "images/node/**"
+
+release:
+  repo: runsheet/mesh-cli
+
+  tag:
+    bump: patch # minor on release:minor; major is by hand only
+
+  build:
+    binaries:
+      - { os: linux, arch: amd64 }
+      - { os: linux, arch: arm64 }
+      - { os: darwin, arch: arm64 }
+    cgo_enabled: false
+    trimpath: true
+    ldflags:
+      - "-X projectmesh.io/mesh-cli/internal/version.Version={{tag}}"
+      - "-X projectmesh.io/mesh-cli/internal/version.Sha={{commit}}"
+    image:
+      containerfile: images/node/Containerfile
+      platforms: [linux/amd64, linux/arm64]
+      ref: "ghcr.io/runsheet/mesh-node:{{tag}}"
+
+  sign:
+    keyless: true
+    fulcio: runsheet # our own Fulcio, not public-good's
+    rekor: runsheet # our own Rekor, not public-good's
+    identity:
+      issuer: https://oidc.runsheet.dev
+      san: "https://runsheet.dev/releases/runsheet/mesh-cli@refs/tags/{{tag}}"
+    sums: SHA256SUMS
+    bundle: SHA256SUMS.sigstore.json
+    sign_image_digest: true
+
+  publish:
+    store: runsheet-releases # runsheet's own release store, not a
+    # GitHub release and not a GitHub mirror
+    assets:
+      - mesh-linux-amd64
+      - mesh-linux-arm64
+      - mesh-darwin-arm64
+      - SHA256SUMS
+      - SHA256SUMS.sigstore.json
+    image:
+      push: true
+      ref: "ghcr.io/runsheet/mesh-node:{{tag}}"

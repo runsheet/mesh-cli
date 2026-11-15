@@ -50,16 +50,12 @@ suites:
     kind: unit
     command: |
       set -e
-      for t in mirror-release exchange-workflow-token mirror-token mirror-token-reading \
-               mini-owner-reading withdrawn-account-reading release-on-merge \
+      for t in mini-owner-reading withdrawn-account-reading \
                evaluation-cost-by-priority; do
         echo "== scripts/${t}_test.sh"; bash "scripts/${t}_test.sh"
       done
     paths:
       - "scripts/**"
-      - ".github/**"
-      - "dist/**"
-      - ".runsheet/**"
     timeout: 10m
 
   - name: inv-02
