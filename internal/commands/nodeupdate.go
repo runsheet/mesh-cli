@@ -133,7 +133,7 @@ func defaultNodeUpdate(out io.Writer) (*nodeUpdate, error) {
 	if err != nil {
 		return nil, err
 	}
-	gh := selfupdate.GitHub{}
+	gh := selfupdate.DefaultChannel()
 	return &nodeUpdate{
 		Updater: &node.ReleaseUpdater{Source: gh, State: state, Exe: exe},
 		Latest:  gh.Latest,

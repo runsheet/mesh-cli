@@ -110,3 +110,29 @@ func TestFetchMissingAsset(t *testing.T) {
 		t.Fatalf("Fetch windows = %v, want ErrMissingAsset", err)
 	}
 }
+
+// The channel reads runsheet's release store first, and the mirror only
+// for an asset the store does not hold.
+func TestChannelPrefersRunsheetsStore(t *testing.T) {
+	ft := &fakeTransport{files: map[string][]byte{
+		"/releases/mesh/v1.2.3/SHA256SUMS":                   []byte("from runsheet"),
+		"/runsheet/mesh/releases/download/v1.2.3/SHA256SUMS": []byte("from github"),
+		"/runsheet/mesh/releases/download/v1.0.0/SHA256SUMS": []byte("old tag"),
+	}}
+	c := &http.Client{Transport: ft}
+	ch := Channel{Runsheet: GitHub{Client: c}, GitHub: GitHub{Client: c}}
+	b, err := ch.Asset(context.Background(), "v1.2.3", SumsAsset)
+	if err != nil || string(b) != "from runsheet" {
+		t.Fatalf("v1.2.3 = %q, %v; want runsheet's", b, err)
+	}
+	b, err = ch.Asset(context.Background(), "v1.0.0", SumsAsset)
+	if err != nil || string(b) != "old tag" {
+		t.Fatalf("v1.0.0 = %q, %v; want the mirror's", b, err)
+	}
+	if _, err := ch.Asset(context.Background(), "v9.9.9", SumsAsset); !errors.Is(err, ErrMissingAsset) {
+		t.Fatalf("v9.9.9: %v, want ErrMissingAsset", err)
+	}
+	if !strings.HasPrefix(ft.seen[0], RunsheetReleaseBaseURL) {
+		t.Errorf("first request %q, want runsheet's store", ft.seen[0])
+	}
+}

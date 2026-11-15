@@ -1,0 +1,43 @@
+{
+  "mediaType": "application/vnd.dev.sigstore.trustedroot+json;version=0.1",
+  "tlogs": [
+    {
+      "baseUrl": "https://rekor.dl360.internal",
+      "hashAlgorithm": "SHA2_256",
+      "publicKey": {
+        "rawBytes": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEp7MtctsH74IZflAo43gcjc1t6xwdfFApqdJkkM025t3GqHaop46Q3+DfKydNF5gi4WDhtoCzZzv/RT91iu2rdQ==",
+        "keyDetails": "PKIX_ECDSA_P256_SHA_256",
+        "validFor": {
+          "start": "2026-10-27T00:00:00Z"
+        }
+      },
+      "logId": {
+        "keyId": "n4Flo3RMupYxM3DvGt9/kzNuU4/TooXwzRQBA1xgK5U="
+      }
+    }
+  ],
+  "certificateAuthorities": [
+    {
+      "subject": {
+        "organization": "runsheet",
+        "commonName": "runsheet sigstore root"
+      },
+      "uri": "https://fulcio.dl360.internal",
+      "certChain": {
+        "certificates": [
+          {
+            "rawBytes": "MIICJTCCAaygAwIBAgIQR1AnNMyw1y+Umqpxs+Rs3jAKBggqhkjOPQQDAzA0MREwDwYDVQQKEwhydW5zaGVldDEfMB0GA1UEAxMWcnVuc2hlZXQgc2lnc3RvcmUgcm9vdDAeFw0yNjEwMjcxMjA3NTJaFw0yNzEwMjcxMjA4NTJaMDwxETAPBgNVBAoTCHJ1bnNoZWV0MScwJQYDVQQDEx5ydW5zaGVldCBzaWdzdG9yZSBpbnRlcm1lZGlhdGUwdjAQBgcqhkjOPQIBBgUrgQQAIgNiAAS2tA6753ylKFS+PG7Ytqz0tEjSRK0tCPasq/SODiIcScXofaUqQQhvU//xXnDcgD+pXgJh95dM5B9xEzvu6uzNwV85rpH5HmbioY3hZciNJ5xWAR3oYU7rD9UMYnC5bGOjezB5MA4GA1UdDwEB/wQEAwIBBjATBgNVHSUEDDAKBggrBgEFBQcDAzASBgNVHRMBAf8ECDAGAQH/AgEAMB0GA1UdDgQWBBQG3sD+Frdxb4gt9+zJg9pjSh4YPTAfBgNVHSMEGDAWgBTRk1RGCHcJznEWrFUoUpyO41J3ajAKBggqhkjOPQQDAwNnADBkAjAa6DTb5tSp3obRduq/vdLVyB9tBeU1jBxs2PPVwC4mKBO6Bt8NLwLu9Irs8QWrwLsCMG/fN0Cju2s/OrhsxPr2Ev2Q+8OjW72moeXbQi+r9hhNUkEp2Eg3qQW7RhwfICPGlQ=="
+          },
+          {
+            "rawBytes": "MIIB6DCCAW6gAwIBAgIQeN/Ob65EvVIAnjcMyxWyOTAKBggqhkjOPQQDAzA0MREwDwYDVQQKEwhydW5zaGVldDEfMB0GA1UEAxMWcnVuc2hlZXQgc2lnc3RvcmUgcm9vdDAeFw0yNjEwMjcxMjA2MzdaFw0zNjEwMjcxMjA3MzdaMDQxETAPBgNVBAoTCHJ1bnNoZWV0MR8wHQYDVQQDExZydW5zaGVldCBzaWdzdG9yZSByb290MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEMG9mhXLXizIabrhOe8htJjyKgrUrw6VmofJ50Wa9ZtcYgR+QnMUDu24h1hBvJc8o8xbA0BIt2M1p+pAXreVHloiyLbbEGZFMVATrsZTf51e9UPSHmTp2aKLi/MnvbxXro0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYDVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQU0ZNURgh3Cc5xFqxVKFKcjuNSd2owCgYIKoZIzj0EAwMDaAAwZQIxAMyntAHLWNmlRAnXkNhfZCpNHg2w6233hWjb0iZZwbJvPSWenxLiQXeFTZ5IhiE5YAIwKarxu4a8ZWAoh9hGQXaUQ3uKhDhkx527/BBBQd/u1K7rbqWXKkzmqT2/pT1AlHI3"
+          }
+        ]
+      },
+      "validFor": {
+        "start": "2026-10-27T00:00:00Z"
+      }
+    }
+  ],
+  "ctlogs": [],
+  "timestampAuthorities": []
+}

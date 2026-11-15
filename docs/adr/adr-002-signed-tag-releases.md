@@ -793,6 +793,75 @@ Tests: `internal/node/selfupdate_test.go`
 (`TestSelfUpdateSandboxedSwapsWithoutDraining`),
 `internal/node/sandboxed_swap_e2e_test.go`.
 
+## Amendment: releases ship through runsheet, signed by our own Sigstore (goal `mesh-cli-releases-ship-through-runsheet`, 2026-11-15)
+
+GitHub Actions is off for the runsheet org, so no release has shipped
+since v1.0.71. The 2026-10-10 platform identity could never sign:
+`oidc.runsheet.dev` does not exist, and Sigstore's public Fulcio trusts no
+issuer of ours. Chris, 2026-11-15: ship mesh-cli through runsheet and
+"use our own sigstore root". This amendment replaces that identity.
+
+**The identity.** Our Sigstore is the Fulcio and Rekor on dl360 (mesh-specs
+ADR 068), whose trusted root Latchkey publishes at
+`https://auth.runsheet.dev/.well-known/sigstore/trusted_root.json`. Its
+Fulcio already trusts Latchkey's session issuer as the CI provider
+`runsheet-mesh` (Latchkey `specs/contracts/fulcio-config.json`): a Mesh
+job session's ID token for audience `sigstore` becomes a certificate whose
+
+| field | value for a mesh-cli release |
+| --- | --- |
+| issuer | `https://auth.runsheet.dev` (`PlatformIssuer`) |
+| SAN | the token's subject, `mesh:<tenant>/runsheet:job:<job>:lease:<n>` (`PlatformSANPattern`) |
+| SourceRepositoryURI | `https://github.com/runsheet/mesh-cli` (`PlatformRepository`) |
+| BuildConfigURI | `https://projectmesh.io/products/runsheet/kinds/deploy` (`PlatformBuildConfig`) |
+
+So no Latchkey or Fulcio change is needed. The token is the lease's
+signing token, which the node holds and never hands to the session; the
+node signs (below), so a model can never sign a release.
+
+**The version.** The certificate names the job, not the tag. A platform
+release therefore lists `mesh-version` in `SHA256SUMS`, a file whose bytes
+are the version alone, and the verifier requires that line to be the
+sha256 of the version it was asked for. A release signed for v1.2.3 is
+refused as v1.2.4.
+
+**The verifier.** `ReleasePolicy` keeps the Actions identity (and the
+pre-transfer one) against Sigstore's public-good root, with SCTs, so every
+release Actions already cut keeps verifying. It adds `Platform`: our
+root, embedded in the binary (`internal/selfupdate/runsheet_trusted_root.json`;
+a rotated root ships in the next release), no SCTs (our Fulcio keeps no CT
+log), a Rekor entry, the issuer, SAN pattern and both extensions above,
+and the version line. The certificate's issuer chooses which half judges
+the release, so a refusal names the way it was meant to verify. The
+2026-10-10 constants (`RunsheetIssuer`, `RunsheetIdentityPrefix`) are
+gone.
+
+**The channel.** A node reads a release from runsheet's release store
+(`https://api.runsheet.dev/releases/mesh/<version>/<asset>`, runsheet ADR
+082) first, and from the GitHub mirror only for a tag the store does not
+hold. Latest still reads the mirror until runsheet's channel answers it.
+
+**The release.** mesh-cli's `.runsheet/deploy.yml` runs on a node-changing
+merge to main as a runsheet deploy job of runsheet/mesh-cli. runsheet
+names the version (the next patch after its newest stored release) and
+grants the job an upload token for that product and version alone
+(runsheet's `releaseBuilderGrant`, ADR 082 amendment). The steps: build
+the three binaries and `mesh-version` and write `SHA256SUMS` (`mesh release
+build`); have the node sign `SHA256SUMS` with the lease's signing token
+through our Fulcio and Rekor (the deploy kind's node tool `sign_release`);
+PUT every asset to the store; probe by reading `SHA256SUMS` back. The node
+image is not part of a release: dl360's `sandbox.image` is pinned.
+
+**Bootstrap.** The first build carrying this verifier is installed on
+dl360 by hand (it is the only node), once; every later release ships
+through runsheet. mesh-cli's Actions release workflows are deleted once
+the first runsheet release has updated a node.
+
+Tests: `internal/selfupdate/verify_test.go` (`TestVerifyPlatformRelease`,
+`TestVerifyPlatformReleaseRefuses`, `TestVerifyPlatformReleaseNeedsItsExtensions`,
+`TestPlatformRootIsEmbedded`), `internal/selfupdate/fetch_test.go`
+(`TestChannelPrefersRunsheetsStore`).
+
 ## Consequences
 
 - Renaming an asset, the workflow file, or the repo breaks every

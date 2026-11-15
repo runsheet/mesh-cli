@@ -187,7 +187,7 @@ func defaultNodeUpgrade(out io.Writer, run node.RunState) (*nodeUpgrade, error) 
 	if err != nil {
 		return nil, err
 	}
-	gh := selfupdate.GitHub{}
+	gh := selfupdate.DefaultChannel()
 	within := selfupdate.DefaultConfirmWithin
 	if cfg, err := node.LoadSettings(); err == nil {
 		within = cfg.ConfirmWithin()

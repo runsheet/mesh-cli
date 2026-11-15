@@ -177,7 +177,7 @@ runs, and finish or hand back.`,
 		}
 		rt.SupervisorMode, rt.QuietAfter = mode, nodeRunQuietAfter
 		if nodeRunSelfUpdate {
-			rt.Updater = &resources.ReleaseUpdater{Releases: selfupdate.GitHub{}, Current: version.Resolved(), Exe: meshBinary()}
+			rt.Updater = &resources.ReleaseUpdater{Releases: selfupdate.DefaultChannel(), Current: version.Resolved(), Exe: meshBinary()}
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
