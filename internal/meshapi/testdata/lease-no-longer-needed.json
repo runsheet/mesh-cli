@@ -1,0 +1,16 @@
+{
+  "name": "lease-no-longer-needed",
+  "method": "POST",
+  "path": "/v1/leases/c0534583-942f-516f-a5d7-809f29e7cc3d/no-longer-needed",
+  "caller": "node",
+  "request": {
+    "reason": "pull request acme/fixture#12 head is now fedcba9876543210fedcba9876543210fedcba98, not 0123456789abcdef0123456789abcdef01234567"
+  },
+  "status": 200,
+  "response": {
+    "end": "no_longer_needed",
+    "handbacks": 0,
+    "job_id": "22581bbc-3658-58a7-8625-6729493a144d",
+    "status": "ended"
+  }
+}

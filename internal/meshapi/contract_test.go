@@ -347,6 +347,32 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			decode(t, f.Request, &req)
 			return c.HandBack(context.Background(), idOf(f.Path, 3), req)
 		},
+		// a job whose precondition no longer holds ends no_longer_needed,
+		// with no hand-back counted (api ADR 001 amendment, a job is
+		// still needed or ends quietly)
+		"lease-no-longer-needed": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.NoLongerNeededRequest
+			decode(t, f.Request, &req)
+			st, err := c.NoLongerNeeded(context.Background(), idOf(f.Path, 3), req)
+			if err == nil && (st.Status != "ended" || st.End != meshapi.EndNoLongerNeeded || st.Handbacks != 0) {
+				t.Errorf("lease-no-longer-needed: %+v", st)
+			}
+			return st, err
+		},
+		"take-preconditions": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.TakeRequest
+			decode(t, f.Request, &req)
+			tk, err := c.Take(context.Background(), req)
+			if err == nil {
+				p := tk.Brief.Preconditions
+				if len(p) != 2 || p[0].Type != meshapi.PreconditionPRHead || p[0].Repo != "acme/fixture" || p[0].Number != 12 || len(p[0].SHA) != 40 ||
+					p[1].Type != meshapi.PreconditionRefHead || p[1].Ref != "main" || p[1].SHA != p[0].SHA {
+					t.Errorf("take-preconditions: the brief's preconditions %+v", p)
+				}
+			}
+			// only the preconditions are held to the fixture
+			return nil, err
+		},
 	}
 	for name := range fx {
 		if calls[name] == nil {

@@ -70,7 +70,7 @@ type fakeLease struct {
 
 // Call is one request the fake answered.
 type Call struct {
-	Route   string // register, connect, drain, heartbeat, take, renew, session, evidence, access, usage, progress, security, finish, fail, hand-back, blob
+	Route   string // register, connect, drain, heartbeat, take, renew, session, evidence, access, usage, progress, security, finish, fail, hand-back, no-longer-needed, blob
 	LeaseID string
 	Auth    string
 	Body    json.RawMessage
@@ -323,7 +323,8 @@ func (f *Fake) LeaseOf(jobID string) string {
 	return id
 }
 
-// Ended is how the lease ended: finish, fail, hand-back, expired, or ""
+// Ended is how the lease ended: finish, fail, hand-back,
+// no-longer-needed, expired, or ""
 // while it is live.
 func (f *Fake) Ended(leaseID string) string {
 	f.mu.Lock()
@@ -561,13 +562,17 @@ func (f *Fake) lease(w http.ResponseWriter, r *http.Request) {
 		f.mu.Unlock()
 		writeJSON(w, http.StatusOK, meshapi.Progressed{JobID: job, Status: "running",
 			Progress: &meshapi.ProgressNote{LeaseID: id, Note: req.Note, At: &at, Notes: notes}})
-	case "finish", "fail", "hand-back":
+	case "finish", "fail", "hand-back", "no-longer-needed":
 		f.mu.Lock()
 		l.ended = route
 		state := meshapi.JobState{JobID: l.brief.JobID, Status: "ended", Handbacks: l.brief.Handbacks}
 		switch route {
 		case "finish":
 			state.End = "finished"
+		case "no-longer-needed":
+			// the job ends quietly: no hand-back is counted (Mesh ADR 001
+			// amendment, a job is still needed or ends quietly)
+			state.End = meshapi.EndNoLongerNeeded
 		case "fail":
 			// only causes work and credential_exposed end the job here;
 			// any other cause is a hand-back, as Mesh's FailJob had it
