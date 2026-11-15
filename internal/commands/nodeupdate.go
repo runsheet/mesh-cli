@@ -31,12 +31,13 @@ var nodeUpdateCmd = &cobra.Command{
 (adr-002). With no version it takes the latest release that is not a
 prerelease.
 
-The release's binary for this OS/arch is downloaded from the public mirror
-runsheet/mesh; the bundle must be signed by release-tag.yml on
+The release's binary for this OS/arch is downloaded from runsheet's own
+release channel; the bundle must be signed by release-tag.yml on
 refs/tags/<version> of runsheet/mesh-cli, issued by
-https://token.actions.githubusercontent.com, and the binary's sha256 must
-be its line in the sums. Anything else is refused with the reason and a
-non-zero exit, and nothing on disk changes.
+https://token.actions.githubusercontent.com, or by runsheet's own release
+unit on that tag, issued by https://oidc.runsheet.dev, and the binary's
+sha256 must be its line in the sums. Anything else is refused with the
+reason and a non-zero exit, and nothing on disk changes.
 
 Once verified, the release's node image (mesh-specs ADR 007),
 ghcr.io/runsheet/mesh-node:<version>, is pulled with podman before
@@ -65,10 +66,11 @@ and the new process adopts them — use ` + "`mesh node upgrade`" + `.
 --verify-only downloads and verifies into a temporary directory and swaps
 nothing.
 
---from-dir reads the release's files from a directory instead of GitHub
-(the binary for this OS/arch, SHA256SUMS, SHA256SUMS.sigstore.json) and
-verifies them the same way, against the version's release identity: for
-checking a downloaded release, or showing that an edited one is refused.`,
+--from-dir reads the release's files from a directory instead of
+runsheet's release channel (the binary for this OS/arch, SHA256SUMS,
+SHA256SUMS.sigstore.json) and verifies them the same way, against the
+version's release identity: for checking a downloaded release, or
+showing that an edited one is refused.`,
 	Args:         cobra.MaximumNArgs(1),
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -133,10 +135,10 @@ func defaultNodeUpdate(out io.Writer) (*nodeUpdate, error) {
 	if err != nil {
 		return nil, err
 	}
-	gh := selfupdate.GitHub{}
+	rs := selfupdate.Runsheet{}
 	return &nodeUpdate{
-		Updater: &node.ReleaseUpdater{Source: gh, State: state, Exe: exe},
-		Latest:  gh.Latest,
+		Updater: &node.ReleaseUpdater{Source: rs, State: state, Exe: exe},
+		Latest:  rs.Latest,
 		Running: version.Resolved(),
 		Run:     run,
 		V1Run:   v1Run,
@@ -307,6 +309,6 @@ func drainIfRunning(state node.RunState, out io.Writer) (bool, error) {
 
 func init() {
 	nodeUpdateCmd.Flags().BoolVar(&nodeUpdateVerifyOnly, "verify-only", false, "download and verify into a temporary directory; swap nothing")
-	nodeUpdateCmd.Flags().StringVar(&nodeUpdateFromDir, "from-dir", "", "read the release's files from this directory instead of GitHub; verified the same way")
+	nodeUpdateCmd.Flags().StringVar(&nodeUpdateFromDir, "from-dir", "", "read the release's files from this directory instead of runsheet's release channel; verified the same way")
 	nodeCmd.AddCommand(nodeUpdateCmd)
 }

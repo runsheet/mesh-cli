@@ -10,8 +10,8 @@ import (
 )
 
 // ReleaseUpdater updates from signed tag releases of runsheet/mesh-cli,
-// downloaded from the public mirror runsheet/mesh (adr-002), recording each
-// step in the update state file.
+// downloaded from Source — runsheet's own release channel in production
+// (adr-002) — recording each step in the update state file.
 type ReleaseUpdater struct {
 	Source selfupdate.Source
 	State  *selfupdate.StateFile

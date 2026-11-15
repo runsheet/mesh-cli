@@ -42,9 +42,10 @@ upgrade, naming it, unless --force, ending it.
 
 With --version vX.Y.Z, or the latest release that is not a prerelease
 when neither flag is given, the release's binary for this OS/arch is
-downloaded from the public mirror runsheet/mesh; the bundle must be signed
-by release-tag.yml on refs/tags/<version> of runsheet/mesh-cli, verified
-as ` + "`mesh node update`" + ` does, and its node image ensured. With --binary
+downloaded from runsheet's own release channel; the bundle must be
+signed by release-tag.yml on refs/tags/<version> of runsheet/mesh-cli,
+or by runsheet's own release unit on that tag, verified as
+` + "`mesh node update`" + ` does, and its node image ensured. With --binary
 <path> a local build is installed instead, once ` + "`<path> version`" + ` answers.
 Either way the executable is swapped atomically, the previous one kept as
 <path>.prev. The new process confirms the upgrade with its first
@@ -187,15 +188,15 @@ func defaultNodeUpgrade(out io.Writer, run node.RunState) (*nodeUpgrade, error) 
 	if err != nil {
 		return nil, err
 	}
-	gh := selfupdate.GitHub{}
+	rs := selfupdate.Runsheet{}
 	within := selfupdate.DefaultConfirmWithin
 	if cfg, err := node.LoadSettings(); err == nil {
 		within = cfg.ConfirmWithin()
 	}
 	return &nodeUpgrade{
 		ConfirmWithin: within,
-		Updater:       &node.ReleaseUpdater{Source: gh, State: state, Exe: exe},
-		Latest:        gh.Latest,
+		Updater:       &node.ReleaseUpdater{Source: rs, State: state, Exe: exe},
+		Latest:        rs.Latest,
 		Running:       version.Resolved(),
 		Run:           run,
 		Version:       binaryVersion,

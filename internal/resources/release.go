@@ -8,7 +8,7 @@ import (
 )
 
 // Releases are where a release's version and assets come from:
-// selfupdate.GitHub, the public mirror's releases.
+// selfupdate.Runsheet in production, runsheet's own release channel.
 type Releases interface {
 	selfupdate.Source
 	Latest(ctx context.Context) (string, error)

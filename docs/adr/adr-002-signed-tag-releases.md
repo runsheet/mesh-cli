@@ -793,6 +793,48 @@ Tests: `internal/node/selfupdate_test.go`
 (`TestSelfUpdateSandboxedSwapsWithoutDraining`),
 `internal/node/sandboxed_swap_e2e_test.go`.
 
+## Amendment: the node fetches releases from runsheet's own release channel, not GitHub (goal `mesh-cli-releases-ship-through-runsheet`, 2026-11-15)
+
+`selfupdate.GitHub` (the "the node downloads from runsheet/mesh" amendment
+above) stays as a `Source`, but production no longer constructs it: `mesh
+node run --self-update`, `mesh node update` and `mesh node upgrade` now
+build `selfupdate.Runsheet{}` instead. The two Sources share the same
+shape (`Asset`, `Latest`) and the same verification; only where the bytes
+are downloaded from changes.
+
+- `internal/selfupdate/runsheet.go` adds `Runsheet`, a `Source` and
+  `resources.Releases` downloading from
+  `RunsheetReleaseBaseURL = "https://runsheet.dev/releases/runsheet/mesh-cli/"`
+  (the version and asset name follow it, as `GitHub`'s base does) and
+  reading `RunsheetLatestURL`
+  (`https://runsheet.dev/releases/runsheet/mesh-cli/latest`) for the
+  newest tag that is neither a draft nor a prerelease — the same shape
+  `GitHub.Latest` reads, built around the identity ADR 017's cut-over
+  already gave this ADR (`RunsheetIssuer`, `RunsheetIdentityPrefix`,
+  above): a release published on runsheet's own channel is signed under
+  that identity, so no change to `ReleasePolicy` or `verify.go` was
+  needed here. `Fetch`'s 404 reason names the channel: `release %s has
+  no %s on runsheet's release channel (404: not published there, or not
+  a signed release)`.
+- `internal/selfupdate/fetch.go` factors `GitHub.Asset`'s download,
+  404-and-size-limit handling into a shared `httpAsset` helper that
+  `Runsheet.Asset` calls too, rather than duplicating it; `GitHub`'s own
+  behavior, including its 404 reason naming `runsheet/mesh`, is
+  unchanged.
+- `internal/commands/nodeupdate.go`, `nodeupgrade.go` and `noderun.go`
+  construct `selfupdate.Runsheet{}` where they used to construct
+  `selfupdate.GitHub{}`, for both the `Source`/`Releases` the fetch runs
+  against and the `Latest` func the "no version given" path calls.
+  `internal/node/selfupdate.go`'s and `internal/resources/release.go`'s
+  doc comments now describe `Source`/`Releases` generically rather than
+  naming the mirror. `GitHub` stays reachable — `--from-dir` still
+  passes a `Dir`, and `GitHub` itself is still exercised by its own
+  tests and by anything that explicitly wants the mirror — this
+  amendment only changes which `Source` production code builds.
+
+Tests: `internal/selfupdate/runsheet_test.go`
+(`TestRunsheetSourceFetchesAndVerifies`, `TestRunsheetSourceLatest`).
+
 ## Consequences
 
 - Renaming an asset, the workflow file, or the repo breaks every

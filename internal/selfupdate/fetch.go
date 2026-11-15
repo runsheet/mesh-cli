@@ -53,12 +53,19 @@ func (g GitHub) Asset(ctx context.Context, version, name string) ([]byte, error)
 	if base == "" {
 		base = ReleaseBaseURL
 	}
+	return httpAsset(ctx, g.Client, base, version, name, "runsheet/mesh")
+}
+
+// httpAsset downloads <base><version>/<name> over client (nil is
+// http.DefaultClient), shared by every http(s) Source: GitHub's base
+// differs from Runsheet's, but a 404 and a size limit mean the same thing
+// either way. where names the channel for a missing asset's reason.
+func httpAsset(ctx context.Context, client *http.Client, base, version, name, where string) ([]byte, error) {
 	u := base + url.PathEscape(version) + "/" + url.PathEscape(name)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
 	}
-	client := g.Client
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -69,7 +76,7 @@ func (g GitHub) Asset(ctx context.Context, version, name string) ([]byte, error)
 	defer resp.Body.Close()
 	switch {
 	case resp.StatusCode == http.StatusNotFound:
-		return nil, refuse(ErrMissingAsset, nil, "release %s has no %s on runsheet/mesh (404: not published there, or not a signed release)", version, name)
+		return nil, refuse(ErrMissingAsset, nil, "release %s has no %s on %s (404: not published there, or not a signed release)", version, name, where)
 	case resp.StatusCode != http.StatusOK:
 		return nil, fmt.Errorf("download %s: %s", name, resp.Status)
 	}
