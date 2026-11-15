@@ -13,7 +13,10 @@
 //     whose agent has ended with only a sidecar left, are removed; a
 //     lease-egress process no actor and no hand-off names is stopped
 //     (ADR-051 decision 3); job directories and relay grants no actor
-//     holds are removed; adopted sessions are counted.
+//     holds are removed; adopted sessions are counted. Nothing of a
+//     lease younger than YoungAge is touched — not its pods, not its
+//     egress process — however the live leases read: a lease being
+//     prepared may not yet be named everywhere the reconcile looks.
 //
 // The supervisor holds no state of a lease's own: what it knows of each
 // it reads from the actors (Fleet) on every look.
@@ -81,6 +84,13 @@ const (
 	// before the reconcile removes it: an actor makes its directory a
 	// moment before the node lists it as live.
 	DefaultOrphanAge = 2 * time.Minute
+	// DefaultYoungAge is how young a lease — its job directory or
+	// actor.json last written, or its egress process started — is
+	// spared by the reconcile whatever the live leases say: a lease
+	// mid-preparation, the node starting dozens at once, can be seconds
+	// from naming its egress process or pod where the reconcile reads
+	// them (ADR-051 amendment, 2026-11-16).
+	DefaultYoungAge = 5 * time.Minute
 )
 
 // Live is one live lease as its actor stands.
@@ -107,6 +117,9 @@ type Live struct {
 // the host, named only by its pid (ADR-051 decision 3).
 type EgressProcess struct {
 	PID int
+	// StartedAt is when the process started, zero when the runtime
+	// cannot tell: a process younger than YoungAge is never stopped.
+	StartedAt time.Time
 }
 
 // EgressRuntime lists and stops the node's own lease-egress processes.
@@ -164,6 +177,11 @@ type Supervisor struct {
 	LeaseRoot string
 	// OrphanAge is how old an unheld job directory must be to go.
 	OrphanAge time.Duration
+	// YoungAge is how young a lease's job directory, actor.json or
+	// egress process is spared by the reconcile (DefaultYoungAge when
+	// zero): its pods are not removed and its egress process is not
+	// stopped, held by a live lease or not.
+	YoungAge time.Duration
 	// Now is the clock; time.Now when nil.
 	Now func() time.Time
 	// Logf hears everything the supervisor sees and does.
@@ -280,24 +298,68 @@ type Reconciled struct {
 	// EgressNoActor is the lease-egress processes the reconcile found no
 	// live lease and no hand-off naming (ADR-051 decision 3), by pid.
 	EgressNoActor []int
-	Errors        []string
+	// PodsYoung and EgressYoung are the pods and egress processes the
+	// reconcile would have taken but spared, being younger than
+	// YoungAge.
+	PodsYoung   []string
+	EgressYoung []int
+	Errors      []string
 }
 
 // Line is the reconcile's log line.
 func (r Reconciled) Line() string {
 	return fmt.Sprintf("supervisor: reconcile: %d actors (%d adopted); removed %d pods with no actor, %d with only a sidecar, %d job directories and %d grants no actor held; stopped %d egress process(es) with no actor and no hand-off",
-		r.Actors, r.Adopted, len(r.PodsNoActor), len(r.PodsSidecarOnly), len(r.Workspaces), len(r.Grants), len(r.EgressNoActor))
+		r.Actors, r.Adopted, len(r.PodsNoActor), len(r.PodsSidecarOnly), len(r.Workspaces), len(r.Grants), len(r.EgressNoActor)) + r.youngLine()
+}
+
+func (r Reconciled) youngLine() string {
+	if len(r.PodsYoung) == 0 && len(r.EgressYoung) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("; spared %d pod(s) and %d egress process(es) of leases too young to judge", len(r.PodsYoung), len(r.EgressYoung))
+}
+
+// youngAge is YoungAge, or DefaultYoungAge.
+func (s *Supervisor) youngAge() time.Duration { return or(s.YoungAge, DefaultYoungAge) }
+
+// young says whether t is within YoungAge of now; a time ahead of now
+// (a clock stepped back) is young too.
+func (s *Supervisor) young(t time.Time) bool {
+	return !t.IsZero() && s.now().Sub(t) < s.youngAge()
+}
+
+// youngLease says whether the lease's job directory under LeaseRoot, or
+// its actor.json (rewritten at every state change), was written within
+// YoungAge: a lease the node took moments ago, which may not yet name
+// its pod or egress process where the reconcile reads them.
+func (s *Supervisor) youngLease(lease string) bool {
+	if s.LeaseRoot == "" || lease == "" || strings.ContainsAny(lease, `/\`) || lease == "." || lease == ".." {
+		return false
+	}
+	dir := filepath.Join(s.LeaseRoot, lease)
+	for _, p := range []string{dir, filepath.Join(dir, actor.FileName)} {
+		if info, err := os.Stat(p); err == nil && s.young(info.ModTime()) {
+			return true
+		}
+	}
+	return false
 }
 
 // Reconcile is one reconcile of the node against its actors. In mode
 // warn it removes nothing and logs what it would; modes cancel and
 // tidy both remove it.
+//
+// Each part reads the live leases afresh after it has listed what it
+// judges — pods, egress processes, job directories, grants — never from
+// a snapshot taken before: a lease the node takes while the reconcile
+// lists (a podman listing on a loaded node takes seconds) is live by
+// the time its pod or egress process is judged, and is never taken for
+// one no actor holds. On 2026-11-16 a snapshot taken before the
+// listings stopped new leases' egress processes seconds after they
+// started, and the leases were handed back egress_died.
 func (s *Supervisor) Reconcile(ctx context.Context) Reconciled {
-	live := s.Fleet.Live()
-	byLease := map[string]Live{}
 	var out Reconciled
-	for _, l := range live {
-		byLease[l.LeaseID] = l
+	for _, l := range s.Fleet.Live() {
 		out.Actors++
 		if l.Adopted {
 			out.Adopted++
@@ -305,11 +367,18 @@ func (s *Supervisor) Reconcile(ctx context.Context) Reconciled {
 	}
 	mode := s.mode()
 	act := mode == Cancel || mode == Tidy
-	s.reconcilePods(ctx, byLease, act, &out)
-	s.reconcileEgress(byLease, act, &out)
-	s.reconcileWorkspaces(byLease, act, &out)
-	for _, id := range s.Fleet.Grants() {
+	s.reconcilePods(ctx, act, &out)
+	s.reconcileEgress(act, &out)
+	s.reconcileWorkspaces(act, &out)
+	grants := s.Fleet.Grants()
+	byLease := s.liveByLease()
+	for _, id := range grants {
 		if _, ok := byLease[id]; ok {
+			continue
+		}
+		// a grant closed under a checkout answers its git "no such
+		// relay": a young lease's is never closed
+		if s.youngLease(id) {
 			continue
 		}
 		out.Grants = append(out.Grants, id)
@@ -328,10 +397,19 @@ func (s *Supervisor) Reconcile(ctx context.Context) Reconciled {
 	return out
 }
 
+// liveByLease is the live leases as they stand now, by lease.
+func (s *Supervisor) liveByLease() map[string]Live {
+	out := map[string]Live{}
+	for _, l := range s.Fleet.Live() {
+		out[l.LeaseID] = l
+	}
+	return out
+}
+
 // reconcilePods removes the node's pods no actor holds, and those whose
 // agent has ended leaving a sidecar running under an actor still
 // running its session.
-func (s *Supervisor) reconcilePods(ctx context.Context, live map[string]Live, act bool, out *Reconciled) {
+func (s *Supervisor) reconcilePods(ctx context.Context, act bool, out *Reconciled) {
 	if s.Sandbox == nil || s.PodLabel == "" {
 		return
 	}
@@ -345,6 +423,8 @@ func (s *Supervisor) reconcilePods(ctx context.Context, live map[string]Live, ac
 		out.Errors = append(out.Errors, "listing containers: "+err.Error())
 		return
 	}
+	// the live leases once the listing is in hand (Reconcile)
+	live := s.liveByLease()
 	remove := func(name string) {
 		if !act {
 			return
@@ -360,6 +440,10 @@ func (s *Supervisor) reconcilePods(ctx context.Context, live map[string]Live, ac
 		}
 		l, held := live[lease]
 		if !held {
+			if s.youngLease(lease) {
+				out.PodsYoung = append(out.PodsYoung, p.Name)
+				continue
+			}
 			out.PodsNoActor = append(out.PodsNoActor, p.Name)
 			remove(p.Name)
 			continue
@@ -396,26 +480,32 @@ func (s *Supervisor) reconcilePods(ctx context.Context, live map[string]Live, ac
 // leaves preparing, so a live lease is never caught). A lease directory
 // carrying handoff.json holds the egress its actor.json and hand-off
 // name: a lease mid hand-off is not yet abandoned.
-func (s *Supervisor) reconcileEgress(live map[string]Live, act bool, out *Reconciled) {
+func (s *Supervisor) reconcileEgress(act bool, out *Reconciled) {
 	if s.Egress == nil {
 		return
 	}
+	procs, err := s.Egress.List()
+	if err != nil {
+		out.Errors = append(out.Errors, "listing egress processes: "+err.Error())
+	}
+	// the live leases once the listing is in hand (Reconcile)
+	live := s.liveByLease()
 	held := map[int]bool{}
 	for _, l := range live {
 		if l.EgressPID != 0 {
 			held[l.EgressPID] = true
 		}
 	}
-	named := s.leftoverEgress(live, held)
+	spare := map[int]bool{}
+	named := s.leftoverEgress(live, held, spare)
 	var found []int
-	procs, err := s.Egress.List()
-	if err != nil {
-		out.Errors = append(out.Errors, "listing egress processes: "+err.Error())
-	}
 	seen := map[int]bool{}
 	for _, p := range procs {
 		seen[p.PID] = true
 		found = append(found, p.PID)
+		if s.young(p.StartedAt) {
+			spare[p.PID] = true
+		}
 	}
 	for _, n := range named {
 		if !seen[n] {
@@ -425,6 +515,10 @@ func (s *Supervisor) reconcileEgress(live map[string]Live, act bool, out *Reconc
 	}
 	for _, pid := range found {
 		if held[pid] {
+			continue
+		}
+		if spare[pid] {
+			out.EgressYoung = append(out.EgressYoung, pid)
 			continue
 		}
 		out.EgressNoActor = append(out.EgressNoActor, pid)
@@ -439,8 +533,9 @@ func (s *Supervisor) reconcileEgress(live map[string]Live, act bool, out *Reconc
 // leftoverEgress reads each lease directory under LeaseRoot that no live
 // lease holds: the egress its actor.json names is returned, unless the
 // directory carries a hand-off, whose egress (its actor.json's and its
-// handoff.json's) is marked held instead.
-func (s *Supervisor) leftoverEgress(live map[string]Live, held map[int]bool) []int {
+// handoff.json's) is marked held instead, or the lease is younger than
+// YoungAge, whose egress is returned but marked spare.
+func (s *Supervisor) leftoverEgress(live map[string]Live, held, spare map[int]bool) []int {
 	if s.LeaseRoot == "" {
 		return nil
 	}
@@ -460,6 +555,9 @@ func (s *Supervisor) leftoverEgress(live map[string]Live, held map[int]bool) []i
 		pid := 0
 		if rec, err := readActorRecord(filepath.Join(dir, actor.FileName)); err == nil {
 			pid = rec.EgressPID
+		}
+		if pid != 0 && s.youngLease(e.Name()) {
+			spare[pid] = true
 		}
 		if b, err := os.ReadFile(filepath.Join(dir, handoffFileName)); err == nil {
 			var h struct {
@@ -482,7 +580,7 @@ func (s *Supervisor) leftoverEgress(live map[string]Live, held map[int]bool) []i
 
 // reconcileWorkspaces removes the job directories no actor holds, once
 // they are OrphanAge old.
-func (s *Supervisor) reconcileWorkspaces(live map[string]Live, act bool, out *Reconciled) {
+func (s *Supervisor) reconcileWorkspaces(act bool, out *Reconciled) {
 	if s.LeaseRoot == "" {
 		return
 	}
@@ -490,6 +588,7 @@ func (s *Supervisor) reconcileWorkspaces(live map[string]Live, act bool, out *Re
 	if err != nil {
 		return
 	}
+	live := s.liveByLease()
 	age := or(s.OrphanAge, DefaultOrphanAge)
 	now := s.now()
 	for _, e := range ents {

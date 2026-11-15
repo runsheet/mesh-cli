@@ -328,9 +328,11 @@ func TestReconcileEgressFromActorRecords(t *testing.T) {
 	write("lse_no_pid", "actor.json", `{"egressPid":0}`)
 	write("lse_live", "actor.json", `{"egressPid":4545}`)
 	os.MkdirAll(filepath.Join(root, "lse_bare"), 0o700)
+	ageTree(t, root, t0.Add(-time.Hour))
 	f := &fleet{now: func() time.Time { return t0 }, live: []Live{{LeaseID: "lse_live", EgressPID: 4545}}}
 	eg := &fakeEgress{procs: []EgressProcess{{PID: 4343}, {PID: 4444}, {PID: 4545}}}
-	s := &Supervisor{Fleet: f, Mode: Cancel, LeaseRoot: root, Egress: eg, Now: func() time.Time { return t0 }}
+	// OrphanAge keeps the directories for the second reconcile below
+	s := &Supervisor{Fleet: f, Mode: Cancel, LeaseRoot: root, Egress: eg, OrphanAge: 24 * time.Hour, Now: func() time.Time { return t0 }}
 	got := s.Reconcile(context.Background())
 	if !slices.Equal(got.EgressNoActor, []int{4242}) {
 		t.Fatalf("egress no actor: %v", got.EgressNoActor)
@@ -374,5 +376,126 @@ func TestReconcileWarnRemovesNothing(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "lse_orphan")); err != nil {
 		t.Fatal("warn removed a directory")
+	}
+}
+
+// ageTree sets every file and directory under root to at, so the
+// reconcile does not spare it as a young lease.
+func ageTree(t *testing.T, root string, at time.Time) {
+	t.Helper()
+	err := filepath.Walk(root, func(p string, _ os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		return os.Chtimes(p, at, at)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A lease the node took moments ago — its job directory and actor.json
+// just written, its egress process just started — is spared by the
+// reconcile though no live lease names its pod or egress yet: the
+// start-up sweep of 2026-11-16 stopped 38 such egress processes and
+// their pods' leases died "context canceled". The same lease once older
+// than YoungAge, still unnamed, is taken as before.
+func TestReconcileSparesYoungLeases(t *testing.T) {
+	root := t.TempDir()
+	now := t0
+	write := func(dir, name, data string) {
+		os.MkdirAll(filepath.Join(root, dir), 0o700)
+		os.WriteFile(filepath.Join(root, dir, name), []byte(data), 0o600)
+	}
+	// lse_preparing: its actor.json already names its egress, but the
+	// runtime has not caught up; lse_unnamed names nothing yet
+	write("lse_preparing", "actor.json", `{"egressPid":5151}`)
+	write("lse_unnamed", "actor.json", `{}`)
+	ageTree(t, root, now.Add(-30*time.Second))
+	pod := func(name, lease string) sandbox.PodInfo {
+		return sandbox.PodInfo{Name: name, Labels: map[string]string{"mesh.v1.lease": lease}}
+	}
+	sb := &sandbox.Fake{Standing: []sandbox.PodInfo{pod("p-preparing", "lse_preparing"), pod("p-unnamed", "lse_unnamed"), pod("p-gone", "lse_gone")}}
+	eg := &fakeEgress{procs: []EgressProcess{
+		{PID: 5151, StartedAt: now.Add(-20 * time.Second)},
+		{PID: 5252, StartedAt: now.Add(-10 * time.Second)},
+		{PID: 5353, StartedAt: now.Add(-time.Hour)},
+	}}
+	f := &fleet{now: func() time.Time { return now }}
+	s := &Supervisor{Fleet: f, Mode: Cancel, Sandbox: sb, PodLabel: "mesh.v1.lease", Egress: eg, LeaseRoot: root,
+		Now: func() time.Time { return now }}
+	got := s.Reconcile(context.Background())
+	if !slices.Equal(sb.Removed, []string{"p-gone"}) {
+		t.Fatalf("removed %v, want only the pod with no lease directory", sb.Removed)
+	}
+	if !slices.Equal(eg.stopped, []int{5353}) {
+		t.Fatalf("stopped %v, want only the old unnamed process", eg.stopped)
+	}
+	if !slices.Equal(got.PodsYoung, []string{"p-preparing", "p-unnamed"}) || !slices.Equal(got.EgressYoung, []int{5151, 5252}) {
+		t.Fatalf("spared pods %v egress %v", got.PodsYoung, got.EgressYoung)
+	}
+	if !strings.Contains(got.Line(), "spared 2 pod(s) and 2 egress process(es)") {
+		t.Fatalf("line %q", got.Line())
+	}
+
+	// ten minutes on, nothing has named them: they go
+	now = t0.Add(10 * time.Minute)
+	sb.Removed, eg.stopped = nil, nil
+	eg.procs = []EgressProcess{{PID: 5151, StartedAt: t0.Add(-20 * time.Second)}}
+	got = s.Reconcile(context.Background())
+	if !slices.Equal(sb.Removed, []string{"p-preparing", "p-unnamed"}) {
+		t.Fatalf("removed %v", sb.Removed)
+	}
+	if !slices.Equal(eg.stopped, []int{5151}) {
+		t.Fatalf("stopped %v", eg.stopped)
+	}
+}
+
+// hookEgress is a fakeEgress that runs listed while it lists: a lease
+// the node takes while the reconcile is listing.
+type hookEgress struct {
+	fakeEgress
+	listed func()
+}
+
+func (e *hookEgress) List() ([]EgressProcess, error) {
+	if e.listed != nil {
+		e.listed()
+	}
+	return e.fakeEgress.List()
+}
+
+// A lease taken while the reconcile lists — its egress process started
+// and named to the fleet after the reconcile began, before the listing
+// came back — is judged against the live leases as they stand after the
+// listing, not a snapshot from before it: its egress process is not
+// stopped and its grant is not closed. The young-lease grace is off
+// here (and the runtime gives no start time) so it cannot hide this.
+func TestReconcileReadsTheLiveLeasesAfterListing(t *testing.T) {
+	f := &fleet{now: func() time.Time { return t0 }}
+	eg := &hookEgress{fakeEgress: fakeEgress{procs: []EgressProcess{{PID: 777}}}}
+	eg.listed = func() {
+		f.live = []Live{{LeaseID: "lse_new", EgressPID: 777}}
+		f.grants = []string{"lse_new"}
+	}
+	s := &Supervisor{Fleet: f, Mode: Cancel, Egress: eg, YoungAge: time.Nanosecond, Now: func() time.Time { return t0 }}
+	got := s.Reconcile(context.Background())
+	if len(eg.stopped) != 0 || len(got.EgressNoActor) != 0 {
+		t.Fatalf("stopped %v: the new lease's egress process", eg.stopped)
+	}
+	if len(f.closed) != 0 {
+		t.Fatalf("closed %v: the new lease's grant", f.closed)
+	}
+
+	// and a grant whose lease's job directory is young is never closed,
+	// named by a live lease or not
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "lse_young"), 0o700)
+	os.Chtimes(filepath.Join(root, "lse_young"), t0, t0)
+	f2 := &fleet{now: func() time.Time { return t0 }, grants: []string{"lse_young", "lse_old"}}
+	s2 := &Supervisor{Fleet: f2, Mode: Cancel, LeaseRoot: root, Now: func() time.Time { return t0 }}
+	s2.Reconcile(context.Background())
+	if !slices.Equal(f2.closed, []string{"lse_old"}) {
+		t.Fatalf("closed %v, want only the grant with no young lease", f2.closed)
 	}
 }

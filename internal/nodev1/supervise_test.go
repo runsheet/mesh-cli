@@ -16,6 +16,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/actor"
 	"projectmesh.io/mesh-cli/internal/escalate"
+	"projectmesh.io/mesh-cli/internal/gitrelay"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/supervisor"
 )
@@ -142,6 +143,10 @@ func TestTheReconcileStopsAStrayEgressProcess(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(stray, actor.FileName), b, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// older than the reconcile's young-lease grace
+	old := time.Now().Add(-time.Hour)
+	os.Chtimes(filepath.Join(stray, actor.FileName), old, old)
+	os.Chtimes(stray, old, old)
 
 	job := g.offer(t, nil)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -264,4 +269,65 @@ func TestTheSupervisorsModeIsReadLiveFromNodeYAML(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+// listedEgress is a test's supervisor.EgressRuntime: it lists pids and
+// records the ones it is asked to stop.
+type listedEgress struct {
+	pids    []int
+	stopped []int
+}
+
+func (e *listedEgress) List() ([]supervisor.EgressProcess, error) {
+	var out []supervisor.EgressProcess
+	for _, p := range e.pids {
+		out = append(out, supervisor.EgressProcess{PID: p})
+	}
+	return out, nil
+}
+func (e *listedEgress) Stop(pid int) error { e.stopped = append(e.stopped, pid); return nil }
+
+// A reconcile that runs while a lease is still being prepared — its
+// egress process started, its relay sidecar not yet (rs.open has not
+// returned, so setEgress has not named it for the hand-off) — neither
+// stops that egress process nor removes the lease's pod: the egress is
+// the lease's from the moment it starts (setEgressStarting). This is
+// the cause of 2026-11-16's start-up sweep on dl360, which stopped 38
+// new leases' egress processes; the young-lease grace is switched off
+// here so it cannot hide the cause.
+func TestAReconcileWhileALeaseIsPreparedSparesItsEgressAndPod(t *testing.T) {
+	g, sb := actorRig(t, &stubSession{hold: make(chan struct{})})
+	g.rt.SupervisorMode = supervisor.Cancel
+	g.rt.relay = &gitrelay.Server{}
+	const id = "lse_preparing"
+	a, err := actor.Start(g.rt.leaseDir(id), actor.Record{LeaseID: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Enter(actor.Preparing); err != nil {
+		t.Fatal(err)
+	}
+	g.rt.mu.Lock()
+	g.rt.leases.Put(id, &running{actor: a, cancel: func(error) {}, started: time.Now()})
+	g.rt.mu.Unlock()
+	const pid = 424242
+	g.rt.setEgressStarting(id, pid)
+	sb.Standing = []sandbox.PodInfo{{Name: PodName(id), Labels: map[string]string{PodLeaseLabel: id}}}
+	eg := &listedEgress{pids: []int{pid}}
+	s := g.rt.supervisor()
+	s.Egress, s.YoungAge = eg, time.Nanosecond
+	got := s.Reconcile(context.Background())
+	if len(eg.stopped) != 0 || len(got.EgressNoActor) != 0 {
+		t.Fatalf("stopped %v (%v): the preparing lease's egress process", eg.stopped, got.EgressNoActor)
+	}
+	if len(sb.Removed) != 0 || len(got.PodsNoActor) != 0 {
+		t.Fatalf("removed %v: the preparing lease's pod", sb.Removed)
+	}
+
+	// once its start fails and stops it, the pid is no longer held
+	g.rt.setEgressStarting(id, 0)
+	got = s.Reconcile(context.Background())
+	if !slices.Equal(eg.stopped, []int{pid}) {
+		t.Fatalf("stopped %v once the lease let it go", eg.stopped)
+	}
 }

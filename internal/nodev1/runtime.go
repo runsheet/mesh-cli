@@ -425,6 +425,10 @@ type running struct {
 	// sidecar at all).
 	egressPID     int
 	egressControl string
+	// egressStarting is the lease's egress process from the moment it
+	// starts, before egressPID names it (setEgressStarting): the
+	// supervisor's alone.
+	egressStarting int
 	// disownEgress tells the lease's egress watch (relaypod.go's
 	// watchEgress) that the process is no longer this node's to watch:
 	// Upgrade calls it once the lease's hand-off is written, since the

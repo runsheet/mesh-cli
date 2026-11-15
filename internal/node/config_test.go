@@ -3,9 +3,12 @@ package node
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"projectmesh.io/mesh-cli/internal/harness"
 )
@@ -69,6 +72,72 @@ func TestSaveLatchkeyBeforeAndAfterRegistration(t *testing.T) {
 	}
 	if loaded.LatchkeyClient != "client-2" || loaded.Slug != "mini" || loaded.Capacity != Fixed(1) {
 		t.Fatalf("a re-login must keep the registration: %+v", loaded)
+	}
+}
+
+// `mesh node login` changes latchkey and latchkey_client and nothing
+// else: a v1 node's node.yaml, whose sections the v0 Config does not
+// know, keeps every one of them, its order and its comments. On dl360
+// on 2026-11-16 a login dropped `v1:` and `cache:` and wrote a
+// top-level `capacity: 0`.
+func TestSaveLatchkeyKeepsEverythingElse(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	before := `# dl360's node
+latchkey: https://latchkey.old
+v1:
+  capacity: {cpus: 80, mem_gb: 200, slots: 0}
+  supervisor: cancel
+cache:
+  max_gb: 250
+  min_free_gb: 60
+sandbox:
+  limits:
+    memory: 64g
+sigstore:
+  fulcio: https://fulcio.example
+host:
+  memory_floor: 10%
+`
+	writeNodeYAML(t, before)
+	if err := SaveLatchkey("https://auth.anythink.io", "client-9"); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := ConfigPath()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var was, now map[string]any
+	if err := yaml.Unmarshal([]byte(before), &was); err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal(got, &now); err != nil {
+		t.Fatalf("%v\n%s", err, got)
+	}
+	was["latchkey"], was["latchkey_client"] = "https://auth.anythink.io", "client-9"
+	if !reflect.DeepEqual(was, now) {
+		t.Fatalf("node.yaml after login:\n%s\nwant only latchkey and latchkey_client changed from:\n%s", got, before)
+	}
+	if _, ok := now["capacity"]; ok {
+		t.Fatalf("login wrote a top-level capacity:\n%s", got)
+	}
+	if !strings.HasPrefix(string(got), "# dl360's node\n") {
+		t.Fatalf("the comment went:\n%s", got)
+	}
+	// the keys stay where they stood: latchkey first, the new client last
+	if i, j := strings.Index(string(got), "latchkey:"), strings.Index(string(got), "v1:"); i < 0 || i > j {
+		t.Fatalf("latchkey moved:\n%s", got)
+	}
+
+	// the same login again leaves the file as it is, byte for byte
+	info, _ := os.Stat(path)
+	if err := SaveLatchkey("https://auth.anythink.io", "client-9"); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := os.ReadFile(path)
+	info2, _ := os.Stat(path)
+	if string(again) != string(got) || !info2.ModTime().Equal(info.ModTime()) {
+		t.Fatalf("a no-op login rewrote node.yaml:\n%s", again)
 	}
 }
 

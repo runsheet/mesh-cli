@@ -277,6 +277,21 @@ func (r *Runtime) setEgress(id string, pid int, control string) {
 	}
 }
 
+// setEgressStarting records the lease's egress process from the moment
+// it starts (relaySidecar.onEgressStart), 0 once it is stopped before
+// its start finished: the supervisor counts it held (fleet.Live) while
+// the rest of the relay sidecar starts, before setEgress names it for
+// the hand-off file. It is kept apart from egressPID so a lease still
+// preparing reads no differently to an upgrade's adoptability or
+// hand-off (drain.go, handoff.go).
+func (r *Runtime) setEgressStarting(id string, pid int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if l := r.lease(id); l != nil {
+		l.egressStarting = pid
+	}
+}
+
 // setDisownEgress records how Upgrade lets go of the lease's egress
 // process once its hand-off is written (handoff.go).
 func (r *Runtime) setDisownEgress(id string, disown func()) {

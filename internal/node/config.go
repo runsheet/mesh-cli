@@ -5,6 +5,7 @@
 package node
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"errors"
@@ -1620,16 +1621,123 @@ func LoadSettings() (*Config, error) {
 // starts from, keeping whatever registration node.yaml already holds —
 // and writing the file when there is none yet, so the first `mesh node
 // login` on a machine is the last that needs --client-id.
+//
+// It changes the latchkey and latchkey_client keys and nothing else:
+// the file is edited as a YAML tree, never read into Config and written
+// back, since Config is the v0 node's view of node.yaml and knows
+// nothing of the v1 node's sections (v1, cache, sandbox, sigstore,
+// ...). A login on dl360 on 2026-11-16 that went through Config dropped
+// the v1 and cache blocks and wrote a top-level `capacity: 0`.
 func SaveLatchkey(issuer, clientID string) error {
-	c, err := LoadSettings()
+	path, err := ConfigPath()
 	if err != nil {
 		return err
 	}
-	if c.Latchkey == issuer && c.LatchkeyClient == clientID {
+	data, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	out, changed, err := setTopLevelKeys(data, [][2]string{{"latchkey", issuer}, {"latchkey_client", clientID}})
+	if err != nil {
+		return fmt.Errorf("parse %s: %w", path, err)
+	}
+	if !changed {
 		return nil
 	}
-	c.Latchkey, c.LatchkeyClient = issuer, clientID
-	return c.Save()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return writeFileAtomic(path, out, 0o600)
+}
+
+// setTopLevelKeys sets each key of the YAML mapping document data to its
+// value, in place where the key stands, appended where it does not, and
+// removed where the value is "" (Config's omitempty); every other node —
+// keys, order, comments — is kept. changed is false when every key
+// already held its value. An empty document becomes a mapping.
+func setTopLevelKeys(data []byte, kv [][2]string) (out []byte, changed bool, err error) {
+	var doc yaml.Node
+	if len(bytes.TrimSpace(data)) > 0 {
+		if err := yaml.Unmarshal(data, &doc); err != nil {
+			return nil, false, err
+		}
+	}
+	if doc.Kind == 0 {
+		doc = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode, Tag: "!!map"}}}
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) != 1 {
+		return nil, false, errors.New("not a single YAML document")
+	}
+	root := doc.Content[0]
+	if root.Kind == yaml.ScalarNode && root.Tag == "!!null" {
+		*root = yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	}
+	if root.Kind != yaml.MappingNode {
+		return nil, false, errors.New("the document is not a mapping")
+	}
+	for _, p := range kv {
+		key, val := p[0], p[1]
+		at := -1
+		for i := 0; i+1 < len(root.Content); i += 2 {
+			if root.Content[i].Value == key {
+				at = i
+				break
+			}
+		}
+		switch {
+		case at < 0 && val == "":
+		case at < 0:
+			root.Content = append(root.Content,
+				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: val})
+			changed = true
+		case val == "":
+			root.Content = append(root.Content[:at], root.Content[at+2:]...)
+			changed = true
+		default:
+			v := root.Content[at+1]
+			if v.Kind == yaml.ScalarNode && v.Value == val {
+				continue
+			}
+			*v = yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: val, LineComment: v.LineComment}
+			changed = true
+		}
+	}
+	if !changed {
+		return data, false, nil
+	}
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&doc); err != nil {
+		return nil, false, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, false, err
+	}
+	return buf.Bytes(), true, nil
+}
+
+// writeFileAtomic writes data to path by a temporary file beside it and
+// a rename, so a crash mid-write never leaves node.yaml half written.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 func (c *Config) Save() error {

@@ -4,9 +4,12 @@ package nodev1
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"time"
 
 	"projectmesh.io/mesh-cli/internal/supervisor"
 )
@@ -21,8 +24,9 @@ type egressRuntime struct{}
 var _ supervisor.EgressRuntime = egressRuntime{}
 
 // List finds every running `mesh lease-egress --control ...` process on
-// this host, named only by pid: the reconcile cross-checks each against
-// the live leases' own EgressPID, never this process's argv further.
+// this host, named by pid and when it started: the reconcile
+// cross-checks each against the live leases' own EgressPID, never this
+// process's argv further, and spares one too young to judge.
 func (egressRuntime) List() ([]supervisor.EgressProcess, error) {
 	ents, err := os.ReadDir("/proc")
 	if err != nil {
@@ -35,7 +39,8 @@ func (egressRuntime) List() ([]supervisor.EgressProcess, error) {
 			continue
 		}
 		if isLeaseEgress(pid) {
-			out = append(out, supervisor.EgressProcess{PID: pid})
+			started, _ := procStartedAt(pid)
+			out = append(out, supervisor.EgressProcess{PID: pid, StartedAt: started})
 		}
 	}
 	return out, nil
@@ -68,4 +73,61 @@ func isLeaseEgress(pid int) bool {
 		}
 	}
 	return foundSub && foundControl
+}
+
+// userHZ is the kernel's USER_HZ, the unit of /proc/<pid>/stat's
+// starttime: 100 on every architecture Linux builds this node for.
+const userHZ = 100
+
+// procStartedAt is when pid started, from its /proc/<pid>/stat
+// starttime (clock ticks after boot) and /proc/stat's btime; zero and
+// an error when either cannot be read.
+func procStartedAt(pid int) (time.Time, error) {
+	stat, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return time.Time{}, err
+	}
+	ticks, err := statStartTicks(string(stat))
+	if err != nil {
+		return time.Time{}, err
+	}
+	boot, err := bootTime()
+	if err != nil {
+		return time.Time{}, err
+	}
+	return boot.Add(time.Duration(ticks) * time.Second / userHZ), nil
+}
+
+// statStartTicks reads field 22, starttime, of a /proc/<pid>/stat line.
+// The command (field 2) is parenthesised and may hold spaces or
+// parentheses itself, so the fields are counted after its last ')'.
+func statStartTicks(stat string) (uint64, error) {
+	i := strings.LastIndexByte(stat, ')')
+	if i < 0 {
+		return 0, errors.New("no command field in /proc/<pid>/stat")
+	}
+	f := strings.Fields(stat[i+1:])
+	// f[0] is field 3 (state), so field 22 is f[19]
+	if len(f) < 20 {
+		return 0, errors.New("/proc/<pid>/stat is short")
+	}
+	return strconv.ParseUint(f[19], 10, 64)
+}
+
+// bootTime is /proc/stat's btime.
+func bootTime() (time.Time, error) {
+	b, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return time.Time{}, err
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if v, ok := strings.CutPrefix(line, "btime "); ok {
+			secs, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+			if err != nil {
+				return time.Time{}, err
+			}
+			return time.Unix(secs, 0), nil
+		}
+	}
+	return time.Time{}, errors.New("no btime in /proc/stat")
 }

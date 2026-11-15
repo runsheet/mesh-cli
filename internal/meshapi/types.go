@@ -891,9 +891,40 @@ const (
 	// vendor (401 or 403): Mesh does not count it against the job, cools
 	// the account down and offers the job again on another (ADR-048).
 	CauseAccountRefused = "account_refused"
-	// CauseEgressDied is the lease's egress process — its own process
-	// group, outside the node's and the pod's — ending on its own while
-	// the lease was still live: the node's condition, never the work's
-	// (ADR-051 decision 3), like pod_killed.
+	// CauseEgressDied was the node's own name for the lease's egress
+	// process — its own process group, outside the node's and the
+	// pod's — ending on its own while the lease was still live. Mesh
+	// never took it (422: it is in no hand-back enum of projectmesh-io/
+	// api), so the node hands that death back pod_killed, the process
+	// named in the reason (ADR-044 amendment, 2026-11-16). It stays only
+	// so an actor.json an older node wrote with it can be read and
+	// reported as MeshCause has it; the node never sends it.
 	CauseEgressDied = "egress_died"
 )
+
+// HandBackCauses are the causes Mesh takes on a hand-back. It mirrors
+// projectmesh-io/api's service/meshgen/models_gen.go HandBackCause
+// (generated from its loom schema) less "expired", which only Mesh
+// itself sets: server/leases.go's handBack refuses anything else 422.
+var HandBackCauses = []string{
+	CauseCannotRun, CausePodKilled, CauseStalled, CauseNodeUpdate, CauseNodeRestart,
+	CausePanic, CauseRevoked, CauseParked, CauseProduct, CausePlatform, CauseInfrastructure,
+	CauseCancelled, CauseNoFinish, CauseCredentialTimeout, CauseToolUnavailable,
+	CauseAccountRefused, "model_rate_limited",
+}
+
+// FailCauses are the causes Mesh takes on a fail: work and the two
+// terminal causes, or any hand-back cause, which Mesh then takes as a
+// hand-back (projectmesh-io/api server/leases.go fail and
+// service/aggregates Terminal).
+var FailCauses = append([]string{CauseWork, CauseStoppedByRule, CauseCredentialExposed}, HandBackCauses...)
+
+// MeshCause is the cause Mesh takes for one the node may hold from
+// before Mesh's set was checked: egress_died, read back from an older
+// node's actor.json, is pod_killed; every other cause is itself.
+func MeshCause(cause string) string {
+	if cause == CauseEgressDied {
+		return CausePodKilled
+	}
+	return cause
+}

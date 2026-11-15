@@ -26,6 +26,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/relaysidecar"
 	"projectmesh.io/mesh-cli/internal/sandbox"
+	"projectmesh.io/mesh-cli/internal/supervisor"
 )
 
 // sidecarRig is a pod rig whose node runs each lease's relay as a
@@ -499,9 +500,11 @@ func TestTheLanesTunnelServesTheRealEgressProcess(t *testing.T) {
 
 // A lease's egress process killed from outside — its own process group,
 // never the actor's own cause (ADR-051 decision 3) — ends the lease
-// egress_died, not pod_killed and not stalled: the actor still reaches
-// releasing and then done, and nothing it held outlives it.
-func TestTheLeasesEgressProcessKilledEndsTheLeaseEgressDied(t *testing.T) {
+// pod_killed — the cause Mesh takes for it (it refused egress_died
+// 422), the egress process named in the reason — not stalled: the actor
+// still reaches releasing and then done, and nothing it held outlives
+// it.
+func TestTheLeasesEgressProcessKilledEndsTheLeasePodKilled(t *testing.T) {
 	if _, err := os.Stat("/proc"); err != nil {
 		t.Skip("no /proc")
 	}
@@ -547,14 +550,75 @@ func TestTheLeasesEgressProcessKilledEndsTheLeaseEgressDied(t *testing.T) {
 		t.Fatal("the lease outlived its killed egress process")
 	}
 	hb := onlyHandBack(t, g, job)
-	if hb.Cause != meshapi.CauseEgressDied {
-		t.Fatalf("hand-back %+v, want cause %q", hb, meshapi.CauseEgressDied)
-	}
-	if hb.Cause == meshapi.CausePodKilled || hb.Cause == meshapi.CauseStalled {
-		t.Fatalf("hand-back wrongly blamed the pod or a stall: %+v", hb)
+	if hb.Cause != meshapi.CausePodKilled || !strings.Contains(hb.Reason, "egress process died") {
+		t.Fatalf("hand-back %+v, want cause %q naming the egress process", hb, meshapi.CausePodKilled)
 	}
 	assertReleased(t, g, job)
 	_ = sb
+}
+
+// A lease's egress process is the lease's from the moment it starts:
+// with the relay sidecar's install held — rs.open not yet returned, as
+// on dl360 on 2026-11-16 when the node started dozens of leases at once
+// — the actor's record already names it, and a reconcile (the young-
+// lease grace off) stops neither it nor the lease's pod.
+func TestAReconcileMidPreparationSparesTheStartingEgressProcess(t *testing.T) {
+	if _, err := os.Stat("/proc"); err != nil {
+		t.Skip("no /proc")
+	}
+	g, sb, _ := sidecarRig(t)
+	install := sb.RelayInstalled
+	entered, release := make(chan struct{}), make(chan struct{})
+	sb.RelayInstalled = func(pod sandbox.Pod, creds []byte) error {
+		close(entered)
+		<-release
+		return install(pod, creds)
+	}
+	job := g.offer(t, func(b *meshapi.Brief) {
+		b.FinishTool, b.FinishSchema = "", nil
+		b.Egress = &meshapi.Egress{Hosts: []string{"proxy.golang.org"}}
+	})
+	done := make(chan error, 1)
+	go func() { done <- g.rt.Run(context.Background()) }()
+	select {
+	case <-entered:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the relay sidecar was never installed")
+	}
+	lease := g.fake.LeaseOf(job)
+	b, err := os.ReadFile(filepath.Join(g.rt.leaseDir(lease), actor.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec actor.Record
+	if err := json.Unmarshal(b, &rec); err != nil || rec.EgressPID == 0 {
+		t.Fatalf("mid-preparation, actor.json names no egress process: %s", b)
+	}
+	s := &supervisor.Supervisor{Fleet: fleet{g.rt}, Mode: supervisor.Cancel, Sandbox: sb, PodLabel: PodLeaseLabel,
+		LeaseRoot: g.rt.leaseDir(""), Egress: egressRuntime{}, YoungAge: time.Nanosecond, OrphanAge: time.Hour}
+	got := s.Reconcile(context.Background())
+	if slices.Contains(got.EgressNoActor, rec.EgressPID) || !egressAlive(rec.EgressPID) {
+		t.Fatalf("the reconcile stopped the starting egress process %d (%v)", rec.EgressPID, got.EgressNoActor)
+	}
+	if slices.Contains(sb.Removed, PodName(lease)) {
+		t.Fatal("the reconcile removed the preparing lease's pod")
+	}
+	close(release)
+	waitFor(t, "the lease's relay sidecar", func() bool {
+		g.rt.mu.Lock()
+		defer g.rt.mu.Unlock()
+		l := g.rt.lease(lease)
+		return l != nil && l.egressPID == rec.EgressPID
+	})
+	if err := syscall.Kill(rec.EgressPID, syscall.SIGKILL); err != nil {
+		t.Fatalf("killing the egress process %d: %v", rec.EgressPID, err)
+	}
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the lease outlived its killed egress process")
+	}
+	assertReleased(t, g, job)
 }
 
 // A node that stops without releasing (ADR-051 decision 5) leaves its
