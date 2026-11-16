@@ -19,6 +19,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	rawresults "projectmesh.io/mesh-cli/internal/results"
 	"projectmesh.io/mesh-cli/internal/validate"
+	"projectmesh.io/mesh-cli/internal/validate/docscheck"
 	"projectmesh.io/mesh-cli/internal/validate/infer"
 )
 
@@ -26,10 +27,11 @@ import (
 // checkout's declared validation (.runsheet/validate.yml, through
 // internal/validate), or, when it declares none, the suites the node
 // infers from the checkout itself (internal/validate/infer, ADR-053) —
-// every suite, or the ones named — on the node, and
-// records the result: its output blob is every step's outcome and every
-// test's final event, go test -json normalised to {package, test,
-// action, elapsed}.
+// every suite, or the ones named — on the node, and records the result:
+// its output blob is every step's outcome and every test's final event,
+// go test -json normalised to {package, test, action, elapsed}. A step
+// whose command is the node's own docs check (docscheck.Command) runs in
+// process on the checkout (withBuiltins).
 const RunSuiteTool = "run_suite"
 
 // SuiteRunner runs validate's steps in a workspace (validate.Run on a
@@ -63,6 +65,122 @@ func HostSuites(ctx context.Context, workspace string, steps []validate.Step, en
 	}
 	host := validate.HostRunner{Dir: workspace, Env: append(base, env...)}
 	return validate.Run(ctx, steps, host, validate.Options{Dir: workspace, ContinueOnFailure: true})
+}
+
+// withBuiltins is run with the steps the node runs itself taken out: a
+// step whose command is the node's docs check (docscheck.IsCommand, the
+// suite infer gives a repository that holds only documents) runs here,
+// in process, on the checkout — the pod image carries no mesh binary,
+// and the check only reads the checkout, through an os.Root, and
+// executes nothing of it (ADR-053 amendment 2026-11-16). Every other
+// step goes to run as before, and the results come back in the steps'
+// order. A red built-in under fail_fast runs nothing more.
+func withBuiltins(run SuiteRunner, failFast bool) SuiteRunner {
+	return func(ctx context.Context, workspace string, steps []validate.Step, env []string) ([]validate.StepResult, error) {
+		own := map[string]validate.StepResult{}
+		var rest []validate.Step
+		red := false
+		for _, st := range steps {
+			if !docscheck.IsCommand(st.Command) {
+				rest = append(rest, st)
+				continue
+			}
+			r := docsCheckStep(workspace, st)
+			own[st.Name] = r
+			red = red || r.ExitCode != 0
+		}
+		if len(own) == 0 {
+			return run(ctx, workspace, steps, env)
+		}
+		var got []validate.StepResult
+		var err error
+		if len(rest) > 0 && !(red && failFast) && ctx.Err() == nil {
+			got, err = run(ctx, workspace, rest, env)
+		}
+		ran := map[string]validate.StepResult{}
+		for _, r := range got {
+			ran[r.Name] = r
+		}
+		out := make([]validate.StepResult, 0, len(own)+len(got))
+		for _, st := range steps {
+			if r, ok := own[st.Name]; ok {
+				out = append(out, r)
+			} else if r, ok := ran[st.Name]; ok {
+				out = append(out, r)
+				delete(ran, st.Name)
+			}
+		}
+		for _, r := range got {
+			if _, left := ran[r.Name]; left {
+				out = append(out, r) // a result the runner named apart from its step
+			}
+		}
+		return out, err
+	}
+}
+
+// docsCheckOutputCap bounds the output a docs check's StepResult keeps,
+// as validate's own steps are bounded: the end of the report, where the
+// summary and the last problems are.
+const docsCheckOutputCap = 8 * 1024
+
+// docsCheckStep runs the node's docs check on workspace as step st.
+// Each document it read is one of the step's tests, package the step's
+// name and test the document's path — passing, or failing with its
+// problems as its output — so a red check names the documents that are
+// wrong wherever a failing test is named: run_suite's answer, the
+// validation's failing tests, the rework's brief.
+func docsCheckStep(workspace string, st validate.Step) validate.StepResult {
+	start := time.Now()
+	r := validate.StepResult{Name: st.Name, Command: st.Command}
+	res, err := docscheck.Check(workspace)
+	var report string
+	switch {
+	case err != nil:
+		r.ExitCode = 2
+		report = "docs-check: the checkout could not be read: " + err.Error() + "\n"
+	case !res.OK():
+		r.ExitCode = 1
+		report = res.Report()
+	default:
+		report = res.Report()
+	}
+	if err == nil {
+		wrong := map[string][]string{}
+		var order []string
+		for _, p := range res.Problems {
+			if _, seen := wrong[p.Path]; !seen {
+				order = append(order, p.Path)
+			}
+			wrong[p.Path] = append(wrong[p.Path], p.String())
+		}
+		for _, path := range res.Paths {
+			if _, bad := wrong[path]; !bad {
+				r.Tests = append(r.Tests, validate.TestResult{Package: st.Name, Name: path, Action: "pass"})
+			}
+		}
+		for _, path := range order {
+			r.Tests = append(r.Tests, validate.TestResult{Package: st.Name, Name: path, Action: "fail",
+				Output: validate.RedactTokens(strings.Join(wrong[path], "\n") + "\n")})
+		}
+		r.TestsRun = len(r.Tests)
+		r.TestsFailed = len(order)
+		r.TestsPassed = r.TestsRun - r.TestsFailed
+	}
+	r.DurationMs = time.Since(start).Milliseconds()
+	report = validate.RedactTokens(report)
+	r.Output = report
+	if len(report) > docsCheckOutputCap {
+		r.Output = "[mesh: the docs check's report is cut to its last 8 KiB]\n" + report[len(report)-docsCheckOutputCap:]
+	}
+	if r.ExitCode != 0 {
+		lines := strings.Split(strings.TrimRight(report, "\n"), "\n")
+		if len(lines) > validate.TailLines {
+			lines = lines[len(lines)-validate.TailLines:]
+		}
+		r.Tail = strings.Join(lines, "\n")
+	}
+	return r
 }
 
 // Selection is the part of a suite a run_suite call named: the targets
@@ -804,7 +922,7 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 	var results []validate.StepResult
 	var runErr error
 	if deadline.IsZero() || start.Before(deadline) {
-		results, runErr = run(ctx, s.Workspace, steps, SelectionEnv(sel))
+		results, runErr = withBuiltins(run, failFast)(ctx, s.Workspace, steps, SelectionEnv(sel))
 	}
 	ended := time.Now()
 	// out of time: the budget's deadline stopped a run that had not

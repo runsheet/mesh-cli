@@ -96,15 +96,18 @@ func TestRunSuiteInfersTheSuitesOfARepoWithNoValidateYml(t *testing.T) {
 }
 
 // A checkout with nothing the node can infer suites from is refused,
-// the refusal naming what was looked for.
+// the refusal naming what was looked for: code in no language the node
+// reads, beside a README, so not documents-only either.
 func TestRunSuiteRefusesARepoWithNothingToInfer(t *testing.T) {
 	dir := t.TempDir()
 	gitIn(t, dir, "init", "-q")
 	os.WriteFile(filepath.Join(dir, "README.md"), []byte("hi\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "main.py"), []byte("print(1)\n"), 0o644)
 	m := &fakeMesh{}
 	rec, _ := recorder(t, m, RunSuiteTool)
 	_, err := (&RunSuite{Workspace: dir, Recorder: rec, OnHost: true}).Tool().Call(context.Background(), map[string]any{})
-	if err == nil || !strings.Contains(err.Error(), "the suites cannot run") || !strings.Contains(err.Error(), "looked for go.mod") {
+	if err == nil || !strings.Contains(err.Error(), "the suites cannot run") || !strings.Contains(err.Error(), "looked for go.mod") ||
+		!strings.Contains(err.Error(), "main.py is not a document") {
 		t.Fatalf("err %v, want a cannot-run naming what was looked for", err)
 	}
 	if len(m.records) != 0 {

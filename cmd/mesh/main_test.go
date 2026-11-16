@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -56,5 +57,29 @@ func TestNodeStatusWithNoNodeRunning(t *testing.T) {
 	}
 	if want := "This machine: no Mesh v1 node running (mesh node run).\n"; string(out) != want {
 		t.Fatalf("mesh node status printed %q, want %q", out, want)
+	}
+}
+
+// `mesh docs-check DIR` prints each problem and a summary, and exits 1
+// when there are problems, 0 when there are none: the command the docs
+// suite of a repository that holds only documents names.
+func TestDocsCheck(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(dir+"/README.md", []byte("# Handbook\n\nSee [the plan](plan.md).\n"), 0o644)
+	cmd := exec.Command(os.Args[0], "docs-check", dir)
+	cmd.Env = append(os.Environ(), "MESH_TEST_MAIN=1")
+	out, err := cmd.Output()
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || ee.ExitCode() != 1 {
+		t.Fatalf("docs-check on a broken link: err %v, want exit 1\n%s", err, out)
+	}
+	if !strings.Contains(string(out), `README.md:3: the link to "plan.md"`) || !strings.Contains(string(out), "1 problems") {
+		t.Fatalf("printed %q", out)
+	}
+	os.WriteFile(dir+"/plan.md", []byte("# Plan\n"), 0o644)
+	cmd = exec.Command(os.Args[0], "docs-check", dir)
+	cmd.Env = append(os.Environ(), "MESH_TEST_MAIN=1")
+	if out, err = cmd.Output(); err != nil || !strings.Contains(string(out), "no problems") {
+		t.Fatalf("docs-check on a good tree: err %v\n%s", err, out)
 	}
 }

@@ -25,6 +25,10 @@
 //     not, and never npm's "no test specified" placeholder.
 //   - Makefile: only when neither of those gives a test, the root
 //     Makefile's targets literally named test and check.
+//   - Documents: only when none of those gives any suite, a checkout
+//     that holds only documents (DocumentsOnly: Markdown and the like,
+//     outside its dot-paths) runs docs, the node's built-in docs check
+//     (docscheck; ADR-053 amendment 2026-11-16).
 //
 // Every inferred suite asks for 4 CPUs and 8g, what a lane held before
 // suites named their own room (ADR-049 amendment), and none names a
@@ -56,7 +60,8 @@ var ErrNothingToInfer = errors.New("infer: nothing to build or test")
 
 // lookedFor is what Infer reads, as its cannot-run error names it.
 const lookedFor = "go.mod or go.work; package.json with a packageManager field or a lockfile (pnpm-lock.yaml, package-lock.json, yarn.lock); " +
-	"a Makefile with a target named test or check — at the repository's root, and go.mod and package.json in its first-level directories"
+	"a Makefile with a target named test or check — at the repository's root, and go.mod and package.json in its first-level directories; " +
+	"or only documents (Markdown, text and images, outside its dot-paths) for the node's docs check"
 
 // The room every inferred suite asks for (validate.Step.CPUs, Memory).
 const (
@@ -150,6 +155,9 @@ func Infer(dir string) (validate.Config, Profile, error) {
 	in.goModules()
 	in.node()
 	in.makefile()
+	if len(in.suites) == 0 {
+		in.docs()
+	}
 	if len(in.suites) == 0 {
 		msg := fmt.Sprintf("no .runsheet/validate.yml, and nothing to infer its suites from: looked for %s", lookedFor)
 		if len(in.notes) > 0 {

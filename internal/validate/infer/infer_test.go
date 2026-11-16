@@ -149,6 +149,19 @@ func TestInfer(t *testing.T) {
 			},
 		},
 		{
+			// a handbook as the Grapevine ones are (16 Nov: every
+			// validation of business-portal-handbook handed back)
+			name: "documents only",
+			files: map[string]string{
+				"README.md": "# Handbook\n", "AGENTS.md": "rules\n", "specs/overview.md": "---\ntitle: x\n---\n",
+				"research/notes.txt": "", "docs/logo.png": "", "LICENSE": "",
+				".runsheet/release.yml": "notes: true\n", "releases/.gitkeep": "", ".github/workflows/x.yml": "on: push\n",
+			},
+			from: []string{"3 Markdown files"},
+			want: []want{{"docs", "lint", []string{"mesh docs-check"}}},
+			note: "holds only documents",
+		},
+		{
 			name:  "Makefile only",
 			files: map[string]string{"Makefile": "CHECK := x\ncheck: lint\n\t./lint.sh\ntest :\n\t./t.sh\ntests:\n\techo no\n"},
 			from:  []string{"Makefile"},
@@ -213,6 +226,56 @@ func TestInferNothingToRun(t *testing.T) {
 		"package.json has no packageManager field", "Makefile has no target named test or check"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("err %q, want it to name %q", err, want)
+		}
+	}
+}
+
+// A repository with documents and one file of code is not
+// documents-only: nothing is inferred, and the error names the file
+// that is not a document, so it is never checked with less than its
+// code needs.
+func TestInferDocumentsAndCodeIsNothing(t *testing.T) {
+	for _, files := range []map[string]string{
+		{"README.md": "# x\n", "specs/a.md": "a\n", "tools/gen.py": "print(1)\n"},
+		{"README.md": "# x\n", "run.sh": "echo\n"},
+		{"README.md": "# x\n", "data.json": "{}\n"},
+	} {
+		_, _, err := Infer(tree(t, files))
+		if !errors.Is(err, ErrNothingToInfer) {
+			t.Fatalf("%v: err %v, want ErrNothingToInfer", files, err)
+		}
+		if !strings.Contains(err.Error(), "is not a document, so the repository is not documents-only") {
+			t.Errorf("err %q, want it to name the file that is not a document", err)
+		}
+	}
+	// a checkout with no Markdown at all is not documents-only either
+	if _, _, err := Infer(tree(t, map[string]string{"notes.txt": "x\n", ".runsheet/release.yml": ""})); !errors.Is(err, ErrNothingToInfer) {
+		t.Fatalf("err %v, want ErrNothingToInfer for a checkout with no Markdown", err)
+	}
+}
+
+// The documents-only rule's lists are pinned: runsheet holds the same
+// ones (its merge queue's documents-only rule) to offer such a
+// repository's validation, and the two change together.
+func TestDocumentsOnlyListsArePinned(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		got, want []string
+	}{
+		{"DocumentExts", DocumentExts, []string{".md", ".markdown", ".mdx", ".txt", ".rst", ".adoc"}},
+		{"AssetExts", AssetExts, []string{".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".pdf"}},
+		{"DocumentNames", DocumentNames, []string{"LICENSE", "LICENCE", "NOTICE", "AUTHORS", "CODEOWNERS", "COPYING", "README"}},
+		{"MarkdownExts", MarkdownExts, []string{".md", ".markdown", ".mdx"}},
+	} {
+		if !reflect.DeepEqual(c.got, c.want) {
+			t.Errorf("%s is %q, want %q: change runsheet's documents-only rule with it", c.name, c.got, c.want)
+		}
+	}
+	for path, want := range map[string]bool{"README.md": true, "Docs/Guide.MD": true, "readme": true, "Licence": true,
+		"img/a.SVG": true, "main.go": false, "Makefile": false, "Dockerfile": false, "x.yaml": false} {
+		dir := tree(t, map[string]string{path: "", "index.md": ""})
+		if ok, _, _ := DocumentsOnly(dir); ok != want {
+			t.Errorf("a checkout of %s and index.md documents-only %v, want %v", path, ok, want)
 		}
 	}
 }
