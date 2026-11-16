@@ -119,7 +119,7 @@ func TestTheFinishToolClosesTheInput(t *testing.T) {
 // the session's loop; a kind that does not escalate when asked refuses.
 func TestTheEscalateTool(t *testing.T) {
 	mb := NewMailbox()
-	tool := escalateTool(escalate.New(meshapi.ModelPolicy{Default: "haiku", Escalate: []string{"sonnet"}, On: []string{escalate.OnAsked}}), mb)
+	tool := escalateTool(escalate.New(meshapi.ModelPolicy{Default: "haiku", Escalate: []string{"sonnet"}, On: []string{escalate.OnAsked}}), mb, false)
 	if _, err := tool.Call(context.Background(), map[string]any{}); err == nil {
 		t.Fatal("no reason was no error")
 	}
@@ -130,7 +130,7 @@ func TestTheEscalateTool(t *testing.T) {
 	if m := <-mb.C(); m.Kind != MsgEscalate || m.On != escalate.OnAsked || m.Text != "the refactor is too big" {
 		t.Fatalf("%+v", m)
 	}
-	tool = escalateTool(escalate.New(meshapi.ModelPolicy{Default: "haiku", Escalate: []string{"sonnet"}, On: []string{escalate.OnRed}}), mb)
+	tool = escalateTool(escalate.New(meshapi.ModelPolicy{Default: "haiku", Escalate: []string{"sonnet"}, On: []string{escalate.OnRed}}), mb, false)
 	if _, err := tool.Call(context.Background(), map[string]any{"reason": "please"}); err == nil || !strings.Contains(err.Error(), "does not escalate on asked") {
 		t.Fatalf("%v", err)
 	}

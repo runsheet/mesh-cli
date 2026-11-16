@@ -20,8 +20,12 @@ const EscalateTool = "escalate"
 // escalateTool is the lease's escalate tool: escalate {reason}. It
 // answers the model the session moves to and leaves the step in the
 // lease's mailbox for the session's loop, which moves the live session
-// with set_model.
-func escalateTool(ladder *escalate.Ladder, mb *Mailbox) mcptool.Tool {
+// with set_model. codex, true for a lease whose session is a Codex one
+// (app-server has no set_model, codexsession.go), refuses the call
+// outright rather than posting a step its session's loop can only log
+// and drop: the asking session hears why in its own tool result,
+// instead of carrying on with nothing having moved and no sign of it.
+func escalateTool(ladder *escalate.Ladder, mb *Mailbox, codex bool) mcptool.Tool {
 	return mcptool.Tool{
 		Name: EscalateTool,
 		Description: "Ask for a stronger model when the job is beyond the one you run on: the node moves this session up the job's model ladder. " +
@@ -38,6 +42,9 @@ func escalateTool(ladder *escalate.Ladder, mb *Mailbox) mcptool.Tool {
 			reason = strings.TrimSpace(reason)
 			if reason == "" {
 				return "", fmt.Errorf("reason is required")
+			}
+			if codex {
+				return "", fmt.Errorf("this session has no capability to change model mid-session: codex's app-server has no set_model; carry on with the job on the model you are on")
 			}
 			to, err := ladder.Peek(escalate.OnAsked)
 			if err != nil {
