@@ -220,6 +220,15 @@ type Brief struct {
 	// same as empty.
 	Tools  *BriefTools `json:"tools,omitempty"`
 	Egress *Egress     `json:"egress,omitempty"`
+	// Granted is the lease's effective egress, which Mesh computed once
+	// at the take: the kind's baseline hosts narrowed by the tenant's
+	// egress policy and widened by the offer's own extra_hosts where
+	// that policy allows them (projectmesh-io/api ADR 001 amendment,
+	// tenant egress policy; mesh-specs gap 33). The relay enforces
+	// Granted, never Egress directly: ApplyGranted folds it into Egress
+	// once, as the take is read. Nil from a Mesh that sends none, which
+	// leaves Egress the kind's baseline as before.
+	Granted *Egress `json:"granted,omitempty"`
 	// Registry is the artifact registry the kind's sessions reach
 	// through the relay, which serves it on the session's loopback as
 	// MESH_REGISTRY (projectmesh-io/api ADR 001 amendment, registry
@@ -309,6 +318,23 @@ type Egress struct {
 	MCP        []string `json:"mcp"`
 	Model      bool     `json:"model"`
 	Registries []string `json:"registries,omitempty"`
+}
+
+// ApplyGranted makes b's Egress the lease's effective egress: its hosts
+// become Granted's, so every reader of Egress.Hosts (the tunnel, the
+// relay sidecar, credential injection, interception) enforces what Mesh
+// granted for this lease — a repository's extra hosts included — and
+// not the kind's baseline alone. MCP, model and registries stay the
+// kind's, which no tenant policy narrows or widens yet. Nothing changes
+// when either is nil (a kind with no egress keeps it open; a Mesh that
+// sends no grant keeps the baseline). Calling it again changes nothing.
+func (b *Brief) ApplyGranted() {
+	if b == nil || b.Egress == nil || b.Granted == nil {
+		return
+	}
+	hosts := make([]string, len(b.Granted.Hosts))
+	copy(hosts, b.Granted.Hosts)
+	b.Egress.Hosts = hosts
 }
 
 // Subject is what a job is about, in the product's own terms.

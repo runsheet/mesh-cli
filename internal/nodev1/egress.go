@@ -11,8 +11,10 @@ import (
 // A kind's egress (projectmesh-io/api ADR 001 amendment, tool slots and
 // egress; mesh-specs gap 11). A brief with no egress is served as before.
 // A brief with egress makes the lease's relay its session's only exit,
-// and the relay's allowlist exactly that egress, narrowed by the tenant's
-// policy (none exists yet: tenantHosts) and never widened:
+// and the relay's allowlist exactly the egress Mesh granted the lease:
+// the brief's granted hosts (the kind's baseline narrowed by the
+// tenant's policy and widened by the offer's extra_hosts), which the
+// take folds into the brief's Egress (meshapi.Brief.ApplyGranted):
 //
 //   - hosts: HTTPS by CONNECT to host:443 through the lease's tunnel
 //     (internal/egress), the host matched exactly and named again by the
@@ -30,9 +32,9 @@ import (
 // access names. A session on the host (an unsandboxed node) is given the
 // same relay routes but nothing confines it: the node says so in its log.
 
-// tenantHosts are the tenant's own egress hosts, which narrow the kind's:
-// nil, since Mesh has no tenant egress policy yet. Here is where one is
-// read once it does; it can only remove hosts.
+// tenantHosts are a further allowlist that narrows the lease's hosts:
+// nil, since Mesh applies the tenant's egress policy itself at the take
+// and sends the result as the brief's granted egress.
 func tenantHosts(*meshapi.Brief) []string { return nil }
 
 // egressTunnel is the lease's tunnel under its egress, nil when the kind
