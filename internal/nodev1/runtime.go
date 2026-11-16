@@ -274,6 +274,18 @@ type Runtime struct {
 	Host    Host
 	Machine MachineProbe
 
+	// HostProbe, when set, reads the host's load, memory and CPU
+	// pressure, package temperature, and disk at the lease path
+	// (WorkRoot) and the cache path (diskGatePath) once a minute (Mesh
+	// v1 spec amendment, "A node reports its host's cpu, memory, disk
+	// and temperature"): WatchHost caches the reading and keeps it with
+	// the last 59 before it, at most 60 kept, independent of hostGate's
+	// simpler Machine above and of whether a lease take happens that
+	// tick. Defaulted to ProcHostProbe{Root: "/"} at Run when nil.
+	HostProbe HostProbe
+	// HostProbePoll is how often HostProbe is read; a minute when zero.
+	HostProbePoll time.Duration
+
 	// BuildCacheConfigPath, when set, is node.yaml's path: the build
 	// cache watcher (ADR-044 amendment, goal
 	// a-nodes-build-cache-stays-under-its-size) rereads its top-level
@@ -330,6 +342,14 @@ type Runtime struct {
 	// diskGateReason is the disk gate's current reason, "" when open, so
 	// noteDiskGate logs only a crossing, never the same state twice
 	diskGateReason string
+	// hostReading is HostProbe's last reading, and hostHistory the last
+	// 60 of them kept, oldest first (WatchHost); the zero value and nil
+	// before the first tick, or with no HostProbe set.
+	hostReading MachineReading
+	hostHistory []MachineReading
+	// hostTicks, set, replaces WatchHost's own ticker: a test's
+	// simulated minutes.
+	hostTicks <-chan time.Time
 	// buildCacheConfig is node.yaml's `cache` section as WatchBuildCache
 	// last read it; diskGate's MinFreeGB floor and evictBuildCache's own
 	// MaxGB cap.
@@ -612,6 +632,10 @@ func (r *Runtime) Run(ctx context.Context) error {
 			return ReadBuildCacheConfig(path, func() (uint64, error) { return r.Disk.FreeBytes(r.diskGatePath()) })
 		}, r.BuildCachePoll, r.BuildCacheReload)
 	}
+	if r.HostProbe == nil {
+		r.HostProbe = &ProcHostProbe{Root: "/"}
+	}
+	go r.WatchHost(hbCtx, r.HostProbePoll)
 	r.probeCacheMountOnce(ctx)
 
 	var leases sync.WaitGroup
@@ -810,6 +834,79 @@ func (r *Runtime) keepAccess(id string, rec meshapi.AccessRecord) {
 func (r *Runtime) lease(id string) *running {
 	l, _ := r.leases.Get(id)
 	return l
+}
+
+// hostHistoryMax is the most HostProbe readings WatchHost keeps.
+const hostHistoryMax = 60
+
+// WatchHost is the once-a-minute host monitor (Mesh v1 spec amendment,
+// "A node reports its host's cpu, memory, disk and temperature"): it
+// reads HostProbe at the lease path (WorkRoot) and the cache path
+// (diskGatePath) every poll, caches the reading as HostReading, and
+// keeps it with the last hostHistoryMax-1 before it as HostHistory —
+// independent of hostGate/diskGate and of whether a lease take
+// happens that tick. A read that errors changes neither, and is logged
+// only when reads start failing, not on every tick. Nil HostProbe runs
+// no monitor.
+func (r *Runtime) WatchHost(ctx context.Context, poll time.Duration) {
+	if r.HostProbe == nil {
+		return
+	}
+	ticks := r.hostTicks
+	if ticks == nil {
+		if poll <= 0 {
+			poll = time.Minute
+		}
+		t := time.NewTicker(poll)
+		defer t.Stop()
+		ticks = t.C
+	}
+	failing := false
+	apply := func() {
+		reading, err := r.HostProbe.Read(r.WorkRoot, r.diskGatePath())
+		if err != nil {
+			if !failing {
+				r.logf("nodev1: host: %v", err)
+			}
+			failing = true
+			return
+		}
+		failing = false
+		r.mu.Lock()
+		r.hostReading = reading
+		r.hostHistory = append(r.hostHistory, reading)
+		if len(r.hostHistory) > hostHistoryMax {
+			r.hostHistory = r.hostHistory[len(r.hostHistory)-hostHistoryMax:]
+		}
+		r.mu.Unlock()
+	}
+	apply()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticks:
+			apply()
+		}
+	}
+}
+
+// HostReading is HostProbe's last reading, the zero value before the
+// first tick or with no HostProbe set.
+func (r *Runtime) HostReading() MachineReading {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.hostReading
+}
+
+// HostHistory is HostProbe's last hostHistoryMax readings, oldest
+// first.
+func (r *Runtime) HostHistory() []MachineReading {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]MachineReading, len(r.hostHistory))
+	copy(out, r.hostHistory)
+	return out
 }
 
 // trimMirrors removes the mirrors no lease has used for
