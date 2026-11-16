@@ -1,5 +1,5 @@
 ---
-summary: On a v1 node run_suite runs a sharded suite's shards (and its groups) at once, the first in the lease's pod and each other in a pod of its own beside it with its own copy of the lease's services, on the lease's HOME, network and egress (amended 2026-11-02: a lane sees what its lease's pod sees), on the room its suite asks for in validate.yml (cpus, memory; the node's sandbox default when it names none), held of the node's scheduler and the limit of its steps (amended 2026-11-15; before, the lease's resources), and on the lease's warm cache (ADR-044, amended 2026-11-15); a run longer than the call's wait (10 minutes) answers {run_id, status: running}, which the session polls with run_suite {run_id}, never an MCP timeout; fail_fast stops the other shards at the first failure; a validate lease is held to its validate.yml budget from the lease's start, past which the run is stopped and answered red, out_of_time, with its signed record; the record stays one per run, its output blob naming each shard. run_suite also supervises its units: a red unit's failed tests are retried by name, a confirmed failure stops the run, a stalled test is named and a unit that ran 0 tests is red (amended 2026-11-15).
+summary: On a v1 node run_suite runs a sharded suite's shards (and its groups) at once, the first in the lease's pod and each other in a pod of its own beside it with its own copy of the lease's services, on the lease's HOME, network and egress (amended 2026-11-02: a lane sees what its lease's pod sees), on the room its suite asks for in validate.yml (cpus, memory; the node's sandbox default when it names none), held of the node's scheduler and the limit of its steps (amended 2026-11-15; before, the lease's resources), and on the lease's warm cache (ADR-044, amended 2026-11-15); a run longer than the call's wait (10 minutes) answers {run_id, status: running}, which the session polls with run_suite {run_id}, never an MCP timeout; fail_fast stops the other shards at the first failure; a validate lease is held to its validate.yml budget from the lease's start, past which the run is stopped and answered red, out_of_time, with its signed record; the record stays one per run, its output blob naming each shard. run_suite also supervises its units: a red unit's failed tests are retried by name, a confirmed failure stops the run, a stalled test is named and a unit that ran 0 tests is red (amended 2026-11-15); a stall is the unit's whole stream falling silent, never one test's silence while the others still report (amended 2026-11-16).
 status: accepted
 ---
 
@@ -504,3 +504,68 @@ yet another start. `TestRunSuiteRepeatCallAnswersTheRunningRun`
 `TestRunSuiteDifferentSuiteStillStarts` and
 `TestRunSuiteUnansweredEndAnswersTheRepeatCall` (internal/nodetools)
 hold it.
+
+## Amendment 2026-11-16: a stall is the unit's silence, not one test's
+
+Goal `every-hung-test-is-found-and-fixed-by-its-cause` (runsheet).
+Replaces the 2026-11-15 amendment's "A stalled test is named": what the
+limit measures.
+
+**What happened.** From 16 Nov, the day after the stall guard shipped
+(#1909), runsheet validations on dl360 ended with all four integration
+shards stopped at the same moment, ~280 tests between them named
+"produced no event for 5m0s (validate.yml stall:)" and ~30 more left
+`timeout`; the same tests passed alone. Evaluators put it down to
+starvation: `nproc` said 4 and the load average read 47–59, while
+validate.yml's suites ask for ~24 CPUs at once.
+
+**What it was.** runsheet's e2e harness lets every test of a shard
+through `t.Parallel` at once (its TestMain sets `-parallel 10000`) and
+then holds each on its own running slots — six, handed out longest
+first — until one comes free. go test writes `run`, `pause` and `cont`
+for every test in the first second; a test at the back of the harness's
+queue then writes nothing until it has a slot, and to go test it is
+running. The watch read each test on its own: every test still queued
+five minutes into a shard's tests — a quarter of each shard on a busy
+node — was named stalled and the shard stopped. The four shards start
+their tests together (they wait on e2ebuild's one binary), so they
+stopped together. The runs were progressing.
+
+It was not the lanes. The validation the evaluators read (lease
+09947c4e, 16 Nov 17:46 AEDT) opened each of its four integration
+shards in a lane of its own, 4 CPUs and 8 GB each, in four seconds.
+The node's "no room for lane …" lines are a first lane only — the one
+in the lease's own pod, most of them a session's run of one suite
+that names no group (lane `validate`) — whose room is within the lease's allowance;
+it runs under the lease's own hold, its steps limited to that room
+(`--cpus`, and `GOMAXPROCS`, `OMP_NUM_THREADS` and `MAKEFLAGS` told the
+same: `sandbox.LimitEnv`), so go test's `-p` and `-parallel` follow it.
+Every other lane waits for room of its own and never falls back into
+the lease's pod. A suite there runs no wider than its CPUs; making the
+first lane wait instead would bring back what the fallback was for (an
+agent waiting on room only another lease's end can free). `nproc` is 4
+because `OMP_NUM_THREADS` is (GNU nproc honours it), and a container's
+load average is the host's: 47–59 on dl360's 96 threads.
+
+**Decision.** A unit is stalled when its go test -json stream has
+carried no event at all — any test's, or its package's — for the
+suite's `stall` while a test of it is running (started, not paused for
+a parallel sibling). The tests named are the running ones with no
+subtest still open, every one of them silent that long. A unit whose
+stream still moves is making progress, however slowly — on fewer CPUs,
+behind its own queue — and is never stopped for one test's silence.
+`stall:` keeps its key, default (5m) and `0`/`off`.
+
+A hung test is still found, later: once the tests beside it have
+finished or gone quiet too, the limit after the stream's last event.
+Until then go test's own `-timeout` and the suite's own deadlines bound
+it, as they did before the guard; a whole unit gone quiet is stopped at
+the limit, as before.
+
+`TestStallWatchReadsWhoIsRunning`,
+`TestTestsQueuedBehindTheSuitesOwnSlotsAreNotStalled` and
+`TestASlowButProgressingSuiteIsNotStalled` (internal/validate) hold the
+stall; `TestAStalledTestIsNamedAndItsUnitStopped` still holds; and
+`TestALaneRefusedRoomRunsOnItsOwnRoomAndTheOthersWait`
+(internal/nodev1) holds the first lane's room and the other lanes'
+wait.

@@ -385,7 +385,7 @@ func (s *RunSuite) Tool() mcptool.Tool {
 			"A run of named targets or tests is recorded as that selection, never as the suite's full run. " +
 			"The node supervises the tests itself, so never re-run a failing test to see whether it is flaky: a failing test is run again by name once its step or shard ends, " +
 			"one that then passes is named with outcome flaky (in flaky_tests) and does not fail its step, and one that fails again (retries on its entry) is a confirmed failure, " +
-			"which stops the rest of the run unless its suite says run_to_end; a test silent past its suite's stall limit is named with outcome stalled and its step or shard stopped; " +
+			"which stops the rest of the run unless its suite says run_to_end; a step or shard whose tests all fall silent past its suite's stall limit is stopped, the tests it was running named with outcome stalled (one slow test beside others that still report is not a stall); " +
 			"and a step that exits 0 having run no tests is red with reason \"ran 0 tests\". " +
 			"A run still going after a while answers {run_id, status: running} instead: call run_suite {run_id} again to wait for it, as often as it takes; " +
 			"a call naming no run_id while a run of the same suites is still going on this lease starts nothing: it answers that run, exactly as run_suite {run_id} would (and a run that ended unanswered answers its result to a call for the same suites, targets and tests). " +

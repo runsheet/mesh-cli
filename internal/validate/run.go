@@ -542,8 +542,9 @@ func shardCommand(cmd string, u unit) string {
 // (Step.Retries), one that passes then named flaky and no longer
 // failing its unit, one that fails again a confirmed failure, which
 // stops the run as fail fast does unless its suite says RunToEnd; a
-// started test silent for Step.Stall is named stalled and its unit
-// stopped; and a unit that exits 0 under Step.MinTests is red.
+// unit whose test stream is silent for Step.Stall while a test runs has
+// its running tests named stalled and is stopped; and a unit that exits
+// 0 under Step.MinTests is red.
 func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]StepResult, error) {
 	lr, split := runner.(LaneRunner)
 	ls := lanes(steps, split)

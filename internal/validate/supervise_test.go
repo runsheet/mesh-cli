@@ -544,8 +544,12 @@ func (h *hangs) Run(ctx context.Context, cmd string, timeout time.Duration, stdo
 	return -1, ctx.Err()
 }
 
-// A test that keeps reporting is never stalled, however long it runs,
-// and a package whose binary has ended leaves no stalled test behind.
+// The stall is the unit's silence, not one test's: while any test of
+// the unit reports, none is stalled, however long one of them has been
+// quiet; once the whole stream has been silent for the limit, the tests
+// still running are — a parent waiting on its subtest and a test paused
+// for its parallel siblings not among them — and a package whose binary
+// has ended leaves no stalled test behind.
 func TestStallWatchReadsWhoIsRunning(t *testing.T) {
 	now := time.Unix(0, 0)
 	w := newStallWatch(time.Minute, func() time.Time { return now })
@@ -565,18 +569,150 @@ func TestStallWatchReadsWhoIsRunning(t *testing.T) {
 	now = now.Add(50 * time.Second)
 	write(ev("output", "TestChatty", "still going\n"), evIn("dead", "fail", ""))
 	now = now.Add(20 * time.Second)
-	if got := names(); got != "pkg.TestQuiet" {
-		t.Fatalf("stalled %q, want pkg.TestQuiet alone", got)
+	// TestQuiet has been silent 70s, but the unit wrote 20s ago
+	if got := names(); got != "" {
+		t.Fatalf("stalled %q while the unit still reports, want none", got)
 	}
-	write(ev("pass", "TestQuiet"), "not json", ev("run", "TestParent"), ev("run", "TestParent/sub"))
-	now = now.Add(45 * time.Second)
-	write(ev("pass", "TestParent/sub"))
-	now = now.Add(30 * time.Second)
-	// TestChatty has now been silent 95s; TestParent heard its subtest
-	// 30s ago
-	if got := names(); got != "pkg.TestChatty" {
-		t.Fatalf("stalled %q, want pkg.TestChatty alone", got)
+	now = now.Add(40 * time.Second)
+	// the whole stream silent 60s: both still running are stalled,
+	// TestLeftOpen's package having ended
+	if got := names(); got != "pkg.TestChatty,pkg.TestQuiet" {
+		t.Fatalf("stalled %q, want pkg.TestChatty,pkg.TestQuiet", got)
 	}
+	write(ev("pass", "TestQuiet"), ev("pass", "TestChatty"), "not json",
+		ev("run", "TestParent"), ev("run", "TestParent/sub"), ev("run", "TestPaused"), ev("pause", "TestPaused"))
+	now = now.Add(59 * time.Second)
+	if got := names(); got != "" {
+		t.Fatalf("stalled %q under the limit, want none", got)
+	}
+	now = now.Add(time.Second)
+	if got := names(); got != "pkg.TestParent/sub" {
+		t.Fatalf("stalled %q, want pkg.TestParent/sub alone", got)
+	}
+}
+
+// A suite that queues its own tests is not stalled while it progresses
+// (2026-11-16, every-hung-test-is-found-and-fixed-by-its-cause):
+// runsheet's e2e harness lets every test of a shard through t.Parallel
+// at once — go test's run, pause and cont for each — and then holds
+// each on its own running slots, six of them, until one comes free. A
+// test at the back of that queue is silent, and "running" to go test,
+// for most of the shard; watched test by test, every one still queued
+// at the limit was named stalled and its shard stopped. Here 30 tests
+// queue for 2 slots, each running 3 minutes: the last waits 42 minutes,
+// far past the 5-minute limit, while the stream moves every 3. Only when
+// the slots' holders stop reporting too is the unit stalled.
+func TestTestsQueuedBehindTheSuitesOwnSlotsAreNotStalled(t *testing.T) {
+	now := time.Unix(0, 0)
+	w := newStallWatch(5*time.Minute, func() time.Time { return now })
+	write := func(lines ...string) {
+		for _, l := range lines {
+			fmt.Fprintln(w, l)
+		}
+	}
+	const tests, slots = 30, 2
+	name := func(i int) string { return fmt.Sprintf("TestRig%02d", i) }
+	for i := range tests {
+		write(ev("run", name(i)), ev("pause", name(i)))
+	}
+	for i := range tests {
+		write(ev("cont", name(i)))
+	}
+	for i := 0; i < tests; i += slots {
+		for j := i; j < i+slots; j++ {
+			write(ev("output", name(j), "rig up\n"))
+		}
+		now = now.Add(3 * time.Minute)
+		if got := w.check(); len(got) > 0 {
+			t.Fatalf("%s in: %d tests named stalled while two hold the slots and report: %v", now.Sub(time.Unix(0, 0)), len(got), got)
+		}
+		for j := i; j < i+slots; j++ {
+			write(ev("pass", name(j)))
+		}
+	}
+	// a last test takes a slot and hangs: the stream goes quiet, and it
+	// is named once the stream has been quiet the limit
+	write(ev("run", "TestHangs"), ev("pause", "TestHangs"), ev("cont", "TestHangs"), ev("output", "TestHangs", "rig up\n"))
+	now = now.Add(5 * time.Minute)
+	if got := fmt.Sprint(w.check()); got != "[pkg.TestHangs]" {
+		t.Fatalf("stalled %s, want [pkg.TestHangs]", got)
+	}
+}
+
+// A slow suite that progresses runs to its end (2026-11-16): a unit
+// whose tests queue for the suite's own slots, as runsheet's e2e shards
+// do, and take far longer in all than the stall limit — every queued
+// test silent for longer than the limit — is not stopped, and its tests
+// pass.
+func TestASlowButProgressingSuiteIsNotStalled(t *testing.T) {
+	const tests, slots, each = 24, 2, 60 * time.Millisecond
+	runner := &queueRunner{tests: tests, slots: slots, each: each}
+	steps := []Step{{Name: "integration", Command: "go test -json ./e2e", Timeout: time.Minute, Stall: 250 * time.Millisecond}}
+	start := time.Now()
+	results, err := Run(context.Background(), steps, runner, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	took := time.Since(start)
+	got := results[0]
+	if got.Stopped || got.ExitCode != 0 || got.TestsPassed != tests {
+		t.Fatalf("unit stopped %v after %s (%.120q), exit %d, %d of %d passed; want every test passed and no stop", got.Stopped, took, got.StopReason, got.ExitCode, got.TestsPassed, tests)
+	}
+	if took < 2*steps[0].Stall {
+		t.Fatalf("the run took %s, want well past the %s limit for the test to mean anything", took, steps[0].Stall)
+	}
+}
+
+// queueRunner is a go test -json run of tests parallel tests let through
+// t.Parallel at once and run slots at a time by the suite's own queue,
+// each for each, as runsheet's e2e harness does: a test is silent from
+// its cont until its slot.
+type queueRunner struct {
+	tests, slots int
+	each         time.Duration
+}
+
+func (q *queueRunner) Run(ctx context.Context, _ string, _ time.Duration, stdout, _ io.Writer) (int, error) {
+	var mu sync.Mutex
+	emit := func(action, test string, output ...string) {
+		mu.Lock()
+		defer mu.Unlock()
+		fmt.Fprintln(stdout, ev(action, test, output...))
+	}
+	name := func(i int) string { return fmt.Sprintf("TestRig%02d", i) }
+	for i := range q.tests {
+		emit("run", name(i))
+		emit("pause", name(i))
+	}
+	for i := range q.tests {
+		emit("cont", name(i))
+	}
+	slot := make(chan struct{}, q.slots)
+	var wg sync.WaitGroup
+	for i := range q.tests {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case slot <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			defer func() { <-slot }()
+			emit("output", name(i), "rig up\n")
+			select {
+			case <-time.After(q.each):
+				emit("pass", name(i))
+			case <-ctx.Done():
+			}
+		}()
+	}
+	wg.Wait()
+	if ctx.Err() != nil {
+		return -1, ctx.Err()
+	}
+	emit("pass", "")
+	return 0, nil
 }
 
 const floorYML = `suites:
