@@ -295,7 +295,9 @@ func TestV1UpgradeAdoptsSidecarLeases(t *testing.T) {
 
 	pre1 := []byte("pre-upgrade output for lease 1\n")
 	pre2 := []byte("pre-upgrade output for lease 2\n")
-	leaseOutput := func(id string) string { return filepath.Join(workRoot, "leases", id, "agent-output.log") }
+	// the agent's own stdout, which outlives the node process (nodev1's
+	// agentio.go)
+	leaseOutput := func(id string) string { return filepath.Join(workRoot, "leases", id, "agent.stdout") }
 	if err := os.WriteFile(leaseOutput(lease1), pre1, 0o600); err != nil {
 		t.Fatalf("writing lease 1's pre-upgrade agent output: %v", err)
 	}

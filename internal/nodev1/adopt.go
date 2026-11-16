@@ -9,14 +9,18 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/actor"
 	"projectmesh.io/mesh-cli/internal/egress"
+	"projectmesh.io/mesh-cli/internal/escalate"
 	"projectmesh.io/mesh-cli/internal/gitrelay"
+	"projectmesh.io/mesh-cli/internal/mcptool"
 	"projectmesh.io/mesh-cli/internal/meshapi"
+	"projectmesh.io/mesh-cli/internal/nodetools"
 	"projectmesh.io/mesh-cli/internal/relaysidecar"
 )
 
@@ -29,9 +33,13 @@ import (
 // longer exists can never again be mistaken for this one), pushed to
 // the sidecar as its lease's credentials from now on
 // (relaysidecar.ReplaceCredentials), its room in the scheduler taken
-// again, its agent output tailed from where the hand-off left it, and
-// a fresh relaysidecar.Node listening on the sidecar's own node
-// socket, this time with its token renewal pull (Renew, mirroring the
+// again, its agent's output followed from where the hand-off left it
+// (each line the session's progress, followAgentOutput), and a fresh
+// relaysidecar.Node listening on the sidecar's own node socket, with
+// what the sidecar forwards to the node -- the lease's model account's
+// forwarder and the node tools that need nothing the old process held
+// (nodeProxy, adoptedNodeTools) -- its AccessRecords, its token
+// renewal pull (Renew, mirroring the
 // sidecar's own rs.renew), its Stop gate (openStopGate, as a fresh
 // start would open it, with no earlier hand-back request or evidence
 // record to carry across the restart) and, for a lease whose egress
@@ -48,12 +56,12 @@ import (
 // refuses the fresh credentials, or cannot be reached at all, is
 // stopped instead (stopUnclaimedEgress): Upgrade disowned it the
 // moment the hand-off was written (handoff.go), so nothing else is
-// left to claim or stop it (ADR-051 decision 4). Its sessionproxy is
-// not reattached:
-// rebuilding it means rebuilding the pod session itself, which
-// adoption does not do. A hand-off that cannot be adopted this way --
-// unreadable, no sidecar named, or the sidecar refuses the new
-// credentials -- is handed back node_update instead, the same cause
+// left to claim or stop it (ADR-051 decision 4). The lease's pod
+// session is not reattached, so the node tools that run through it
+// (run_suite, stop_suite) are not served again. A hand-off that cannot
+// be adopted this way -- unreadable, no sidecar named, its model
+// account unreadable, or the sidecar refuses the new credentials -- is
+// handed back node_update instead, the same cause
 // the drain's wait hands a lease back with, and its job directory
 // removed.
 
@@ -172,6 +180,14 @@ func (r *Runtime) adoptOne(ctx context.Context, id, dir string, st *handoffState
 		r.cannotAdopt(id, dir, fmt.Sprintf("its new session token: %v", err))
 		return
 	}
+	// the lease's model account, read again on its new session: the
+	// session's model calls reach the node's own forwarder (nodeProxy),
+	// which held the account in the memory of the process that is gone
+	account, err := openAccount(ctx, b.CredentialRef, tokens, os.Environ())
+	if err != nil {
+		r.cannotAdopt(id, dir, fmt.Sprintf("its model account: %v", err))
+		return
+	}
 	handoffKey, err := tokens.Key().Handoff()
 	if err != nil {
 		r.cannotAdopt(id, dir, fmt.Sprintf("its new key: %v", err))
@@ -208,6 +224,7 @@ func (r *Runtime) adoptOne(ctx context.Context, id, dir string, st *handoffState
 	mb := NewMailbox()
 	mb.turns = restoreTurnLedger(st.Turns)
 	fin := &finishCapture{tool: b.FinishTool, learningsTool: b.LearningsTool, onFinish: mb.Finish}
+	hb := &sessionHandBack{}
 
 	// the hand-off's egress process is the lease's to the supervisor
 	// from here, while its adoption decides whether to keep it
@@ -291,9 +308,29 @@ func (r *Runtime) adoptOne(ctx context.Context, id, dir string, st *handoffState
 	}
 
 	nodeSock := filepath.Join(st.SidecarDir, relayNodeSocket)
-	gate := r.openStopGate(b, nodeSock, fin, nil, nil)
 
-	node := &relaysidecar.Node{Observe: fin.observe, Security: r.securityReporter(id), Canary: v.canary(), Logf: r.logf, Renew: renew}
+	// the node's side of the lease's socket past the tunnel, as rs.open
+	// serves it for a lease it starts: the model forwarder and the node
+	// tools the session reaches through the sidecar (nodeProxy), whose
+	// first making died with the process that made it. Without them the
+	// sidecar's every model call and node tool call is answered 404.
+	if v != nil {
+		account.inspect = v.inspectModel
+	}
+	// the job's account refused by its vendor ends the lease, handed
+	// back account_refused (accountrefused.go)
+	account.onRefused = func(err error) { cancel(err) }
+	tools, rec := r.adoptedTools(leaseCtx, b, filepath.Join(dir, "work"), tokens, mb, fin, hb, st.SidecarDir)
+	np, err := r.nodeProxy(b, tools, account, "")
+	if err != nil {
+		end := actor.End{Report: actor.ReportHandBack, Cause: meshapi.CauseNodeUpdate, Reason: fmt.Sprintf("its model relay: %v", err)}
+		r.endActor(a, id, end, func() { r.handBack(id, end.Cause, end.Reason, "") })
+		return
+	}
+	gate := r.openStopGate(b, nodeSock, fin, hb, rec)
+
+	node := &relaysidecar.Node{Proxy: np, Observe: fin.observe, Security: r.securityReporter(id), Canary: v.canary(), Logf: r.logf, Renew: renew,
+		Access: func(rec meshapi.AccessRecord) { r.keepAccess(id, rec) }}
 	if gate != nil {
 		node.Stop = gate.handler()
 	}
@@ -314,6 +351,14 @@ func (r *Runtime) adoptOne(ctx context.Context, id, dir string, st *handoffState
 			}
 		}
 	}
+	// the egress process is claimed -- named in actor.json and held --
+	// before the node socket serves anything through it, so no request
+	// ever rides an egress process a second crash would not find
+	if node.Tunnel != nil {
+		r.setEgress(id, st.EgressPID, st.EgressControl)
+		a.NoteEgress(st.EgressPID, st.EgressControl)
+		a.Hold("the lease's egress process", func() error { return stopLeftoverEgress(st.EgressPID) })
+	}
 	if err := node.Listen(nodeSock); err != nil {
 		end := actor.End{Report: actor.ReportHandBack, Cause: meshapi.CauseNodeUpdate, Reason: fmt.Sprintf("its node socket: %v", err)}
 		r.endActor(a, id, end, func() { r.handBack(id, end.Cause, end.Reason, "") })
@@ -323,17 +368,21 @@ func (r *Runtime) adoptOne(ctx context.Context, id, dir string, st *handoffState
 	if gate != nil {
 		a.Hold("the stop gate", func() error { gate.close(); return nil })
 	}
-	if node.Tunnel != nil {
-		r.setEgress(id, st.EgressPID, st.EgressControl)
-		a.NoteEgress(st.EgressPID, st.EgressControl)
-		a.Hold("the lease's egress process", func() error { return stopLeftoverEgress(st.EgressPID) })
-	}
 
-	if n, err := r.tailAgentOutput(id, st.AgentStdoutOffset); err != nil {
+	if n, err := r.pastOffset(id, st.AgentStdoutOffset); err != nil {
 		r.logf("nodev1: lease %s: resuming its agent output: %v", id, err)
-	} else if len(n) > 0 {
-		r.logf("nodev1: lease %s: resumed its agent output, %d byte(s) past offset %d", id, len(n), st.AgentStdoutOffset)
+	} else if n > 0 {
+		r.logf("nodev1: lease %s: resumed its agent output, %d byte(s) past offset %d", id, n, st.AgentStdoutOffset)
 	}
+	// the session's own stream moves the lease's progress from here, as
+	// it did for the process that started it: without it the adopted
+	// lease's progress_at stays where adoption set it, and Mesh's stall
+	// reaper hands it back however busy the session is
+	followed := make(chan struct{})
+	go func() {
+		defer close(followed)
+		r.followAgentOutput(leaseCtx, id, st.AgentStdoutOffset)
+	}()
 
 	lease := &meshapi.Lease{LeaseID: b.LeaseID, JobID: b.JobID, N: b.LeaseN, ExpiresAt: b.LeaseExpiresAt, RenewEveryS: b.RenewEveryS}
 	room, roomErr := r.holdCapacity(leaseCtx, b, lease)
@@ -358,8 +407,17 @@ func (r *Runtime) adoptOne(ctx context.Context, id, dir string, st *handoffState
 	case <-mb.Finished():
 	case <-leaseCtx.Done():
 	}
+	// why the lease's context ended, when it ended before the session's
+	// finish: Mesh took the lease back, cancelled it, an upgrade handed
+	// it back, or its account was refused -- reported as runActor
+	// reports each (report)
+	var cause error
+	if leaseCtx.Err() != nil {
+		cause = context.Cause(leaseCtx)
+	}
 	cancel(nil)
 	<-renewDone
+	<-followed
 
 	mintMu.Lock()
 	toRevoke := minted
@@ -372,7 +430,7 @@ func (r *Runtime) adoptOne(ctx context.Context, id, dir string, st *handoffState
 		rcancel()
 	}
 
-	out := outcome{finish: fin.result()}
+	out := outcome{finish: fin.result(), handBack: hb.asked(), cause: cause, evidence: rec.IDs(), account: account, harness: b.Harness.Name}
 	out.nodeEnding = ctx.Err() != nil
 	a.ReleaseNow(holdProxy, holdGrant)
 	r.releaseCarried(id)
@@ -417,4 +475,45 @@ func restoreTurnLedger(ht *handoffTurns) *turnLedger {
 		l.closed[seq] = true
 	}
 	return l
+}
+
+// adoptedNodeTools are the node tools a node serves again for a lease it
+// adopts, those of the kind's that need nothing but the hand-off, the
+// lease's new session and its relay sidecar: result, hand_back and
+// progress, through which a session ends its lease or says how far it
+// got, and push, which every sidecar lease's session makes through the
+// sidecar anyway (relaysidecar.PushClient). The rest stay unserved after
+// a restart, each needing what only the process that started the lease
+// held: run_suite and stop_suite its pod session, apply_onto its own git
+// grant, request_time its time budget, escalate its harness, which read
+// the mailbox the escalation is left in, and sign_release its Fulcio
+// signer's session. A session calling one of those after a restart is
+// told the node does not have it, where before every node tool was
+// answered 404.
+var adoptedNodeTools = []string{nodetools.ResultTool, nodetools.HandBackTool, nodetools.ProgressTool, nodetools.PushTool}
+
+// adoptedTools are the adopted lease's node tools (adoptedNodeTools of
+// the kind's), the kind's tool slots applied as at a fresh start
+// (slots.go), and the recorder their evidence goes to.
+func (r *Runtime) adoptedTools(ctx context.Context, b *meshapi.Brief, workspace string, tokens *sessionTokens, mb *Mailbox, fin *finishCapture, hb *sessionHandBack, sidecarDir string) ([]mcptool.Tool, *nodetools.Recorder) {
+	served := *b
+	served.NodeTools = nil
+	var unserved []string
+	for _, name := range b.NodeTools {
+		if slices.Contains(adoptedNodeTools, name) {
+			served.NodeTools = append(served.NodeTools, name)
+		} else {
+			unserved = append(unserved, name)
+		}
+	}
+	if len(unserved) > 0 {
+		r.logf("nodev1: lease %s: adopted without node tool(s) %s, which only the node that started it could serve", b.LeaseID, strings.Join(unserved, ", "))
+	}
+	pusher := sidecarPusher(filepath.Join(sidecarDir, relayControlDir, relayControlSocket))
+	tools, rec := r.nodeTools(&served, nil, workspace, tokens, escalate.New(b.Harness.Model), mb, nil, pusher, leaseClock{ctx: ctx, began: time.Now()}, nil, nil)
+	tools = append(tools, r.endTools(&served, fin, hb, mb)...)
+	if sl, err := slotsOf(b); err == nil {
+		tools = sl.nodeTools(tools)
+	}
+	return tools, rec
 }

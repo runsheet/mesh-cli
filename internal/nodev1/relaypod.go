@@ -240,9 +240,43 @@ func (r *Runtime) prepareRelaySidecar(ctx context.Context, b *meshapi.Brief, lp 
 	return rs, nil
 }
 
+// nodeProxy is what the node serves the sidecar past the tunnel, on the
+// lease's socket: the kind's node tools in process at NodeToolsServer,
+// and the lease's model account's forwarder on its paths alone
+// (sessionproxy.ForwarderPaths). The sidecar forwards the session's
+// /mcp/<node tools> and /model/ to it unchanged. It lives in the node
+// process alone, so a node that adopts a lease after a restart
+// (adopt.go) builds it again, the same way rs.open builds it for a
+// lease it starts. base is where the session reaches the model: the
+// sidecar's loopback.
+func (r *Runtime) nodeProxy(b *meshapi.Brief, tools []mcptool.Tool, account *sessionAccount, base string) (*sessionproxy.Proxy, error) {
+	np := sessionproxy.New(nil)
+	np.Logf = r.Logf
+	// the node tools' calls, which the sidecar forwards unchanged
+	np.Canary = r.injectedOf(b.LeaseID).canary()
+	if len(tools) > 0 {
+		np.Add(NodeToolsServer, sessionproxy.InProcess{Handler: &mcptool.Handler{Name: NodeToolsServer, Tools: tools}})
+	}
+	models := r.ModelUpstreams
+	if models == nil {
+		models = modelUpstreams()
+	}
+	if err := account.forward(np, models, r.logf, b.LeaseID, base); err != nil {
+		return nil, err
+	}
+	return np, nil
+}
+
 // pusher is the push tool's way to the sidecar.
 func (rs *relaySidecar) pusher() nodetools.Pusher {
-	pc := relaysidecar.PushClient{Socket: rs.controlSocket()}
+	return sidecarPusher(rs.controlSocket())
+}
+
+// sidecarPusher is the push tool's way to the relay sidecar whose
+// control socket is socket: every push the session asks for is the
+// sidecar's to check and make (relaysidecar.PushClient).
+func sidecarPusher(socket string) nodetools.Pusher {
+	pc := relaysidecar.PushClient{Socket: socket}
 	return func(ctx context.Context, ref, sha, lease string) (nodetools.PushOutcome, error) {
 		res, err := pc.Push(ctx, ref, sha, lease)
 		if err != nil {
@@ -264,18 +298,8 @@ func (rs *relaySidecar) open(ctx context.Context, tools []mcptool.Tool, observe 
 	r, b := rs.r, rs.b
 	// the node's side: node tools, the model forwarder, the stop gate,
 	// renewal, AccessRecords, the tunnel
-	np := sessionproxy.New(nil)
-	np.Logf = r.Logf
-	// the node tools' calls, which the sidecar forwards unchanged
-	np.Canary = r.injectedOf(b.LeaseID).canary()
-	if len(tools) > 0 {
-		np.Add(NodeToolsServer, sessionproxy.InProcess{Handler: &mcptool.Handler{Name: NodeToolsServer, Tools: tools}})
-	}
-	models := r.ModelUpstreams
-	if models == nil {
-		models = modelUpstreams()
-	}
-	if err := account.forward(np, models, r.logf, b.LeaseID, rs.base()); err != nil {
+	np, err := r.nodeProxy(b, tools, account, rs.base())
+	if err != nil {
 		return nil, err
 	}
 	// egress.model never closes the harness's own model route (#1700)

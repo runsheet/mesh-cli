@@ -21,6 +21,7 @@ import (
 func TestMain(m *testing.M) {
 	sessiontest.Main()
 	maybeRunFakeNode()
+	maybeRunRestartRole()
 	code := m.Run()
 	cleanupTestMeshBinary()
 	os.Exit(code)

@@ -1,13 +1,14 @@
 package nodev1
 
 import (
+	"context"
 	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
 
 	"projectmesh.io/mesh-cli/internal/meshapi"
+	"projectmesh.io/mesh-cli/internal/sessionunit"
 )
 
 // handoffFile is the name, under the lease's own directory
@@ -42,9 +43,10 @@ type handoffState struct {
 	// tunnel from then on.
 	EgressPID     int    `json:"egressPid,omitempty"`
 	EgressControl string `json:"egressControl,omitempty"`
-	// AgentStdoutOffset is how far into the lease's agent output the
-	// node had already read, so an adopting node resumes the tail from
-	// there rather than from the top (adopt.go).
+	// AgentStdoutOffset is how far into the lease's agent output
+	// (agentOutputPath, the agent's own stdout file) the node had got,
+	// so an adopting node follows it from there rather than from the top
+	// (adopt.go's followAgentOutput).
 	AgentStdoutOffset int64 `json:"agentStdoutOffset,omitempty"`
 }
 
@@ -103,33 +105,57 @@ func (r *Runtime) writeHandoff(id string, l *running) error {
 	return os.Rename(tmp, filepath.Join(dir, handoffFile))
 }
 
-// agentOutputPath is where a sidecar-mode lease keeps its agent's
-// output for an adopting node to resume tailing from, rather than from
-// the top (adopt.go); a lease that never wrote one adopts from offset
-// 0.
+// agentOutputPath is the lease's agent's own stdout, under the lease's
+// directory (agentio.go's agentStdoutName): a file the agent writes
+// itself, never a pipe into the node, so it outlives the node process
+// that started the agent. A hand-off notes how far into it that process
+// had got (AgentStdoutOffset); the node that adopts the lease follows it
+// from there (followAgentOutput). A lease whose agent never wrote one
+// adopts from offset 0.
 func (r *Runtime) agentOutputPath(id string) string {
-	return filepath.Join(r.leaseDir(id), "agent-output.log")
+	return filepath.Join(r.leaseDir(id), agentStdoutName)
 }
 
-// tailAgentOutput is whatever the lease's agent output file holds past
-// offset: what an adopting node had not already seen before the node
-// stopped. A file that does not exist, or one no longer than offset,
+// pastOffset is how many bytes the lease's agent output holds past
+// offset: what its agent wrote that the node which wrote the hand-off
+// never read. A file that does not exist, or one no longer than offset,
 // has nothing new.
-func (r *Runtime) tailAgentOutput(id string, offset int64) ([]byte, error) {
-	f, err := os.Open(r.agentOutputPath(id))
+func (r *Runtime) pastOffset(id string, offset int64) (int64, error) {
+	fi, err := os.Stat(r.agentOutputPath(id))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return 0, nil
 		}
-		return nil, err
+		return 0, err
 	}
-	defer f.Close()
-	if offset > 0 {
-		if _, err := f.Seek(offset, io.SeekStart); err != nil {
-			return nil, err
+	return max(fi.Size()-offset, 0), nil
+}
+
+// followAgentOutput is an adopted lease's session showing progress
+// (adopt.go): every line its agent writes to its output from offset on
+// moves the lease's progress_at, as each event of the session's stream
+// did for the node that started it (lease.go's OnEvent), so Mesh's
+// stall reaper hears a session a restart left running. It returns once
+// ctx ends.
+func (r *Runtime) followAgentOutput(ctx context.Context, id string, offset int64) {
+	fl, err := sessionunit.Follow(ctx, r.agentOutputPath(id), offset, func() bool { return ctx.Err() == nil })
+	if err != nil {
+		if !os.IsNotExist(err) {
+			r.logf("nodev1: lease %s: following its agent output: %v", id, err)
+		}
+		return
+	}
+	defer fl.Close()
+	buf := make([]byte, 64<<10)
+	for {
+		n, err := fl.Read(buf)
+		if n > 0 {
+			r.touch(id)
+		}
+		if err != nil {
+			return
 		}
 	}
-	return io.ReadAll(f)
 }
 
 // Upgrade is the node choosing, per live lease, between a hand-off and a
