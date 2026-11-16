@@ -5,7 +5,7 @@ import "fmt"
 // Host is the floor past which the node backs off a hot or
 // short-of-memory host (Mesh v1 spec amendment, "A node backs off a hot
 // host", reimplemented from the legacy node's HostConfig since nodev1
-// may not import internal/node; guard_test.go). Either field left zero,
+// may not import internal/node; guard_test.go). Each field left zero,
 // the default, never gates on that reading.
 type Host struct {
 	// LoadPerCoreMax is the load average per core past which the host is
@@ -14,6 +14,11 @@ type Host struct {
 	// MinFreeMemory is the bytes of free memory at or under which the
 	// host is read as short of memory.
 	MinFreeMemory uint64
+	// PackageTempMaxC is the package thermal zone's reading, in degrees
+	// Celsius, past which the host is read as hot. Checked only when the
+	// reading's HasTemp is true; a probe that found no thermal zone
+	// never gates on it.
+	PackageTempMaxC float64
 }
 
 // MachineReading is one read of the host's load and memory.
@@ -88,8 +93,9 @@ type MachineProbe interface {
 }
 
 // hostGate is "" when the node may take a new lease, else why it may
-// not: Machine reads past Host.LoadPerCoreMax load per core, or at or
-// under Host.MinFreeMemory free. Checked once per pass through Run's
+// not: Machine reads past Host.LoadPerCoreMax load per core, at or
+// under Host.MinFreeMemory free, or (with a reading that has one) past
+// Host.PackageTempMaxC degrees. Checked once per pass through Run's
 // take loop, before r.API.Take — never against a lease already running,
 // which is left to finish whatever the host does meanwhile. Nil Machine
 // never gates.
@@ -108,6 +114,9 @@ func (r *Runtime) hostGate() string {
 	}
 	if floor := r.Host.MinFreeMemory; floor > 0 && reading.MemAvailable <= floor {
 		return fmt.Sprintf("host short of memory: %d bytes free, floor %d", reading.MemAvailable, floor)
+	}
+	if max := r.Host.PackageTempMaxC; max > 0 && reading.HasTemp && reading.PackageTempC > max {
+		return fmt.Sprintf("host hot: package %.1f°C over %.1f°C", reading.PackageTempC, max)
 	}
 	return ""
 }

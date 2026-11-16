@@ -344,9 +344,13 @@ type Runtime struct {
 	diskGateReason string
 	// hostReading is HostProbe's last reading, and hostHistory the last
 	// 60 of them kept, oldest first (WatchHost); the zero value and nil
-	// before the first tick, or with no HostProbe set.
+	// before the first tick, or with no HostProbe set. hostRead is true
+	// once WatchHost has cached a reading, so the heartbeat and
+	// Status/DrainLines send and show nothing before the first tick
+	// rather than a misleading zero reading.
 	hostReading MachineReading
 	hostHistory []MachineReading
+	hostRead    bool
 	// hostTicks, set, replaces WatchHost's own ticker: a test's
 	// simulated minutes.
 	hostTicks <-chan time.Time
@@ -785,7 +789,7 @@ func (r *Runtime) heartbeat(ctx context.Context) {
 	r.mu.Unlock()
 	accounts := r.unsentAccounts()
 	resp, err := r.API.Heartbeat(ctx, nodeID, meshapi.HeartbeatRequest{
-		Version: r.Node.Version, CapacityTotal: r.capacityTotal(), Leases: beats, Accounts: accounts,
+		Version: r.Node.Version, CapacityTotal: r.capacityTotal(), Leases: beats, Accounts: accounts, Host: r.hostReport(),
 	})
 	if err != nil {
 		if ctx.Err() == nil {
@@ -874,6 +878,7 @@ func (r *Runtime) WatchHost(ctx context.Context, poll time.Duration) {
 		failing = false
 		r.mu.Lock()
 		r.hostReading = reading
+		r.hostRead = true
 		r.hostHistory = append(r.hostHistory, reading)
 		if len(r.hostHistory) > hostHistoryMax {
 			r.hostHistory = r.hostHistory[len(r.hostHistory)-hostHistoryMax:]
@@ -907,6 +912,36 @@ func (r *Runtime) HostHistory() []MachineReading {
 	out := make([]MachineReading, len(r.hostHistory))
 	copy(out, r.hostHistory)
 	return out
+}
+
+// hostReport is the heartbeat's Host field: HostReading converted to
+// the wire shape, or nil before WatchHost's first tick or with no
+// HostProbe set (Mesh v1 spec amendment, "A node reports its host's
+// cpu, memory, disk and temperature").
+func (r *Runtime) hostReport() *meshapi.Host {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.hostRead {
+		return nil
+	}
+	return hostToWire(r.hostReading)
+}
+
+// hostToWire converts a MachineReading to meshapi's wire shape, field
+// for field.
+func hostToWire(m MachineReading) *meshapi.Host {
+	return &meshapi.Host{
+		Load1: m.Load1, CPUs: m.CPUs, MemAvailable: m.MemAvailable,
+		CPUSomeAvg10: m.CPUSomeAvg10, CPUSomeAvg60: m.CPUSomeAvg60, HasCPUPressure: m.HasCPUPressure,
+		MemSomeAvg10: m.MemSomeAvg10, MemSomeAvg60: m.MemSomeAvg60, HasMemPressure: m.HasMemPressure,
+		PackageTempC: m.PackageTempC, HasTemp: m.HasTemp,
+		LeaseDisk: diskReadingToWire(m.LeaseDisk),
+		CacheDisk: diskReadingToWire(m.CacheDisk),
+	}
+}
+
+func diskReadingToWire(d DiskReading) meshapi.DiskReading {
+	return meshapi.DiskReading{FreeBytes: d.FreeBytes, PercentUsed: d.PercentUsed, Has: d.Has}
 }
 
 // trimMirrors removes the mirrors no lease has used for

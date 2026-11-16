@@ -20,7 +20,7 @@ func TestNodeRunHostReadsNodeYAMLHostBlock(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(home, ".mesh"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	yaml := "host:\n  load_per_core_max: 2.5\n  min_free_memory: \"32g\"\n"
+	yaml := "host:\n  load_per_core_max: 2.5\n  package_temp_max_c: 85\n  min_free_memory: \"32g\"\n"
 	if err := os.WriteFile(filepath.Join(home, ".mesh", "node.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +28,7 @@ func TestNodeRunHostReadsNodeYAMLHostBlock(t *testing.T) {
 	var logs bytes.Buffer
 	host, machine := nodeRunHost(log.New(&logs, "", 0))
 
-	want := nodev1.Host{LoadPerCoreMax: 2.5, MinFreeMemory: 32 << 30}
+	want := nodev1.Host{LoadPerCoreMax: 2.5, PackageTempMaxC: 85, MinFreeMemory: 32 << 30}
 	if host != want {
 		t.Fatalf("Host = %+v, want %+v (log: %s)", host, want, logs.String())
 	}

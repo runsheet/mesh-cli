@@ -352,15 +352,15 @@ func nodeRunSigstore(logger *log.Logger) *sigstore.Signer {
 // so the node backs off a hot or short-of-memory host too (Mesh v1
 // spec amendment, "A node backs off a hot host"; nodev1 may not import
 // internal/node itself, guard_test.go, so this package bridges the
-// two). LoadPerCoreMax carries straight across; MinFreeMemory, a size
-// or a percentage of total memory, is resolved to bytes by
-// HostConfig.MemoryFloor on the platform probe's one-off read of total
-// memory, when there is one — a size needs no total, and a percentage
-// with none read falls back to HostConfig's own default. No `host:`
-// block, or a failed node.yaml load, is a zero Host; the command still
-// starts. The probe is independent of node.yaml: it is set whenever
-// the platform has one (nil off Linux), since the gate does nothing
-// with zero thresholds.
+// two). LoadPerCoreMax and PackageTempMaxC carry straight across;
+// MinFreeMemory, a size or a percentage of total memory, is resolved
+// to bytes by HostConfig.MemoryFloor on the platform probe's one-off
+// read of total memory, when there is one — a size needs no total, and
+// a percentage with none read falls back to HostConfig's own default.
+// No `host:` block, or a failed node.yaml load, is a zero Host; the
+// command still starts. The probe is independent of node.yaml: it is
+// set whenever the platform has one (nil off Linux), since the gate
+// does nothing with zero thresholds.
 func nodeRunHost(logger *log.Logger) (nodev1.Host, nodev1.MachineProbe) {
 	var cfg node.HostConfig
 	if settings, err := node.LoadSettings(); err != nil {
@@ -369,7 +369,7 @@ func nodeRunHost(logger *log.Logger) (nodev1.Host, nodev1.MachineProbe) {
 		cfg = settings.Host
 	}
 	probe := node.HostMachine()
-	host := nodev1.Host{LoadPerCoreMax: cfg.LoadPerCoreMax}
+	host := nodev1.Host{LoadPerCoreMax: cfg.LoadPerCoreMax, PackageTempMaxC: cfg.PackageTempMaxC}
 	if cfg.MinFreeMemory != "" {
 		var total uint64
 		if probe != nil {
@@ -394,7 +394,10 @@ type nodeRunMachineProbe struct {
 
 func (p nodeRunMachineProbe) Read() (nodev1.MachineReading, error) {
 	r, err := p.probe.Read()
-	return nodev1.MachineReading{Load1: r.Load1, CPUs: r.CPUs, MemAvailable: r.MemAvailable}, err
+	return nodev1.MachineReading{
+		Load1: r.Load1, CPUs: r.CPUs, MemAvailable: r.MemAvailable,
+		PackageTempC: r.PackageTempC, HasTemp: r.HasTemp,
+	}, err
 }
 
 // nodeRunSessionOf is --harness: the session a lease runs and the

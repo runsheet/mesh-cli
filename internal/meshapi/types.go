@@ -104,6 +104,46 @@ type HeartbeatRequest struct {
 	Unavailable   Capacity        `json:"unavailable"`
 	Leases        []LeaseBeat     `json:"leases"`
 	Accounts      []AccountReport `json:"accounts"`
+	// Host is the node's own HostProbe's latest cached reading (Mesh v1
+	// spec amendment, "A node reports its host's cpu, memory, disk and
+	// temperature"): nil before the node has read it once, or with no
+	// HostProbe set.
+	Host *Host `json:"host,omitempty"`
+}
+
+// Host is one reading of the node's own host: its load, memory, CPU
+// and memory pressure, package temperature, and disk at the lease and
+// cache paths, as internal/nodev1's HostProbe last read it. Each
+// pressure, temperature and disk field has its own Has flag; a source
+// that could not be read leaves its field zero with its flag false,
+// never an error.
+type Host struct {
+	Load1        float64 `json:"load1"`
+	CPUs         int     `json:"cpus"`
+	MemAvailable uint64  `json:"mem_available"`
+
+	CPUSomeAvg10   float64 `json:"cpu_some_avg10,omitempty"`
+	CPUSomeAvg60   float64 `json:"cpu_some_avg60,omitempty"`
+	HasCPUPressure bool    `json:"has_cpu_pressure,omitempty"`
+
+	MemSomeAvg10   float64 `json:"mem_some_avg10,omitempty"`
+	MemSomeAvg60   float64 `json:"mem_some_avg60,omitempty"`
+	HasMemPressure bool    `json:"has_mem_pressure,omitempty"`
+
+	PackageTempC float64 `json:"package_temp_c,omitempty"`
+	HasTemp      bool    `json:"has_temp,omitempty"`
+
+	LeaseDisk DiskReading `json:"lease_disk"`
+	CacheDisk DiskReading `json:"cache_disk"`
+}
+
+// DiskReading is a disk path's free space and percent used, as
+// internal/nodev1's HostProbe last read it. Has is false when the path
+// could not be read.
+type DiskReading struct {
+	FreeBytes   uint64  `json:"free_bytes"`
+	PercentUsed float64 `json:"percent_used"`
+	Has         bool    `json:"has"`
 }
 
 // HeartbeatResponse is what Mesh asks of the node: leases to cancel,
