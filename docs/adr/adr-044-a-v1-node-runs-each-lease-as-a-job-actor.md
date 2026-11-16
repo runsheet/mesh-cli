@@ -831,3 +831,115 @@ clipped to 2000 bytes from its end, so the mint's error was cut off.
 `TestAnEgressExitAfterItsLeaseEndedIsNotAnEgressDeath`,
 `TestEveryCauseTheNodeSendsIsOneMeshTakes` (internal/nodev1) and
 `TestSaveLatchkeyKeepsEverythingElse` (internal/node) hold it.
+
+## Amendment, 2026-11-16: an adopted session reaches its model and node tools again, and its progress reaches Mesh
+
+dl360 (v1.0.71-bootstrap.9) restarted its node at 23:48, 00:09 and
+00:48 AEDT on 15–16 November. Each start logged "adopted N of N
+hand-off(s) at start" (12, 21, then 25), and no adopted session made
+progress again. node.log shows it for build lease `eb31087c` (job
+`c57dc991`): its model calls ran every few seconds from 22:56 until
+23:43:30, then stopped. After the 23:48:02 adoption, and after the
+later two, not one model call was logged. The same held for all 12
+leases adopted at 23:48: zero model calls after adoption, whatever
+their kind. Mesh's stall reaper (`MESH_STALL_LIMIT`, 30 minutes) handed
+them back, and those hand-backs opened the build breaker.
+
+The relay's address was not the fault. The session reaches its relay
+sidecar on the pod's own loopback, and the sidecar reaches the node on
+the lease's socket (`<socket dir>/n`). Both outlive the node: the pod
+and its sidecar keep running, and the adopting node listens on the same
+path again. The fault was what the adopted socket served:
+
+1. **No model forwarder and no node tools.** At a lease's start,
+   `rs.open` serves the node's side of the socket with a `Proxy`: the
+   lease's model account's forwarder at `/model/` and the kind's node
+   tools at `/mcp/mesh-node`. That proxy lives in the node process.
+   `adoptOne` built the node socket again with renewal, the Stop gate,
+   the tunnel, Observe, Security and Canary, but no `Proxy`. So the
+   sidecar forwarded every model call and every node tool call to a
+   node that answered 404, an answer Claude Code does not retry. The
+   session could go no further, and nothing told the adopted lease,
+   which waited for a finish that could not come.
+2. **Progress stopped at adoption.** A lease's `progress_at` moves on
+   its session's stream events (`OnEvent`, read by the harness in the
+   node that started the session). The adopting node has no harness,
+   so `progress_at` stayed at the adoption time, and the reaper handed
+   the lease back 30 minutes later however busy its session was.
+3. **The hand-off named the wrong output file.** The hand-off noted
+   the size of `agent-output.log`, a file nothing writes. The agent's
+   real stdout is `agent.stdout` (agentio.go), so every hand-off's
+   offset was 0 and adoption resumed nothing.
+
+The product's MCP servers (served by the sidecar itself, on its
+replaced credentials) and git (the checkout's origin rewritten onto
+the sidecar's `/git/`) kept working through adoption. Only the routes
+the sidecar forwards to the node itself broke.
+
+So adoption now serves the node's side of the socket as a fresh start
+serves it, as far as the hand-off allows:
+
+4. **The model forwarder is rebuilt.** `adoptOne` reads the lease's
+   model account again on the new session (`openAccount`). It serves
+   the account's forwarder and the node tools on the adopted socket
+   (`Runtime.nodeProxy`, shared with `rs.open` so the two cannot
+   drift). The account's canary inspection and its vendor-refusal hook
+   are wired as `work` wires them. An account that cannot be read hands
+   the lease back `node_update`, like any other hand-off that cannot be
+   adopted. The sidecar's AccessRecords are kept again (`Access`), so
+   pushes made after a restart reach Mesh.
+5. **The node tools that need nothing the old process held are served
+   again.** These are `result`, `hand_back` and `progress`, through
+   which a session ends its lease or reports how far it got, and
+   `push`, which goes through the sidecar's control socket as every
+   sidecar lease's push does (`adoptedNodeTools`). The rest are not
+   served after a restart. `run_suite` and `stop_suite` need the lease's
+   pod session, `apply_onto` the node's own git grant, `request_time`
+   the lease's time budget, `escalate` the harness that read its
+   mailbox, and `sign_release` the signer's session. A session calling
+   one of those is told the node does not have it, and the node logs
+   which tools it left out. Rebuilding run_suite for an adopted lease
+   is a later item.
+6. **The session's own output moves progress.** The hand-off notes how
+   far into `agent.stdout` the node had read (`agentOutputPath`). The
+   adopting node follows the file from there (`followAgentOutput`), and
+   each line the agent writes moves `progress_at`, as each stream event
+   did. Progress again stops only when the session stops writing.
+7. **An adopted lease reports why it ended.** When the lease's context
+   ends before a finish, adoption carries its cause into the outcome as
+   `runActor` does. Mesh taking the lease back is reported as nothing,
+   a cancel as `cancelled`, a second upgrade's hand-back as
+   `node_update`, and a refused account as `account_refused`. Before,
+   each of these fell through to a finish with no result (seen at 00:09
+   as `422 evidence_required` on leases Mesh had already taken back).
+   A session that hands its job back with `hand_back` is handed back
+   with its own cause.
+8. **The egress process is claimed before the socket serves.**
+   `NoteEgress` and its hold now come before `node.Listen`, so no
+   request rides an egress process that actor.json does not yet name.
+   This was also why `TestNodeAdoptsHandoffAtStart` failed on main: its
+   "with a live egress process" case read actor.json as soon as a
+   CONNECT through the new socket had worked, which could be before
+   `NoteEgress` ran.
+
+Not covered: the adopting node does not see the session's end. A
+session that exits without calling its finish or `hand_back` tool (a
+validate session that cannot run run_suite after the restart, say)
+leaves its lease until its output stops and the stall limit hands it
+back, as before. Nor does the adopting node hold the lease's pod, so
+the pod outlives the lease until the supervisor's reconcile removes it.
+
+`TestASessionSurvivesANodeRestartE2E` (internal/nodev1) holds it, end
+to end across real processes. A node process runs a lease whose relay
+sidecar and stand-in agent run as processes of their own group, as the
+pod's do. The agent keeps calling the model, the product's MCP server,
+the node's `progress` tool and `git fetch` through the sidecar. The
+node then gets SIGHUP and exits through `UpgradeSignal`, and a second
+node process adopts the lease. The test asserts that every one of the
+agent's calls after the adoption succeeds, that node B's heartbeats
+carry a `progress_at` that moves past the adoption, and that the
+lease's finish is reported once. On main the model and node-tool calls
+fail 404 after adoption and `progress_at` stays put.
+`TestNodeAdoptsHandoffAtStart` holds point 8.
+`TestV1UpgradeAdoptsSidecarLeases` (internal/commands) now writes the
+agent's output where the agent writes it.
