@@ -182,6 +182,9 @@ func checkout(ctx context.Context, grant *gitrelay.Grant, b *meshapi.Brief, work
 	}
 	if ref := b.Code.BaseRef; ref != "" {
 		if _, err := git(workspace, "fetch", "-q", "origin", ref); err != nil {
+			if refGone(git, workspace, ref, err) {
+				return nil, &refGoneError{repo: b.Git.Repo, ref: ref, err: err}
+			}
 			return nil, err
 		}
 	}
@@ -207,6 +210,57 @@ func checkout(ctx context.Context, grant *gitrelay.Grant, b *meshapi.Brief, work
 		}
 	}
 	return resumePushed(git, b, workspace, logf)
+}
+
+// refGoneError is a checkout whose base ref the code host no longer has
+// (refGone): the branch was never pushed, or was deleted while the job
+// was queued. Its text is the fetch's own, so a kind that still hands it
+// back cannot_run says exactly what it said before; reason is what a
+// validation that ends no_longer_needed on it says instead (lease.go,
+// ADR-052 amendment 2026-11-16).
+type refGoneError struct {
+	repo, ref string
+	err       error
+}
+
+func (e *refGoneError) Error() string { return e.err.Error() }
+func (e *refGoneError) Unwrap() error { return e.err }
+
+// reason is the no_longer_needed end's words for the gone ref.
+func (e *refGoneError) reason() string {
+	return fmt.Sprintf("%s %s is gone from the code host, so there is nothing left to validate: the job was to check out that ref", e.repo, e.ref)
+}
+
+// refGone says whether fetchErr, the base ref's fetch failing, is the
+// code host having no such ref, and not anything else that fails a
+// fetch: git said it could not find the remote ref, and a fresh
+// ls-remote through the same origin answers, names the repository's
+// HEAD — so the ref advertisement works and is not an empty answer from
+// a relay or a code host that is not answering — and names no ref
+// matching ref. A read that fails, or that finds the ref after all (it
+// was pushed since the fetch), is not gone: the fetch's error stands.
+func refGone(git func(string, ...string) (string, error), workspace, ref string, fetchErr error) bool {
+	if fetchErr == nil || !strings.Contains(fetchErr.Error(), "couldn't find remote ref") {
+		return false
+	}
+	out, err := git(workspace, "ls-remote", "origin", "HEAD", ref)
+	if err != nil {
+		return false
+	}
+	head := false
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) != 2 {
+			continue
+		}
+		switch {
+		case f[1] == "HEAD":
+			head = true
+		case f[1] == ref || strings.HasSuffix(f[1], "/"+ref):
+			return false // there after all
+		}
+	}
+	return head
 }
 
 // resumePushed moves a retried write lease's checkout onto what an

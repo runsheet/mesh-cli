@@ -1,5 +1,5 @@
 ---
-summary: A v1 brief may carry preconditions — {type ref_head, repo, ref, sha} or {type pr_head, repo, number, sha}. After the lease's git grant opens and before its checkout, pod and session, the node reads each ref with git ls-remote through that grant; when the code host answers that a ref has moved or is gone, the node ends the lease with POST /v1/leases/{id}/no-longer-needed and the reason, which is neither a hand-back nor a failure. A precondition the node cannot tell (unknown type, a repository the grant does not reach, a failed read) is logged and the job runs.
+summary: A v1 brief may carry preconditions — {type ref_head, repo, ref, sha} or {type pr_head, repo, number, sha}. After the lease's git grant opens and before its checkout, pod and session, the node reads each ref with git ls-remote through that grant; when the code host answers that a ref has moved or is gone, the node ends the lease with POST /v1/leases/{id}/no-longer-needed and the reason, which is neither a hand-back nor a failure. A precondition the node cannot tell (unknown type, a repository the grant does not reach, a failed read) is logged and the job runs. Amended 2026-11-16: a validate lease whose checkout finds its base_ref gone (git cannot find the remote ref, and ls-remote answers HEAD but not the ref) ends no_longer_needed too; other kinds still hand it back cannot_run.
 status: accepted
 ---
 
@@ -114,3 +114,67 @@ a fake Latchkey and git http-backend as the code host):
 - `TestAJobWhoseRefMovedOrIsGoneEndsNoLongerNeeded`.
 - `TestAJobWhosePreconditionsHoldOrCannotBeToldRuns`.
 - `TestPreconditionRef`.
+
+## Amendment 2026-11-16: a validation whose ref is gone at checkout ends quietly
+
+**Context.** On 16 Nov dl360 handed back 98 leases whose checkout
+failed with `git fetch: exit status 128: fatal: couldn't find remote
+ref …`, every one of them cannot_run, every one queued again by Mesh:
+
+- runsheet job `1c9c18ff`, 78 times: a head validation of
+  `mesh/test-reliability-2026-w46-34`. Its build finished on its own
+  base (it committed nothing), so the branch was never pushed, and the
+  validation's brief named that branch with no precondition;
+- latchkey job `c1f2d21f`, 18 times: a **rebase** onto
+  `mesh/a-tenant-connects-a-vendor-by-oauth-consent-1`, a dependency's
+  branch GitHub deleted when its pull request merged (latchkey #830,
+  21:15 AEDT).
+
+A precondition (above) would have caught the first only if the offer
+named one; runsheet now names it (runsheet goal
+`a-job-is-still-needed-or-ends-quietly`, and its 16 Nov follow-up). This
+amendment is the node's backstop for an offer that names none.
+
+**Decision.** When a lease of the validate kind (`validationKind`:
+`validate`, bare or under its product) fetches its brief's `base_ref`
+and git answers that it `couldn't find remote ref`, the node reads the
+ref again with `git ls-remote origin HEAD <ref>` in the checkout,
+through the same grant and relay (`refGone`, checkout.go). The ref is
+**gone** only when that read succeeds, names the repository's `HEAD` —
+so the code host answered and advertises its refs — and names no ref
+matching `<ref>`. The lease then ends `no_longer_needed` with the reason
+`<repo> <ref> is gone from the code host, so there is nothing left to
+validate` (lease.go), exactly as a precondition that no longer holds
+does: no hand-back, no failure, its session never started.
+
+Everything else is unchanged:
+
+- any other kind (build, rebase, evaluate, …) whose base ref is gone is
+  handed back `cannot_run` with the fetch's own words, as before. A
+  rebase onto a merged dependency's deleted branch needs the product to
+  re-target it; ending it quietly would only have runsheet ask for the
+  same rebase again;
+- a fetch that failed any other way, an ls-remote that fails, one that
+  advertises no `HEAD` (an empty answer), and one that finds the ref
+  after all (pushed since the fetch) keep the fetch's error and its
+  cannot_run;
+- a git token that was not minted is still `credential_timeout` first.
+
+**Risk.** The one way this misfires is a validation ended quietly whose
+ref was in fact there. That needs git to say the remote ref is missing
+*and* a second read, moments later, to answer with `HEAD` but without
+the ref: a relay or code host blip makes either read fail, which keeps
+cannot_run. A validation ended in error costs the product one re-offer
+(runsheet treats a validate job that ended `no_longer_needed` as its
+head gone and does not offer it again on its own). It never turns a red
+into a green: no verdict is reported.
+
+**Tests.** `internal/nodev1/refgone_test.go`: `TestRefGone` (a local
+bare repository: a missing ref by short and full name is gone; a
+present one, a fetch that failed another way, an origin that does not
+answer and an empty origin are not);
+`TestAValidationWhoseRefIsGoneEndsNoLongerNeeded` (with and without job
+actors: one no-longer-needed end naming the ref, no hand-back, fail or
+finish, the session never ran);
+`TestAnotherKindWhoseRefIsGoneIsHandedBackAsBefore` (rebase, build and
+another kind: cannot_run with the fetch's own words).
