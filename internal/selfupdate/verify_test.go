@@ -6,6 +6,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -313,12 +317,58 @@ func TestVerifyPlatformReleaseNeedsItsExtensions(t *testing.T) {
 // The embedded root is our Sigstore's: it parses and names its Fulcio and
 // Rekor.
 func TestPlatformRootIsEmbedded(t *testing.T) {
-	tm, err := platformRoot()
+	tm, err := root.NewTrustedRootFromJSON(platformRootJSON)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(tm.FulcioCertificateAuthorities()) == 0 || len(tm.RekorLogs()) == 0 {
 		t.Errorf("platform root: %d CAs, %d Rekor logs", len(tm.FulcioCertificateAuthorities()), len(tm.RekorLogs()))
+	}
+}
+
+// Our root is the copy Latchkey publishes, cached as it is fetched; with
+// the publisher unreachable it is the cached copy, and with neither the
+// embedded one.
+func TestPlatformRootPrefersTheFetchedThenCachedThenEmbeddedCopy(t *testing.T) {
+	rotated, err := os.ReadFile(filepath.Join("testdata", "runsheet_trusted_root_rotated.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	serve := []byte(nil)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/sigstore/trusted_root.json" || serve == nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(serve)
+	}))
+	defer srv.Close()
+	url := srv.URL + "/.well-known/sigstore/trusted_root.json"
+	cache := filepath.Join(t.TempDir(), "sigstore")
+	logs := func(tr *root.TrustedRoot) int { return len(tr.RekorLogs()) }
+
+	serve = rotated
+	tr, err := loadPlatformRoot(srv.Client(), url, cache)
+	if err != nil || logs(tr) != 2 {
+		t.Fatalf("published: %v; want the rotated root (2 Rekor logs)", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(cache, platformRootCache)); err != nil || !bytes.Equal(b, rotated) {
+		t.Fatalf("cache = %v; want the fetched copy", err)
+	}
+
+	serve = nil
+	if tr, err = loadPlatformRoot(srv.Client(), url, cache); err != nil || logs(tr) != 2 {
+		t.Fatalf("unreachable, cached: %v; want the cached rotated root", err)
+	}
+
+	serve = []byte(`{"mediaType":"nope"`)
+	if tr, err = loadPlatformRoot(srv.Client(), url, cache); err != nil || logs(tr) != 2 {
+		t.Fatalf("unparseable, cached: %v; want the cached rotated root", err)
+	}
+
+	serve = nil
+	if tr, err = loadPlatformRoot(srv.Client(), url, ""); err != nil || logs(tr) != 1 {
+		t.Fatalf("unreachable, no cache: %v; want the embedded root", err)
 	}
 }
 

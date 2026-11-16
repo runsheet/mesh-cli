@@ -9,7 +9,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/sigstore/sigstore-go/pkg/fulcio/certificate"
 	"github.com/sigstore/sigstore-go/pkg/root"
@@ -100,7 +105,8 @@ type PlatformTrust struct {
 	SANPattern  string
 	Repository  string
 	BuildConfig string
-	// TrustedMaterial yields our Sigstore's root (embedded at build time).
+	// TrustedMaterial yields our Sigstore's root (platformRoot: fetched,
+	// else cached, else embedded at build time).
 	TrustedMaterial func() (root.TrustedMaterial, error)
 
 	// withoutExtensions drops the extension match. Only tests set it: a
@@ -137,15 +143,82 @@ func ReleasePolicy(version string) Policy {
 	}
 }
 
+// PlatformRootURL is where Latchkey publishes our own Sigstore's trusted
+// root: the origin of PlatformIssuer, whose keys our Fulcio already trusts.
+const PlatformRootURL = "https://auth.runsheet.dev/.well-known/sigstore/trusted_root.json"
+
+// platformRootCache is the fetched root's copy in paths.SigstoreCacheDir.
+const platformRootCache = "runsheet_trusted_root.json"
+
+const (
+	platformRootTimeout = 10 * time.Second
+	platformRootMaxSize = 1 << 20
+)
+
 //go:embed runsheet_trusted_root.json
 var platformRootJSON []byte
 
-// platformRoot is our own Sigstore's trusted root, as Latchkey publishes
-// it at auth.runsheet.dev/.well-known/sigstore/trusted_root.json, embedded
-// when the binary is built: a node needs no network to trust it, and a
-// rotated root ships in the release that follows the rotation.
+// platformRoot is our own Sigstore's trusted root: the copy Latchkey
+// publishes at PlatformRootURL, else the last one fetched, else the one
+// embedded when the binary was built — so a rotated root reaches a node
+// before the release that embeds it, and a node with no network still
+// trusts the root it shipped with.
 func platformRoot() (root.TrustedMaterial, error) {
+	dir, err := paths.SigstoreCacheDir()
+	if err != nil {
+		dir = ""
+	}
+	return loadPlatformRoot(&http.Client{Timeout: platformRootTimeout}, PlatformRootURL, dir)
+}
+
+func loadPlatformRoot(client *http.Client, url, cacheDir string) (*root.TrustedRoot, error) {
+	if b, err := fetchPlatformRoot(client, url); err == nil {
+		if tr, err := root.NewTrustedRootFromJSON(b); err == nil {
+			if cacheDir != "" {
+				_ = writePlatformRootCache(cacheDir, b)
+			}
+			return tr, nil
+		}
+	}
+	if cacheDir != "" {
+		if b, err := os.ReadFile(filepath.Join(cacheDir, platformRootCache)); err == nil {
+			if tr, err := root.NewTrustedRootFromJSON(b); err == nil {
+				return tr, nil
+			}
+		}
+	}
 	return root.NewTrustedRootFromJSON(platformRootJSON)
+}
+
+func fetchPlatformRoot(client *http.Client, url string) ([]byte, error) {
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s: %s", url, resp.Status)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, platformRootMaxSize))
+}
+
+func writePlatformRootCache(dir string, b []byte) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, platformRootCache+".*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), filepath.Join(dir, platformRootCache))
 }
 
 // WithoutSCTs is p without the embedded-SCT requirement, for tests in
