@@ -409,3 +409,79 @@ func TestARelaySidecarsSessionHasItsCredentialsInjected(t *testing.T) {
 	}
 	assertNoValue(t, "the pod's environment", strings.Join(sb.AgentSpecs()[0].Env, "\n"))
 }
+
+// A Cloudflare rule — a connection whose vendor is cloudflare, or any
+// rule on api.cloudflare.com — leaves Cloudflare's JWT-only endpoints
+// untouched; no other vendor's rule does.
+func TestCloudflareRulesLeaveTheJWTEndpointsUntouched(t *testing.T) {
+	for _, tc := range []struct {
+		service string
+		spec    egress.InjectSpec
+		want    bool
+	}{
+		{"cloudflare", egress.InjectSpec{Hosts: []string{"api.cloudflare.test"}, Header: "Authorization", Prefix: "Bearer "}, true},
+		{"", egress.InjectSpec{Hosts: []string{"api.cloudflare.com"}, Form: "bearer"}, true},
+		{"github", egress.InjectSpec{Hosts: []string{"api.github.com"}, Header: "Authorization", Prefix: "Bearer "}, false},
+		{"", egress.InjectSpec{Hosts: []string{"api.example.com"}, Form: "bearer"}, false},
+	} {
+		if got := untouchedPaths(tc.service, tc.spec); (len(got) > 0) != tc.want {
+			t.Errorf("%q %v: %v", tc.service, tc.spec.Hosts, got)
+		}
+	}
+}
+
+// wrangler deploy of a Worker with static assets, replayed through the
+// lease's relay: the upload session and the script upload go out on the
+// injected child token; the asset uploads go out on the upload session's
+// JWT as wrangler sent it (they were refused credential_preset, so no
+// Cloudflare Worker with assets could deploy); a Pages deploy's JWT
+// calls likewise. A JWT on any other Cloudflare path is still refused.
+func TestWranglerDeploysAWorkerWithAssetsThroughTheRelay(t *testing.T) {
+	needCurl(t)
+	g, sb, _ := podRig(t)
+	host := injectHostRig(t, g)
+	carryAll(g.latchkey)
+	dir := t.TempDir()
+	answers := filepath.Join(dir, "answers")
+	const acct = "https://api.cloudflare.test/client/v4/accounts/c6c6df3a3f7f402ef15c6f420ca973ed"
+	sb.Agent = hostAgent(t, filepath.Join(dir, "claude"), curlScript(answers,
+		`-X POST -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" -d '{"manifest":{}}' `+acct+`/workers/scripts/qr/assets-upload-session`,
+		`-X POST -H "Authorization: Bearer upload-session-jwt" -F "h1=@/dev/null" "`+acct+`/workers/assets/upload?base64=true"`,
+		`-X POST -H "Authorization: Bearer upload-session-jwt" --data-binary x `+acct+`/workers/assets/upload/0123abcd`,
+		`-X PUT -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -F 'metadata={"assets":{"jwt":"completion-jwt"}}' `+acct+`/workers/scripts/qr`,
+		`-X POST -H "Authorization: Bearer pages-jwt" -d '{"hashes":[]}' https://api.cloudflare.test/client/v4/pages/assets/check-missing`,
+		`-X PATCH -H "Authorization: Bearer upload-session-jwt" `+acct+`/workers/scripts/qr/script-settings`,
+	))
+	g.offer(t, injectBrief)
+	run(t, g, context.Background())
+	if n := len(g.fake.Calls("finish")); n != 1 {
+		t.Fatalf("%d finishes; hand-backs %+v", n, g.fake.Calls("hand-back"))
+	}
+	got, _ := os.ReadFile(answers)
+	lines := strings.Split(strings.TrimSpace(string(got)), "\n")
+	if len(lines) != 6 {
+		t.Fatalf("the pod's answers %q", got)
+	}
+	for i, want := range [][]string{{" 200"}, {" 200"}, {" 200"}, {" 200"}, {" 200"}, {" 403", "x-mesh-error: credential_preset"}} {
+		for _, w := range want {
+			if !strings.Contains(strings.ToLower(lines[i]), w) {
+				t.Fatalf("answer %d is %q, want %q", i, lines[i], want)
+			}
+		}
+	}
+	seen := strings.Join(host.lines(), "\n")
+	for _, want := range []string{
+		`POST api.cloudflare.test /client/v4/accounts/c6c6df3a3f7f402ef15c6f420ca973ed/workers/scripts/qr/assets-upload-session? auth="Bearer ` + injChildToken + `"`,
+		`POST api.cloudflare.test /client/v4/accounts/c6c6df3a3f7f402ef15c6f420ca973ed/workers/assets/upload?base64=true auth="Bearer upload-session-jwt"`,
+		`POST api.cloudflare.test /client/v4/accounts/c6c6df3a3f7f402ef15c6f420ca973ed/workers/assets/upload/0123abcd? auth="Bearer upload-session-jwt"`,
+		`PUT api.cloudflare.test /client/v4/accounts/c6c6df3a3f7f402ef15c6f420ca973ed/workers/scripts/qr? auth="Bearer ` + injChildToken + `"`,
+		`POST api.cloudflare.test /client/v4/pages/assets/check-missing? auth="Bearer pages-jwt"`,
+	} {
+		if !strings.Contains(seen, want) {
+			t.Fatalf("the host saw\n%s\nnot %s", seen, want)
+		}
+	}
+	if strings.Contains(seen, "script-settings") || strings.Contains(seen, "LEAKED") {
+		t.Fatalf("the host saw\n%s", seen)
+	}
+}

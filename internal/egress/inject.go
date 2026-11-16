@@ -36,8 +36,8 @@ import (
 // that Overwrites (a federation's cloud token, gap 32). A credential that
 // cannot be had refuses the request 502 (credential_unavailable, or
 // credential_refused with Latchkey's code): nothing the sandbox sent
-// goes on in its place. A request outside the rule's paths or methods
-// goes on untouched.
+// goes on in its place. A request outside the rule's paths or methods,
+// or under one of its Untouched paths, goes on untouched.
 
 // RuleInject names an InjectRule in an Applied and the audit.
 const RuleInject = "inject"
@@ -106,6 +106,15 @@ type InjectSpec struct {
 	// gap 32). Never Latchkey's to set: the node sets it on the rules it
 	// makes itself.
 	Overwrite bool `json:"-"`
+	// Untouched are paths on the rule's hosts it never writes on, though
+	// they are under its Paths: a vendor endpoint that takes only a
+	// credential of its own, which the vendor hands back to a call the
+	// rule did write on (Cloudflare's asset uploads take the upload
+	// session's JWT, never the API token). A request under one goes on as
+	// sent — never refused credential_preset, never given the credential.
+	// A "*" segment is any one segment. Never Latchkey's to set: the node
+	// sets it on the rules it makes itself, by the connection's vendor.
+	Untouched []string `json:"-"`
 	// Host and Port are the tcp_auth form's: where the raw credential is
 	// used, read directly rather than matched against a lease's egress
 	// hosts (MatchesHost never matches a tcp_auth spec, having no Hosts).
@@ -194,17 +203,22 @@ func (s InjectSpec) MatchesHost(host string) bool {
 }
 
 // matches says req is the rule's: its method among Methods and its path
-// under one of Paths, when they are named. A path with a dot segment is
-// never the rule's.
+// under one of Paths, when they are named, and not under one of
+// Untouched. A path with a dot segment is never under Untouched, and
+// never the rule's when Paths are named.
 func (s InjectSpec) matches(req *http.Request) bool {
 	if len(s.Methods) > 0 && !slices.ContainsFunc(s.Methods, func(m string) bool { return strings.EqualFold(m, req.Method) }) {
+		return false
+	}
+	sent := req.URL.EscapedPath()
+	dots := hasDotSegment(req.URL.Path) || hasDotSegment(sent)
+	if !dots && s.untouched(req.URL.Path, sent) {
 		return false
 	}
 	if len(s.Paths) == 0 {
 		return true
 	}
-	sent := req.URL.EscapedPath()
-	if hasDotSegment(req.URL.Path) || hasDotSegment(sent) {
+	if dots {
 		return false
 	}
 	for _, p := range s.Paths {
@@ -213,6 +227,36 @@ func (s InjectSpec) matches(req *http.Request) bool {
 		}
 	}
 	return false
+}
+
+// untouched says a path, as sent and as read, is under one of the
+// rule's Untouched paths.
+func (s InjectSpec) untouched(path, sent string) bool {
+	for _, p := range s.Untouched {
+		if underPattern(path, p) && underPattern(sent, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// underPattern says path is under pattern at a segment boundary, each
+// "*" segment of pattern any one non-empty segment of path.
+func underPattern(path, pattern string) bool {
+	want := strings.Split(strings.TrimSuffix(pattern, "/"), "/")
+	got := strings.Split(path, "/")
+	if len(got) < len(want) {
+		return false
+	}
+	for i, w := range want {
+		if w == "*" && got[i] != "" {
+			continue
+		}
+		if got[i] != w {
+			return false
+		}
+	}
+	return true
 }
 
 // Credential is one ref's credential of the moment, as Latchkey answered
