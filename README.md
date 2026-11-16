@@ -274,6 +274,9 @@ must still be at a commit), the node reads them through the same relay
 before the checkout, and a job whose head has moved ends
 `no_longer_needed` without starting: not a failure, not a hand-back
 ([ADR-052](docs/adr/adr-052-the-node-checks-a-job-is-still-needed-before-it-starts.md)).
+A validation whose ref the code host no longer has (a branch never
+pushed, a candidate deleted while it was queued) ends the same way at
+its checkout, even when its brief named no precondition.
 AGENTS.md has the detail.
 
 A person's own `mesh mcp` `mesh_join` (see

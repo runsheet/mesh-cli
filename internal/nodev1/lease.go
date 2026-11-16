@@ -331,6 +331,17 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		if resume == "" {
 			if resumed, err = checkout(ctx, grant, b, workspace, r.mirrors, r.logf); err != nil {
 				mintMu.Lock()
+				var gone *refGoneError
+				if mintErr == nil && validationKind(b) && errors.As(err, &gone) {
+					// a validation of a ref the code host no longer has —
+					// a branch never pushed, a candidate deleted while the
+					// job was queued — can never run: it ends
+					// no_longer_needed, as a precondition that no longer
+					// holds does, not a cannot_run Mesh offers again
+					// (ADR-052 amendment 2026-11-16)
+					mintMu.Unlock()
+					return outcome{notNeeded: gone.reason()}
+				}
 				if mintErr != nil {
 					// the mint error first: the reason is clipped from its
 					// end (maxReason), and git's stderr is the long part
