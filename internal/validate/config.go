@@ -149,10 +149,12 @@ type Step struct {
 	// (`run_to_end: true`); otherwise a confirmed failure stops the run
 	// as fail_fast does.
 	RunToEnd bool
-	// Stall is how long a started test may go without an event before
-	// it is named stalled and its unit stopped (`stall:`): Parse reads
-	// DefaultStall when the file leaves it out; 0 (`stall: 0` or
-	// `off`) never stops one.
+	// Stall is how long a unit's test stream may carry no event at all,
+	// while a test of it is running, before its running tests are named
+	// stalled and the unit stopped (`stall:`; supervise.go's stallWatch):
+	// a unit whose stream still moves is progressing, however slowly.
+	// Parse reads DefaultStall when the file leaves it out; 0 (`stall: 0`
+	// or `off`) never stops one.
 	Stall time.Duration
 	// MinTests is the fewest tests a unit that exits 0 must have
 	// reported (`min_tests:`): fewer is red, "ran 0 tests". Parse reads

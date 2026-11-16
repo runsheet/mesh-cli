@@ -2,6 +2,7 @@ package nodev1
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -111,6 +112,94 @@ func TestALanesAskIsLoweredToWhatTheNodeCouldGive(t *testing.T) {
 	room := g.rt.laneRoom(g.b, "integration-1", validate.Resources{CPUs: 64, Memory: "8g"})
 	if room.CPUs != 8 || room.MemGB != 8 {
 		t.Fatalf("a 64-cpu ask on a 12-cpu node beside a 4-cpu lease is %+v, want 8 cpus and its 8 GB", room)
+	}
+}
+
+// A lane refused room never runs wider than the CPUs it has (goal
+// every-hung-test-is-found-and-fixed-by-its-cause, 2026-11-16). On a
+// node with no room left, a validation's first shard — the lane in the
+// lease's own pod — does not wait: it runs under the lease's own hold,
+// its step limited to the 4 CPUs its suite asks for, no more than the
+// lease's 4, with GOMAXPROCS, OMP_NUM_THREADS and MAKEFLAGS told the
+// same, so go test's -p and -parallel follow it. It runs alone there:
+// each other shard waits for room of its own, opening its lane only when
+// the node has it, never falling back into the lease's pod beside it.
+func TestALaneRefusedRoomRunsOnItsOwnRoomAndTheOthersWait(t *testing.T) {
+	g := newShardRig(t, sizedYML, 0, scheduler.Capacity{CPUs: 16, MemGB: 64})
+	// the node fills up before the run: the lease's early holds go back
+	// and another lease takes every CPU
+	g.lp.releaseEagerLanes()
+	other, err := g.rt.Scheduler.TryTake(scheduler.Ask{Owner: "another-lease", CPUs: 16, MemGB: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var logged []string
+	g.rt.Logf = func(format string, args ...any) {
+		mu.Lock()
+		logged = append(logged, fmt.Sprintf(format, args...))
+		mu.Unlock()
+	}
+	type ran struct {
+		inLease bool
+		limits  sandbox.Limits
+		at      time.Time
+	}
+	var runs []ran
+	g.f.Agent = func(_ context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
+		if !strings.Contains(spec.Name, "-exec-") {
+			return sandbox.Exit{}, nil
+		}
+		mu.Lock()
+		runs = append(runs, ran{inLease: strings.HasPrefix(spec.Name, g.lp.name+"-exec-"), limits: spec.Limits, at: time.Now()})
+		mu.Unlock()
+		time.Sleep(50 * time.Millisecond)
+		return sandbox.Exit{}, nil
+	}
+	var freed time.Time
+	go func() {
+		time.Sleep(400 * time.Millisecond)
+		mu.Lock()
+		freed = time.Now()
+		mu.Unlock()
+		other.Release()
+	}()
+	if _, last := g.run(t, map[string]any{"suite": "integration"}); last["exit"] != float64(0) {
+		t.Fatalf("the run answered %v", last)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(runs) != 4 {
+		t.Fatalf("%d shards ran, want 4", len(runs))
+	}
+	inLease := 0
+	for _, r := range runs {
+		if !r.inLease {
+			if r.at.Before(freed) {
+				t.Fatalf("a shard opened its lane at %s, before the node had room for it at %s: it did not wait", r.at, freed)
+			}
+			continue
+		}
+		inLease++
+		if !r.at.Before(freed) {
+			t.Fatal("the lease's own shard waited for room its lease already holds")
+		}
+		if r.limits.CPUs != 4 || r.limits.Memory != "8192m" {
+			t.Fatalf("the shard in the lease's pod ran limited to %+v, want its suite's 4 cpus and 8g", r.limits)
+		}
+		if env := sandbox.LimitEnv(r.limits); !slices.Contains(env, "GOMAXPROCS=4") || !slices.Contains(env, "OMP_NUM_THREADS=4") {
+			t.Fatalf("the shard in the lease's pod is told %v, want GOMAXPROCS and OMP_NUM_THREADS at its 4 cpus", env)
+		}
+	}
+	if inLease != 1 {
+		t.Fatalf("%d shards ran in the lease's own pod, want the first alone", inLease)
+	}
+	said := strings.Join(logged, "\n")
+	if !strings.Contains(said, "no room for lane integration-0's 4 cpus, 8 GB right now; it runs in the lease's pod under the lease's own hold") {
+		t.Fatalf("the node's log did not say the first lane ran under the lease's hold:\n%s", said)
+	}
+	if free := g.rt.Scheduler.Free(); free.CPUs != 16 || free.MemGB != 64 {
+		t.Fatalf("the lanes' room was not given back: %+v", free)
 	}
 }
 

@@ -30,9 +30,12 @@ import (
 //     again is a confirmed failure.
 //   - run_to_end: a confirmed failure stops the run as fail_fast does,
 //     unless the suite says run_to_end.
-//   - stall: a started test with no event for the limit is named
-//     stalled and its unit stopped, by the unit's own stop func
-//     (Options.OnLane's, stop_suite's).
+//   - stall: a unit whose go test stream carries no event at all for
+//     the limit while a test of it is running has its running tests
+//     named stalled and is stopped, by the unit's own stop func
+//     (Options.OnLane's, stop_suite's). A unit whose stream still moves
+//     is making progress, however slowly, and is never stopped for one
+//     test's silence (stallWatch).
 //   - min_tests: a unit that exits 0 having reported fewer tests than
 //     the floor is red, "ran 0 tests".
 
@@ -431,15 +434,34 @@ func belowFloor(step Step, run int, counted bool) string {
 
 // stallWatch reads a unit's go test -json stream as it arrives and
 // knows which tests are running: started, not paused for a parallel
-// sibling, with no subtest of their own still open. One of those silent
-// for limit — no event of its own, nor of a subtest — is stalled.
+// sibling, with no subtest of their own still open. The unit is stalled
+// when its stream has carried no event at all for limit while one of
+// those is running; the stalled tests are the running ones silent for
+// limit — no event of their own, nor of a subtest — which, the whole
+// stream being silent that long, is every one of them.
+//
+// The limit is the unit's silence, not one test's (2026-11-16, goal
+// every-hung-test-is-found-and-fixed-by-its-cause). A test go test has
+// let through t.Parallel may be waiting on its suite's own queue rather
+// than running: runsheet's e2e harness admits every test of a shard at
+// once (-parallel 10000) and hands six running slots out longest first,
+// so the tests at the back of its queue sat silent, "running" to go
+// test, until a slot came free. Watched test by test, every one still
+// queued 5 minutes into a shard's tests was named stalled and the shard
+// stopped — all four shards at the same moment, ~280 tests between
+// them, on runs that were progressing. The stream moving at all, any
+// test's event, is the unit's progress; a hung test is still found,
+// once the tests beside it have stopped moving too.
 type stallWatch struct {
 	limit time.Duration
 	now   func() time.Time
 
-	mu      sync.Mutex
-	buf     []byte
-	open    map[testKey]*openTest
+	mu   sync.Mutex
+	buf  []byte
+	open map[testKey]*openTest
+	// last is when the stream last carried a go test event, any test's
+	// or its package's: the unit's progress.
+	last    time.Time
 	stalled []testKey
 }
 
@@ -478,6 +500,8 @@ func (w *stallWatch) line(line []byte) {
 	if json.Unmarshal(line, &ev) != nil || ev.Action == "" {
 		return
 	}
+	now := w.now()
+	w.last = now
 	if ev.Test == "" {
 		switch ev.Action {
 		case "pass", "fail", "skip":
@@ -491,7 +515,6 @@ func (w *stallWatch) line(line []byte) {
 		}
 		return
 	}
-	now := w.now()
 	k := testKey{ev.Package, ev.Test}
 	switch ev.Action {
 	case "run":
@@ -520,11 +543,15 @@ func (w *stallWatch) line(line []byte) {
 	}
 }
 
-// check are the tests stalled now, sorted.
+// check are the tests stalled now, sorted: none while the unit's
+// stream has moved within the limit.
 func (w *stallWatch) check() []testKey {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	now := w.now()
+	if now.Sub(w.last) < w.limit {
+		return nil
+	}
 	var out []testKey
 	for k, t := range w.open {
 		if t.paused || now.Sub(t.last) < w.limit {
