@@ -208,6 +208,8 @@ func (c *Client) Take(ctx context.Context, req TakeRequest) (*Take, error) {
 	if out.Lease == nil || out.Brief == nil {
 		return &Take{Waiting: out.Waiting}, nil
 	}
+	// the lease enforces what Mesh granted it, not the kind's baseline
+	out.Brief.ApplyGranted()
 	return &out, nil
 }
 
