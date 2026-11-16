@@ -1,5 +1,5 @@
 ---
-summary: When a checkout has no .runsheet/validate.yml, run_suite no longer refuses. The node infers the suites from the repository itself (internal/validate/infer). go.mod and go.work give go-build, go-vet and go-test. A package.json whose package manager is named by its packageManager field or a lockfile gives node-install plus its own lint, typecheck, test and build scripts. When neither gives a test, a root Makefile's test and check targets are used. The inferred suites are written as a validate.yml and read back through validate.Parse. An explicit validate.yml always wins, as a whole file. The answer, the summary, the signed record's blob and the node's log name what was inferred and from which files, so a product can store the profile later. Amends ADR-013.
+summary: When a checkout has no .runsheet/validate.yml, run_suite no longer refuses. The node infers the suites from the repository itself (internal/validate/infer). go.mod and go.work give go-build, go-vet and go-test. A package.json whose package manager is named by its packageManager field or a lockfile gives node-install plus its own lint, typecheck, test and build scripts. When neither gives a test, a root Makefile's test and check targets are used. The inferred suites are written as a validate.yml and read back through validate.Parse. An explicit validate.yml always wins, as a whole file. The answer, the summary, the signed record's blob and the node's log name what was inferred and from which files, so a product can store the profile later. Amended 2026-11-16: a repository that holds only documents infers one suite, docs, whose command `mesh docs-check` is the node's built-in docs check, run in process. Amends ADR-013.
 status: accepted
 ---
 
@@ -131,3 +131,76 @@ does not store it in Mesh, and the API is unchanged.
   evaluation because the repository has no validate.yml (runsheet's
   unenrolled-repo hold) still holds it. Changing that is the product's
   side of the goal.
+
+## Amendment 2026-11-16: a repository that holds only documents is validated by a docs check
+
+**Context.** The rules above recognise code: a handbook or a specs
+repository has none, so it fell through to `ErrNothingToInfer` and every
+validation of it was handed back. On 16 November dl360 handed back 27
+leases of `GrapevineNetwork/business-portal-handbook` ("is a
+documentation-only repository", "Repository declares no validation
+(.runsheet/validate.yml)"), as both product and cannot_run, across nine
+merge chains each handed back about five times before it was held, and
+each chain formed again. Those pull requests could never go green, and
+every offer cost a lease (runsheet goal
+`a-docs-only-repo-is-validated-by-a-docs-check`).
+
+**Decision.** A fourth rule, applied only when none of the three above
+gives any suite:
+
+- **Documents.** A checkout holds only documents
+  (`infer.DocumentsOnly`) when every file outside a dot-path — any path
+  with a segment starting with `.`, so `.git`, `.github`, `.runsheet`,
+  `.gitkeep` — is a document or an asset, and at least one is Markdown.
+  A document is a file whose extension, in any case, is one of
+  `infer.DocumentExts` (`.md .markdown .mdx .txt .rst .adoc`) or
+  `infer.AssetExts` (`.png .jpg .jpeg .gif .svg .webp .ico .pdf`), or an
+  extensionless file named, in any case, one of `infer.DocumentNames`
+  (`LICENSE LICENCE NOTICE AUTHORS CODEOWNERS COPYING README`); a
+  symlink is judged by its own name and never followed. The list is an
+  allowlist on purpose: one file of code (a `.py`, a `.sh`, a `.json`, a
+  Dockerfile) makes the repository not documents-only, so nothing that
+  holds code is ever checked with less than its code would need. Such a
+  checkout still answers `ErrNothingToInfer`, its error naming the file
+  that is not a document.
+- It infers one suite, `docs` (kind lint, the same room as every
+  inferred suite), whose command is exactly `mesh docs-check`, and its
+  profile is "inferred suites docs from N Markdown files".
+
+**The check** (`internal/validate/docscheck`). Over every `.md` and
+`.markdown` file outside a dot-path: the file is UTF-8 with no NUL byte
+and no larger than 4 MiB; a frontmatter block (a first line `---`)
+closes and is a YAML mapping; every fenced code block (``` or ~~~)
+closes; and every relative link or image — `[text](target)`,
+`![alt](target)`, a reference definition `[id]: target` — outside code
+fences and inline code names a file or directory inside the repository,
+its `#fragment` and `?query` cut and URL-decoded, `/x` read from the
+root. A target that climbs out of the repository is a problem of its
+own; one with a scheme, `//host` or only a fragment is not checked. An
+`.mdx` file has only its encoding and frontmatter read (its body is
+JSX). It reports `path:line: what` per problem and a summary.
+
+**It runs in process.** run_suite runs a step whose command is exactly
+`mesh docs-check` (or `mesh docs-check .`) itself, on the checkout,
+rather than through the lease's runner (nodetools `withBuiltins`): the
+pod image carries no mesh binary. Every other step still runs in the
+pod, the results in the file's order. This is node code, not the
+session's: it reads the checkout through an `os.Root`, so a symlink the
+session wrote never makes it read outside the checkout, caps every file
+it reads, and executes nothing. Each document it read is one test of the
+step (package `docs`, test the path), passing, or failing with its
+problems as output, so a red check names the documents wherever a
+failing test is named. `mesh docs-check [dir]` runs the same check
+anywhere mesh is installed, so committing the inferred file as
+`.runsheet/validate.yml` means the same thing.
+
+**runsheet's side.** runsheet's merge queue holds the same
+documents-only rule (the same lists) to tell a repository whose chain it
+offers a validation (documents-only: this check proves it) from one with
+no validate.yml that holds code, which it holds once for a person rather
+than offering a validation no node can reach a verdict on. The two lists
+change together; `TestDocumentsOnlyListsArePinned` pins this side.
+
+**Not handled.** Anchors (`#section`) are not checked against headings,
+links in raw HTML are not read, and prose is not reviewed.
+

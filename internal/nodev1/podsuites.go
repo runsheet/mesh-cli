@@ -27,6 +27,14 @@ import (
 //     (nodetools.ErrNoSuiteRunner): there is nowhere the steps may run.
 //   - Only a node explicitly unsandboxed (HostSuites, and no Sandbox),
 //     whose sessions already run on the host, runs them on the host.
+//   - The one exception is the node's own code, never the session's: a
+//     step whose command is exactly `mesh docs-check` (the docs suite
+//     infer gives a repository that holds only documents) is the node's
+//     built-in docs check, which run_suite runs in process on the
+//     checkout (nodetools.withBuiltins) — the pod image has no mesh
+//     binary. It reads the checkout through an os.Root, so a symlink
+//     the session wrote never reaches outside it, caps every file it
+//     reads, and executes nothing (ADR-053 amendment 2026-11-16).
 
 // suiteRunner is run_suite's runner for a lease: pod's when the lease
 // has one, else nil — which the tool runs on the host only when
