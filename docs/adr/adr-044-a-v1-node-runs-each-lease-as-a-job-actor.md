@@ -974,3 +974,36 @@ due. Nothing kept a picture of the host between takes.
 `TestMachineReadingMissingSourcesAreZeroNotError` and
 `TestRunReadsTheHostOnceAMinuteWithNoLeaseTaken` (internal/nodev1,
 linux) hold it.
+
+## Amendment, 2026-11-16: the heartbeat and node status carry the host reading, and the node backs off a hot package
+
+`WatchHost`'s reading stayed on the node: Mesh never saw it, `mesh
+node status` did not show it, and the host gate ignored the package
+temperature it now read.
+
+1. **The heartbeat carries it.** `HeartbeatRequest.Host`
+   (`internal/meshapi`, `host`) is `WatchHost`'s latest cached reading:
+   load, cores, free memory, CPU and memory pressure, package
+   temperature, and lease and cache disk, each with its own `Has` flag.
+   It is nil (omitted) before the first reading is cached, or with no
+   `HostProbe`, never a zero reading. The heartbeat sends the cached
+   reading and does not read the host itself.
+2. **The host gate backs off a hot package.** `Host.PackageTempMaxC`
+   (node.yaml's `host.package_temp_max_c`, carried by `nodeRunHost`
+   as given, like `load_per_core_max`; absent or zero turns it off) holds back a new take while the gate's reading has a
+   temperature over it: `host hot: package <t>°C over <max>°C`. A
+   reading with no thermal zone never gates on it. The disk gate is
+   unchanged. Both gates are checked independently before each take,
+   each logs its own crossings once on entering and once on leaving,
+   and neither touches a running lease.
+3. **`mesh node status` shows it.** `Status.Host` and
+   `Status.HostHistory` carry the cached reading and the last hour of
+   readings. Once a reading exists, `DrainLines` adds `Host: …` (the
+   current reading) and `peak last hour: …`. The peak line takes the
+   worst value of each metric separately: the highest load, pressure
+   and temperature, and the least free memory and disk. A source no
+   reading carried is left out of the line rather than shown as zero.
+
+`TestHeartbeatCarriesTheHostReading`, `TestHostAndDiskGatesTogether`
+and `TestDrainLinesShowTheHostReadingAndItsPeak` (internal/nodev1)
+hold it.
