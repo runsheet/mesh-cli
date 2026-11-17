@@ -125,7 +125,8 @@ func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace s
 			}
 			out = append(out, sr.Tool())
 		case EscalateTool:
-			out = append(out, escalateTool(ladder, mb))
+			_, codex := r.Session.(*CodexSession)
+			out = append(out, escalateTool(ladder, mb, codex))
 		case RequestTimeTool:
 			if tb == nil {
 				r.logf("nodev1: lease %s: the kind names node tool %q, but has no time budget to extend", b.LeaseID, name)
