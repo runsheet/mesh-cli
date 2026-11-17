@@ -310,6 +310,11 @@ type Runtime struct {
 	// gitBridgePort, set, is a lease pod's git bridge port in place of
 	// podGitPort: tests, whose fake pods share the host's loopback.
 	gitBridgePort int
+	// containers and cgroupRoot, set, are where a lease's use is read
+	// (leaseused.go) in place of the sandbox's podman and "/": tests,
+	// with a fake listing and a fixture /proc and /sys/fs/cgroup.
+	containers containerLister
+	cgroupRoot string
 
 	nodeID  string
 	relay   *gitrelay.Server
@@ -459,6 +464,9 @@ type running struct {
 	// adopter now holds the process and stops it at its own release.
 	// nil for a lease whose egress process this node did not start.
 	disownEgress func()
+	// use is what the lease's containers were read to have used, for
+	// its finish's or fail's `used` (leaseused.go)
+	use leaseUse
 }
 
 // touch is the lease's session showing progress: its progress_at in the
@@ -640,6 +648,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 		r.HostProbe = &ProcHostProbe{Root: "/"}
 	}
 	go r.WatchHost(hbCtx, r.HostProbePoll)
+	go r.watchUse(hbCtx)
 	r.probeCacheMountOnce(ctx)
 
 	var leases sync.WaitGroup

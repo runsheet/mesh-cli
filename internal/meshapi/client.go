@@ -286,20 +286,42 @@ func (c *Client) Usage(ctx context.Context, leaseID string, req UsageRequest) er
 }
 
 // Finish ends the job with the product's result: POST
-// /v1/leases/{id}/finish.
+// /v1/leases/{id}/finish. A Mesh that refuses the body's `used`
+// (UsedRefused) is sent it again without.
 func (c *Client) Finish(ctx context.Context, leaseID string, req FinishRequest) (*JobState, error) {
 	if len(req.Result) == 0 {
 		req.Result = json.RawMessage("{}")
 	}
-	return c.end(ctx, leaseID, "finish", req)
+	st, err := c.end(ctx, leaseID, "finish", req)
+	if req.Used != nil && UsedRefused(err) {
+		req.Used = nil
+		return c.end(ctx, leaseID, "finish", req)
+	}
+	return st, err
 }
 
-// Fail ends the job as a work failure: POST /v1/leases/{id}/fail.
+// Fail ends the job as a work failure: POST /v1/leases/{id}/fail. A
+// Mesh that refuses the body's `used` (UsedRefused) is sent it again
+// without.
 func (c *Client) Fail(ctx context.Context, leaseID string, req FailRequest) (*JobState, error) {
 	if req.Cause == "" {
 		req.Cause = CauseWork
 	}
-	return c.end(ctx, leaseID, "fail", req)
+	st, err := c.end(ctx, leaseID, "fail", req)
+	if req.Used != nil && UsedRefused(err) {
+		req.Used = nil
+		return c.end(ctx, leaseID, "fail", req)
+	}
+	return st, err
+}
+
+// UsedRefused says whether err is a Mesh that does not know a finish's
+// or fail's `used` refusing the body for it: Mesh decodes a body
+// strictly, so one older than projectmesh-io/api #219 answers 400
+// `json: unknown field "used"`, having done nothing with the lease.
+func UsedRefused(err error) bool {
+	var e *Error
+	return errors.As(err, &e) && e.Status == http.StatusBadRequest && strings.Contains(e.Message, `unknown field "used"`)
 }
 
 // HandBack ends the lease and offers the job again: POST

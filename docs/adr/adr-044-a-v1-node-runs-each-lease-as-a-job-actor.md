@@ -1007,3 +1007,63 @@ temperature it now read.
 `TestHeartbeatCarriesTheHostReading`, `TestHostAndDiskGatesTogether`
 and `TestDrainLinesShowTheHostReadingAndItsPeak` (internal/nodev1)
 hold it.
+
+## Amendment, 2026-11-18: a lease's finish and fail say what it used
+
+Mesh placed every job by the room it declared. runsheet's validations
+declare 4 CPUs and use many more, so on 17 Nov Mesh said 52 CPUs were
+free on dl360 while its load was 121 on 96 cores. projectmesh-io/api
+#219 takes an optional `used: {cpu_seconds, mem_peak_gb}` on a lease's
+finish and fail and learns each kind's real size from it. The node
+never sent it.
+
+1. **Where it is read.** Rootless podman on cgroupfs (dl360, podman
+   4.9.3) gives each container a cgroup of its own, flat under the node
+   user's `app.slice` and named by its id. There is no pod or lease
+   cgroup, and a container's cgroup goes when it exits. So the node
+   reads a lease's containers while they run (`leaseused.go`):
+   every 15 s while it holds a lease, one `podman ps` (no `--all`, no
+   inspect; `sandbox.Podman.RunningContainers`) lists the running
+   containers and their host pids. Each container named for a held
+   lease (its `PodName`, or that and `-…`: the agent, each step's exec
+   or run container, the services, the relay, a lane's pod) has its
+   cgroup read from `/proc/<pid>/cgroup`'s `0::` line, and from it
+   `cpu.stat`'s `usage_usec`, `memory.peak` (`memory.current` on a
+   kernel that keeps no peak) and `memory.current`. The highest reading
+   of each container is kept in the lease's record (`running.use`), so
+   a step that has exited keeps what it was last read at. The lease's
+   containers are read once more at its finish or fail.
+2. **What is sent.** `cpu_seconds` is each container's `usage_usec`
+   summed. `mem_peak_gb` (GiB) is the larger of one container's peak and
+   the lease's containers' `memory.current` summed at one reading, so
+   two steps that ran one after the other are never counted as held at
+   once. Both are a little under the truth: a container's seconds after
+   its last reading, and one that lived under 15 s, go unseen.
+3. **On finish and fail only.** `Finish` and `fail` carry it; Mesh
+   keeps a fail's only when the fail ends the job. A hand-back never
+   does: #219's hand-back body has no `used`, and Mesh refuses a field it
+   does not know. `failExposed`, the canary path and a no-longer-needed
+   end are left as they were.
+4. **It never costs the end.** No container lister (no `--sandbox`), no
+   cgroup v2 line, an unreadable `cpu.stat`, a failed `podman ps` or a
+   panic while reading leaves nothing read, and nothing read sends no
+   `used`. A cgroup that is the root, the node's own or an ancestor of
+   it, or one two containers share, is never read. The read is bounded
+   at 10 s and runs before the finish's own 30 s starts.
+5. **A Mesh without #219.** Mesh decodes a lease body strictly, so one
+   older than #219 answers 400 `json: unknown field "used"` and does
+   nothing with the lease. `meshapi.Client.Finish` and `Fail` then send
+   the same body again without `used` (`meshapi.UsedRefused`). The node
+   can ship before #219 and keeps working after it.
+
+An exact reading would put each lease's pods under a cgroup of its own
+(`podman pod create --cgroup-parent`), read once at its end. That moves
+every pod on the node and is not done here.
+
+`TestLeaseUsedReadsItsContainersCgroups`,
+`TestLeaseUsedKeepsAContainerThatExited`, `TestLeaseUsedMissingFiles`,
+`TestLeaseUsedSkipsCgroupsNotTheLeasesAlone` and
+`TestFinishAndFailCarryWhatTheLeaseUsed` (internal/nodev1, on a fixture
+`/proc` and `/sys/fs/cgroup`), `TestFinishAndFailSendUsedOnlyWhereMeshTakesIt`
+and `TestUsedOnTheWire` (internal/meshapi) and `TestRunningContainers`
+(internal/sandbox) hold it.

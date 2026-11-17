@@ -877,6 +877,9 @@ type FinishRequest struct {
 	Result     json.RawMessage `json:"result"`
 	SessionRef string          `json:"session_ref,omitempty"`
 	Evidence   []string        `json:"evidence,omitempty"`
+	// Used is what the lease used on the node; nil sends none
+	// (LeaseUsed).
+	Used *LeaseUsed `json:"used,omitempty"`
 }
 
 // FailRequest is POST /v1/leases/{id}/fail: a work failure, which ends
@@ -888,6 +891,22 @@ type FailRequest struct {
 	// ExitCode is the killed step's exit code (137, 143) when the cause
 	// is a hand-back's (mesh-specs gap 14); 0 sends none.
 	ExitCode int `json:"exit_code,omitempty"`
+	// Used is what the lease used on the node; nil sends none
+	// (LeaseUsed). Mesh keeps it only when the fail ends the job.
+	Used *LeaseUsed `json:"used,omitempty"`
+}
+
+// LeaseUsed is what a lease's containers used on the node, read from
+// their cgroups: the CPU time they spent (cpu.stat's usage_usec) and
+// the most memory they held (memory.peak), in GiB. A finish and a fail
+// carry it as `used` (projectmesh-io/api #219, ADR 001 amendment,
+// placed by learned size), and Mesh learns each kind's real size from
+// it. A Mesh without #219 refuses the field, so Finish and Fail send
+// the body again without it (client.go). No contracts/v1 fixture
+// carries it yet; used_test.go holds its shape.
+type LeaseUsed struct {
+	CPUSeconds float64 `json:"cpu_seconds"`
+	MemPeakGB  float64 `json:"mem_peak_gb"`
 }
 
 // HandBackRequest is POST /v1/leases/{id}/hand-back: the lease ends and
