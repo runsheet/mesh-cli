@@ -9,6 +9,17 @@ type DiskProbe interface {
 	FreeBytes(path string) (uint64, error)
 }
 
+// DiskReading is a disk path's free space and percent used, as
+// HostProbe last read it (hostprobe_linux.go) — richer than
+// DiskProbe's free-bytes-alone reading, which diskGate gates on
+// alone. Has is false when the path could not be read — no path set,
+// or the read failed — never an error.
+type DiskReading struct {
+	FreeBytes   uint64
+	PercentUsed float64
+	Has         bool
+}
+
 // diskGate is "" when the node may take a new lease, else why it may
 // not: Disk reads less free space at the build cache's own path (or
 // WorkRoot, with no BuildCache set) than the live floor —

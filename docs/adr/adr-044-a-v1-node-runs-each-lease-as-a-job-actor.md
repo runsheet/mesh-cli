@@ -943,3 +943,34 @@ fail 404 after adoption and `progress_at` stays put.
 `TestNodeAdoptsHandoffAtStart` holds point 8.
 `TestV1UpgradeAdoptsSidecarLeases` (internal/commands) now writes the
 agent's output where the agent writes it.
+
+## Amendment, 2026-11-16: the node reads its host's pressure, disk and temperature once a minute
+
+The host gate read only load and free memory, and only when a take was
+due. Nothing kept a picture of the host between takes.
+
+1. **The reading is richer.** `MachineReading` (`hostgate.go`) now also
+   carries `/proc/pressure/cpu` and `/proc/pressure/memory`'s `some`
+   avg10 and avg60, the package temperature (the highest of every
+   `x86_pkg_temp` or `TCPU` thermal zone, since a multi-socket host has
+   one per package), and a `DiskReading` (free bytes, percent used) at
+   the lease path (`WorkRoot`) and the cache path (`diskGatePath`).
+   Each source has its own `Has` flag. A missing pressure file, thermal
+   zone or unreadable disk path leaves its field zero with its flag
+   false, never an error; only `/proc/loadavg` and `/proc/meminfo`'s
+   `MemAvailable` must read.
+2. **`HostProbe`** reads it (`ProcHostProbe{Root}`, `hostprobe_linux.go`;
+   off linux it always refuses). `Root` lets a test feed a fixture
+   `/proc` and `/sys`.
+3. **`WatchHost`**, started by `Run` (with `ProcHostProbe{Root: "/"}`
+   when `HostProbe` is nil), reads the probe at start and every
+   `HostProbePoll` (a minute), caches the reading (`HostReading`) and
+   keeps the last 60 (`HostHistory`, oldest first). It ticks whether or
+   not a take happens. A failed read changes neither and is logged
+   once, when reads start failing. The host and disk gates are
+   unchanged and still read their own probes.
+
+`TestMachineReadingCarriesPressureDiskAndTemp`,
+`TestMachineReadingMissingSourcesAreZeroNotError` and
+`TestRunReadsTheHostOnceAMinuteWithNoLeaseTaken` (internal/nodev1,
+linux) hold it.

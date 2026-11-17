@@ -532,7 +532,9 @@ func TestTheLeasesEgressProcessKilledEndsTheLeasePodKilled(t *testing.T) {
 			return false
 		}
 		var r actor.Record
-		if json.Unmarshal(b, &r) != nil || r.EgressPID == 0 {
+		// the pid is noted as the egress process starts, before the
+		// sidecar is installed; running is past both
+		if json.Unmarshal(b, &r) != nil || r.EgressPID == 0 || r.State != actor.Running {
 			return false
 		}
 		rec = r
@@ -664,7 +666,9 @@ func TestARuntimeKilledMidTransferLeavesPodSidecarAndEgressRunningUntilTheNextRu
 			return false
 		}
 		var r actor.Record
-		if json.Unmarshal(b, &r) != nil || r.EgressPID == 0 {
+		// the pid is noted as the egress process starts, before the
+		// sidecar is installed; running is past both
+		if json.Unmarshal(b, &r) != nil || r.EgressPID == 0 || r.State != actor.Running {
 			return false
 		}
 		rec = r
