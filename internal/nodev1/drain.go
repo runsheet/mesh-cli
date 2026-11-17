@@ -59,7 +59,14 @@ type Status struct {
 	// -- adoptOne registers it well before it finishes deciding.
 	Adopting bool          `json:"adopting,omitempty"`
 	Leases   []LeaseStatus `json:"leases"`
-	At       time.Time     `json:"at"`
+	// Host is HostProbe's latest cached reading (WatchHost, runtime.go),
+	// and HostHistory the last hour's readings behind it (oldest
+	// first), DrainLines' own source for the past hour's peak of each
+	// metric. Both the zero value and empty before WatchHost's first
+	// tick, or with no HostProbe set.
+	Host        MachineReading   `json:"host,omitempty"`
+	HostHistory []MachineReading `json:"host_history,omitempty"`
+	At          time.Time        `json:"at"`
 }
 
 // LeaseStatus is one lease the node runs.
@@ -304,6 +311,10 @@ func (r *Runtime) Status() Status {
 		Adopting: r.Actors && (!r.adoptScanned || r.adoptPending > 0),
 		Leases:   []LeaseStatus{}, At: time.Now().UTC(),
 	}
+	if r.hostRead {
+		s.Host = r.hostReading
+		s.HostHistory = append([]MachineReading(nil), r.hostHistory...)
+	}
 	if !r.drainSince.IsZero() {
 		t := r.drainSince.UTC()
 		s.DrainSince = &t
@@ -372,6 +383,10 @@ func (s Status) DrainLines(now time.Time) []string {
 	if s.DiskGate != "" {
 		out = append(out, "Disk: "+s.DiskGate+"; taking no new lease.")
 	}
+	if len(s.HostHistory) > 0 {
+		out = append(out, hostLine("Host", s.Host))
+		out = append(out, hostLine("  peak last hour", hostPeak(s.HostHistory)))
+	}
 	if len(s.Leases) == 0 {
 		out = append(out, "Leases: none running.")
 		return out
@@ -383,4 +398,65 @@ func (s Status) DrainLines(now time.Time) []string {
 		out = append(out, fmt.Sprintf("  %s  job %s  %s  for %s", l.LeaseID, l.JobID, l.Kind, now.Sub(l.Since).Round(time.Second)))
 	}
 	return out
+}
+
+// hostLine renders one MachineReading as a DrainLines line, labelled:
+// load and cores always, pressure and temperature only when the
+// reading has them, disk only when its own path read. A source the
+// reading never carries (its Has flag false throughout) is left out
+// rather than shown as a false zero.
+func hostLine(label string, m MachineReading) string {
+	parts := []string{fmt.Sprintf("load %.2f/%d cores", m.Load1, m.CPUs)}
+	if m.HasCPUPressure {
+		parts = append(parts, fmt.Sprintf("cpu pressure %.0f%%/%.0f%%", m.CPUSomeAvg10, m.CPUSomeAvg60))
+	}
+	parts = append(parts, fmt.Sprintf("mem %.1f GB free", float64(m.MemAvailable)/(1<<30)))
+	if m.HasMemPressure {
+		parts = append(parts, fmt.Sprintf("mem pressure %.0f%%/%.0f%%", m.MemSomeAvg10, m.MemSomeAvg60))
+	}
+	if m.LeaseDisk.Has {
+		parts = append(parts, fmt.Sprintf("lease disk %.1f GB free (%.1f%% used)", float64(m.LeaseDisk.FreeBytes)/(1<<30), m.LeaseDisk.PercentUsed))
+	}
+	if m.CacheDisk.Has {
+		parts = append(parts, fmt.Sprintf("cache disk %.1f GB free (%.1f%% used)", float64(m.CacheDisk.FreeBytes)/(1<<30), m.CacheDisk.PercentUsed))
+	}
+	if m.HasTemp {
+		parts = append(parts, fmt.Sprintf("temp %.1f°C", m.PackageTempC))
+	}
+	return label + ": " + strings.Join(parts, ", ") + "."
+}
+
+// hostPeak is history's worst reading of each metric, independently:
+// the highest load, pressure and temperature, and the lowest free
+// memory and disk, over the window — a reading's own CPUs rides along
+// with its worst load, to keep "x/y cores" sensible. A metric no
+// reading in history carries (its own Has flag false throughout) comes
+// back zero with its flag false, same as a MachineReading that never
+// read it.
+func hostPeak(history []MachineReading) MachineReading {
+	var p MachineReading
+	for i, m := range history {
+		if i == 0 || m.Load1 > p.Load1 {
+			p.Load1, p.CPUs = m.Load1, m.CPUs
+		}
+		if i == 0 || m.MemAvailable < p.MemAvailable {
+			p.MemAvailable = m.MemAvailable
+		}
+		if m.HasCPUPressure && (!p.HasCPUPressure || m.CPUSomeAvg60 > p.CPUSomeAvg60) {
+			p.CPUSomeAvg10, p.CPUSomeAvg60, p.HasCPUPressure = m.CPUSomeAvg10, m.CPUSomeAvg60, true
+		}
+		if m.HasMemPressure && (!p.HasMemPressure || m.MemSomeAvg60 > p.MemSomeAvg60) {
+			p.MemSomeAvg10, p.MemSomeAvg60, p.HasMemPressure = m.MemSomeAvg10, m.MemSomeAvg60, true
+		}
+		if m.HasTemp && (!p.HasTemp || m.PackageTempC > p.PackageTempC) {
+			p.PackageTempC, p.HasTemp = m.PackageTempC, true
+		}
+		if m.LeaseDisk.Has && (!p.LeaseDisk.Has || m.LeaseDisk.FreeBytes < p.LeaseDisk.FreeBytes) {
+			p.LeaseDisk = m.LeaseDisk
+		}
+		if m.CacheDisk.Has && (!p.CacheDisk.Has || m.CacheDisk.FreeBytes < p.CacheDisk.FreeBytes) {
+			p.CacheDisk = m.CacheDisk
+		}
+	}
+	return p
 }
