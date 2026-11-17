@@ -833,6 +833,54 @@ func (p *Podman) ListPods(ctx context.Context) ([]PodInfo, error) {
 	return ParsePods(out)
 }
 
+// RunningContainer is a running container as `podman ps` lists it: its
+// id, its name and its init process's pid on the host, where its
+// cgroup is read from (/proc/<pid>/cgroup).
+type RunningContainer struct {
+	ID   string
+	Name string
+	PID  int
+}
+
+// RunningArgs lists the running containers as JSON.
+func RunningArgs() []string { return []string{"ps", "--format", "json"} }
+
+// ParseRunning reads `podman ps --format json` into each running
+// container's id, first name and pid.
+func ParseRunning(out string) ([]RunningContainer, error) {
+	if strings.TrimSpace(out) == "" {
+		return nil, nil
+	}
+	var rows []struct {
+		ID    string   `json:"Id"`
+		Names []string `json:"Names"`
+		PID   int      `json:"Pid"`
+	}
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		return nil, fmt.Errorf("podman ps: %w", err)
+	}
+	cs := make([]RunningContainer, 0, len(rows))
+	for _, r := range rows {
+		name := ""
+		if len(r.Names) > 0 {
+			name = r.Names[0]
+		}
+		cs = append(cs, RunningContainer{ID: r.ID, Name: name, PID: r.PID})
+	}
+	return cs, nil
+}
+
+// RunningContainers lists the node user's running containers with their
+// host pids: one `podman ps`, no inspect. It is not part of Runtime; a
+// v1 node reads each lease's cgroups through it (nodev1's leaseused.go).
+func (p *Podman) RunningContainers(ctx context.Context) ([]RunningContainer, error) {
+	out, err := p.output(ctx, RunningArgs(), nil)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRunning(out)
+}
+
 // RemoveContainer implements Runtime.
 func (p *Podman) RemoveContainer(ctx context.Context, name string) error {
 	_, err := p.output(ctx, RemoveContainerArgs(name), nil)

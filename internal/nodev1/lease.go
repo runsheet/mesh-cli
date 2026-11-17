@@ -1001,8 +1001,6 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) (end actor.End)
 		r.handBack(id, hb.Cause, reason, o.result.SessionID)
 		return actor.End{Report: actor.ReportHandBack, Cause: hb.Cause, Reason: reason}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
-	defer cancel()
 	r.postAccess(id, o.access)
 	r.postUsage(id, o)
 	if o.err != nil && len(writes) > 0 {
@@ -1027,7 +1025,11 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) (end actor.End)
 	if result == nil {
 		result, _ = json.Marshal(map[string]string{"text": clip(o.result.Text, 16<<10)})
 	}
-	st, err := r.API.Finish(ctx, id, meshapi.FinishRequest{Result: result, SessionRef: o.result.SessionID, Evidence: o.evidence})
+	// what the lease used is read before the finish's own time starts
+	used := r.leaseUsed(id)
+	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
+	defer cancel()
+	st, err := r.API.Finish(ctx, id, meshapi.FinishRequest{Result: result, SessionRef: o.result.SessionID, Evidence: o.evidence, Used: used})
 	if err != nil {
 		r.logf("nodev1: lease %s: finish: %v", id, err)
 		return actor.End{Report: actor.ReportFinish, Reason: err.Error()}
@@ -1071,11 +1073,13 @@ func (r *Runtime) postUsage(id string, o outcome) {
 }
 
 // fail reports the lease failed with cause: work ends the job, any
-// other cause Mesh takes as a hand-back.
+// other cause Mesh takes as a hand-back. It carries what the lease used
+// (leaseused.go), which Mesh keeps only when the fail ends the job.
 func (r *Runtime) fail(id, cause, reason string) {
+	used := r.leaseUsed(id)
 	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
 	defer cancel()
-	st, err := r.API.Fail(ctx, id, meshapi.FailRequest{Cause: cause, Reason: clip(r.redact(reason), maxReason)})
+	st, err := r.API.Fail(ctx, id, meshapi.FailRequest{Cause: cause, Reason: clip(r.redact(reason), maxReason), Used: used})
 	if err != nil && meshapi.LeaseGone(err) {
 		r.logf("nodev1: lease %s was no longer the node's to fail (%s)", id, cause)
 		return
