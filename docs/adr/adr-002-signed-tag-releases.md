@@ -902,6 +902,56 @@ Deleting it drops that trigger with nothing yet in its place; giving
 the Shipper a way to raise a release unit against `.runsheet/deploy.yml`
 instead is a later item.
 
+## Amendment: each identity chains to its own root, ours embedded and fetched (goal `mesh-cli-releases-ship-through-runsheet`, 2026-11-16)
+
+**The split.** `Policy` holds one `TrustedMaterial` per identity, never one
+for all of them. The identity is chosen by the issuer on the bundle's
+certificate:
+
+| issuer | identity | trusted root | SCTs |
+| --- | --- | --- | --- |
+| `https://token.actions.githubusercontent.com` (`Issuer`) | `release-tag.yml` on the tag (`IdentityPrefix`, and `PreTransferIdentityPrefix` for `preTransferTags`) | Sigstore's public-good root (`Policy.TrustedMaterial`, `publicGoodRoot`: TUF from the root embedded in sigstore-go, cached in `~/.mesh/sigstore`) | required |
+| `https://auth.runsheet.dev` (`PlatformIssuer`) | a runsheet deploy job of runsheet/mesh-cli (`PlatformSANPattern`, both extensions, the `mesh-version` line) | our own Sigstore's root (`Policy.Platform.TrustedMaterial`, `platformRoot`) | none |
+
+A certificate from either Sigstore is judged only against its own root, so
+a certificate from one never verifies against the other's root. Every tag
+`release-tag.yml` published before the cut-over has the Actions issuer and
+the public-good chain, and still verifies exactly as before. The
+`RunsheetIssuer` identity and its single shared root from earlier drafts
+are not used.
+
+**Our root, embedded and fetched.** `platformRoot` uses the first of these
+it can read:
+
+1. the copy Latchkey publishes at `PlatformRootURL`
+   (`https://auth.runsheet.dev/.well-known/sigstore/trusted_root.json`),
+   fetched with a 10s timeout and at most 1 MiB, and only if it parses as
+   a trusted root. It is then written atomically to
+   `~/.mesh/sigstore/runsheet_trusted_root.json`;
+2. that cached copy, when the fetch fails or does not parse;
+3. the copy embedded in the binary (`internal/selfupdate/runsheet_trusted_root.json`).
+
+So a rotated Fulcio or Rekor key reaches a node before any release embeds
+it. This corrects the 2026-11-15 amendment, which said a rotated root ships
+only in the next release. A node with no network still trusts the cached or
+embedded root. The fetch is authenticated by TLS to `auth.runsheet.dev` and
+nothing else; that host is already `PlatformIssuer`, whose keys our Fulcio
+trusts to issue certificates, so the fetch adds no new party to trust. The
+root is fetched only when a bundle names `PlatformIssuer`. A release signed
+by Actions never reaches it.
+
+**Bootstrap.** No release before this verifier accepts a platform-signed
+release. The first build carrying it is therefore installed on dl360 (the
+only node) by hand, once, before any release ships through runsheet. The
+install is the manual path from AGENTS.md: build for linux/amd64, `scp` to
+`~/bin/mesh.new`, then `mesh node upgrade --binary ~/bin/mesh.new`. Every
+later release reaches dl360 through self-update.
+
+Tests: `internal/selfupdate/verify_test.go` (`TestVerifyPlatformRelease`,
+`TestVerifyPlatformReleaseRefuses`, `TestVerifyActionsReleaseUnderReleasePolicy`,
+`TestPlatformRootIsEmbedded`, `TestPlatformRootPrefersTheFetchedThenCachedThenEmbeddedCopy`),
+`internal/selfupdate/reference_test.go` (`TestReferenceReleaseVerifiesOffline`).
+
 ## Consequences
 
 - Renaming an asset, the workflow file, or the repo breaks every

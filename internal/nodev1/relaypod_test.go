@@ -538,9 +538,11 @@ func TestTheLeasesEgressProcessKilledEndsTheLeasePodKilled(t *testing.T) {
 		rec = r
 		return true
 	})
-	if len(*installed) == 0 {
-		t.Fatal("the sidecar was never installed")
-	}
+	// the egress process is named to the actor the moment it starts
+	// (lease.go), before rs.open installs the sidecar's credentials
+	// (relaypod.go): EgressPID in actor.json is no proof the sidecar
+	// install has happened yet.
+	waitFor(t, "the sidecar to be installed", func() bool { return len(*installed) > 0 })
 	if err := syscall.Kill(rec.EgressPID, syscall.SIGKILL); err != nil {
 		t.Fatalf("killing the egress process %d: %v", rec.EgressPID, err)
 	}
@@ -668,9 +670,11 @@ func TestARuntimeKilledMidTransferLeavesPodSidecarAndEgressRunningUntilTheNextRu
 		rec = r
 		return true
 	})
-	if len(*installed) == 0 {
-		t.Fatal("the sidecar was never installed")
-	}
+	// the egress process is named to the actor the moment it starts
+	// (lease.go), before rs.open installs the sidecar's credentials
+	// (relaypod.go): EgressPID in actor.json is no proof the sidecar
+	// install has happened yet.
+	waitFor(t, "the sidecar to be installed", func() bool { return len(*installed) > 0 })
 	waitFor(t, "the lane socket's directory", func() bool { return laneDir != "" })
 	sock := filepath.Join(laneDir, relayLaneDir, relayLaneSocket)
 	// the egress process listens on the lane socket a moment after it
