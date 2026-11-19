@@ -138,6 +138,9 @@ type Runtime struct {
 	// node reports what is free on every take and runs its leases side
 	// by side, a slot each. Nil runs one lease at a time.
 	Scheduler *scheduler.Scheduler
+	// lanes is the validation lanes each lease runs, for its hand-off
+	// (admit.go).
+	lanes laneBook
 	// Actors runs each lease as a job actor (ADR-044, PR 3.2; `--actors`):
 	// it owns everything the lease uses, writes actor.json before each
 	// state change, recovers a panic into its release, and hands back

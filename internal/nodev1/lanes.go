@@ -272,7 +272,9 @@ func (r *Runtime) suiteLanes(b *meshapi.Brief, workspace string, parent *leasePo
 		dir := r.laneDir(b.LeaseID, k)
 		r.laneCacheMounts(b, parent.sess, sess, dir)
 		start := time.Now()
+		r.lanes.add(b.LeaseID, handoffLane{Name: name, Pod: lp.name, CPUs: hold.room.CPUs, MemGB: hold.room.MemGB})
 		release := func() {
+			r.lanes.drop(b.LeaseID, lp.name)
 			if err := sess.Close(); err != nil {
 				r.logf("nodev1: lease %s: %s", b.LeaseID, sandbox.CloseLine(lp.name, err))
 			}
@@ -338,9 +340,25 @@ type laneHold struct {
 	l    *scheduler.Lease
 	stop chan struct{}
 	once sync.Once
+	// back, set on a hold the lease's admission took (admitLanes), gives
+	// it back to the lease's pool when its lane ends rather than to the
+	// node: an admitted lease holds every lane's room for its whole life
+	// and gives it back only at its end (releaseEagerLanes).
+	back func(*laneHold)
 }
 
+// release ends the lane's use of the hold: back to the lease's pool for
+// an admitted hold, else back to the node (free).
 func (h *laneHold) release() {
+	if h != nil && h.back != nil {
+		h.back(h)
+		return
+	}
+	h.free()
+}
+
+// free gives the hold back to the node's scheduler; again is nothing.
+func (h *laneHold) free() {
 	if h == nil || h.l == nil {
 		return
 	}
@@ -452,7 +470,7 @@ func (r *Runtime) holdLane(ctx context.Context, b *meshapi.Brief, p *leasePod, n
 		if h.room == room {
 			return h, nil
 		}
-		h.release()
+		h.free()
 	}
 	if r.Scheduler == nil {
 		return &laneHold{room: room}, nil
@@ -478,41 +496,6 @@ func (r *Runtime) holdLane(ctx context.Context, b *meshapi.Brief, p *leasePod, n
 // allowance of 0 is no limit.
 func within(room, lease meshapi.Resources) bool {
 	return (lease.CPUs <= 0 || room.CPUs <= lease.CPUs) && (lease.MemGB <= 0 || room.MemGB <= lease.MemGB)
-}
-
-// reserveLanes eagerly holds the node's scheduler room for every lane a
-// validation's suite will run in, as soon as its lanes are known —
-// right after the lease's pod's services are up, before any lane is
-// opened (ADR-049 amendment, a lease's lanes reserve their room as soon
-// as the lane count is known) — each the room its own suite asks for
-// (laneRoom), by the lane's name: the first lane is the lease's own
-// pod, which runs with no hold of its own otherwise; the others are the
-// pods suiteLanes opens beside it. Each is tried with TryTake, never
-// blocking: a lane TryTake could not take is left for holdLane's
-// blocking wait when (if) that lane actually opens, so a lease's own
-// take never hangs on room its lanes do not yet need. Held on p, where
-// holdLane takes them back and the lease's end gives back any no run
-// took (releaseEagerLanes).
-func (r *Runtime) reserveLanes(b *meshapi.Brief, workspace string, p *leasePod) {
-	if r.Scheduler == nil || r.Pods == nil || !validationKind(b) {
-		return
-	}
-	cfg, err := validate.Load(workspace)
-	if err != nil {
-		return
-	}
-	sizes := validate.LaneSizes(cfg.Steps)
-	if len(sizes) <= 1 {
-		return
-	}
-	for _, lane := range sizes {
-		room := r.laneRoom(b, lane.Name, lane.Resources)
-		l, err := r.Scheduler.TryTake(laneAsk(b, lane.Name, room))
-		if err != nil {
-			continue
-		}
-		p.setEagerLane(lane.Name, wrapHold(l, room))
-	}
 }
 
 // validationKind says whether the brief's kind is a validation, which

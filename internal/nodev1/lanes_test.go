@@ -218,6 +218,9 @@ func TestASuitesShardsRunAtOnceEachWithItsOwnServices(t *testing.T) {
 	if slices.Contains(g.f.Removed, g.lp.name) {
 		t.Fatal("the lease's own pod was removed with the lanes")
 	}
+	// an admitted lease holds its lanes' room until it ends
+	// (admitLanes): its end gives it all back
+	g.lp.releaseEagerLanes()
 	if free := g.rt.Scheduler.Free(); free.CPUs != 32 || free.MemGB != 64 {
 		t.Fatalf("the lanes' room was not given back: %+v", free)
 	}
@@ -230,24 +233,21 @@ func TestASuitesShardsRunAtOnceEachWithItsOwnServices(t *testing.T) {
 	}
 }
 
-// Shards are scheduled against the node's capacity like any exec: on a
-// node with room for three lanes of the room the suite asks for, the
-// fourth waits for one to end. 12 CPUs, not 8: since the lease's lanes
-// reserve their room as soon as the lane count is known (reserveLanes),
-// the first lane — the lease's own pod — now holds its room of the
-// scheduler too, where it once ran free of it; three concurrent lanes
-// need three holds' worth of room, 12 CPUs at this suite's 4 each.
+// An admitted validation runs every shard at once: admission
+// (admitLanes) held every lane's room before the run, so no shard waits
+// on room another lease took. 16 CPUs: the lease's own 4 and its three
+// other lanes' 4 each.
 func TestShardsWaitForTheNodesRoom(t *testing.T) {
 	const shard = 400 * time.Millisecond
-	g := newShardRig(t, sizedYML, shard, scheduler.Capacity{CPUs: 12, MemGB: 64, Slots: 3})
+	g := newShardRig(t, sizedYML, shard, scheduler.Capacity{CPUs: 16, MemGB: 64, Slots: 3})
 	start := time.Now()
 	_, last := g.run(t, map[string]any{"suite": "integration"})
 	wall := time.Since(start)
 	if last["exit"] != float64(0) {
 		t.Fatalf("the run answered %v", last)
 	}
-	if g.peak != 3 || wall < 2*shard {
-		t.Fatalf("%d shards at once in %s on room for 3, want 3 and two shards' time", g.peak, wall)
+	if g.peak != 4 || wall > 3*shard {
+		t.Fatalf("%d shards at once in %s, want all 4 at once", g.peak, wall)
 	}
 }
 
@@ -272,7 +272,9 @@ func TestALeasesLanesHoldRoomAsSoonAsTheLaneCountIsKnown(t *testing.T) {
 		t.Fatalf("lane holds taken before any lane ran = %v, want %v", owners, want)
 	}
 
-	if _, err := g.rt.Scheduler.TryTake(scheduler.Ask{Owner: "lease-2", CPUs: 1, MemGB: 1}); err == nil {
+	// 12 of the 16 held: the first lane's room is the lease's own
+	// hold (4, taken before the pod in production), the rest beside it
+	if _, err := g.rt.Scheduler.TryTake(scheduler.Ask{Owner: "lease-2", CPUs: 5, MemGB: 1}); err == nil {
 		t.Fatal("a later lease was offered room the lease's unopened lanes already hold")
 	}
 

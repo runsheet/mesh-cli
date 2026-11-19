@@ -48,6 +48,10 @@ type handoffState struct {
 	// so an adopting node follows it from there rather than from the top
 	// (adopt.go's followAgentOutput).
 	AgentStdoutOffset int64 `json:"agentStdoutOffset,omitempty"`
+	// Lanes is the validation's lanes running beside the lease's pod
+	// when the hand-off was written (admit.go): an adopting node keeps
+	// their pods and holds their room again (adoptLanes).
+	Lanes *handoffLanes `json:"lanes,omitempty"`
 }
 
 // handoffTurns is the lease's turnLedger as written to disk: seen, and
@@ -83,7 +87,7 @@ func turnsForHandoff(l *turnLedger) *handoffTurns {
 // writeHandoff leaves l's hand-off state under its own lease directory,
 // atomically: a reader never sees a half-written file.
 func (r *Runtime) writeHandoff(id string, l *running) error {
-	st := &handoffState{Brief: l.brief, SocketDir: filepath.Dir(l.sock), PushHeads: l.pushHeads, SidecarDir: l.sidecarDir, EgressPID: l.egressPID, EgressControl: l.egressControl}
+	st := &handoffState{Brief: l.brief, SocketDir: filepath.Dir(l.sock), PushHeads: l.pushHeads, SidecarDir: l.sidecarDir, EgressPID: l.egressPID, EgressControl: l.egressControl, Lanes: r.lanes.of(id)}
 	if l.mailbox != nil {
 		st.Turns = turnsForHandoff(l.mailbox.turns)
 	}

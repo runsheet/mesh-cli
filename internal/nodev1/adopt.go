@@ -394,6 +394,7 @@ func (r *Runtime) adoptOne(ctx context.Context, id, dir string, st *handoffState
 	if room != nil {
 		a.Hold("room", func() error { room.Release(); return nil })
 	}
+	r.adoptLanes(leaseCtx, a, id, st)
 	r.logf("nodev1: lease %s of job %s (%s) adopted at start", id, b.JobID, b.Kind)
 	decide()
 
