@@ -301,8 +301,19 @@ func TestAShardedRunPastItsBudgetEndsRedOutOfTime(t *testing.T) {
 	if last["exit"] != float64(1) || last["out_of_time"] != true || !strings.Contains(last["summary"].(string), "ran out of time") {
 		t.Fatalf("the run answered %v, want red, out of time", last)
 	}
-	if len(g.mesh.records) != 1 {
-		t.Fatalf("%d records of the red, want 1", len(g.mesh.records))
+	// the run's one run_suite record, and a step_log of each shard the
+	// budget stopped (nodetools.StepLogTool)
+	steps, _ := last["steps"].([]any)
+	logs := 0
+	for _, st := range steps {
+		for _, sh := range st.(map[string]any)["shards"].([]any) {
+			if sh.(map[string]any)["log_evidence"] != nil {
+				logs++
+			}
+		}
+	}
+	if len(g.mesh.records) != 1+logs {
+		t.Fatalf("%d records of the red, want 1 and %d step_logs", len(g.mesh.records), logs)
 	}
 	for _, p := range g.lanePods() {
 		if !slices.Contains(g.f.Removed, p) {
