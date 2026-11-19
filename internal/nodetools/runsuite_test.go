@@ -300,7 +300,8 @@ func TestRunSuiteRecordsItsRun(t *testing.T) {
 	if !rec.Recorded(RunSuiteTool) || rec.Recorded(PushTool) {
 		t.Fatal("the recorder does not say which tools it recorded")
 	}
-	if got := rec.IDs(); len(got) != 2 {
+	// two run_suite records, and the red run's step_log
+	if got := rec.IDs(); len(got) != 3 || !rec.Recorded(StepLogTool) {
 		t.Fatalf("the recorder keeps %v", got)
 	}
 	// only the red run escalates (PR 2.11, trigger "red")

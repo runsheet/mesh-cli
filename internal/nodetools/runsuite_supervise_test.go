@@ -181,6 +181,11 @@ func TestRunSuiteAnswersWhatTheSupervisorFound(t *testing.T) {
 			}
 			got := out.Steps[0]
 			got.DurationMs = 0
+			// a red step's whole log is kept as its own step_log record
+			if got.Exit != 0 && (got.LogEvidence == "" || got.LogDigest == "" || m.blobs[got.LogDigest] == nil) {
+				t.Fatalf("the red step's log was not kept: %+v", got)
+			}
+			got.LogEvidence, got.LogDigest = "", ""
 			if !reflect.DeepEqual(got, c.wantStep) {
 				t.Fatalf("the blob's step %+v, want %+v", got, c.wantStep)
 			}

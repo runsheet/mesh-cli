@@ -384,7 +384,18 @@ type SuiteStep struct {
 	StopReason string `json:"stop_reason,omitempty"`
 	// Reason is why the node called the step red when its command's own
 	// exit did not: "ran 0 tests" under the suite's min_tests.
-	Reason string `json:"reason,omitempty"`
+	Reason string `json:"reason,omitempty"`	// Hung is a run whose go test ended in its timeout panic twice, the
+	// second time in a fresh lane (validate's hung.go): a hang, never a
+	// failing test of the change's; HungTests are the tests the panic
+	// named as running, and Rerun what the node's re-run found (also
+	// when the re-run did not hang). LogEvidence is the step_log record
+	// keeping the run's whole output — the goroutine dump — and LogDigest
+	// that output's blob.
+	Hung        bool     `json:"hung,omitempty"`
+	HungTests   []string `json:"hung_tests,omitempty"`
+	Rerun       string   `json:"rerun,omitempty"`
+	LogEvidence string   `json:"log_evidence,omitempty"`
+	LogDigest   string   `json:"log_digest,omitempty"`
 }
 
 // SuiteShard is one shard of a sharded step: its index (0-based, as
@@ -405,7 +416,18 @@ type SuiteShard struct {
 	// own: its Exit is still non-zero, never 0, and StopReason names why.
 	Stopped    bool   `json:"stopped,omitempty"`
 	StopReason string `json:"stop_reason,omitempty"`
-	Reason     string `json:"reason,omitempty"`
+	Reason     string `json:"reason,omitempty"`	// Hung is a run whose go test ended in its timeout panic twice, the
+	// second time in a fresh lane (validate's hung.go): a hang, never a
+	// failing test of the change's; HungTests are the tests the panic
+	// named as running, and Rerun what the node's re-run found (also
+	// when the re-run did not hang). LogEvidence is the step_log record
+	// keeping the run's whole output — the goroutine dump — and LogDigest
+	// that output's blob.
+	Hung        bool     `json:"hung,omitempty"`
+	HungTests   []string `json:"hung_tests,omitempty"`
+	Rerun       string   `json:"rerun,omitempty"`
+	LogEvidence string   `json:"log_evidence,omitempty"`
+	LogDigest   string   `json:"log_digest,omitempty"`
 }
 
 // TestResult is one test's (or, Test empty, one package's) final event:
@@ -932,6 +954,7 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 	if runErr != nil && len(results) == 0 && !outOfTime {
 		return "", fmt.Errorf("the suites could not run: %v", runErr)
 	}
+	s.keepLogs(readCtx, results)
 	out := Normalise(results)
 	out.Inferred = profile
 	blob, err := json.Marshal(out)
@@ -986,6 +1009,9 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 	}
 	if stalled > 0 {
 		summary += fmt.Sprintf(", %d stalled", stalled)
+	}
+	if hung := hungTestsOf(results); len(hung) > 0 {
+		summary += fmt.Sprintf("; hung (go test's timeout, twice): %s", strings.Join(hung, ", "))
 	}
 	for _, st := range out.Steps {
 		if st.Reason != "" {
@@ -1044,6 +1070,9 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 	if len(stalledTests) > 0 {
 		answer["stalled_tests"] = stalledTests
 	}
+	if hung := hungTestsOf(results); len(hung) > 0 {
+		answer["hung_tests"] = hung
+	}
 	if sel != nil {
 		answer["selection"] = sel
 	}
@@ -1077,7 +1106,8 @@ func Normalise(results []validate.StepResult) SuiteOutput {
 	for _, r := range results {
 		out.Steps = append(out.Steps, SuiteStep{Name: r.Name, Command: r.Command, Exit: r.ExitCode, DurationMs: r.DurationMs,
 			TestsRun: r.TestsRun, TestsPassed: r.TestsPassed, TestsFailed: r.TestsFailed, TestsFlaky: r.TestsFlaky, Shards: shardsOf(r.Shards),
-			Stopped: r.Stopped, StopReason: r.StopReason, Reason: r.Reason})
+			Stopped: r.Stopped, StopReason: r.StopReason, Reason: r.Reason,
+			Hung: r.Hung, HungTests: r.HungTests, Rerun: r.Rerun, LogEvidence: r.LogEvidence, LogDigest: r.LogDigest})
 		if len(r.Tests) > 0 {
 			out.Tests = append(out.Tests, testResultsFrom(r.Tests)...)
 		} else {
@@ -1117,7 +1147,8 @@ func shardsOf(shards []validate.ShardResult) []SuiteShard {
 		}
 		out[sh.Index] = SuiteShard{Index: sh.Index, Total: total, Exit: sh.ExitCode, DurationMs: sh.DurationMs,
 			TestsRun: sh.TestsRun, TestsPassed: sh.TestsPassed, TestsFailed: sh.TestsFailed, TestsFlaky: sh.TestsFlaky,
-			Stopped: sh.Stopped, StopReason: sh.StopReason, Reason: sh.Reason}
+			Stopped: sh.Stopped, StopReason: sh.StopReason, Reason: sh.Reason,
+			Hung: sh.Hung, HungTests: sh.HungTests, Rerun: sh.Rerun, LogEvidence: sh.LogEvidence, LogDigest: sh.LogDigest}
 	}
 	return out
 }

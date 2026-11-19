@@ -403,6 +403,14 @@ type ran struct {
 	confirmed                  bool
 	reason                     string
 	notes                      strings.Builder
+
+	// hung is a run that ended in go test's timeout panic, hungTests the
+	// tests it named, rerun what the node's re-run of it found and
+	// firstLog the hung first run's output when it was re-run (hung.go)
+	hung      bool
+	hungTests []string
+	rerun     string
+	firstLog  *StepLog
 }
 
 // unitStop is one unit's Options.OnLane stop func, and whether it was
@@ -609,7 +617,14 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 				sh = st.shard(u.shard)
 			}
 			sup.parse(sh, out)
-			if !cancelled() {
+			out.hungTests, out.hung = hungTests(slices.Concat(out.stdout.Bytes(), out.stderr.Bytes()))
+			if out.hung && !out.stopped && !cancelled() && uctx.Err() == nil {
+				// a hang is no failing test to run again by name: the
+				// whole unit runs once more, in a fresh lane when the
+				// runner opens lanes (hung.go)
+				out = rerunHung(uctx, sup, r, lr, split, l.name, st, sh, cmd, ls, out)
+				markStopped()
+			} else if !cancelled() {
 				sup.retry(uctx, r, sh, cmd, start, ls, out)
 				markStopped()
 			}
@@ -715,12 +730,30 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 				Artifacts:   artifacts,
 				Stopped:     out.stopped,
 				StopReason:  out.stopReason,
+				Hung:        out.hung,
+				HungTests:   out.hungTests,
+				Rerun:       out.rerun,
 			}
 			combined := RedactTokens(out.stdout.String() + out.stderr.String())
 			if opts.Redact != nil {
 				combined = opts.Redact(combined)
 			}
 			combined += out.notes.String()
+			if out.exitCode != 0 || out.runErr != nil || out.firstLog != nil {
+				label := st.Name
+				if n > 1 {
+					label = fmt.Sprintf("%s shard %d/%d", st.Name, k+1, n)
+				}
+				if out.firstLog != nil {
+					first := *out.firstLog
+					first.Label = label + ", first run (hung)"
+					first.Data = []byte(redactLog(string(first.Data), opts.Redact))
+					sr.Logs = append(sr.Logs, first)
+				}
+				if out.exitCode != 0 || out.runErr != nil {
+					sr.Logs = append(sr.Logs, StepLog{Label: label, Exit: out.exitCode, Data: capLog([]byte(combined))})
+				}
+			}
 			if out.exitCode != 0 || out.runErr != nil {
 				sr.Output = failTail(combined)
 				sr.Tail = failureTail(combined)
@@ -800,6 +833,8 @@ func merge(shards []ShardResult, concurrent bool) StepResult {
 		out.TestsFlaky += s.TestsFlaky
 		out.Tests = append(out.Tests, s.Tests...)
 		out.TimedOut = out.TimedOut || s.TimedOut
+		out.Hung = out.Hung || s.Hung
+		out.HungTests = append(out.HungTests, s.HungTests...)
 		report.WriteString(s.Report)
 		if s.ExitCode != 0 && failed < 0 {
 			failed = i

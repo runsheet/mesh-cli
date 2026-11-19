@@ -58,6 +58,20 @@ type StepResult struct {
 	// Shards are a sharded step's shards' own results, for the node's
 	// log; the attestation carries the merged step alone.
 	Shards []ShardResult `json:"-"`
+	// Hung is a unit whose go test ended in its timeout panic, and again
+	// when the node ran it a second time in a fresh lane (hung.go);
+	// HungTests are the tests the last panic named as running. Rerun
+	// says what the node's re-run of a hung unit found, when it made one.
+	// A sharded step is Hung when any shard is.
+	Hung      bool     `json:"-"`
+	HungTests []string `json:"-"`
+	Rerun     string   `json:"-"`
+	// Logs are a failed or hung unit's whole outputs (hung.go), for
+	// run_suite to keep as evidence; LogEvidence and LogDigest name the
+	// last one kept, once it is.
+	Logs        []StepLog `json:"-"`
+	LogEvidence string    `json:"-"`
+	LogDigest   string    `json:"-"`
 }
 
 // Artifact is one digested file a step named on Step.Artifacts.
