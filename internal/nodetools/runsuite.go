@@ -384,7 +384,7 @@ type SuiteStep struct {
 	StopReason string `json:"stop_reason,omitempty"`
 	// Reason is why the node called the step red when its command's own
 	// exit did not: "ran 0 tests" under the suite's min_tests.
-	Reason string `json:"reason,omitempty"`	// Hung is a run whose go test ended in its timeout panic twice, the
+	Reason string `json:"reason,omitempty"` // Hung is a run whose go test ended in its timeout panic twice, the
 	// second time in a fresh lane (validate's hung.go): a hang, never a
 	// failing test of the change's; HungTests are the tests the panic
 	// named as running, and Rerun what the node's re-run found (also
@@ -416,7 +416,7 @@ type SuiteShard struct {
 	// own: its Exit is still non-zero, never 0, and StopReason names why.
 	Stopped    bool   `json:"stopped,omitempty"`
 	StopReason string `json:"stop_reason,omitempty"`
-	Reason     string `json:"reason,omitempty"`	// Hung is a run whose go test ended in its timeout panic twice, the
+	Reason     string `json:"reason,omitempty"` // Hung is a run whose go test ended in its timeout panic twice, the
 	// second time in a fresh lane (validate's hung.go): a hang, never a
 	// failing test of the change's; HungTests are the tests the panic
 	// named as running, and Rerun what the node's re-run found (also
