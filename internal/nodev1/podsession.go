@@ -119,6 +119,9 @@ type leasePod struct {
 	// until a run opens that lane (holdLane, popEagerLane) or the lease
 	// ends (releaseEagerLanes) (lanes.go).
 	eagerLanes map[string]*laneHold
+	// ended is set once the lease's end gave its lanes' room back: a
+	// lane's hold that comes back after it is freed, never pooled again.
+	ended bool
 }
 
 // setEagerLane records an eagerly-reserved lane hold (reserveLanes); a
@@ -128,9 +131,9 @@ func (p *leasePod) setEagerLane(name string, h *laneHold) {
 	if p.eagerLanes == nil {
 		p.eagerLanes = map[string]*laneHold{}
 	}
-	if _, held := p.eagerLanes[name]; held {
+	if _, held := p.eagerLanes[name]; held || p.ended {
 		p.mu.Unlock()
-		h.release()
+		h.free()
 		return
 	}
 	p.eagerLanes[name] = h
@@ -144,9 +147,10 @@ func (p *leasePod) releaseEagerLanes() {
 	p.mu.Lock()
 	held := p.eagerLanes
 	p.eagerLanes = nil
+	p.ended = true
 	p.mu.Unlock()
 	for _, h := range held {
-		h.release()
+		h.free()
 	}
 }
 
@@ -235,7 +239,9 @@ func (r *Runtime) openLeasePod(ctx context.Context, b *meshapi.Brief, workspace 
 	if err := r.startServices(ctx, b, p, workspace, "the lease's"); err != nil {
 		return p, err
 	}
-	r.reserveLanes(b, workspace, p)
+	if err := r.admitLanes(ctx, b, workspace, p); err != nil {
+		return p, err
+	}
 	p.lanes = r.suiteLanes(b, workspace, p)
 	p.hold = func(ctx context.Context, name string, size validate.Resources) (*laneHold, error) {
 		return r.holdLane(ctx, b, p, name, size, true)
