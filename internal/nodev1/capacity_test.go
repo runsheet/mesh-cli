@@ -144,9 +144,11 @@ func TestFreeAlreadyExcludesAHeldLeasesUnopenedLanes(t *testing.T) {
 	t.Cleanup(pod.Release)
 
 	free := freeOf(g.rt.Scheduler)
-	wantCPUs, wantMem := 100-5*g.b.Resources.CPUs, 100-5*g.b.Resources.MemGB
+	// the first lane runs in the lease's own pod on the lease's own
+	// hold, so admission (admitLanes) takes only the other three
+	wantCPUs, wantMem := 100-4*g.b.Resources.CPUs, 100-4*g.b.Resources.MemGB
 	if free.CPUs != wantCPUs || free.MemGB != wantMem {
-		t.Fatalf("free = %+v, want %g CPUs and %g MemGB free (1 pod + 4 lanes held of %+v)", free, wantCPUs, wantMem, g.b.Resources)
+		t.Fatalf("free = %+v, want %g CPUs and %g MemGB free (1 pod + 3 lanes beside it held of %+v)", free, wantCPUs, wantMem, g.b.Resources)
 	}
 }
 
