@@ -127,3 +127,21 @@ func TestProbeCacheMountReadsLowerAndWritesUpperE2E(t *testing.T) {
 		t.Fatalf("upper.txt landed in lower too; the overlay never wrote through to it")
 	}
 }
+
+// A cache overlay renders as podman's volume form (`:O` with upperdir
+// and workdir), which podman 4.x takes, never `--mount type=overlay`,
+// which podman 4.9 refuses: dl360's leases dropped their tenant cache
+// on every run for that refusal and downloaded their modules afresh.
+func TestOverlayMountRendersAsAnOverlayVolume(t *testing.T) {
+	mount := Mount{Source: "/c/gomod", Target: "/c/gomod", Overlay: true, Upper: "/l/up", Work: "/l/work"}
+	args := AgentRunArgs(Pod{Name: "p"}, AgentSpec{Name: "a", Image: "img", Mounts: []Mount{mount}})
+
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "type=overlay") {
+		t.Fatalf("args = %v, want no --mount type=overlay", args)
+	}
+	want := "--volume /c/gomod:/c/gomod:O,upperdir=/l/up,workdir=/l/work"
+	if !strings.Contains(joined, want) {
+		t.Fatalf("args = %v, want it to contain %q", args, want)
+	}
+}

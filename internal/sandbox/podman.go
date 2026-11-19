@@ -230,7 +230,13 @@ func agentArgs(mode string, pod Pod, spec AgentSpec, mounts []Mount) []string {
 	sort.SliceStable(mounts, func(i, j int) bool { return mountDepth(mounts[i]) < mountDepth(mounts[j]) })
 	for _, m := range mounts {
 		if m.Overlay {
-			args = append(args, "--mount", fmt.Sprintf("type=overlay,source=%s,destination=%s,upperdir=%s,workdir=%s",
+			// the volume form (`:O` with upperdir and workdir), not
+			// `--mount type=overlay`: podman 4.x (dl360's 4.9.3) refuses
+			// the --mount form outright ("invalid filesystem type
+			// overlay"), so every lease's tenant cache was dropped on the
+			// retry and each lease downloaded its modules afresh. Podman
+			// 4 and 5 both take this form.
+			args = append(args, "--volume", fmt.Sprintf("%s:%s:O,upperdir=%s,workdir=%s",
 				m.Source, m.Target, m.Upper, m.Work))
 			continue
 		}
