@@ -28,7 +28,7 @@ func TestNodeRunHostReadsNodeYAMLHostBlock(t *testing.T) {
 	var logs bytes.Buffer
 	host, machine := nodeRunHost(log.New(&logs, "", 0))
 
-	want := nodev1.Host{LoadPerCoreMax: 2.5, PackageTempMaxC: 85, MinFreeMemory: 32 << 30}
+	want := nodev1.Host{LoadPerCoreMax: 2.5, CPUSomeAvg60Max: 25, PackageTempMaxC: 85, MinFreeMemory: 32 << 30}
 	if host != want {
 		t.Fatalf("Host = %+v, want %+v (log: %s)", host, want, logs.String())
 	}

@@ -369,7 +369,12 @@ func nodeRunHost(logger *log.Logger) (nodev1.Host, nodev1.MachineProbe) {
 		cfg = settings.Host
 	}
 	probe := node.HostMachine()
-	host := nodev1.Host{LoadPerCoreMax: cfg.LoadPerCoreMax, PackageTempMaxC: cfg.PackageTempMaxC}
+	host := nodev1.Host{LoadPerCoreMax: cfg.LoadPerCoreMax, PackageTempMaxC: cfg.PackageTempMaxC, CPUSomeAvg60Max: cfg.CPUSomeAvg60Max}
+	// a load threshold set with no pressure threshold takes the pressure
+	// default, so a host with PSI is judged by pressure (ADR-031)
+	if host.LoadPerCoreMax > 0 && host.CPUSomeAvg60Max == 0 {
+		host.CPUSomeAvg60Max = node.DefaultCPUSomeAvg60Max
+	}
 	if cfg.MinFreeMemory != "" {
 		var total uint64
 		if probe != nil {
@@ -397,6 +402,7 @@ func (p nodeRunMachineProbe) Read() (nodev1.MachineReading, error) {
 	return nodev1.MachineReading{
 		Load1: r.Load1, CPUs: r.CPUs, MemAvailable: r.MemAvailable,
 		PackageTempC: r.PackageTempC, HasTemp: r.HasTemp,
+		CPUSomeAvg10: r.CPUSomeAvg10, CPUSomeAvg60: r.CPUSomeAvg60, HasCPUPressure: r.HasCPUPressure,
 	}, err
 }
 

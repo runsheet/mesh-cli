@@ -1,6 +1,9 @@
 package nodev1
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Host is the floor past which the node backs off a hot or
 // short-of-memory host (Mesh v1 spec amendment, "A node backs off a hot
@@ -11,6 +14,14 @@ type Host struct {
 	// LoadPerCoreMax is the load average per core past which the host is
 	// read as hot.
 	LoadPerCoreMax float64
+	// CPUSomeAvg60Max is the host's /proc/pressure/cpu `some` avg60 (a
+	// percentage) past which the host is read as hot. When the reading
+	// has CPU pressure and this is set, it judges the host in place of
+	// LoadPerCoreMax (ADR-031): load average counts tasks waiting on
+	// disk, locks and Postgres as well as CPU, so on dl360 it read 186
+	// on 96 cores (load/core 1.9, "hot") with the CPUs 91% idle and
+	// pressure at 11%, and the node took no lease for hours.
+	CPUSomeAvg60Max float64
 	// MinFreeMemory is the bytes of free memory at or under which the
 	// host is read as short of memory.
 	MinFreeMemory uint64
@@ -107,7 +118,11 @@ func (r *Runtime) hostGate() string {
 	if err != nil {
 		return ""
 	}
-	if max := r.Host.LoadPerCoreMax; max > 0 {
+	if max := r.Host.CPUSomeAvg60Max; max > 0 && reading.HasCPUPressure {
+		if reading.CPUSomeAvg60 > max {
+			return fmt.Sprintf("host hot: cpu pressure %.1f%% over %.1f%%", reading.CPUSomeAvg60, max)
+		}
+	} else if max := r.Host.LoadPerCoreMax; max > 0 {
 		if per := reading.PerCore(); per > max {
 			return fmt.Sprintf("host hot: load/core %.2f over %.2f", per, max)
 		}
@@ -125,7 +140,7 @@ func (r *Runtime) hostGate() string {
 // ("") — never the same state twice running.
 func (r *Runtime) noteHostGate(reason string) {
 	r.mu.Lock()
-	changed := reason != r.hostGateReason
+	changed := gateKind(reason) != gateKind(r.hostGateReason)
 	r.hostGateReason = reason
 	r.mu.Unlock()
 	if !changed {
@@ -136,4 +151,15 @@ func (r *Runtime) noteHostGate(reason string) {
 		return
 	}
 	r.logf("nodev1: %s; taking no new lease", reason)
+}
+
+// gateKind is reason up to its first digit — "host hot: load/core ",
+// "host hot: cpu pressure " — so a reading that moves while the host
+// stays hot is not logged again (it was, every five seconds: 14,286
+// lines on dl360 since 2026-11-06).
+func gateKind(reason string) string {
+	if i := strings.IndexAny(reason, "0123456789"); i >= 0 {
+		return reason[:i]
+	}
+	return reason
 }
