@@ -511,7 +511,7 @@ func (r *Runtime) adoptedTools(ctx context.Context, b *meshapi.Brief, workspace 
 		r.logf("nodev1: lease %s: adopted without node tool(s) %s, which only the node that started it could serve", b.LeaseID, strings.Join(unserved, ", "))
 	}
 	pusher := sidecarPusher(filepath.Join(sidecarDir, relayControlDir, relayControlSocket))
-	tools, rec := r.nodeTools(&served, nil, workspace, tokens, escalate.New(b.Harness.Model), mb, nil, pusher, leaseClock{ctx: ctx, began: time.Now()}, nil, nil)
+	tools, rec := r.nodeTools(&served, nil, workspace, tokens, escalate.New(b.Harness.Model), mb, nil, pusher, leaseClock{ctx: ctx, began: time.Now(), budget: r.suiteBudget(&served, workspace)}, nil, nil)
 	tools = append(tools, r.endTools(&served, fin, hb, mb)...)
 	if sl, err := slotsOf(b); err == nil {
 		tools = sl.nodeTools(tools)
