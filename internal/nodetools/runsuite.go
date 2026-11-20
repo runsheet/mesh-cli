@@ -279,6 +279,13 @@ type RunSuite struct {
 	// or not any call delivers it: what the lease reports when its
 	// budget stops the session before the session reports itself.
 	OnFinished func(answer string)
+	// OnCoverage, set, hears the content of an e2e coverage map a run's
+	// step wrote (CoverageReport among its reports, runsheet's
+	// e2ecoverage suite on main's validation): what the node carries on
+	// the validate result's "coverage" key (nodev1 withCoverage). A map
+	// cut at the attestation's report bound, or not JSON, is never
+	// heard: Logf says why it was skipped.
+	OnCoverage func(content string)
 
 	mu   sync.Mutex
 	runs map[string]*suiteRun
@@ -962,6 +969,7 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 		return "", fmt.Errorf("the suites could not run: %v", runErr)
 	}
 	s.keepLogs(readCtx, results)
+	s.noteCoverage(steps, results)
 	out := Normalise(results)
 	out.Inferred = profile
 	blob, err := json.Marshal(out)
@@ -1204,4 +1212,58 @@ func stepNames(steps []validate.Step) []string {
 		out[i] = s.Name
 	}
 	return out
+}
+
+// CoverageReport is the report file of runsheet's e2ecoverage suite:
+// main's per-test e2e coverage map (runsheet ADR 032, amended
+// 2026-11-20), carried on the validate result's "coverage" key.
+const CoverageReport = "e2e-coverage.json"
+
+// MaxCoverage is the most of a coverage map the node carries: the
+// attestation's report bound (validate's reportCap). A step's report is
+// cut there, so a report this long may be a cut map and is skipped.
+const MaxCoverage = 256 * 1024
+
+// noteCoverage hands OnCoverage the report of each step that names
+// CoverageReport as its only report and wrote one. A step whose report
+// is its results (a results: location) is not a coverage step.
+func (s *RunSuite) noteCoverage(steps []validate.Step, results []validate.StepResult) {
+	if s.OnCoverage == nil {
+		return
+	}
+	for _, r := range results {
+		i := slices.IndexFunc(steps, func(st validate.Step) bool { return st.Name == r.Name })
+		if i < 0 {
+			continue
+		}
+		st := steps[i]
+		if st.Results != "" || len(st.Reports) != 1 || st.Reports[0] != CoverageReport {
+			continue
+		}
+		content, why := coverageContent(r.Report)
+		if why != "" {
+			if s.Logf != nil {
+				s.Logf("run_suite: step %s: the e2e coverage map is not carried: %s", r.Name, why)
+			}
+			continue
+		}
+		if content != "" {
+			s.OnCoverage(content)
+		}
+	}
+}
+
+// coverageContent is report as the coverage map the node carries, ""
+// for none written, or why it is skipped.
+func coverageContent(report string) (content, why string) {
+	report = strings.TrimSpace(report)
+	switch {
+	case report == "":
+		return "", ""
+	case len(report) >= MaxCoverage:
+		return "", fmt.Sprintf("%d bytes reaches the %d-byte report bound, so it may be cut", len(report), MaxCoverage)
+	case !json.Valid([]byte(report)):
+		return "", "it is not JSON"
+	}
+	return report, ""
 }
