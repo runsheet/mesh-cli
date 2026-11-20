@@ -26,6 +26,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -605,7 +606,7 @@ func (s *Supervisor) reconcileWorkspaces(act bool, out *Reconciled) {
 		dir := filepath.Join(s.LeaseRoot, e.Name())
 		out.Workspaces = append(out.Workspaces, dir)
 		if act {
-			if err := os.RemoveAll(dir); err != nil {
+			if err := removeTree(dir); err != nil {
 				out.Errors = append(out.Errors, fmt.Sprintf("removing %s: %v", dir, err))
 			}
 		}
@@ -621,4 +622,24 @@ func readActorRecord(path string) (actor.Record, error) {
 	}
 	err = json.Unmarshal(b, &rec)
 	return rec, err
+}
+
+// removeTree is os.RemoveAll that also removes read-only trees: Go's
+// module cache (a lease's mesh-home/go/pkg/mod) writes its files and
+// directories without the owner's write bit, so a plain RemoveAll fails
+// with "permission denied" and the job directory stays. On dl360 that
+// left 309 orphaned job directories (253 GB) on 2026-11-20. The first
+// failure makes every directory under dir writable by its owner, then
+// it tries once more.
+func removeTree(dir string) error {
+	if err := os.RemoveAll(dir); err == nil {
+		return nil
+	}
+	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			_ = os.Chmod(path, 0o700)
+		}
+		return nil
+	})
+	return os.RemoveAll(dir)
 }
