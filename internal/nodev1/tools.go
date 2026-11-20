@@ -11,7 +11,6 @@ import (
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/nodetools"
 	"projectmesh.io/mesh-cli/internal/release"
-	"projectmesh.io/mesh-cli/internal/validate"
 )
 
 // nodeTools are the node tools the brief's kind names (Mesh v1 spec,
@@ -73,7 +72,7 @@ func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace s
 	if slices.Contains(b.NodeTools, nodetools.RunSuiteTool) {
 		rs = &nodetools.RunSuite{Workspace: workspace, Recorder: rec, Run: suites,
 			OnHost: suites == nil && r.hostSuites(), Escalate: escalateOn(ladder, mb, escalate.OnRed),
-			Wait: r.SuiteWait, Context: clock.ctx, Began: clock.began, Budget: r.suiteBudget(b, workspace),
+			Wait: r.SuiteWait, Context: clock.ctx, Began: clock.began, Budget: suiteRunBudget(clock.budget), OnFinished: clock.answers.addFunc(),
 			OnActivity: func(what string) { r.stepProgress(b.LeaseID, nodetools.RunSuiteTool+": "+what) },
 			Logf: func(format string, args ...any) {
 				r.logf("nodev1: lease %s: "+format, append([]any{b.LeaseID}, args...)...)
@@ -169,22 +168,34 @@ func escalateOn(ladder *escalate.Ladder, mb *Mailbox, on string) func(string) st
 type leaseClock struct {
 	ctx   context.Context
 	began time.Time
+	// budget is the validation budget the lease is held to, zero for
+	// none, and answers hears run_suite's answers for the report the
+	// node makes if the budget stops the session (validatebudget.go)
+	budget  time.Duration
+	answers *suiteAnswers
 }
 
-// suiteBudget is the validation budget run_suite holds the lease to:
-// the checkout's validate.yml budget, as the lease's work found it, on a
-// validation kind (validationKind); zero otherwise, or when the file
-// states none or cannot be read.
+// suiteRunBudget is how long from the lease's start run_suite's runs
+// may go on: the budget less suiteGrace, so the session hears their
+// answers before the node stops it.
+func suiteRunBudget(budget time.Duration) time.Duration {
+	if budget <= 0 {
+		return 0
+	}
+	return budget - suiteGrace(budget)
+}
+
+// suiteBudget is the validation budget the lease is held to: the
+// smaller of the checkout's and its default branch's validate.yml
+// budget (validatebudget.go), on a validation kind (validationKind);
+// zero otherwise, or when neither states one.
 func (r *Runtime) suiteBudget(b *meshapi.Brief, workspace string) time.Duration {
 	if !validationKind(b) {
 		return 0
 	}
-	cfg, err := validate.Load(workspace)
-	if err != nil {
-		return 0
+	budget := validateBudget(workspace)
+	if budget > 0 {
+		r.logf("nodev1: lease %s: held to the repository's validation budget of %s", b.LeaseID, budget)
 	}
-	if cfg.Budget > 0 {
-		r.logf("nodev1: lease %s: held to the repository's validation budget of %s", b.LeaseID, cfg.Budget)
-	}
-	return cfg.Budget
+	return budget
 }

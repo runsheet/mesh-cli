@@ -33,6 +33,10 @@ type timeBudget struct {
 	fired     bool
 	warned    bool
 	closed    bool
+	// fixed is a budget nothing extends: a validation held to its
+	// repository's budget (validatebudget.go), which request_time must
+	// not carry past it
+	fixed bool
 
 	done chan struct{}
 }
@@ -110,7 +114,7 @@ func (b *timeBudget) Err() error {
 func (b *timeBudget) Extend(d time.Duration) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.closed {
+	if b.closed || b.fixed {
 		return false
 	}
 	b.deadline = b.deadline.Add(d)
@@ -125,6 +129,13 @@ func (b *timeBudget) Extend(d time.Duration) bool {
 		b.warnTimer = time.AfterFunc(warnAt, b.warn)
 	}
 	return true
+}
+
+// spent is whether the budget ran out (and not its parent, nor Stop).
+func (b *timeBudget) spent() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.fired
 }
 
 // Stop releases the budget's timers once its session is done with it,

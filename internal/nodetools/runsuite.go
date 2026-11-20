@@ -275,6 +275,10 @@ type RunSuite struct {
 	// nothing and is answered the same. Zero Budget bounds nothing.
 	Budget time.Duration
 	Began  time.Time
+	// OnFinished, set, hears each run's answer as the run ends, whether
+	// or not any call delivers it: what the lease reports when its
+	// budget stops the session before the session reports itself.
+	OnFinished func(answer string)
 
 	mu   sync.Mutex
 	runs map[string]*suiteRun
@@ -674,6 +678,9 @@ func (s *RunSuite) call(ctx context.Context, args map[string]any) (string, error
 	go func() {
 		defer close(r.done)
 		r.answer, r.err = s.execute(r, run, steps, sel, failFast, profile)
+		if s.OnFinished != nil && r.err == nil {
+			s.OnFinished(r.answer)
+		}
 	}()
 	return s.await(ctx, r, s.wait())
 }

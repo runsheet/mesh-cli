@@ -44,6 +44,9 @@ const maxReason = 2000
 // outcome is how a lease's work ended, before it is reported.
 type outcome struct {
 	result SessionResult
+	// budgetSpent is a validation its repository's budget stopped: its
+	// finish is the node's report of it (validatebudget.go)
+	budgetSpent bool
 	// finish is what the product's finish tool answered, or the node's
 	// result tool kept, nil when the session never had either answer. A
 	// one-shot session's settle fills it from the session's last message
@@ -481,11 +484,24 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	// request_time (nodeTools, below) can extend the very context the
 	// session goes on to run under
 	var tb *timeBudget
-	if m := b.Harness.Budget.Minutes; m > 0 {
-		tb = newTimeBudget(ctx, time.Duration(m)*time.Minute, mb)
+	clock := leaseClock{ctx: ctx, began: began, budget: r.suiteBudget(b, workspace)}
+	length := time.Duration(b.Harness.Budget.Minutes) * time.Minute
+	// a validation's session ends with its repository's budget, counted
+	// from the lease's start (validatebudget.go), when that comes first
+	held := false
+	if clock.budget > 0 {
+		left := max(clock.budget-time.Since(began), min(budgetFloor, clock.budget))
+		if length <= 0 || left < length {
+			length, held = left, true
+			clock.answers = &suiteAnswers{}
+		}
+	}
+	if length > 0 {
+		tb = newTimeBudget(ctx, length, mb)
+		tb.fixed = held
 		defer tb.Stop()
 	}
-	tools, rec := r.nodeTools(b, grant, workspace, tokens, ladder, mb, suites, pusher, leaseClock{ctx: ctx, began: began}, tb, tnt.Tainted)
+	tools, rec := r.nodeTools(b, grant, workspace, tokens, ladder, mb, suites, pusher, clock, tb, tnt.Tainted)
 	hb := &sessionHandBack{}
 	tools = sl.nodeTools(append(tools, r.endTools(b, fin, hb, mb)...))
 	var (
@@ -658,10 +674,20 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		o.cause = context.Cause(ctx)
 	} else if rs := stoppedBy(sctx); rs != nil {
 		o.stopped, o.err = rs, nil
+	} else if held && tb.spent() {
+		// the validation's budget is spent: the node reports it with
+		// what run_suite answered, triaged infra — the session's own
+		// finish when it had made one — and releases (validatebudget.go)
+		o.err = nil
+		if o.finish == nil {
+			o.finish = clock.answers.budgetFinish(clock.budget, o.evidence)
+		}
+		o.budgetSpent = true
+		r.logf("nodev1: lease %s: the repository's validation budget of %s is spent: the session is stopped and the validation reported as it stands", b.LeaseID, clock.budget)
 	} else if errors.Is(err, context.DeadlineExceeded) || sctx.Err() != nil {
 		o.err = fmt.Errorf("the session ran past its %d-minute budget", b.Harness.Budget.Minutes)
 	}
-	if o.err == nil && o.cause == nil && o.stopped == nil && o.exposed == nil && b.Thread == nil && !res.Parked && o.handBack == nil {
+	if o.err == nil && o.cause == nil && o.stopped == nil && o.exposed == nil && b.Thread == nil && !res.Parked && o.handBack == nil && !o.budgetSpent {
 		// a one-shot session's finish is its finish tool's answer, or its
 		// last message when that fits the kind's finish_schema, or none
 		// (settle.go); the learnings the finish carried go to the
