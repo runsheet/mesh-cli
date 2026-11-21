@@ -131,6 +131,10 @@ type Scheduler struct {
 	changed chan struct{}
 	// exclusiveWaiting counts exclusive cache asks waiting in Take.
 	exclusiveWaiting int
+	// allWaiting is the tickets of the all-or-nothing takes waiting in
+	// TakeAll, oldest first, and allN the last ticket given (takeall.go).
+	allWaiting []uint64
+	allN       uint64
 }
 
 // New is a scheduler of total.
