@@ -77,6 +77,10 @@ type leasePod struct {
 	sess     *sandbox.Session
 	name     string
 	statuses []sandbox.ServiceStatus
+	// admissionWait is how long admitLanes waited for the node's room
+	// for every lane: it never counts against the validation budget
+	// (budgetBegan)
+	admissionWait time.Duration
 	// dir is the lease's own directory (Runtime.leaseDir): the agent's
 	// stdio files go here, not the node's own pipes (agentio.go).
 	dir string
