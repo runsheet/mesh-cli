@@ -484,7 +484,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	// request_time (nodeTools, below) can extend the very context the
 	// session goes on to run under
 	var tb *timeBudget
-	clock := leaseClock{ctx: ctx, began: began, budget: r.suiteBudget(b, workspace)}
+	clock := leaseClock{ctx: ctx, began: began, budget: r.suiteBudget(b, workspace), coverage: &coverageNote{}}
 	length := time.Duration(b.Harness.Budget.Minutes) * time.Minute
 	// a validation's session ends with its repository's budget, counted
 	// from the lease's start (validatebudget.go), when that comes first
@@ -697,6 +697,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		r.handInLearnings(ctx, b, sock, fin, st.learnings)
 		if o.noFinish == "" {
 			o.finish = r.finalPin(ctx, b, grant, pusher, workspace, o.finish)
+			o.finish = withCoverage(o.finish, clock.coverage.get())
 		}
 	}
 	return o

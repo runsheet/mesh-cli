@@ -72,7 +72,7 @@ func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace s
 	if slices.Contains(b.NodeTools, nodetools.RunSuiteTool) {
 		rs = &nodetools.RunSuite{Workspace: workspace, Recorder: rec, Run: suites,
 			OnHost: suites == nil && r.hostSuites(), Escalate: escalateOn(ladder, mb, escalate.OnRed),
-			Wait: r.SuiteWait, Context: clock.ctx, Began: clock.began, Budget: suiteRunBudget(clock.budget), OnFinished: clock.answers.addFunc(),
+			Wait: r.SuiteWait, Context: clock.ctx, Began: clock.began, Budget: suiteRunBudget(clock.budget), OnFinished: clock.answers.addFunc(), OnCoverage: clock.coverage.set,
 			OnActivity: func(what string) { r.stepProgress(b.LeaseID, nodetools.RunSuiteTool+": "+what) },
 			Logf: func(format string, args ...any) {
 				r.logf("nodev1: lease %s: "+format, append([]any{b.LeaseID}, args...)...)
@@ -173,6 +173,9 @@ type leaseClock struct {
 	// node makes if the budget stops the session (validatebudget.go)
 	budget  time.Duration
 	answers *suiteAnswers
+	// coverage is the e2e coverage map a run_suite run wrote, carried
+	// on the validate result's "coverage" key (withCoverage)
+	coverage *coverageNote
 }
 
 // suiteRunBudget is how long from the lease's start run_suite's runs
