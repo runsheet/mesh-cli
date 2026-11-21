@@ -55,7 +55,7 @@ func TestValidateLeaseAdmittedForAllLanes(t *testing.T) {
 		return b, own
 	}
 	b1, own1 := brief("lease-1")
-	first, err := rt.admit(context.Background(), b1, sevenLanes())
+	first, err := rt.admit(context.Background(), b1, sevenLanes(), meshapi.Resources{})
 	if err != nil {
 		t.Fatalf("the first lease was not admitted: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestValidateLeaseAdmittedForAllLanes(t *testing.T) {
 	var second []admittedLane
 	go func() {
 		var err error
-		second, err = rt.admit(context.Background(), b2, sevenLanes())
+		second, err = rt.admit(context.Background(), b2, sevenLanes(), meshapi.Resources{})
 		got <- err
 	}()
 	time.Sleep(300 * time.Millisecond)
@@ -120,7 +120,7 @@ func TestValidateLeaseAdmittedForAllLanes(t *testing.T) {
 	for i := range big {
 		big[i].Name = fmt.Sprintf("big-%d", i)
 	}
-	if _, err := rt.admit(context.Background(), b3, big); !errors.Is(err, errNeverFits) || !strings.Contains(err.Error(), "the node has 36 in all") {
+	if _, err := rt.admit(context.Background(), b3, big, meshapi.Resources{}); !errors.Is(err, errNeverFits) || !strings.Contains(err.Error(), "the node has 36 in all") {
 		t.Fatalf("a lease needing more than the node has was answered %v, want refused naming why", err)
 	}
 
@@ -146,7 +146,7 @@ func TestAnAdmittedLaneIsHeldUntilTheLeaseEnds(t *testing.T) {
 	rt := testRuntime(t)
 	rt.Scheduler = scheduler.New(scheduler.Capacity{CPUs: 32, MemGB: 128})
 	b := &meshapi.Brief{LeaseID: "lease-1", Kind: "validate", Resources: meshapi.Resources{CPUs: 4, MemGB: 8}}
-	got, err := rt.admit(context.Background(), b, sevenLanes())
+	got, err := rt.admit(context.Background(), b, sevenLanes(), meshapi.Resources{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,5 +222,52 @@ func TestHandoffCarriesLanes(t *testing.T) {
 	}
 	if free := rt2.Scheduler.Free(); free.CPUs != 32 {
 		t.Fatalf("the lease's end left %g cpus held", 32-free.CPUs)
+	}
+}
+
+// Each lane's sidecars run under limits of their own, outside the
+// lane's steps' room: admission holds them beside every lane, the first
+// lane's (the lease's pod's) included, so a node never schedules past
+// its total by a Postgres a lane (dl360, 2026-11-20).
+func TestAdmissionHoldsEachLanesServices(t *testing.T) {
+	rt := testRuntime(t)
+	rt.Pods.Config.Limits = sandbox.Limits{CPUs: 8, Memory: "16g"}
+	rt.Pods.Config.ServicesLimits = sandbox.Limits{CPUs: 2, Memory: "4g"}
+	rt.Scheduler = scheduler.New(scheduler.Capacity{CPUs: 64, MemGB: 256, Slots: 4})
+	b := &meshapi.Brief{LeaseID: "lease-s", JobID: "job-s", Kind: "runsheet/validate", Resources: meshapi.Resources{CPUs: 4, MemGB: 8}}
+	own, err := rt.Scheduler.TryTake(askOf(b, &meshapi.Lease{LeaseID: "lease-s", RenewEveryS: 30}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer own.Release()
+	p := &leasePod{statuses: []sandbox.ServiceStatus{{Name: "postgres", Ready: true}}}
+	svc := rt.servicesRoom(p)
+	if svc.CPUs != 2 || svc.MemGB != 4 {
+		t.Fatalf("services room %+v, want 2 cpus, 4 GB", svc)
+	}
+	if none := rt.servicesRoom(&leasePod{}); none.CPUs != 0 || none.MemGB != 0 {
+		t.Fatalf("a pod with no services holds %+v for them", none)
+	}
+	got, err := rt.admit(context.Background(), b, sevenLanes(), svc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		for _, a := range got {
+			a.l.Release()
+		}
+	}()
+	// 7 lanes of 4 cpus + 2 for each one's services = 42, the lease's own 4 among them
+	if held := 64 - rt.Scheduler.Free().CPUs; held != 42 {
+		t.Fatalf("the lease holds %g cpus, want 42 (7 lanes of 4, each with 2 for its services)", held)
+	}
+	if held := 256 - rt.Scheduler.Free().MemGB; held != 7*(8+4) {
+		t.Fatalf("the lease holds %g GB, want %d", held, 7*(8+4))
+	}
+	// a lane's steps are still limited to its own room
+	for _, a := range got {
+		if a.room.CPUs != 4 {
+			t.Fatalf("lane %s's room is %g cpus, want 4", a.name, a.room.CPUs)
+		}
 	}
 }

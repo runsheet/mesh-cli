@@ -5,13 +5,14 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
 
 func TestResolve(t *testing.T) {
-	pgTuning := []string{"-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"}
+	pgTuning := PostgresTuning
 	myTuning := []string{"--innodb-flush-log-at-trx-commit=0", "--sync-binlog=0", "--skip-log-bin"}
 	tests := []struct {
 		fixture string
@@ -74,9 +75,12 @@ func TestResolve(t *testing.T) {
 					"PGDATA":            PostgresDefaultPGDATA, "POSTGRES_INITDB_ARGS": PostgresDefaultInitdbArgs,
 				},
 				Ports:   []string{"5432:5432"},
-				Command: []string{"-c", "max_connections=200"},
-				From:    ".mesh/services.yml",
-				Notes:   []string{"defaulted PGDATA, POSTGRES_INITDB_ARGS so the data directory is writable under keep-id"},
+				Command: append(append([]string(nil), PostgresTuning...), "-c", "max_connections=200"), Tuned: true,
+				From:  ".mesh/services.yml",
+				Tmpfs: []Tmpfs{{Path: "/tmp"}},
+				Notes: []string{"the node's test tuning runs first, the declared flags after it (theirs win): tuning: false turns it off",
+					"defaulted PGDATA, POSTGRES_INITDB_ARGS so the data directory is writable under keep-id",
+					"data on a tmpfs at /tmp (RAM, not the container overlay): tmpfs: false turns it off"},
 			}},
 		},
 		{fixture: "neither", source: SourceNone},
@@ -369,7 +373,8 @@ func TestServiceTmpfs(t *testing.T) {
 		{"tuned postgres, own PGDATA", "db:\n  image: postgis/postgis:16\n  env:\n    PGDATA: /data/pg/main\n", []Tmpfs{{Path: "/data/pg"}}},
 		{"opted out", "db:\n  image: postgres:17\n  tmpfs: false\n", nil},
 		{"not tuned", "db:\n  image: postgres:17\n  tuning: false\n", nil},
-		{"own command", "db:\n  image: postgres:17\n  command: [-c, max_connections=200]\n", nil},
+		{"own flags keep the tuning", "db:\n  image: postgres:17\n  command: [-c, max_connections=200]\n", []Tmpfs{{Path: "/tmp"}}},
+		{"own command", "db:\n  image: postgres:17\n  command: [postgres, -c, max_connections=200]\n", nil},
 		{"declared, any service", "cache:\n  image: redis:7\n  tmpfs: [/data, \"/scratch:512m\"]\n", []Tmpfs{{Path: "/data"}, {Path: "/scratch", Size: "512m"}}},
 		{"declared wins over the default", "db:\n  image: postgres:17\n  tmpfs: [\"/var/lib/postgresql:1g\"]\n", []Tmpfs{{Path: "/var/lib/postgresql", Size: "1g"}}},
 		{"redis gets none", "cache:\n  image: redis:7\n", nil},
@@ -439,5 +444,54 @@ func TestStartGivesASidecarItsTmpfs(t *testing.T) {
 	}
 	if len(f.Sidecars) != 1 || !reflect.DeepEqual(f.Sidecars[0].Tmpfs, []Tmpfs{{Path: "/tmp", Size: "3g"}}) {
 		t.Fatalf("sidecars %+v", f.Sidecars)
+	}
+}
+
+// A Postgres whose command is only server flags keeps the node's tuning
+// under them, its flags after (Postgres takes the last of a repeated
+// -c), and so its tmpfs; one that names an executable is its own.
+func TestPostgresFlagsLayerOverTheNodesTuning(t *testing.T) {
+	got, err := resolveFile(t, "db:\n  image: postgres:17-alpine\n  command: -c max_connections=200 -c fsync=on\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := got[0]
+	want := append(append([]string(nil), PostgresTuning...), "-c", "max_connections=200", "-c", "fsync=on")
+	if !s.Tuned || !reflect.DeepEqual(s.Command, want) {
+		t.Fatalf("tuned %v command %q, want %q", s.Tuned, s.Command, want)
+	}
+	if !reflect.DeepEqual(s.Tmpfs, []Tmpfs{{Path: "/tmp"}}) {
+		t.Fatalf("tmpfs %+v", s.Tmpfs)
+	}
+	for _, flag := range []string{"wal_level=minimal", "max_wal_senders=0", "archive_mode=off", "checkpoint_timeout=1h"} {
+		if !slices.Contains(PostgresTuning, flag) {
+			t.Fatalf("the tuning lacks %s", flag)
+		}
+	}
+}
+
+// A tuned Postgres's shared_buffers is a quarter of its sidecar's
+// memory, ahead of its command so a declared one wins; its tmpfs, naming
+// no size, is sized at the sidecar's memory (at least 1g).
+func TestATunedPostgresIsSizedFromItsSidecar(t *testing.T) {
+	svc := Service{Name: "postgres", Image: "postgres:17", Command: PostgresTuning, Tuned: true, Tmpfs: []Tmpfs{{Path: "/tmp"}, {Path: "/x", Size: "64m"}}}
+	l := Limits{Memory: "8g"}
+	cmd := tunedCommand(svc, l)
+	if cmd[0] != "-c" || cmd[1] != "shared_buffers=2048MB" || !reflect.DeepEqual(cmd[2:], PostgresTuning) {
+		t.Fatalf("command %q", cmd)
+	}
+	if got := (Config{}).tmpfsFor(svc, l); !reflect.DeepEqual(got, []Tmpfs{{Path: "/tmp", Size: "8192m"}, {Path: "/x", Size: "64m"}}) {
+		t.Fatalf("tmpfs %+v", got)
+	}
+	if got := (Config{}).tmpfsFor(svc, Limits{Memory: "256m"}); got[0].Size != "1024m" {
+		t.Fatalf("a small sidecar's tmpfs %q, want the 1g floor", got[0].Size)
+	}
+	if got := (Config{ServicesTmpfs: "3g"}).tmpfsFor(svc, Limits{}); got[0].Size != "3g" {
+		t.Fatalf("no memory limit: tmpfs %q, want the node's 3g", got[0].Size)
+	}
+	untuned := svc
+	untuned.Tuned = false
+	if got := tunedCommand(untuned, l); !reflect.DeepEqual(got, svc.Command) {
+		t.Fatalf("an untuned postgres's command changed: %q", got)
 	}
 }

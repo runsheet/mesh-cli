@@ -227,10 +227,20 @@ func build(name string, sp spec, from string, resolve func(string) (string, bool
 	if !sp.Credentials.IsZero() {
 		s.Notes = append(s.Notes, "credentials are not supported: only public images are pulled")
 	}
-	// Tuning: explicit command wins; tuning: false turns it off.
-	if len(s.Command) == 0 && (sp.Tuning == nil || *sp.Tuning) {
-		if t := tuning(s.Image); t != nil {
-			s.Command, s.Tuned = t, true
+	// Tuning: explicit command wins; tuning: false turns it off. A
+	// Postgres whose command is only server flags (-c k=v ...) keeps the
+	// node's tuning under them: Postgres takes the last of a repeated
+	// -c, so the declared flags override the node's, and the rest of
+	// the tuning (and its tmpfs) still applies.
+	if sp.Tuning == nil || *sp.Tuning {
+		switch {
+		case len(s.Command) == 0:
+			if t := tuning(s.Image); t != nil {
+				s.Command, s.Tuned = t, true
+			}
+		case isPostgres(s.Image) && strings.HasPrefix(s.Command[0], "-"):
+			s.Command, s.Tuned = append(tuning(s.Image), s.Command...), true
+			s.Notes = append(s.Notes, "the node's test tuning runs first, the declared flags after it (theirs win): tuning: false turns it off")
 		}
 	}
 	return s
@@ -361,8 +371,27 @@ func RegistryAllowed(host string, allowed []string) bool {
 // Default test tuning of known databases: durability is worthless in a
 // database that dies with the session.
 var (
-	PostgresTuning = []string{"-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"}
-	MySQLTuning    = []string{"--innodb-flush-log-at-trx-commit=0", "--sync-binlog=0", "--skip-log-bin"}
+	//
+	// Postgres: no durability (fsync, synchronous_commit,
+	// full_page_writes), no WAL beyond crash recovery's minimum
+	// (wal_level=minimal with no senders or archive: CREATE DATABASE
+	// ... TEMPLATE and bulk loads skip WAL), no checkpoint in a test
+	// run's life (checkpoint_timeout, max_wal_size), and autovacuum kept
+	// but relaxed: a suite that makes a database per rig has hundreds
+	// of short-lived databases, and the default launcher visits each
+	// once a minute, a worker per visit, for tables a test drops within
+	// seconds; off entirely, a session-long database's planner would
+	// never see statistics. max_connections leaves room for a lane's
+	// rigs. shared_buffers is sized from the sidecar's memory when it
+	// starts (PostgresSharedBuffers), ahead of these.
+	PostgresTuning = []string{
+		"-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off",
+		"-c", "wal_level=minimal", "-c", "max_wal_senders=0", "-c", "archive_mode=off",
+		"-c", "checkpoint_timeout=1h", "-c", "max_wal_size=8GB",
+		"-c", "autovacuum_naptime=5min", "-c", "autovacuum_max_workers=1",
+		"-c", "max_connections=400",
+	}
+	MySQLTuning = []string{"--innodb-flush-log-at-trx-commit=0", "--sync-binlog=0", "--skip-log-bin"}
 )
 
 // PostgresDefaultPGDATA and PostgresDefaultInitdbArgs are the data
@@ -374,6 +403,15 @@ const (
 	PostgresDefaultPGDATA     = "/tmp/pgdata"
 	PostgresDefaultInitdbArgs = "--no-sync"
 )
+
+// isPostgres says whether image is a postgres or postgis image.
+func isPostgres(image string) bool {
+	switch imageName(image) {
+	case "postgres", "postgis":
+		return true
+	}
+	return false
+}
 
 func tuning(image string) []string {
 	switch imageName(image) {

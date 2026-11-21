@@ -422,11 +422,35 @@ func (r *Runtime) laneRoom(b *meshapi.Brief, name string, want validate.Resource
 }
 
 // laneAsk is what lane name of a lease holds of the node's scheduler:
-// its room (laneRoom), named so Scheduler.Leases() shows it apart from
-// the lease's own pod-level hold (askOf).
-func laneAsk(b *meshapi.Brief, name string, room meshapi.Resources) scheduler.Ask {
-	return scheduler.Ask{Owner: b.LeaseID + "/lane-" + name, CPUs: room.CPUs, MemGB: room.MemGB,
+// its room (laneRoom) and its services' (servicesRoom), named so
+// Scheduler.Leases() shows it apart from the lease's own pod-level hold
+// (askOf).
+func laneAsk(b *meshapi.Brief, name string, room, services meshapi.Resources) scheduler.Ask {
+	return scheduler.Ask{Owner: b.LeaseID + "/lane-" + name, CPUs: room.CPUs + services.CPUs, MemGB: room.MemGB + services.MemGB,
 		Cache: scheduler.CacheShared, TTL: 3 * laneRenewEvery}
+}
+
+// servicesRoom is what the sidecars beside one of p's lanes run on: the
+// node's services budget (node.yaml's sandbox.services_cpus and
+// services_memory), split among them, when p, the lease's pod, started
+// any that came up — each lane runs its own copy of them. The room a lane's steps
+// are limited to (laneRoom) does not hold them: a sidecar runs under
+// its own --cpus and --memory, not inside its pod's steps' limits, so a
+// lane that held only its steps' room left a Postgres of up to the
+// services' CPUs unheld beside every lane, and a node scheduled to its
+// total ran far past it (dl360, 2026-11-20: a runsheet shard's Postgres
+// used more CPU than its tests). A tmpfs a sidecar's data is on is
+// charged to the sidecar's own memory cgroup, so its memory here holds
+// that too.
+func (r *Runtime) servicesRoom(p *leasePod) meshapi.Resources {
+	if r.Pods == nil || p == nil {
+		return meshapi.Resources{}
+	}
+	if !slices.ContainsFunc(p.statuses, func(st sandbox.ServiceStatus) bool { return st.Ready }) {
+		return meshapi.Resources{}
+	}
+	l := r.Pods.Config.ServicesLimits
+	return meshapi.Resources{CPUs: max(l.CPUs, 0), MemGB: gb(validate.MemoryBytes(l.Memory))}
 }
 
 // wrapHold starts a laneHold's renewal, so it is not reaped by its TTL
@@ -475,7 +499,7 @@ func (r *Runtime) holdLane(ctx context.Context, b *meshapi.Brief, p *leasePod, n
 	if r.Scheduler == nil {
 		return &laneHold{room: room}, nil
 	}
-	ask := laneAsk(b, name, room)
+	ask := laneAsk(b, name, room, r.servicesRoom(p))
 	if first {
 		if l, err := r.Scheduler.TryTake(ask); err == nil {
 			return wrapHold(l, room), nil

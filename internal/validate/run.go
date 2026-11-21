@@ -584,7 +584,11 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 		defer mu.Unlock()
 		return stopped && ctx.Err() == nil
 	}
-	runLane := func(lctx context.Context, r Runner, l lane) {
+	// runLane runs l's units in r; *release is r's lane's release (nil
+	// for the lease's own pod), which the lane's end calls. A hung unit re-run in a fresh
+	// lane moves the lane there: the old one released at once, the
+	// fresh one's release in *release for the lane's end.
+	runLane := func(lctx context.Context, r Runner, l lane, release *func()) {
 		for _, u := range l.units {
 			if cancelled() {
 				return
@@ -622,7 +626,15 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 				// a hang is no failing test to run again by name: the
 				// whole unit runs once more, in a fresh lane when the
 				// runner opens lanes (hung.go)
-				out = rerunHung(uctx, sup, r, lr, split, l.name, st, sh, cmd, ls, out)
+				var drop func()
+				drop = *release
+				var fresh Runner
+				var freshRelease func()
+				out, fresh, freshRelease = rerunHung(uctx, sup, r, lr, split, l.name, st, sh, cmd, ls, out, drop)
+				if fresh != nil {
+					r = fresh
+					*release = freshRelease
+				}
 				markStopped()
 			} else if !cancelled() {
 				sup.retry(uctx, r, sh, cmd, start, ls, out)
@@ -661,7 +673,13 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 				lctx, cancelLane := context.WithCancel(rctx)
 				defer cancelLane()
 				if i == 0 {
-					runLane(lctx, runner, l)
+					// the lease's own pod stays; a fresh lane a hung
+					// unit moved to goes with the lane
+					var moved func()
+					runLane(lctx, runner, l, &moved)
+					if moved != nil {
+						moved()
+					}
 					// the run's own pod goes as a lane's does (release),
 					// its steps' reports and artifacts being in the
 					// workspace, read after every lane
@@ -682,8 +700,12 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 					mu.Unlock()
 					return
 				}
-				defer release()
-				runLane(lctx, r, l)
+				defer func() {
+					if release != nil {
+						release()
+					}
+				}()
+				runLane(lctx, r, l, &release)
 			}(i, l)
 		}
 		wg.Wait()
@@ -692,7 +714,11 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 		theLane := ls[0]
 		lctx, cancelLane := context.WithCancel(rctx)
 		defer cancelLane()
-		runLane(lctx, runner, theLane)
+		var moved func()
+		runLane(lctx, runner, theLane, &moved)
+		if moved != nil {
+			moved()
+		}
 	}
 
 	results := make([]StepResult, 0, len(steps))
