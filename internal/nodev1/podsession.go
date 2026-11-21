@@ -100,11 +100,12 @@ type leasePod struct {
 	// lanes, set, opens a pod beside this one for a suite group or shard
 	// that run_suite runs at once with the others (lanes.go); nil runs
 	// every step here, one after another.
-	// size is the room the lane's suite asks for (validate.LaneSizes).
-	lanes func(ctx context.Context, name string, size validate.Resources) (*leasePod, func(), error)
+	// size is the room the lane's suite asks for and whether it runs the
+	// lease's services (validate.LaneSizes).
+	lanes func(ctx context.Context, name string, size validate.LaneSize) (*leasePod, func(), error)
 	// hold, set beside lanes, holds the node's room for a lane that runs
 	// in this pod, the run's first (lanes.go, firstLane).
-	hold func(ctx context.Context, name string, size validate.Resources) (*laneHold, error)
+	hold func(ctx context.Context, name string, size validate.LaneSize) (*laneHold, error)
 	// lane is a lane's pod (lanes.go), on the lease's HOME, which
 	// writes nothing there of its own.
 	lane bool
@@ -247,7 +248,7 @@ func (r *Runtime) openLeasePod(ctx context.Context, b *meshapi.Brief, workspace 
 		return p, err
 	}
 	p.lanes = r.suiteLanes(b, workspace, p)
-	p.hold = func(ctx context.Context, name string, size validate.Resources) (*laneHold, error) {
+	p.hold = func(ctx context.Context, name string, size validate.LaneSize) (*laneHold, error) {
 		return r.holdLane(ctx, b, p, name, size, true)
 	}
 	return p, nil

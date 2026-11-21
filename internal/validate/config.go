@@ -139,6 +139,15 @@ type Step struct {
 	// much room a suite runs with is not what it runs.
 	CPUs   float64
 	Memory string
+	// Services says the suite's lane runs the repository's services
+	// (`services: true|false`; .mesh/services.yml's sidecars, a Postgres
+	// among them): a lane none of whose suites does starts no sidecars
+	// and holds none of the node's services budget for them (LaneSizes;
+	// mesh-cli nodev1 servicesRoom). When the file leaves it out, every
+	// kind but lint, build and typecheck runs them, which are static
+	// checks and compiles. Not hashed: where the services run is not
+	// what the suite runs.
+	Services bool
 	// Retries is how many times the node re-runs a red unit's failing
 	// tests by name (`retries:`, supervise.go; ADR-049's amendment of
 	// 2026-11-15): Parse reads 1 when the file leaves it out, 0 turns
@@ -232,6 +241,7 @@ type rawStep struct {
 	RunToEnd  bool     `yaml:"run_to_end"`
 	Stall     string   `yaml:"stall"`
 	MinTests  *int     `yaml:"min_tests"`
+	Services  *bool    `yaml:"services"`
 }
 
 // Load reads <dir>/.runsheet/validate.yml. A missing file is
@@ -290,6 +300,10 @@ func Parse(data []byte) (Config, error) {
 			Retries:   DefaultRetries,
 			RunToEnd:  s.RunToEnd,
 			Stall:     DefaultStall,
+		}
+		step.Services = defaultServices(step.Kind)
+		if s.Services != nil {
+			step.Services = *s.Services
 		}
 		if step.Name == "" {
 			return Config{}, fmt.Errorf("suite %d has no name", i+1)
@@ -462,4 +476,16 @@ func (s Step) shard(k int) Step {
 	}
 	s.Reports = reports
 	return s
+}
+
+// defaultServices is whether a suite of kind k runs the repository's
+// services when validate.yml does not say (Step.Services): a static
+// check or a compile needs no database; a test, or a suite of no kind
+// (an old `steps:` file), may.
+func defaultServices(k Kind) bool {
+	switch k {
+	case KindLint, KindBuild, KindTypecheck:
+		return false
+	}
+	return true
 }

@@ -141,7 +141,7 @@ suites:
 	want := []Step{
 		{Name: "vet", Kind: KindLint, Command: "go vet ./...", Paths: []string{}, Always: true, Timeout: DefaultTimeout,
 			Retries: DefaultRetries, Stall: DefaultStall},
-		{Name: "e2e", Kind: KindIntegration, Command: "go test ./e2e -json", Paths: []string{"e2e/**", "platform/**"},
+		{Name: "e2e", Kind: KindIntegration, Services: true, Command: "go test ./e2e -json", Paths: []string{"e2e/**", "platform/**"},
 			Reports: []string{"e2e.json"}, Jobs: []string{"shard (e2e 1/3)", "shard (e2e 2/3)"},
 			Timeout: 20 * time.Minute, Artifacts: []string{"cover.out"}, Results: "go-test-json:e2e.json",
 			Retries: DefaultRetries, Stall: DefaultStall, MinTests: 1, minTestsImplied: true},

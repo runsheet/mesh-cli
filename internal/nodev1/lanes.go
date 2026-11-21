@@ -80,17 +80,17 @@ import (
 // lease's own pod.
 type laneSteps struct {
 	podSteps
-	sizes map[string]validate.Resources
+	sizes map[string]validate.LaneSize
 	first *firstLane
 }
 
 // newLaneSteps is run_suite's runner over steps in p, the lease's pod.
 func newLaneSteps(p *leasePod, steps []validate.Step, base podSteps) laneSteps {
-	ls := laneSteps{podSteps: base, sizes: map[string]validate.Resources{}, first: &firstLane{p: p}}
+	ls := laneSteps{podSteps: base, sizes: map[string]validate.LaneSize{}, first: &firstLane{p: p}}
 	for i, l := range validate.LaneSizes(steps) {
-		ls.sizes[l.Name] = l.Resources
+		ls.sizes[l.Name] = l
 		if i == 0 {
-			ls.first.name, ls.first.size = l.Name, l.Resources
+			ls.first.name, ls.first.size = l.Name, l
 		}
 	}
 	return ls
@@ -137,7 +137,7 @@ func (s laneSteps) ReleaseFirst() { s.first.release() }
 type firstLane struct {
 	p    *leasePod
 	name string
-	size validate.Resources
+	size validate.LaneSize
 
 	mu     sync.Mutex
 	opened bool
@@ -239,7 +239,7 @@ func (r *Runtime) laneCacheMounts(b *meshapi.Brief, parent, sess *sandbox.Sessio
 // suiteLanes opens lanes beside parent, the lease's pod, each on the
 // room its suite asks for (size): nil on a node without the sandbox's
 // pods.
-func (r *Runtime) suiteLanes(b *meshapi.Brief, workspace string, parent *leasePod) func(context.Context, string, validate.Resources) (*leasePod, func(), error) {
+func (r *Runtime) suiteLanes(b *meshapi.Brief, workspace string, parent *leasePod) func(context.Context, string, validate.LaneSize) (*leasePod, func(), error) {
 	if r.Pods == nil {
 		return nil
 	}
@@ -247,7 +247,7 @@ func (r *Runtime) suiteLanes(b *meshapi.Brief, workspace string, parent *leasePo
 	var bridgeOnce sync.Once
 	var bridge string
 	var bridgeErr error
-	return func(ctx context.Context, name string, size validate.Resources) (*leasePod, func(), error) {
+	return func(ctx context.Context, name string, size validate.LaneSize) (*leasePod, func(), error) {
 		k := n.Add(1)
 		hold, err := r.holdLane(ctx, b, parent, name, size, false)
 		if err != nil {
@@ -295,9 +295,15 @@ func (r *Runtime) suiteLanes(b *meshapi.Brief, workspace string, parent *leasePo
 		} else if lp.proxyEnv != nil {
 			r.logf("nodev1: lease %s: lane %s has no way to the lease's relay; its steps reach nothing beyond the pod", b.LeaseID, name)
 		}
-		if err := r.startServices(ctx, b, lp, workspace, "the lane "+name+"'s"); err != nil {
-			release()
-			return nil, nil, err
+		// the lease's services, only for a lane whose suites run them
+		// (validate.Step.Services): a lane of static checks, or one of
+		// unit tests that declared none, starts no Postgres of its own
+		// and holds none of the node's services budget (servicesRoom)
+		if size.Services {
+			if err := r.startServices(ctx, b, lp, workspace, "the lane "+name+"'s"); err != nil {
+				release()
+				return nil, nil, err
+			}
 		}
 		r.logf("nodev1: lease %s: run_suite's lane %s runs in pod %s (opened in %s; %s; HOME %s, egress %s)", b.LeaseID, name, lp.name,
 			time.Since(start).Round(time.Second), roomLine(hold.room), sess.Home, laneEgressLine(lp, sb.Config.Network))
@@ -433,7 +439,8 @@ func laneAsk(b *meshapi.Brief, name string, room, services meshapi.Resources) sc
 // servicesRoom is what the sidecars beside one of p's lanes run on: the
 // node's services budget (node.yaml's sandbox.services_cpus and
 // services_memory), split among them, when p, the lease's pod, started
-// any that came up — each lane runs its own copy of them. The room a lane's steps
+// any that came up — each lane whose suites run services runs its own
+// copy of them (laneServices). The room a lane's steps
 // are limited to (laneRoom) does not hold them: a sidecar runs under
 // its own --cpus and --memory, not inside its pod's steps' limits, so a
 // lane that held only its steps' room left a Postgres of up to the
@@ -451,6 +458,16 @@ func (r *Runtime) servicesRoom(p *leasePod) meshapi.Resources {
 	}
 	l := r.Pods.Config.ServicesLimits
 	return meshapi.Resources{CPUs: max(l.CPUs, 0), MemGB: gb(validate.MemoryBytes(l.Memory))}
+}
+
+// laneServices is the services room (servicesRoom) a lane of p holds:
+// none for a lane none of whose suites runs the lease's services
+// (validate.LaneSize.Services), which starts no sidecars of its own.
+func (r *Runtime) laneServices(p *leasePod, size validate.LaneSize) meshapi.Resources {
+	if !size.Services {
+		return meshapi.Resources{}
+	}
+	return r.servicesRoom(p)
 }
 
 // wrapHold starts a laneHold's renewal, so it is not reaped by its TTL
@@ -488,8 +505,8 @@ func wrapHold(l *scheduler.Lease, room meshapi.Resources) *laneHold {
 // did before lanes had sizes — a node whose every lease waited on room
 // only another lease's end could free would never move. A first lane
 // asking for more than its lease has waits for it, as any lane does.
-func (r *Runtime) holdLane(ctx context.Context, b *meshapi.Brief, p *leasePod, name string, size validate.Resources, first bool) (*laneHold, error) {
-	room := r.laneRoom(b, name, size)
+func (r *Runtime) holdLane(ctx context.Context, b *meshapi.Brief, p *leasePod, name string, size validate.LaneSize, first bool) (*laneHold, error) {
+	room := r.laneRoom(b, name, size.Resources)
 	if h := p.popEagerLane(name); h != nil {
 		if h.room == room {
 			return h, nil
@@ -499,7 +516,7 @@ func (r *Runtime) holdLane(ctx context.Context, b *meshapi.Brief, p *leasePod, n
 	if r.Scheduler == nil {
 		return &laneHold{room: room}, nil
 	}
-	ask := laneAsk(b, name, room, r.servicesRoom(p))
+	ask := laneAsk(b, name, room, r.laneServices(p, size))
 	if first {
 		if l, err := r.Scheduler.TryTake(ask); err == nil {
 			return wrapHold(l, room), nil

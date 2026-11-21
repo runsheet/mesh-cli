@@ -58,3 +58,29 @@ func TestLaneSizesFollowTheirSuites(t *testing.T) {
 		}
 	}
 }
+
+// A lane runs services when any of its suites does; lint, build and
+// typecheck suites run none unless they say so, every other kind does
+// unless it says not.
+func TestLaneSizesCarryServices(t *testing.T) {
+	cfg, err := Parse([]byte(`suites:
+  - {name: vet, kind: lint, group: checks, command: x}
+  - {name: e2ebuild, kind: build, group: checks, command: x}
+  - {name: unit, kind: unit, services: false, command: x}
+  - {name: integration, kind: integration, shards: 2, command: x}
+  - {name: gen, kind: lint, group: gen, services: true, command: x}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"checks": false, "unit": false, "integration-0": true, "integration-1": true, "gen": true}
+	got := LaneSizes(cfg.Steps)
+	if len(got) != len(want) {
+		t.Fatalf("lanes %+v, want %d", got, len(want))
+	}
+	for _, l := range got {
+		if l.Services != want[l.Name] {
+			t.Errorf("lane %s services %v, want %v", l.Name, l.Services, want[l.Name])
+		}
+	}
+}

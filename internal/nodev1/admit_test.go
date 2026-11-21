@@ -23,7 +23,7 @@ import (
 func sevenLanes() []validate.LaneSize {
 	out := make([]validate.LaneSize, 7)
 	for i := range out {
-		out[i] = validate.LaneSize{Name: fmt.Sprintf("integration-%d", i), Resources: validate.Resources{CPUs: 4, Memory: "8g"}}
+		out[i] = validate.LaneSize{Name: fmt.Sprintf("integration-%d", i), Resources: validate.Resources{CPUs: 4, Memory: "8g"}, Services: true}
 	}
 	return out
 }
@@ -269,5 +269,67 @@ func TestAdmissionHoldsEachLanesServices(t *testing.T) {
 		if a.room.CPUs != 4 {
 			t.Fatalf("lane %s's room is %g cpus, want 4", a.name, a.room.CPUs)
 		}
+	}
+}
+
+// Only a lane whose suites run services holds the node's services
+// budget beside its room (validate.Step.Services): a runsheet
+// validation's checks and unit lanes start no Postgres, its two
+// integration shards each do. With dl360's budget (services_cpus 4,
+// services_memory 8g) four lanes of 4 cpus ask 16 + 2×4 = 24, less the
+// lease's own 4: 20, not the 28 it asked when every lane held them.
+func TestAdmissionHoldsServicesOnlyForLanesThatRunThem(t *testing.T) {
+	rt := testRuntime(t)
+	rt.Pods.Config.Limits = sandbox.Limits{CPUs: 8, Memory: "16g"}
+	rt.Pods.Config.ServicesLimits = sandbox.Limits{CPUs: 4, Memory: "8g"}
+	rt.Scheduler = scheduler.New(scheduler.Capacity{CPUs: 88, MemGB: 256, Slots: 8})
+	b := &meshapi.Brief{LeaseID: "lease-p", JobID: "job-p", Kind: "runsheet/validate", Resources: meshapi.Resources{CPUs: 4, MemGB: 8}}
+	own, err := rt.Scheduler.TryTake(askOf(b, &meshapi.Lease{LeaseID: "lease-p", RenewEveryS: 30}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer own.Release()
+	p := &leasePod{statuses: []sandbox.ServiceStatus{{Name: "postgres", Ready: true}}}
+	room := validate.Resources{CPUs: 4, Memory: "8g"}
+	sizes := []validate.LaneSize{
+		{Name: "checks", Resources: room},
+		{Name: "unit", Resources: room},
+		{Name: "integration-0", Resources: room, Services: true},
+		{Name: "integration-1", Resources: room, Services: true},
+	}
+	before := rt.Scheduler.Free()
+	got, err := rt.admit(context.Background(), b, sizes, rt.servicesRoom(p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		for _, a := range got {
+			a.l.Release()
+		}
+	}()
+	after := rt.Scheduler.Free()
+	if asked := before.CPUs - after.CPUs; asked != 20 {
+		t.Fatalf("the lease asked %g cpus, want 20 (lanes 16 + services 2×4, less its own 4)", asked)
+	}
+	if asked := before.MemGB - after.MemGB; asked != 32+16-8 {
+		t.Fatalf("the lease asked %g GB, want 40 (lanes 32 + services 2×8, less its own 8)", asked)
+	}
+	// three such validations fit on 88 cpus beside their own 4 each
+	if held := 88 - after.CPUs; held != 24 {
+		t.Fatalf("the lease holds %g cpus with its own, want 24", held)
+	}
+}
+
+// A lane none of whose suites runs services holds no services room
+// when it is opened on its own (holdLane), as at admission.
+func TestLaneServicesOnlyForServiceLanes(t *testing.T) {
+	rt := testRuntime(t)
+	rt.Pods.Config.ServicesLimits = sandbox.Limits{CPUs: 4, Memory: "8g"}
+	p := &leasePod{statuses: []sandbox.ServiceStatus{{Name: "postgres", Ready: true}}}
+	if got := rt.laneServices(p, validate.LaneSize{Name: "checks"}); got.CPUs != 0 || got.MemGB != 0 {
+		t.Fatalf("a lane without services holds %+v for them", got)
+	}
+	if got := rt.laneServices(p, validate.LaneSize{Name: "integration-0", Services: true}); got.CPUs != 4 || got.MemGB != 8 {
+		t.Fatalf("a lane with services holds %+v for them, want 4 cpus, 8 GB", got)
 	}
 }
