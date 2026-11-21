@@ -62,6 +62,9 @@ type LaneSize struct {
 	// name, or <suite>-<shard> for a shard.
 	Name string
 	Resources
+	// Services says the lane runs the repository's services: any of its
+	// suites does (Step.Services).
+	Services bool
 }
 
 // LaneSizes is the lanes steps run in on a LaneRunner, in the order Run
@@ -69,7 +72,8 @@ type LaneSize struct {
 // asks for: a shard's is its suite's, a group's the most any of its
 // suites asks, CPUs and memory each on their own, since its suites run
 // one after another in the one pod. A lane none of whose suites names a
-// size is the zero Resources: the node's default.
+// size is the zero Resources: the node's default. A lane runs services
+// when any of its suites does.
 func LaneSizes(steps []Step) []LaneSize {
 	ls := lanes(steps, true)
 	out := make([]LaneSize, 0, len(ls))
@@ -77,6 +81,7 @@ func LaneSizes(steps []Step) []LaneSize {
 		size := LaneSize{Name: l.name}
 		for _, u := range l.units {
 			st := steps[u.step]
+			size.Services = size.Services || st.Services
 			size.CPUs = max(size.CPUs, st.CPUs)
 			if st.Resources().MemoryBytes() > size.MemoryBytes() {
 				size.Memory = st.Memory

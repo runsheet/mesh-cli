@@ -89,7 +89,8 @@ func (r *Runtime) admitLanes(ctx context.Context, b *meshapi.Brief, workspace st
 // they could never fit beside the lease's own hold.
 //
 // services is what each lane's own sidecars run on (servicesRoom), held
-// beside its room: the first lane's are the lease's pod's.
+// beside its room for a lane whose suites run services
+// (validate.LaneSize.Services): the first lane's are the lease's pod's.
 func (r *Runtime) admit(ctx context.Context, b *meshapi.Brief, sizes []validate.LaneSize, services meshapi.Resources) ([]admittedLane, error) {
 	if r.Scheduler == nil || len(sizes) == 0 {
 		return nil, nil
@@ -99,7 +100,13 @@ func (r *Runtime) admit(ctx context.Context, b *meshapi.Brief, sizes []validate.
 	var asked, rooms meshapi.Resources
 	for i, s := range sizes {
 		room := r.laneRoom(b, s.Name, s.Resources)
-		ask := laneAsk(b, s.Name, room, services)
+		svc := services
+		if !s.Services {
+			// a lane none of whose suites runs services starts no
+			// sidecars (suiteLanes), so holds none of their room
+			svc = meshapi.Resources{}
+		}
+		ask := laneAsk(b, s.Name, room, svc)
 		if i == 0 {
 			// the first lane runs in the lease's own pod, on the lease's
 			// own hold: it asks for what its room and the pod's

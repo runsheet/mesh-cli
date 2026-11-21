@@ -266,7 +266,7 @@ func TestALaneMountsTheLeasesWarmCache(t *testing.T) {
 
 	var gomods []sandbox.Mount
 	for _, name := range []string{"integration-1", "integration-2"} {
-		lane, release, err := lp.lanes(context.Background(), name, validate.Resources{})
+		lane, release, err := lp.lanes(context.Background(), name, validate.LaneSize{Services: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -317,7 +317,7 @@ func TestALaneOfALeaseWithoutItsTenantCacheHasNone(t *testing.T) {
 	rt, lp, ws, _ := laneCacheRig(t)
 	lp.sess.DropMounts(tenantCacheMount)
 	lp.sess.DropEnv(tenantCacheEnv...)
-	lane, release, err := lp.lanes(context.Background(), "integration-1", validate.Resources{})
+	lane, release, err := lp.lanes(context.Background(), "integration-1", validate.LaneSize{Services: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +345,7 @@ func TestTheLeasesEndRemovesEveryLanesOverlayDirs(t *testing.T) {
 	var made []string
 	var releases []func()
 	for _, name := range []string{"integration-1", "integration-2", "integration-3"} {
-		lane, release, err := lp.lanes(context.Background(), name, validate.Resources{})
+		lane, release, err := lp.lanes(context.Background(), name, validate.LaneSize{Services: true})
 		if err != nil {
 			t.Fatal(err)
 		}
