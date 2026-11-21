@@ -130,3 +130,35 @@ func TestAHungShardIsRerunOnceInAFreshLane(t *testing.T) {
 		})
 	}
 }
+
+// trackedLanes is scriptLanes whose lanes record when each is released.
+type trackedLanes struct {
+	*scriptLanes
+	events []string
+}
+
+func (t *trackedLanes) Lane(ctx context.Context, name string) (Runner, func(), error) {
+	r, _, err := t.scriptLanes.Lane(ctx, name)
+	t.mu.Lock()
+	n := len(t.scriptLanes.lanes)
+	t.events = append(t.events, fmt.Sprintf("open %d", n))
+	t.mu.Unlock()
+	return r, func() {
+		t.mu.Lock()
+		t.events = append(t.events, fmt.Sprintf("release %d", n))
+		t.mu.Unlock()
+	}, err
+}
+
+func TestAHungLaneIsReleasedWhenItsFreshLaneOpens(t *testing.T) {
+	steps := []Step{{Name: "integration", Command: "true", Shards: 2, Retries: 1}}
+	s := &trackedLanes{scriptLanes: &scriptLanes{calls: map[string]int{}, script: map[string][]string{"0": {"ok\n"}, "1": {panicOutput, "ok\n"}}}}
+	if _, err := Run(context.Background(), steps, s, Options{Dir: t.TempDir(), ContinueOnFailure: true}); err != nil {
+		t.Fatal(err)
+	}
+	// the hung lane (1) goes the moment its fresh lane (2) opens, not
+	// after the re-run; the fresh lane goes with the lane's end; each once
+	if got := strings.Join(s.events, ", "); got != "open 1, open 2, release 1, release 2" {
+		t.Fatalf("lane events %q", got)
+	}
+}

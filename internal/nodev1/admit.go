@@ -26,8 +26,9 @@ import (
 // Once a validate lease's checkout is in and its pod's services are up,
 // admitLanes sizes the lease from its suites' lanes (validate.LaneSizes:
 // each lane's CPUs and memory, the room laneRoom gives it, which is the
-// limit of the lane's whole pod — its steps and its sidecars, a Postgres
-// among them, all run inside it) and takes every lane's room of the
+// limit of the lane's steps, and beside it the room of the lane's own
+// sidecars, a Postgres among them, which run under limits of their own:
+// servicesRoom) and takes every lane's room of the
 // node's scheduler in one all-or-nothing take (Scheduler.TakeAll). The
 // first lane runs in the lease's own pod, so it asks only for what its
 // room needs beyond the lease's own hold (askOf): a lease whose lanes
@@ -65,7 +66,7 @@ func (r *Runtime) admitLanes(ctx context.Context, b *meshapi.Brief, workspace st
 	if err != nil {
 		return nil
 	}
-	got, err := r.admit(ctx, b, validate.LaneSizes(cfg.Steps))
+	got, err := r.admit(ctx, b, validate.LaneSizes(cfg.Steps), r.servicesRoom(p))
 	if err != nil {
 		return err
 	}
@@ -81,7 +82,10 @@ func (r *Runtime) admitLanes(ctx context.Context, b *meshapi.Brief, workspace st
 // admit takes every lane's room of sizes, for b's lease, of the node's
 // scheduler at once, waiting as long as ctx allows; errNeverFits when
 // they could never fit beside the lease's own hold.
-func (r *Runtime) admit(ctx context.Context, b *meshapi.Brief, sizes []validate.LaneSize) ([]admittedLane, error) {
+//
+// services is what each lane's own sidecars run on (servicesRoom), held
+// beside its room: the first lane's are the lease's pod's.
+func (r *Runtime) admit(ctx context.Context, b *meshapi.Brief, sizes []validate.LaneSize, services meshapi.Resources) ([]admittedLane, error) {
 	if r.Scheduler == nil || len(sizes) == 0 {
 		return nil, nil
 	}
@@ -90,12 +94,13 @@ func (r *Runtime) admit(ctx context.Context, b *meshapi.Brief, sizes []validate.
 	var asked, rooms meshapi.Resources
 	for i, s := range sizes {
 		room := r.laneRoom(b, s.Name, s.Resources)
-		ask := laneAsk(b, s.Name, room)
+		ask := laneAsk(b, s.Name, room, services)
 		if i == 0 {
 			// the first lane runs in the lease's own pod, on the lease's
-			// own hold: it asks for what its room needs beyond that
-			ask.CPUs = math.Max(room.CPUs-b.Resources.CPUs, 0)
-			ask.MemGB = math.Max(room.MemGB-b.Resources.MemGB, 0)
+			// own hold: it asks for what its room and the pod's
+			// services need beyond that
+			ask.CPUs = math.Max(ask.CPUs-b.Resources.CPUs, 0)
+			ask.MemGB = math.Max(ask.MemGB-b.Resources.MemGB, 0)
 		}
 		lanes[i] = admittedLane{name: s.Name, room: room}
 		asks[i] = ask

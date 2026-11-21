@@ -140,7 +140,7 @@ func (s *Session) Start(ctx context.Context, services []Service, timeout time.Du
 		if svc.Refused {
 			continue
 		}
-		spec := SidecarSpec{Name: svc.Name, Image: svc.Image, Env: sortedEnv(svc.Env), Command: svc.Command, Limits: limits, Tmpfs: s.sb.Config.tmpfsOf(svc)}
+		spec := SidecarSpec{Name: svc.Name, Image: svc.Image, Env: sortedEnv(svc.Env), Command: tunedCommand(svc, limits), Limits: limits, Tmpfs: s.sb.Config.tmpfsFor(svc, limits)}
 		if err := s.sb.Runtime.AddSidecar(ctx, pod, spec); err != nil {
 			if ctx.Err() != nil {
 				return sts, ctx.Err()
@@ -367,4 +367,49 @@ func (c Config) tmpfsOf(svc Service) []Tmpfs {
 		out[i] = m
 	}
 	return out
+}
+
+// MinServiceTmpfs is the least a service's tmpfs is sized at from its
+// sidecar's memory (tmpfsFor).
+const MinServiceTmpfs = 1 << 30
+
+// tmpfsFor is tmpfsOf with a mount that names no size sized from the
+// sidecar's memory (its memory.high, l.Memory; at least
+// MinServiceTmpfs) rather than the node's flat default: a tmpfs's pages
+// are charged to the container's own memory cgroup, so the sidecar's
+// limit is what bounds its data, and memory.max (MemoryGuardFactor
+// times that) leaves the server's own memory room beside a full
+// tmpfs. Without a memory limit it is tmpfsOf's.
+func (c Config) tmpfsFor(svc Service, l Limits) []Tmpfs {
+	out := c.tmpfsOf(svc)
+	mem, ok := parseSize(l.Memory)
+	if !ok || mem <= 0 {
+		return out
+	}
+	size := strconv.FormatInt(max(mem, MinServiceTmpfs)>>20, 10) + "m"
+	for i, m := range svc.Tmpfs {
+		if m.Size == "" {
+			out[i].Size = size
+		}
+	}
+	return out
+}
+
+// PostgresSharedBuffers is the share of a tuned Postgres sidecar's
+// memory its shared_buffers gets.
+const PostgresSharedBuffers = 4 // a quarter
+
+// tunedCommand is svc's command, with a tuned Postgres's shared_buffers
+// sized at a quarter of its sidecar's memory put first, so a
+// shared_buffers the repository declares still wins.
+func tunedCommand(svc Service, l Limits) []string {
+	if !svc.Tuned || !isPostgres(svc.Image) {
+		return svc.Command
+	}
+	mem, ok := parseSize(l.Memory)
+	if !ok || mem <= 0 {
+		return svc.Command
+	}
+	mb := max(mem/PostgresSharedBuffers>>20, 128)
+	return append([]string{"-c", "shared_buffers=" + strconv.FormatInt(mb, 10) + "MB"}, svc.Command...)
 }

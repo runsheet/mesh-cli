@@ -116,15 +116,28 @@ func capLog(data []byte) []byte {
 // hung again, it is Hung with the tests the second panic named; not,
 // it stands as the unit's result (a pass, or a red of its own that the
 // supervisor retries as any red).
-func rerunHung(ctx context.Context, sup *supervisor, r Runner, lr LaneRunner, split bool, laneName string, st, sh Step, cmd string, ls *unitStop, first *ran) *ran {
+//
+// When a fresh lane opens, the hung lane is done with: drop (its
+// release, nil for the lease's own pod) is called at once, so its pod
+// and its sidecars — a Postgres idling beside nothing — are removed
+// rather than left up through the re-run and the lane's later units
+// (dl360, 2026-11-20: lane-1..5 sidecars idle while their re-runs ran).
+// The fresh lane and its release are answered for the lane's later
+// units to run in and its end to release; nil when none opened.
+func rerunHung(ctx context.Context, sup *supervisor, r Runner, lr LaneRunner, split bool, laneName string, st, sh Step, cmd string, ls *unitStop, first *ran, drop func()) (*ran, Runner, func()) {
 	firstLog := &StepLog{Exit: first.exitCode, Data: capLog(slices.Concat(first.stdout.Bytes(), first.stderr.Bytes(), []byte(first.notes.String())))}
 	runner, where := r, "in the same pod"
+	var freshRunner Runner
+	var freshRelease func()
 	if split && lr != nil {
 		opened := Busy(ctx, "opening a fresh lane for "+laneName)
 		fresh, release, err := lr.Lane(ctx, laneName)
 		opened()
 		if err == nil {
-			defer release()
+			if drop != nil {
+				drop()
+			}
+			freshRunner, freshRelease = fresh, release
 			runner, where = fresh, "in a fresh lane"
 		} else {
 			where = fmt.Sprintf("in the same pod (a fresh lane did not open: %v)", err)
@@ -151,7 +164,7 @@ func rerunHung(ctx context.Context, sup *supervisor, r Runner, lr LaneRunner, sp
 		}
 	}
 	fmt.Fprintf(&out.notes, "supervisor: %s\n", out.rerun)
-	return out
+	return out, freshRunner, freshRelease
 }
 
 // redactLog masks tokens in a kept log, and what the run's own Redact
