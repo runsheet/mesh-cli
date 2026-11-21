@@ -44,6 +44,23 @@ func suiteGrace(budget time.Duration) time.Duration {
 // more than the budget itself.
 const budgetFloor = time.Minute
 
+// budgetBegan is when a lease's validation budget starts counting: the
+// lease's start, moved on by the time it waited in admission for its
+// lanes' room. On dl360 runsheet validations asking 72 of 88 cpus
+// waited up to two hours in admission and were then handed back with
+// their budget already spent and no step run: the wait is the node's
+// queue, never the repository's budget.
+func budgetBegan(began time.Time, admissionWait time.Duration) time.Time {
+	return began.Add(max(admissionWait, 0))
+}
+
+// budgetLeft is how long a session held to budget has from now: the
+// budget less what has gone since budgetBegan, never less than
+// budgetFloor (or the budget, when smaller).
+func budgetLeft(budget time.Duration, began time.Time, admissionWait time.Duration, now time.Time) time.Duration {
+	return max(budget-now.Sub(budgetBegan(began, admissionWait)), min(budgetFloor, budget))
+}
+
 // validateBudget is the lease's validation budget, as validateBudget
 // describes: zero when neither the checkout nor its default branch
 // states one.

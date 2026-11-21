@@ -484,13 +484,21 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	// request_time (nodeTools, below) can extend the very context the
 	// session goes on to run under
 	var tb *timeBudget
-	clock := leaseClock{ctx: ctx, began: began, budget: r.suiteBudget(b, workspace), coverage: &coverageNote{}}
+	var admissionWait time.Duration
+	if lp != nil {
+		admissionWait = lp.admissionWait
+	}
+	clock := leaseClock{ctx: ctx, began: budgetBegan(began, admissionWait), budget: r.suiteBudget(b, workspace), coverage: &coverageNote{}}
 	length := time.Duration(b.Harness.Budget.Minutes) * time.Minute
 	// a validation's session ends with its repository's budget, counted
-	// from the lease's start (validatebudget.go), when that comes first
+	// from the lease's start less its admission wait (validatebudget.go),
+	// when that comes first
 	held := false
 	if clock.budget > 0 {
-		left := max(clock.budget-time.Since(began), min(budgetFloor, clock.budget))
+		left := budgetLeft(clock.budget, began, admissionWait, time.Now())
+		if admissionWait > 0 {
+			r.logf("nodev1: lease %s: validation budget of %s counted from admission: the %s admission wait is not held against it, %s left", b.LeaseID, clock.budget, admissionWait.Round(time.Second), left.Round(time.Second))
+		}
 		if length <= 0 || left < length {
 			length, held = left, true
 			clock.answers = &suiteAnswers{}

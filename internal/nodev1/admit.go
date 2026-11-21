@@ -66,10 +66,15 @@ func (r *Runtime) admitLanes(ctx context.Context, b *meshapi.Brief, workspace st
 	if err != nil {
 		return nil
 	}
+	start := time.Now()
 	got, err := r.admit(ctx, b, validate.LaneSizes(cfg.Steps), r.servicesRoom(p))
 	if err != nil {
 		return err
 	}
+	// the time the lease waited for its lanes' room is the node's, never
+	// the repository's budget's: the budget's clock starts again from
+	// admission (budgetBegan)
+	p.admissionWait = time.Since(start)
 	for _, a := range got {
 		name := a.name
 		h := wrapHold(a.l, a.room)

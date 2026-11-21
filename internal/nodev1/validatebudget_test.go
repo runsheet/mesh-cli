@@ -193,3 +193,32 @@ func TestAValidationSessionIsStoppedAtTheBudgetAndReported(t *testing.T) {
 		t.Fatalf("finish result %s", fin.Result)
 	}
 }
+
+// A lease that waits longer than its budget in admission still gets
+// its full budget once admitted: the wait is the node's queue.
+func TestBudgetLeftExcludesAdmissionWait(t *testing.T) {
+	began := time.Date(2026, 11, 21, 11, 21, 0, 0, time.UTC)
+	budget := 38 * time.Minute
+	wait := 1*time.Hour + 53*time.Minute
+	setup := 90 * time.Second
+	admitted := began.Add(setup + wait)
+
+	if got := budgetLeft(budget, began, wait, admitted); got != budget-setup {
+		t.Fatalf("left at admission = %s, want %s (full budget less setup)", got, budget-setup)
+	}
+	if got := budgetBegan(began, wait); !got.Equal(began.Add(wait)) {
+		t.Fatalf("budgetBegan = %s, want %s", got, began.Add(wait))
+	}
+	// without the wait excluded the lease would have only the floor
+	if got := budgetLeft(budget, began, 0, admitted); got != budgetFloor {
+		t.Fatalf("left with no wait recorded = %s, want the floor %s", got, budgetFloor)
+	}
+	// the rest of the whole-lease budget still holds: time after
+	// admission counts, down to the floor
+	if got := budgetLeft(budget, began, wait, admitted.Add(10*time.Minute)); got != budget-setup-10*time.Minute {
+		t.Fatalf("left 10m after admission = %s", got)
+	}
+	if got := budgetLeft(budget, began, wait, admitted.Add(budget)); got != budgetFloor {
+		t.Fatalf("left past the budget = %s, want the floor", got)
+	}
+}
