@@ -108,7 +108,9 @@ func TestRunShardsStartsTheFirstShards(t *testing.T) {
 // Shards a run did not start are no failure; a started one with no
 // result is.
 func TestMergeNamesShardsNotStarted(t *testing.T) {
-	ok := func(k int) ShardResult { return ShardResult{Index: k, Total: 4, StepResult: StepResult{Name: "integration"}} }
+	ok := func(k int) ShardResult {
+		return ShardResult{Index: k, Total: 4, StepResult: StepResult{Name: "integration"}}
+	}
 	got := merge([]ShardResult{ok(0), ok(1)}, true, 2)
 	if got.ExitCode != 0 {
 		t.Fatalf("two of two started shards passed: exit %d", got.ExitCode)
