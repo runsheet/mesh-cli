@@ -478,17 +478,18 @@ func lanes(steps []Step, split bool) []lane {
 	grouped := slices.ContainsFunc(steps, func(st Step) bool { return st.Group != "" })
 	for i, st := range steps {
 		n := max(st.Shards, 1)
+		started := st.started()
 		if !split {
 			if len(out) == 0 {
 				out = append(out, lane{})
 			}
-			for k := range n {
+			for k := range started {
 				out[0].units = append(out[0].units, unit{step: i, shard: k, total: n})
 			}
 			continue
 		}
 		if n > 1 {
-			for k := range n {
+			for k := range started {
 				out = append(out, lane{name: fmt.Sprintf("%s-%d", st.Name, k), units: []unit{{step: i, shard: k, total: n}}})
 			}
 			continue
@@ -801,7 +802,7 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 		if len(shards) == 0 {
 			continue
 		}
-		sr := merge(shards, split)
+		sr := merge(shards, split, st.started())
 		if sup.selected && sr.ExitCode == 0 {
 			// under a selection a shard may rightly be empty: the
 			// suite's floor is the step's shards' together
@@ -839,7 +840,12 @@ type ShardResult struct {
 // output after a line per shard; the wall (the longest shard when they
 // ran at once, else their sum); the tests and reports summed in shard
 // order.
-func merge(shards []ShardResult, concurrent bool) StepResult {
+//
+// started is how many shards the run started (Step.started): a shard
+// past them was left out on purpose (run_suite's shards), named not
+// started and no failure; one of them with no result is not run, and
+// no pass.
+func merge(shards []ShardResult, concurrent bool, started int) StepResult {
 	if len(shards) == 1 && shards[0].Total <= 1 {
 		return shards[0].StepResult
 	}
@@ -866,13 +872,18 @@ func merge(shards []ShardResult, concurrent bool) StepResult {
 			failed = i
 		}
 	}
+	started = min(max(started, 1), shards[0].Total)
 	for k := range shards[0].Total {
 		if !slices.ContainsFunc(shards, func(s ShardResult) bool { return s.Index == k }) {
+			if k >= started {
+				fmt.Fprintf(&lines, "shard %d/%d: not started (the run asked for shards 1-%d)\n", k+1, shards[0].Total, started)
+				continue
+			}
 			fmt.Fprintf(&lines, "shard %d/%d: not run\n", k+1, shards[0].Total)
 		}
 	}
 	out.Report = report.String()
-	if len(shards) < shards[0].Total && failed < 0 {
+	if len(shards) < started && failed < 0 {
 		// a shard that never ran (its lane did not open) is no pass
 		out.ExitCode = -1
 	}

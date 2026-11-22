@@ -24,7 +24,10 @@ import (
 // could hold).
 //
 // Once a validate lease's checkout is in and its pod's services are up,
-// admitLanes sizes the lease from its suites' lanes (validate.LaneSizes:
+// admitLanes sizes the lease from its suites' lanes (validate.AdmitSizes:
+// every lane but a sharded suite's further shards, which a run admits
+// one by one as it starts them (holdLane, waiting for room) and gives
+// back to the node as each ends; validate.LaneSizes:
 // each lane's CPUs and memory, the room laneRoom gives it, which is the
 // limit of the lane's steps, and beside it the room of the lane's own
 // sidecars, a Postgres among them, which run under limits of their own:
@@ -67,7 +70,7 @@ func (r *Runtime) admitLanes(ctx context.Context, b *meshapi.Brief, workspace st
 		return nil
 	}
 	start := time.Now()
-	got, err := r.admit(ctx, b, validate.LaneSizes(cfg.Steps), r.servicesRoom(p))
+	got, err := r.admit(ctx, b, validate.AdmitSizes(cfg.Steps), r.servicesRoom(p))
 	if err != nil {
 		return err
 	}

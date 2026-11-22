@@ -85,9 +85,10 @@ func TestASuiteNamingNoSizeGetsTheNodesDefaultNotTheKindsAllowance(t *testing.T)
 	for _, h := range g.rt.Scheduler.Leases() {
 		held += h.Ask.CPUs
 	}
-	// the first lane's 2 are within the lease's own hold (admitLanes)
-	if held != 6 {
-		t.Fatalf("four lanes of a suite naming no size hold %g cpus, want 6 (2 each beside the lease's pod)", held)
+	// admission takes the first shard alone (validate.AdmitSizes), and
+	// its 2 are within the lease's own hold (admitLanes)
+	if held != 0 {
+		t.Fatalf("a suite naming no size holds %g cpus at admission, want 0 (its first shard within the lease's pod)", held)
 	}
 	limits, holds := laneRooms(t, g)
 	if len(limits) != 4 {

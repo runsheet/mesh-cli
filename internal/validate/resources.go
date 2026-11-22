@@ -91,3 +91,24 @@ func LaneSizes(steps []Step) []LaneSize {
 	}
 	return out
 }
+
+// AdmitSizes is the lanes a validation is admitted for up front
+// (internal/nodev1 admitLanes): every lane LaneSizes names except a
+// sharded suite's, of which only its first shard's. A run starts a
+// suite's further shards only when it asks for them (run_suite's
+// shards; every one when it names none), and each waits for its own
+// room then and gives it back when it ends. A coverage selection runs
+// on as few shards as it needs, so a lease held room for shards that
+// never ran (dl360, 2026-11-23: every runsheet validation asked for 40
+// cpus for its four 8-cpu integration shards, and about one an hour was
+// admitted).
+func AdmitSizes(steps []Step) []LaneSize {
+	one := make([]Step, len(steps))
+	for i, st := range steps {
+		if st.Shards > 1 {
+			st.RunShards = 1
+		}
+		one[i] = st
+	}
+	return LaneSizes(one)
+}

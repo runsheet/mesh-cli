@@ -267,15 +267,11 @@ func TestALeasesLanesHoldRoomAsSoonAsTheLaneCountIsKnown(t *testing.T) {
 		owners = append(owners, h.Owner)
 	}
 	slices.Sort(owners)
-	want := []string{"lease-1/lane-integration-0", "lease-1/lane-integration-1", "lease-1/lane-integration-2", "lease-1/lane-integration-3"}
+	// admission holds one lane per sharded suite (validate.AdmitSizes);
+	// shards 1-3 wait for their own room when a run opens them
+	want := []string{"lease-1/lane-integration-0"}
 	if !slices.Equal(owners, want) {
 		t.Fatalf("lane holds taken before any lane ran = %v, want %v", owners, want)
-	}
-
-	// 12 of the 16 held: the first lane's room is the lease's own
-	// hold (4, taken before the pod in production), the rest beside it
-	if _, err := g.rt.Scheduler.TryTake(scheduler.Ask{Owner: "lease-2", CPUs: 5, MemGB: 1}); err == nil {
-		t.Fatal("a later lease was offered room the lease's unopened lanes already hold")
 	}
 
 	g.lp.releaseEagerLanes()
