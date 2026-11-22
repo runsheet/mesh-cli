@@ -132,6 +132,12 @@ type Step struct {
 	// 0 (the file leaving it out) and 1 are one run; never more than
 	// MaxShards.
 	Shards int
+	// RunShards, set by a run rather than read from validate.yml, starts
+	// only the first RunShards of the step's Shards (run_suite's shards:
+	// a selection small enough for fewer shards), each still told
+	// MESH_SHARD_TOTAL as Shards, so every test keeps its shard. 0, or
+	// anything not below Shards, starts every shard.
+	RunShards int
 	// CPUs and Memory are the room the suite asks for (`cpus: 8`,
 	// `memory: 24g`): what the lane it runs in is limited to and holds
 	// of the node (Resources, LaneSizes). 0 and "" (the file leaving
@@ -467,6 +473,16 @@ func validGlob(p string) error {
 
 // shard is the step as shard k runs it: "{shard}" in its results and
 // reports paths is k, so each shard writes and reads its own file.
+// started is how many of the step's shards a run starts: RunShards when
+// it is below Shards, else every one (1 for a step with no shards).
+func (s Step) started() int {
+	n := max(s.Shards, 1)
+	if s.RunShards > 0 && s.RunShards < n {
+		return s.RunShards
+	}
+	return n
+}
+
 func (s Step) shard(k int) Step {
 	idx := fmt.Sprint(k)
 	s.Results = strings.ReplaceAll(s.Results, "{shard}", idx)

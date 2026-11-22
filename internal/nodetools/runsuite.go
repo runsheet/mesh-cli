@@ -551,6 +551,8 @@ func (s *RunSuite) Tool() mcptool.Tool {
 					SuiteTargetsEnv + " (space separated); the suite's whole set when absent"),
 				"tests": list("the test names to run, exported to the suite's command as " + SuiteTestsEnv +
 					" (space separated); every test when absent"),
+				"shards": map[string]any{"type": "integer", "minimum": 1,
+					"description": "with targets or tests, how many of a sharded suite's shards to start: the first shards ones, each still told the suite's declared shard count, so every test keeps its shard; every shard when absent, or without targets or tests. Name it when your brief says how many shards a selection needs"},
 				"fail_fast": map[string]any{"type": "boolean", "description": "stop the run at its first failing suite or shard, the others cancelled and named not run"},
 				"run_id":    map[string]any{"type": "string", "description": "a running run's id, as an earlier call answered it: wait for that run instead of starting one"},
 				"wait_seconds": map[string]any{"type": "integer", "minimum": 0,
@@ -639,6 +641,10 @@ func (s *RunSuite) call(ctx context.Context, args map[string]any) (string, error
 	if err != nil {
 		return "", err
 	}
+	shards, err := shardsArg(args)
+	if err != nil {
+		return "", err
+	}
 	failFast := false
 	if v, ok := args["fail_fast"]; ok && v != nil {
 		if failFast, ok = v.(bool); !ok {
@@ -675,6 +681,7 @@ func (s *RunSuite) call(ctx context.Context, args map[string]any) (string, error
 	if len(steps) == 0 {
 		return "", fmt.Errorf("%s declares no suites", source)
 	}
+	steps = startShards(steps, shards, sel, s.Logf)
 	r, fresh, note := s.startOrJoin(steps, sel)
 	if !fresh {
 		// a repeat call: the same suites are already running on this
@@ -690,6 +697,45 @@ func (s *RunSuite) call(ctx context.Context, args map[string]any) (string, error
 		}
 	}()
 	return s.await(ctx, r, s.wait())
+}
+
+// shardsArg is the call's shards, 0 when it names none.
+func shardsArg(args map[string]any) (int, error) {
+	v, ok := args["shards"]
+	if !ok || v == nil {
+		return 0, nil
+	}
+	f, ok := v.(float64)
+	if !ok || f < 1 || f != float64(int(f)) {
+		return 0, errors.New("shards is a whole number, at least 1")
+	}
+	return int(f), nil
+}
+
+// startShards is steps with each sharded suite set to start only its
+// first k shards (validate.Step.RunShards), each still told the suite's
+// declared count: only for a selection, since a whole run that started
+// fewer shards would leave tests out unseen. The node admits a
+// validation for one lane per sharded suite (validate.AdmitSizes); each
+// further shard waits for its own room as it starts and gives it back
+// as it ends. k 0, or no selection, starts every shard.
+func startShards(steps []validate.Step, k int, sel *Selection, logf func(string, ...any)) []validate.Step {
+	if k <= 0 {
+		return steps
+	}
+	if sel == nil {
+		if logf != nil {
+			logf("run_suite: shards %d ignored: the run names no targets or tests, so every shard runs", k)
+		}
+		return steps
+	}
+	out := slices.Clone(steps)
+	for i := range out {
+		if out[i].Shards > 1 && k < out[i].Shards {
+			out[i].RunShards = k
+		}
+	}
+	return out
 }
 
 // sameSelection is whether a and b name the same targets and tests,
