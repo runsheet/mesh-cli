@@ -178,6 +178,13 @@ type TakeRequest struct {
 	Free      *Capacity `json:"free,omitempty"`
 	Harnesses []string  `json:"harnesses"`
 	WaitS     int       `json:"wait_s,omitempty"`
+	// Reserved is room the node keeps for ReservedKinds alone, beside
+	// Free (goal one-assistant-dispatcher-per-org-answers-every-ask P1):
+	// Mesh places a queued job of one of those kinds that fits Free and
+	// Reserved together first. Both are left out when the node keeps no
+	// reserve.
+	Reserved      *Capacity `json:"reserved,omitempty"`
+	ReservedKinds []string  `json:"reserved_kinds,omitempty"`
 }
 
 // Take is a take's answer: a lease and its brief, or Waiting — why no
