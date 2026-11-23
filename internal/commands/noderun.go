@@ -48,12 +48,17 @@ var (
 	// The actor node's flags (ADR-044), each off by default.
 	nodeRunScheduler    bool
 	nodeRunAccountSlots int
-	nodeRunActors       bool
-	nodeRunSupervisor   string
-	nodeRunQuietAfter   time.Duration
-	nodeRunSelfUpdate   bool
-	nodeRunSandbox      bool
-	nodeRunRelaySidecar bool
+	// the room kept for the assistant kinds (goal
+	// one-assistant-dispatcher-per-org-answers-every-ask P1)
+	nodeRunAssistantCPUs  float64
+	nodeRunAssistantMemGB float64
+	nodeRunAssistantKinds []string
+	nodeRunActors         bool
+	nodeRunSupervisor     string
+	nodeRunQuietAfter     time.Duration
+	nodeRunSelfUpdate     bool
+	nodeRunSandbox        bool
+	nodeRunRelaySidecar   bool
 	// nodeRunSandboxRuntime is the runtime --sandbox opens its pods on:
 	// rootless podman, substituted for a test double (sandbox.Fake) so a
 	// test can exercise --sandbox with no podman installed.
@@ -165,6 +170,18 @@ runs, and finish or hand back.`,
 				AccountSlots: nodeRunAccountSlots,
 			})
 			rt.Scheduler.Logf = logger.Printf
+			reserve, err := nodev1.ReadAssistantReserve(capPath, nodev1.AssistantReserve{
+				CPUs: nodeRunAssistantCPUs, MemGB: nodeRunAssistantMemGB, Kinds: nodeRunAssistantKinds,
+			})
+			if err != nil {
+				return err
+			}
+			if len(reserve.Kinds) > 0 && (reserve.CPUs > 0 || reserve.MemGB > 0) {
+				rt.AssistantKinds = reserve.Kinds
+				rt.Scheduler.SetReserve(scheduler.Capacity{CPUs: reserve.CPUs, MemGB: reserve.MemGB})
+				r := rt.Scheduler.Reserve()
+				logger.Printf("nodev1: reserve: %g cpus, %g GB kept for %s alone", r.CPUs, r.MemGB, strings.Join(reserve.Kinds, ", "))
+			}
 		}
 		rt.Host, rt.Machine = nodeRunHost(logger)
 		rt.Actors = nodeRunActors
@@ -490,6 +507,9 @@ func init() {
 	f.StringVar(&nodeRunRekorURL, "rekor-url", "", "the Rekor node tools' records are logged in (default $MESH_REKOR_URL, else node.yaml's sigstore.rekor_url)")
 	f.BoolVar(&nodeRunScheduler, "actors-scheduler", false, "the scheduler owns the node's capacity (ADR-044): leases hold their resources as scheduler leases, the node reports what is free on each take and runs up to --slots leases side by side (--slots 0: as many as its CPUs and memory hold)")
 	f.IntVar(&nodeRunAccountSlots, "account-slots", 0, "with --actors-scheduler, sessions at once per model account (0 is unbounded)")
+	f.Float64Var(&nodeRunAssistantCPUs, "assistant-reserve-cpus", 4, "with --actors-scheduler, CPUs kept for the assistant kinds alone (--assistant-kinds), admitted at once however full the node; at most a quarter of the node; node.yaml's v1.assistant_reserve.cpus wins")
+	f.Float64Var(&nodeRunAssistantMemGB, "assistant-reserve-mem-gb", 8, "with --actors-scheduler, memory in GB kept for the assistant kinds alone; at most a quarter of the node; node.yaml's v1.assistant_reserve.mem_gb wins")
+	f.StringSliceVar(&nodeRunAssistantKinds, "assistant-kinds", []string{"goal-chat"}, "the kinds the assistant reserve is kept for (short names); none keeps no reserve; node.yaml's v1.assistant_reserve.kinds wins")
 	f.BoolVar(&nodeRunActors, "actors", false, "run each lease as a job actor (ADR-044): it owns the lease's directory, room, grant and proxy, writes actor.json before each state change, releases everything however the lease ends, and hands back pod_killed a session killed from outside; a restarted node releases the actors it left")
 	f.StringVar(&nodeRunSupervisor, "supervisor", "off", "with --actors, the supervisor (ADR-044): off; warn (or report) logs quiet sessions and what the minute's reconcile finds; cancel escalates a quiet session, then hands it back stalled, and removes pods, job directories and grants no actor holds; tidy removes pods, job directories and grants no actor holds like cancel, but never escalates or stalls a quiet session, as warn does not either. Once running, node.yaml's `v1.supervisor` key is read live (ADR-044 amendment, 2026-11-09): editing it and sending SIGHUP (as `mesh node set` does for capacity) changes the mode in force on the next Look or Reconcile, with no restart")
 	f.DurationVar(&nodeRunQuietAfter, "quiet-after", 0, "with --supervisor, how long a session may show no progress before it is escalated, and again before it is stopped (default 15m)")

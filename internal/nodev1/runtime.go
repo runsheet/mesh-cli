@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,6 +43,12 @@ import (
 type Runtime struct {
 	// API is Mesh, on the node's machine token.
 	API *meshapi.Client
+	// AssistantKinds are the kinds (short names, "goal-chat") the
+	// scheduler's reserve is kept for (Scheduler.SetReserve; goal
+	// one-assistant-dispatcher-per-org-answers-every-ask P1): their
+	// leases ask for it, every take names it to Mesh, and a hot host
+	// still takes them. None keeps no reserve.
+	AssistantKinds []string
 	// Node is what the node registers as; OS and Arch default to this
 	// build's.
 	Node meshapi.RegisterRequest
@@ -671,21 +678,30 @@ func (r *Runtime) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			break
 		}
+		// a hot host takes no new lease but an assistant's, in the room
+		// it keeps for them (goal
+		// one-assistant-dispatcher-per-org-answers-every-ask P1); short
+		// of memory, it takes none
+		reservedOnly := false
 		if reason := r.hostGate(); reason != "" {
 			r.noteHostGate(reason)
-			r.sleep(ctx, r.backoff())
-			continue
+			if !r.reserveOpen() || strings.HasPrefix(reason, "host short of memory") {
+				r.sleep(ctx, r.backoff())
+				continue
+			}
+			reservedOnly = true
+		} else {
+			r.noteHostGate("")
 		}
-		r.noteHostGate("")
 		if reason := r.diskGate(); reason != "" {
 			r.noteDiskGate(reason)
 			r.sleep(ctx, r.backoff())
 			continue
 		}
 		r.noteDiskGate("")
-		tk, err := r.API.Take(ctx, meshapi.TakeRequest{
-			NodeID: node.NodeID, Free: r.free(), Harnesses: r.Node.Harnesses, WaitS: meshapi.MaxWaitS,
-		})
+		tr := meshapi.TakeRequest{NodeID: node.NodeID, Free: r.free(), Harnesses: r.Node.Harnesses, WaitS: meshapi.MaxWaitS}
+		r.takeReserved(&tr, reservedOnly)
+		tk, err := r.API.Take(ctx, tr)
 		if err != nil {
 			if ctx.Err() != nil {
 				break

@@ -2,6 +2,8 @@ package nodev1
 
 import (
 	"context"
+	"path"
+	"slices"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/meshapi"
@@ -43,13 +45,63 @@ func askOf(b *meshapi.Brief, lease *meshapi.Lease) scheduler.Ask {
 	}
 }
 
+// assistantKind is whether b is one of the kinds the node keeps its
+// reserve for (Runtime.AssistantKinds).
+func (r *Runtime) assistantKind(b *meshapi.Brief) bool {
+	if b == nil {
+		return false
+	}
+	k := path.Base(b.Kind)
+	return slices.ContainsFunc(r.AssistantKinds, func(a string) bool { return path.Base(a) == k })
+}
+
+// leaseAsk is askOf for the node: an assistant kind's lease asks for the
+// reserve (scheduler.Ask.Reserved), takes no job slot — the reserve is
+// beside the slots — and does not hold the build cache, so neither a
+// full node nor a cache trim keeps it waiting (goal
+// one-assistant-dispatcher-per-org-answers-every-ask P1).
+func (r *Runtime) leaseAsk(b *meshapi.Brief, lease *meshapi.Lease) scheduler.Ask {
+	ask := askOf(b, lease)
+	if r.assistantKind(b) {
+		ask.Reserved, ask.Slot, ask.Cache = true, false, scheduler.CacheNone
+	}
+	return ask
+}
+
+// reserveOpen is whether the node keeps a reserve for its assistant
+// kinds with room left in it now.
+func (r *Runtime) reserveOpen() bool {
+	if r.Scheduler == nil || len(r.AssistantKinds) == 0 {
+		return false
+	}
+	f := r.Scheduler.ReserveFree()
+	return f.CPUs > 0 || f.MemGB > 0
+}
+
+// takeReserved names on tr the room the node keeps for its assistant
+// kinds, when it keeps any with room left (Mesh places one of them that
+// fits free and reserved together first); with reservedOnly — a hot
+// host, or no job slot free — the take offers that room alone, its
+// general free zero.
+func (r *Runtime) takeReserved(tr *meshapi.TakeRequest, reservedOnly bool) {
+	if !r.reserveOpen() {
+		return
+	}
+	f := r.Scheduler.ReserveFree()
+	tr.Reserved = &meshapi.Capacity{CPUs: f.CPUs, MemGB: f.MemGB}
+	tr.ReservedKinds = r.AssistantKinds
+	if reservedOnly || (r.Scheduler.Total().Slots > 0 && r.Scheduler.Free().Slots <= 0) {
+		tr.Free = &meshapi.Capacity{}
+	}
+}
+
 // holdCapacity takes the lease's room in the scheduler, waiting at most
 // roomWait; nil and no error when the node has no scheduler.
 func (r *Runtime) holdCapacity(ctx context.Context, b *meshapi.Brief, lease *meshapi.Lease) (*scheduler.Lease, error) {
 	if r.Scheduler == nil {
 		return nil, nil
 	}
-	ask := askOf(b, lease)
+	ask := r.leaseAsk(b, lease)
 	if l, err := r.Scheduler.TryTake(ask); err == nil {
 		return l, nil
 	}
@@ -70,6 +122,11 @@ func (r *Runtime) waitForSlot(ctx context.Context) {
 	for ctx.Err() == nil {
 		ch := r.Scheduler.Changed()
 		if !r.Scheduler.Trimming() && (r.Scheduler.Total().Slots <= 0 || r.Scheduler.Free().Slots > 0) {
+			return
+		}
+		// no slot, or a trim: the reserve still takes an assistant's
+		// lease, which holds neither (takeReserved offers it alone)
+		if r.reserveOpen() {
 			return
 		}
 		// a lease that lapses frees its slot without a change to wake on
