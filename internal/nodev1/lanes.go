@@ -522,13 +522,17 @@ func (r *Runtime) holdLane(ctx context.Context, b *meshapi.Brief, p *leasePod, n
 		// own hold, as admission asked it
 		ask, readmit = a, true
 	}
+	readmitted := func(h *laneHold) *laneHold {
+		if readmit {
+			free := r.Scheduler.Free()
+			r.logf("nodev1: lease %s: lane %s readmitted: held %g cpus, %s GB again, free %g cpus, %s GB", b.LeaseID, name, ask.CPUs, num2(ask.MemGB), free.CPUs, num2(free.MemGB))
+			h.ended = r.laneEnded(b, name)
+		}
+		return h
+	}
 	if first {
 		if l, err := r.Scheduler.TryTake(ask); err == nil {
-			h := wrapHold(l, room)
-			if readmit {
-				h.ended = r.laneEnded(b, name)
-			}
-			return h, nil
+			return readmitted(wrapHold(l, room)), nil
 		}
 		if within(room, b.Resources) {
 			r.logf("nodev1: lease %s: no room for lane %s's %s right now; it runs in the lease's pod under the lease's own hold", b.LeaseID, name, roomLine(room))
@@ -544,13 +548,7 @@ func (r *Runtime) holdLane(ctx context.Context, b *meshapi.Brief, p *leasePod, n
 			return nil, err
 		}
 	}
-	h := wrapHold(l, room)
-	if readmit {
-		free := r.Scheduler.Free()
-		r.logf("nodev1: lease %s: lane %s readmitted: held %g cpus, %s GB again, free %g cpus, %s GB", b.LeaseID, name, ask.CPUs, num2(ask.MemGB), free.CPUs, num2(free.MemGB))
-		h.ended = r.laneEnded(b, name)
-	}
-	return h, nil
+	return readmitted(wrapHold(l, room)), nil
 }
 
 // within says whether room is no more than a lease's allowance; an
