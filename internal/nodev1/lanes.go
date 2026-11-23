@@ -346,22 +346,15 @@ type laneHold struct {
 	l    *scheduler.Lease
 	stop chan struct{}
 	once sync.Once
-	// back, set on a hold the lease's admission took (admitLanes), gives
-	// it back to the lease's pool when its lane ends rather than to the
-	// node: an admitted lease holds every lane's room for its whole life
-	// and gives it back only at its end (releaseEagerLanes).
-	back func(*laneHold)
+	// ended, set, hears the room the hold gave back to the node, once
+	// it has (admitLanes: the line naming the lane and the node's free).
+	ended func(cpus, memGB float64)
 }
 
-// release ends the lane's use of the hold: back to the lease's pool for
-// an admitted hold, else back to the node (free).
-func (h *laneHold) release() {
-	if h != nil && h.back != nil {
-		h.back(h)
-		return
-	}
-	h.free()
-}
+// release ends the lane's use of the hold: its room back to the node
+// as its last step exits, an admitted lane's as any other's (admit.go);
+// a later step in the lane takes it again (holdLane).
+func (h *laneHold) release() { h.free() }
 
 // free gives the hold back to the node's scheduler; again is nothing.
 func (h *laneHold) free() {
@@ -371,6 +364,10 @@ func (h *laneHold) free() {
 	h.once.Do(func() {
 		close(h.stop)
 		h.l.Release()
+		if h.ended != nil {
+			a := h.l.Ask()
+			h.ended(a.CPUs, a.MemGB)
+		}
 	})
 }
 
@@ -517,20 +514,41 @@ func (r *Runtime) holdLane(ctx context.Context, b *meshapi.Brief, p *leasePod, n
 		return &laneHold{room: room}, nil
 	}
 	ask := laneAsk(b, name, room, r.laneServices(p, size))
+	readmit := false
+	if a, ok := p.admittedAsk(name, room); ok {
+		// a lane admission took, whose room went back to the node when
+		// its last step exited: a later step (a re-run) asks the same
+		// again, the first lane only what it needs beyond the lease's
+		// own hold, as admission asked it
+		ask, readmit = a, true
+	}
+	readmitted := func(h *laneHold) *laneHold {
+		if readmit {
+			free := r.Scheduler.Free()
+			r.logf("nodev1: lease %s: lane %s readmitted: held %g cpus, %s GB again, free %g cpus, %s GB", b.LeaseID, name, ask.CPUs, num2(ask.MemGB), free.CPUs, num2(free.MemGB))
+			h.ended = r.laneEnded(b, name)
+		}
+		return h
+	}
 	if first {
 		if l, err := r.Scheduler.TryTake(ask); err == nil {
-			return wrapHold(l, room), nil
+			return readmitted(wrapHold(l, room)), nil
 		}
 		if within(room, b.Resources) {
 			r.logf("nodev1: lease %s: no room for lane %s's %s right now; it runs in the lease's pod under the lease's own hold", b.LeaseID, name, roomLine(room))
 			return &laneHold{room: room}, nil
 		}
 	}
-	l, err := r.Scheduler.Take(ctx, ask)
+	l, err := r.Scheduler.TryTake(ask)
 	if err != nil {
-		return nil, err
+		if readmit {
+			r.logf("nodev1: lease %s: lane %s waits to be readmitted: asked %g cpus, %s GB (%v)", b.LeaseID, name, ask.CPUs, num2(ask.MemGB), err)
+		}
+		if l, err = r.Scheduler.Take(ctx, ask); err != nil {
+			return nil, err
+		}
 	}
-	return wrapHold(l, room), nil
+	return readmitted(wrapHold(l, room)), nil
 }
 
 // within says whether room is no more than a lease's allowance; an

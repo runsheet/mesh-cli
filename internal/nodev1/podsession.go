@@ -21,6 +21,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/sandbox"
+	"projectmesh.io/mesh-cli/internal/scheduler"
 	"projectmesh.io/mesh-cli/internal/validate"
 )
 
@@ -124,6 +125,11 @@ type leasePod struct {
 	// until a run opens that lane (holdLane, popEagerLane) or the lease
 	// ends (releaseEagerLanes) (lanes.go).
 	eagerLanes map[string]*laneHold
+	// admitted is what admission asked of the node's scheduler for
+	// each lane, by name, and the room it held: a lane whose room went
+	// back at its end asks the same again when a later step needs it
+	// (holdLane, admittedAsk).
+	admitted map[string]admittedRoom
 	// ended is set once the lease's end gave its lanes' room back: a
 	// lane's hold that comes back after it is freed, never pooled again.
 	ended bool
@@ -143,6 +149,35 @@ func (p *leasePod) setEagerLane(name string, h *laneHold) {
 	}
 	p.eagerLanes[name] = h
 	p.mu.Unlock()
+}
+
+// admittedRoom is a lane's room as admission held it, and its ask.
+type admittedRoom struct {
+	room meshapi.Resources
+	ask  scheduler.Ask
+}
+
+// setAdmitted records what admission asked for lane name (admitLanes).
+func (p *leasePod) setAdmitted(name string, room meshapi.Resources, ask scheduler.Ask) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.admitted == nil {
+		p.admitted = map[string]admittedRoom{}
+	}
+	p.admitted[name] = admittedRoom{room: room, ask: ask}
+}
+
+// admittedAsk is what admission asked for lane name, when it held the
+// room the lane asks for now; false for a lane admission did not take,
+// or one whose room changed since.
+func (p *leasePod) admittedAsk(name string, room meshapi.Resources) (scheduler.Ask, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	a, ok := p.admitted[name]
+	if !ok || a.room != room {
+		return scheduler.Ask{}, false
+	}
+	return a.ask, true
 }
 
 // releaseEagerLanes gives back every eagerly-reserved lane hold no run
