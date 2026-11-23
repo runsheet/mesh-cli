@@ -37,11 +37,19 @@ import (
 // room needs beyond the lease's own hold (askOf): a lease whose lanes
 // sum to 28 CPUs holds 28 in all, not 28 plus its 4. A lease whose lanes
 // do not fit now waits, holding none of them; one whose lanes could
-// never fit the node's total is refused, naming why. The room is held
-// for the lease's whole life: a lane's end gives its hold back to the
-// lease's pool (laneHold.back), not to the node, and only the lease's
-// end gives it all back (releaseEagerLanes). Every admission is a line
-// in node.log naming asked, free and held.
+// never fit the node's total is refused, naming why. Every admission is
+// a line in node.log naming asked, free and held.
+//
+// A lane's room goes back to the node when the last run_suite step in
+// that lane exits (holdLane's hold, released by the lane's end), not
+// when the lease ends (2026-11-23: dl360 booked 86 of 88 CPUs while its
+// load was 4 on 96 cores, every admitted unit and checks lane held idle
+// for the rest of its lease while the session triaged and wrote its
+// finish). A later step that needs the lane again — a re-run of its
+// failing tests — takes the same ask afresh (admittedAsk), waiting for
+// room as a shard's lane does. The lease's own hold (askOf) stays until
+// the lease ends; a lane no run opened is given back then
+// (releaseEagerLanes).
 //
 // The lanes a lease is running are in its hand-off (handoff.json's
 // lanes): a node restarted mid-lease adopts their pods and holds their
@@ -50,10 +58,12 @@ import (
 // errNeverFits is a lease whose lanes could never fit the node.
 var errNeverFits = errors.New("the node could never hold this validation's lanes")
 
-// admittedLane is one lane's room as admission took it.
+// admittedLane is one lane's room as admission took it, and what it
+// asked of the node's scheduler for it.
 type admittedLane struct {
 	name string
 	room meshapi.Resources
+	ask  scheduler.Ask
 	l    *scheduler.Lease
 }
 
@@ -78,13 +88,20 @@ func (r *Runtime) admitLanes(ctx context.Context, b *meshapi.Brief, workspace st
 	// the repository's budget's: the budget's clock starts again from
 	// admission (budgetBegan)
 	p.admissionWait = time.Since(start)
-	for _, a := range got {
-		name := a.name
-		h := wrapHold(a.l, a.room)
-		h.back = func(h *laneHold) { p.setEagerLane(name, h) }
-		p.setEagerLane(name, h)
-	}
+	r.keepAdmitted(b, p, got)
 	return nil
+}
+
+// keepAdmitted keeps admission's holds on p by lane name, for the run
+// that opens each lane to take (holdLane), and what each asked, for a
+// later step to ask again once the lane's end gave it back.
+func (r *Runtime) keepAdmitted(b *meshapi.Brief, p *leasePod, got []admittedLane) {
+	for _, a := range got {
+		h := wrapHold(a.l, a.room)
+		h.ended = r.laneEnded(b, a.name)
+		p.setAdmitted(a.name, a.room, a.ask)
+		p.setEagerLane(a.name, h)
+	}
 }
 
 // admit takes every lane's room of sizes, for b's lease, of the node's
@@ -117,7 +134,7 @@ func (r *Runtime) admit(ctx context.Context, b *meshapi.Brief, sizes []validate.
 			ask.CPUs = math.Max(ask.CPUs-b.Resources.CPUs, 0)
 			ask.MemGB = math.Max(ask.MemGB-b.Resources.MemGB, 0)
 		}
-		lanes[i] = admittedLane{name: s.Name, room: room}
+		lanes[i] = admittedLane{name: s.Name, room: room, ask: ask}
 		asks[i] = ask
 		asked.CPUs += ask.CPUs
 		asked.MemGB += ask.MemGB
@@ -155,6 +172,19 @@ func (r *Runtime) admit(ctx context.Context, b *meshapi.Brief, sizes []validate.
 		lanes[i].l = ls[i]
 	}
 	return lanes, nil
+}
+
+// laneEnded is the line a lane's hold says as its room goes back to
+// the node: the lane, what it held and what the node has free after.
+func (r *Runtime) laneEnded(b *meshapi.Brief, name string) func(cpus, memGB float64) {
+	return func(cpus, memGB float64) {
+		if r.Scheduler == nil {
+			return
+		}
+		free := r.Scheduler.Free()
+		r.logf("nodev1: lease %s: lane %s ended: its %g cpus, %s GB back to the node, free %g cpus, %s GB",
+			b.LeaseID, name, cpus, num2(memGB), free.CPUs, num2(free.MemGB))
+	}
 }
 
 // num2 is a float rounded to two places, for the log.

@@ -200,7 +200,10 @@ func TestALaneRefusedRoomRunsOnItsOwnRoomAndTheOthersWait(t *testing.T) {
 		t.Fatalf("%d shards ran in the lease's own pod, want the first alone", inLease)
 	}
 	said := strings.Join(logged, "\n")
-	if !strings.Contains(said, "no room for lane integration-0's 4 cpus, 8 GB right now; it runs in the lease's pod under the lease's own hold") {
+	// admission took the first lane as what it needs beyond the lease's
+	// own hold, nothing here: readmitted as that, it runs on the lease's
+	// hold, as a first lane with no room does
+	if !strings.Contains(said, "lane integration-0 readmitted: held 0 cpus, 0 GB again") {
 		t.Fatalf("the node's log did not say the first lane ran under the lease's hold:\n%s", said)
 	}
 	if free := g.rt.Scheduler.Free(); free.CPUs != 16 || free.MemGB != 64 {

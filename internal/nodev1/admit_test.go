@@ -140,31 +140,133 @@ func TestValidateLeaseAdmittedForAllLanes(t *testing.T) {
 	}
 }
 
-// A lane's end gives its room back to its lease, not to the node: an
-// admitted lease holds every lane's room until it ends.
-func TestAnAdmittedLaneIsHeldUntilTheLeaseEnds(t *testing.T) {
-	rt := testRuntime(t)
-	rt.Scheduler = scheduler.New(scheduler.Capacity{CPUs: 32, MemGB: 128})
-	b := &meshapi.Brief{LeaseID: "lease-1", Kind: "validate", Resources: meshapi.Resources{CPUs: 4, MemGB: 8}}
-	got, err := rt.admit(context.Background(), b, sevenLanes(), meshapi.Resources{})
+// A lane's end gives its room back to the node, not to its lease: an
+// admitted lease holds a lane's room only while a run_suite step runs
+// in it, and a later step that needs the lane again (a re-run) takes
+// the same room again, waiting for it as any lane does. The lease's own
+// hold stays until it ends.
+func TestAnAdmittedLaneGivesItsRoomBackWhenItEnds(t *testing.T) {
+	cfg, err := validate.Parse([]byte(runsheetLike))
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &leasePod{}
-	for _, a := range got {
-		name := a.name
-		h := wrapHold(a.l, a.room)
-		h.back = func(h *laneHold) { p.setEagerLane(name, h) }
-		p.setEagerLane(name, h)
+	rt := testRuntime(t)
+	var mu sync.Mutex
+	var logged []string
+	rt.Logf = func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		logged = append(logged, fmt.Sprintf(format, args...))
 	}
-	h := p.popEagerLane("integration-3")
-	h.release()
-	if free := rt.Scheduler.Free(); free.CPUs != 8 {
-		t.Fatalf("a lane's end gave its room to the node: %g cpus free, want 8", free.CPUs)
+	rt.Pods.Config.Limits = sandbox.Limits{CPUs: 8, Memory: "16g"}
+	rt.Pods.Config.ServicesLimits = sandbox.Limits{CPUs: 4, Memory: "8g"}
+	rt.Scheduler = scheduler.New(scheduler.Capacity{CPUs: 80, MemGB: 200, Slots: 8})
+	b := &meshapi.Brief{LeaseID: "lease-r", JobID: "job-r", Kind: "runsheet/validate", Resources: meshapi.Resources{CPUs: 4, MemGB: 8}}
+	own, err := rt.Scheduler.TryTake(askOf(b, &meshapi.Lease{LeaseID: "lease-r", RenewEveryS: 30}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &leasePod{statuses: []sandbox.ServiceStatus{{Name: "postgres", Ready: true}}}
+	got, err := rt.admit(context.Background(), b, validate.AdmitSizes(cfg.Steps), rt.servicesRoom(p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.keepAdmitted(b, p, got)
+	held := func() float64 { return 80 - rt.Scheduler.Free().CPUs }
+	if h := held(); h != 16 {
+		t.Fatalf("admitted, the lease holds %g cpus with its own, want 16", h)
+	}
+	sizes := map[string]validate.LaneSize{}
+	for _, s := range validate.LaneSizes(cfg.Steps) {
+		sizes[s.Name] = s
+	}
+
+	// the unit lane runs its steps on admission's hold and gives its 4
+	// cpus back to the node as its last step exits
+	unit, err := rt.holdLane(context.Background(), b, p, "unit", sizes["unit"], false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := held(); h != 16 {
+		t.Fatalf("opening the admitted unit lane took more room: %g cpus held, want 16", h)
+	}
+	unit.release()
+	if h := held(); h != 12 {
+		t.Fatalf("after the unit lane ended the node holds %g cpus, want 12 (its 4 back to the node)", h)
+	}
+
+	// a re-run in the unit lane readmits its 4 cpus, and gives them back again
+	again, err := rt.holdLane(context.Background(), b, p, "unit", sizes["unit"], false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := held(); h != 16 {
+		t.Fatalf("a re-run in the unit lane holds %g cpus, want 16 (its 4 readmitted)", h)
+	}
+	again.release()
+	if h := held(); h != 12 {
+		t.Fatalf("after the re-run ended the node holds %g cpus, want 12", h)
+	}
+
+	// a re-run on a full node waits for the lane's room, and is
+	// readmitted once room comes back
+	fill, err := rt.Scheduler.TryTake(scheduler.Ask{Owner: "other", CPUs: rt.Scheduler.Free().CPUs, MemGB: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waited := make(chan error, 1)
+	var late *laneHold
+	go func() {
+		var err error
+		late, err = rt.holdLane(context.Background(), b, p, "unit", sizes["unit"], false)
+		waited <- err
+	}()
+	select {
+	case err := <-waited:
+		t.Fatalf("a re-run on a full node did not wait for room: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	fill.Release()
+	select {
+	case err := <-waited:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the re-run was still waiting once room came back")
+	}
+	late.release()
+
+	// the integration lane, its Postgres with it: 8 back as it ends
+	integ, err := rt.holdLane(context.Background(), b, p, "integration-0", sizes["integration-0"], false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	integ.release()
+	if h := held(); h != 4 {
+		t.Fatalf("after every lane ended the node holds %g cpus, want 4 (the lease's own)", h)
 	}
 	p.releaseEagerLanes()
-	if free := rt.Scheduler.Free(); free.CPUs != 32 {
-		t.Fatalf("the lease's end left %g cpus held", 32-free.CPUs)
+	if h := held(); h != 4 {
+		t.Fatalf("the lease's own hold is %g cpus at its end, want 4 until the lease releases it", h)
+	}
+	own.Release()
+	if h := held(); h != 0 {
+		t.Fatalf("the lease's end left %g cpus held", h)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	said := strings.Join(logged, "\n")
+	for _, want := range []string{
+		"lease lease-r: lane unit ended: its 4 cpus, 8 GB back to the node",
+		"lease lease-r: lane unit readmitted: held 4 cpus, 8 GB again",
+		"lease lease-r: lane unit waits to be readmitted",
+		"lease lease-r: lane integration-0 ended: its 8 cpus, 16 GB back to the node",
+	} {
+		if !strings.Contains(said, want) {
+			t.Fatalf("node.log lacks %q:\n%s", want, said)
+		}
 	}
 }
 

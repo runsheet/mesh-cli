@@ -3,10 +3,14 @@ package nodetools
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -1015,7 +1019,7 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 		return "", fmt.Errorf("the suites could not run: %v", runErr)
 	}
 	s.keepLogs(readCtx, results)
-	s.noteCoverage(steps, results)
+	s.noteCoverage(steps, results, start)
 	out := Normalise(results)
 	out.Inferred = profile
 	blob, err := json.Marshal(out)
@@ -1270,10 +1274,20 @@ const CoverageReport = "e2e-coverage.json"
 // cut there, so a report this long may be a cut map and is skipped.
 const MaxCoverage = 256 * 1024
 
-// noteCoverage hands OnCoverage the report of each step that names
-// CoverageReport as its only report and wrote one. A step whose report
-// is its results (a results: location) is not a coverage step.
-func (s *RunSuite) noteCoverage(steps []validate.Step, results []validate.StepResult) {
+// noteCoverage hands OnCoverage the map each step that names
+// CoverageReport as its only report wrote. A step whose report is its
+// results (a results: location) is not a coverage step.
+//
+// The map is read whole from the checkout, when the step wrote it in
+// this run (its file changed since start): the step's Report is cut to
+// what the run's earlier steps left of the report bound (validate's
+// reportCap), and on main's validation, where the e2ecoverage suite runs
+// after unit's and integration's reports, that left a cut map, never
+// carried (dl360, 2026-11-23: "not carried" on every main validation
+// since #1946, so runsheet had no coverage map and every validation ran
+// all four e2e shards). The Report is the fallback for a runner that
+// does not write to the checkout.
+func (s *RunSuite) noteCoverage(steps []validate.Step, results []validate.StepResult, start time.Time) {
 	if s.OnCoverage == nil {
 		return
 	}
@@ -1286,7 +1300,18 @@ func (s *RunSuite) noteCoverage(steps []validate.Step, results []validate.StepRe
 		if st.Results != "" || len(st.Reports) != 1 || st.Reports[0] != CoverageReport {
 			continue
 		}
-		content, why := coverageContent(r.Report)
+		report := r.Report
+		if s.Workspace != "" {
+			path := filepath.Join(s.Workspace, CoverageReport)
+			if fi, err := os.Stat(path); err == nil && fi.Mode().IsRegular() && !fi.ModTime().Before(start) {
+				// one at or past the bound is read only that far:
+				// coverageContent then names it too long to carry
+				if data, err := readAtMost(path, MaxCoverage); err == nil {
+					report = string(data)
+				}
+			}
+		}
+		content, why := coverageContent(report)
 		if why != "" {
 			if s.Logf != nil {
 				s.Logf("run_suite: step %s: the e2e coverage map is not carried: %s", r.Name, why)
@@ -1294,9 +1319,23 @@ func (s *RunSuite) noteCoverage(steps []validate.Step, results []validate.StepRe
 			continue
 		}
 		if content != "" {
+			if s.Logf != nil {
+				s.Logf("run_suite: step %s: the e2e coverage map is carried (%d bytes)", r.Name, len(content))
+			}
 			s.OnCoverage(content)
 		}
 	}
+}
+
+// readAtMost is the first n bytes of the file at path, or all of a
+// shorter one.
+func readAtMost(path string, n int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(io.LimitReader(f, n))
 }
 
 // coverageContent is report as the coverage map the node carries, ""
@@ -1308,8 +1347,25 @@ func coverageContent(report string) (content, why string) {
 		return "", ""
 	case len(report) >= MaxCoverage:
 		return "", fmt.Sprintf("%d bytes reaches the %d-byte report bound, so it may be cut", len(report), MaxCoverage)
-	case !json.Valid([]byte(report)):
-		return "", "it is not JSON"
+	case json.Valid([]byte(report)), encodedCoverage(report):
+		return report, ""
 	}
-	return report, ""
+	return "", "it is neither JSON nor a " + coverageEncoding + " map"
+}
+
+// coverageEncoding is the prefix of runsheet's encoded coverage map
+// (platform/coverage's Encode: gzip, then base64, after it), which is
+// what its e2ecoverage suite writes: the node carries it as written,
+// a JSON string on the result, and the platform decodes it.
+const coverageEncoding = "gz64:"
+
+// encodedCoverage says whether report is a whole encoded map: the
+// prefix and a base64 body that decodes, a cut one failing to.
+func encodedCoverage(report string) bool {
+	body, ok := strings.CutPrefix(report, coverageEncoding)
+	if !ok || body == "" {
+		return false
+	}
+	_, err := base64.StdEncoding.DecodeString(body)
+	return err == nil
 }
