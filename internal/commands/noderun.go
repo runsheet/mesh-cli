@@ -53,13 +53,22 @@ var (
 	nodeRunAssistantCPUs  float64
 	nodeRunAssistantMemGB float64
 	nodeRunAssistantKinds []string
-	nodeRunDispatcherCap  int
-	nodeRunActors         bool
-	nodeRunSupervisor     string
-	nodeRunQuietAfter     time.Duration
-	nodeRunSelfUpdate     bool
-	nodeRunSandbox        bool
-	nodeRunRelaySidecar   bool
+	// the room kept for validations and evaluations, and its person
+	// share (goal
+	// a-v1-node-reserves-room-for-validations-and-sizes-its-reserves-from-use
+	// P1, P2)
+	nodeRunValidationCPUs        float64
+	nodeRunValidationMemGB       float64
+	nodeRunValidationPersonCPUs  float64
+	nodeRunValidationPersonMemGB float64
+	nodeRunValidationKinds       []string
+	nodeRunDispatcherCap         int
+	nodeRunActors                bool
+	nodeRunSupervisor            string
+	nodeRunQuietAfter            time.Duration
+	nodeRunSelfUpdate            bool
+	nodeRunSandbox               bool
+	nodeRunRelaySidecar          bool
 	// nodeRunSandboxRuntime is the runtime --sandbox opens its pods on:
 	// rootless podman, substituted for a test double (sandbox.Fake) so a
 	// test can exercise --sandbox with no podman installed.
@@ -185,6 +194,20 @@ runs, and finish or hand back.`,
 				r := rt.Scheduler.Reserve()
 				logger.Printf("nodev1: reserve: %g cpus, %g GB kept for %s alone", r.CPUs, r.MemGB, strings.Join(reserve.Kinds, ", "))
 			}
+			vr, err := nodev1.ReadValidationReserve(capPath, nodev1.ValidationReserve{
+				CPUs: nodeRunValidationCPUs, MemGB: nodeRunValidationMemGB,
+				PersonCPUs: nodeRunValidationPersonCPUs, PersonMemGB: nodeRunValidationPersonMemGB, Kinds: nodeRunValidationKinds,
+			})
+			if err != nil {
+				return err
+			}
+			if len(vr.Kinds) > 0 && (vr.CPUs > 0 || vr.MemGB > 0) {
+				rt.ValidationKinds = vr.Kinds
+				rt.Scheduler.SetNamedReserve(nodev1.ValidationReserveName, scheduler.Capacity{CPUs: vr.CPUs, MemGB: vr.MemGB},
+					scheduler.Capacity{CPUs: vr.PersonCPUs, MemGB: vr.PersonMemGB})
+				r, p := rt.Scheduler.ReserveOf(nodev1.ValidationReserveName), rt.Scheduler.PersonShareOf(nodev1.ValidationReserveName)
+				logger.Printf("nodev1: reserve: %g cpus, %g GB kept for %s alone, %g cpus, %g GB of it for people's pull requests", r.CPUs, r.MemGB, strings.Join(vr.Kinds, ", "), p.CPUs, p.MemGB)
+			}
 		}
 		rt.Host, rt.Machine = nodeRunHost(logger)
 		rt.Actors = nodeRunActors
@@ -287,6 +310,11 @@ runs, and finish or hand back.`,
 			// the session runs in the lease's pod, and so do run_suite's
 			// steps: never on the host
 			rt.Pods, rt.HostSuites = sb, false
+			// each lease's CPU and memory peaks, read from its containers'
+			// cgroups (usage.go)
+			if pm, ok := nodeRunSandboxRuntime.(*sandbox.Podman); ok {
+				rt.Meter = nodev1.PodmanMeter{Podman: pm}
+			}
 			// --sandbox with no explicit --relay-sidecar defaults it on:
 			// a sandboxed lease with no sidecar names none to adopt
 			// across a restart (adopt.go), so the sidecar is the one
@@ -512,6 +540,11 @@ func init() {
 	f.IntVar(&nodeRunAccountSlots, "account-slots", 0, "with --actors-scheduler, sessions at once per model account (0 is unbounded)")
 	f.Float64Var(&nodeRunAssistantCPUs, "assistant-reserve-cpus", 4, "with --actors-scheduler, CPUs kept for the assistant kinds alone (--assistant-kinds), admitted at once however full the node; at most a quarter of the node; node.yaml's v1.assistant_reserve.cpus wins")
 	f.Float64Var(&nodeRunAssistantMemGB, "assistant-reserve-mem-gb", 8, "with --actors-scheduler, memory in GB kept for the assistant kinds alone; at most a quarter of the node; node.yaml's v1.assistant_reserve.mem_gb wins")
+	f.Float64Var(&nodeRunValidationCPUs, "validation-reserve-cpus", 0, "with --actors-scheduler, CPUs kept for the validation kinds alone (--validation-kinds): builds, plans, reviews and every other kind never take them, and validations also use the general room beyond them; 0 keeps no reserve; all reserves together are at most three quarters of the node; node.yaml's v1.validation_reserve.cpus wins")
+	f.Float64Var(&nodeRunValidationMemGB, "validation-reserve-mem-gb", 0, "with --actors-scheduler, memory in GB kept for the validation kinds alone; node.yaml's v1.validation_reserve.mem_gb wins")
+	f.Float64Var(&nodeRunValidationPersonCPUs, "validation-person-cpus", 0, "of the validation reserve, CPUs only people's pull request validations (validate_for=<repo>:person) may use; node.yaml's v1.validation_reserve.person_cpus wins")
+	f.Float64Var(&nodeRunValidationPersonMemGB, "validation-person-mem-gb", 0, "of the validation reserve, memory in GB only people's pull request validations may use; node.yaml's v1.validation_reserve.person_mem_gb wins")
+	f.StringSliceVar(&nodeRunValidationKinds, "validation-kinds", []string{"validate", "evaluate"}, "the kinds the validation reserve is kept for (short names); node.yaml's v1.validation_reserve.kinds wins")
 	f.StringSliceVar(&nodeRunAssistantKinds, "assistant-kinds", []string{"goal-chat", "assistant"}, "the kinds the assistant reserve is kept for (short names); none keeps no reserve; a dispatcher's lease always uses it; node.yaml's v1.assistant_reserve.kinds wins")
 	f.IntVar(&nodeRunDispatcherCap, "dispatcher-cap", nodev1.DefaultDispatcherCap, "the most sub-agents one assistant dispatcher lease runs at once; its kind's own cap is held to it, and asks past it wait in the dispatcher's queue; node.yaml's v1.dispatcher_cap wins")
 	f.BoolVar(&nodeRunActors, "actors", false, "run each lease as a job actor (ADR-044): it owns the lease's directory, room, grant and proxy, writes actor.json before each state change, releases everything however the lease ends, and hands back pod_killed a session killed from outside; a restarted node releases the actors it left")
