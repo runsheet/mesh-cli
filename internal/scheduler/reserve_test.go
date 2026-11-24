@@ -16,7 +16,7 @@ import (
 // the general room like any other.
 func TestReserveAdmitsAnAssistantOnAFullNode(t *testing.T) {
 	s := New(Capacity{CPUs: 88, MemGB: 200})
-	s.SetReserve(Capacity{CPUs: 4, MemGB: 8})
+	s.SetReserve(ReserveAssistant, Capacity{CPUs: 4, MemGB: 8})
 
 	// validations hold the whole general room
 	if _, err := s.TryTake(Ask{Owner: "validate-1", CPUs: 84, MemGB: 100, Cache: CacheShared}); err != nil {
@@ -25,7 +25,7 @@ func TestReserveAdmitsAnAssistantOnAFullNode(t *testing.T) {
 	if f := s.Free(); f.CPUs != 0 {
 		t.Fatalf("Free = %g cpus, want 0: the reserve is never reported free to other kinds", f.CPUs)
 	}
-	if f := s.ReserveFree(); f.CPUs != 4 || f.MemGB != 8 {
+	if f := s.ReserveFree(ReserveAssistant); f.CPUs != 4 || f.MemGB != 8 {
 		t.Fatalf("ReserveFree = %+v, want 4 cpus, 8 GB", f)
 	}
 
@@ -42,18 +42,18 @@ func TestReserveAdmitsAnAssistantOnAFullNode(t *testing.T) {
 	}
 
 	// the assistant is admitted at once, in the reserve
-	a, err := s.TryTake(Ask{Owner: "goal-chat-1", CPUs: 2, MemGB: 4, Account: "acct", Reserved: true})
+	a, err := s.TryTake(Ask{Owner: "goal-chat-1", CPUs: 2, MemGB: 4, Account: "acct", Reserve: ReserveAssistant})
 	if err != nil {
 		t.Fatalf("assistant on a full node: %v", err)
 	}
-	b, err := s.TryTake(Ask{Owner: "goal-chat-2", CPUs: 2, MemGB: 4, Reserved: true})
+	b, err := s.TryTake(Ask{Owner: "goal-chat-2", CPUs: 2, MemGB: 4, Reserve: ReserveAssistant})
 	if err != nil {
 		t.Fatalf("second assistant on a full node: %v", err)
 	}
-	if f := s.ReserveFree(); f.CPUs != 0 || f.MemGB != 0 {
+	if f := s.ReserveFree(ReserveAssistant); f.CPUs != 0 || f.MemGB != 0 {
 		t.Fatalf("ReserveFree = %+v, want none left", f)
 	}
-	if _, err := s.TryTake(Ask{Owner: "goal-chat-3", CPUs: 2, MemGB: 4, Reserved: true}); !errors.Is(err, ErrNoRoom) {
+	if _, err := s.TryTake(Ask{Owner: "goal-chat-3", CPUs: 2, MemGB: 4, Reserve: ReserveAssistant}); !errors.Is(err, ErrNoRoom) {
 		t.Fatalf("a third assistant past the reserve on a full node: err %v, want no room", err)
 	}
 	if err := <-waiting; err == nil {
@@ -62,16 +62,16 @@ func TestReserveAdmitsAnAssistantOnAFullNode(t *testing.T) {
 
 	// the reserve's room comes back as the assistant ends
 	a.Release()
-	if f := s.ReserveFree(); f.CPUs != 2 {
+	if f := s.ReserveFree(ReserveAssistant); f.CPUs != 2 {
 		t.Fatalf("ReserveFree after a release = %g cpus, want 2", f.CPUs)
 	}
 	b.Release()
 
 	// with the general room free, a full reserve overflows into it
 	s2 := New(Capacity{CPUs: 16, MemGB: 32})
-	s2.SetReserve(Capacity{CPUs: 4, MemGB: 8})
+	s2.SetReserve(ReserveAssistant, Capacity{CPUs: 4, MemGB: 8})
 	for i := 0; i < 3; i++ {
-		if _, err := s2.TryTake(Ask{Owner: "goal-chat", CPUs: 2, MemGB: 4, Reserved: true}); err != nil {
+		if _, err := s2.TryTake(Ask{Owner: "goal-chat", CPUs: 2, MemGB: 4, Reserve: ReserveAssistant}); err != nil {
 			t.Fatalf("assistant %d: %v", i, err)
 		}
 	}
@@ -84,8 +84,8 @@ func TestReserveAdmitsAnAssistantOnAFullNode(t *testing.T) {
 // node is cut to it, and a node with no reserve schedules as before.
 func TestReserveBoundedToAQuarter(t *testing.T) {
 	s := New(Capacity{CPUs: 8, MemGB: 16})
-	s.SetReserve(Capacity{CPUs: 4, MemGB: 8})
-	if r := s.Reserve(); r.CPUs != 2 || r.MemGB != 4 {
+	s.SetReserve(ReserveAssistant, Capacity{CPUs: 4, MemGB: 8})
+	if r := s.Reserve(ReserveAssistant); r.CPUs != 2 || r.MemGB != 4 {
 		t.Fatalf("Reserve = %+v, want 2 cpus, 4 GB (a quarter)", r)
 	}
 	if f := s.Free(); f.CPUs != 6 || f.MemGB != 12 {
@@ -95,7 +95,7 @@ func TestReserveBoundedToAQuarter(t *testing.T) {
 	if _, err := n.TryTake(Ask{Owner: "v", CPUs: 8, MemGB: 16}); err != nil {
 		t.Fatalf("no reserve: %v", err)
 	}
-	if _, err := n.TryTake(Ask{Owner: "chat", CPUs: 1, Reserved: true}); !errors.Is(err, ErrNoRoom) {
+	if _, err := n.TryTake(Ask{Owner: "chat", CPUs: 1, Reserve: ReserveAssistant}); !errors.Is(err, ErrNoRoom) {
 		t.Fatalf("no reserve, a full node: err %v, want no room", err)
 	}
 }

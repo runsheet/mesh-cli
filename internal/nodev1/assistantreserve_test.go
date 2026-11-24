@@ -23,7 +23,7 @@ func TestAFullNodeAdmitsAnAssistantLease(t *testing.T) {
 	g.rt.Once = false
 	g.rt.Node.CapacityTotal = meshapi.Capacity{CPUs: 16, MemGB: 32}
 	g.rt.Scheduler = scheduler.New(scheduler.Capacity{CPUs: 16, MemGB: 32})
-	g.rt.Scheduler.SetReserve(scheduler.Capacity{CPUs: 4, MemGB: 8})
+	g.rt.Scheduler.SetReserve(scheduler.ReserveAssistant, scheduler.Capacity{CPUs: 4, MemGB: 8})
 	g.rt.AssistantKinds = []string{"goal-chat"}
 	// a validation holds the whole general room
 	v, err := g.rt.Scheduler.TryTake(scheduler.Ask{Owner: "validate", CPUs: 12, MemGB: 24, Slot: true, Cache: scheduler.CacheShared})
@@ -55,10 +55,10 @@ func TestAFullNodeAdmitsAnAssistantLease(t *testing.T) {
 			chat = &h
 		}
 	}
-	if chat == nil || !chat.Ask.Reserved || chat.Ask.Slot || chat.Ask.Cache != scheduler.CacheNone {
+	if chat == nil || chat.Ask.Reserve != scheduler.ReserveAssistant || chat.Ask.Slot || chat.Ask.Cache != scheduler.CacheNone {
 		t.Fatalf("the assistant's hold %+v, want one in the reserve, no slot, no cache", chat)
 	}
-	if f := g.rt.Scheduler.ReserveFree(); f.CPUs != 2 || f.MemGB != 4 {
+	if f := g.rt.Scheduler.ReserveFree(scheduler.ReserveAssistant); f.CPUs != 2 || f.MemGB != 4 {
 		t.Fatalf("ReserveFree %+v after the assistant's lease, want 2 cpus, 4 GB", f)
 	}
 	if hb := g.fake.Calls("hand-back"); len(hb) != 0 {
@@ -66,7 +66,7 @@ func TestAFullNodeAdmitsAnAssistantLease(t *testing.T) {
 	}
 	close(sess.hold)
 	waitFor(t, "the finish", func() bool { return len(g.fake.Calls("finish")) == 1 })
-	waitFor(t, "the reserve back", func() bool { return g.rt.Scheduler.ReserveFree().CPUs == 4 })
+	waitFor(t, "the reserve back", func() bool { return g.rt.Scheduler.ReserveFree(scheduler.ReserveAssistant).CPUs == 4 })
 	cancel()
 	select {
 	case <-done:
@@ -81,10 +81,10 @@ func TestAFullNodeAdmitsAnAssistantLease(t *testing.T) {
 func TestOnlyAssistantKindsAskForTheReserve(t *testing.T) {
 	r := &Runtime{AssistantKinds: []string{"goal-chat"}, Scheduler: scheduler.New(scheduler.Capacity{CPUs: 16, MemGB: 32})}
 	lease := &meshapi.Lease{LeaseID: "l", RenewEveryS: 30}
-	if a := r.leaseAsk(&meshapi.Brief{Kind: "runsheet/validate"}, lease); a.Reserved || !a.Slot || a.Cache != scheduler.CacheShared {
+	if a := r.leaseAsk(&meshapi.Brief{Kind: "runsheet/validate"}, lease); a.Reserve != "" || !a.Slot || a.Cache != scheduler.CacheShared {
 		t.Fatalf("a validation's ask %+v, want the general room's", a)
 	}
-	if a := r.leaseAsk(&meshapi.Brief{Kind: "runsheet/goal-chat"}, lease); !a.Reserved {
+	if a := r.leaseAsk(&meshapi.Brief{Kind: "runsheet/goal-chat"}, lease); a.Reserve != scheduler.ReserveAssistant {
 		t.Fatalf("a goal-chat's ask %+v, want the reserve", a)
 	}
 	var tr meshapi.TakeRequest
@@ -92,7 +92,7 @@ func TestOnlyAssistantKindsAskForTheReserve(t *testing.T) {
 	if tr.Reserved != nil || tr.ReservedKinds != nil {
 		t.Fatalf("no reserve set: the take names %+v %v", tr.Reserved, tr.ReservedKinds)
 	}
-	r.Scheduler.SetReserve(scheduler.Capacity{CPUs: 4, MemGB: 8})
+	r.Scheduler.SetReserve(scheduler.ReserveAssistant, scheduler.Capacity{CPUs: 4, MemGB: 8})
 	tr = meshapi.TakeRequest{Free: &meshapi.Capacity{CPUs: 12, MemGB: 24}}
 	r.takeReserved(&tr, true)
 	if tr.Reserved == nil || tr.Free.CPUs != 0 {

@@ -49,6 +49,17 @@ type Runtime struct {
 	// leases ask for it, every take names it to Mesh, and a hot host
 	// still takes them. None keeps no reserve.
 	AssistantKinds []string
+	// ValidationKinds are the kinds (short names, "validate") the
+	// scheduler's validation reserve is kept for
+	// (Scheduler.SetReserve(scheduler.ReserveValidation, ...); goal
+	// a-v1-node-reserves-room-for-validations-and-sizes-its-reserves-from-use
+	// P1): their leases ask for it, so a validation offered after the
+	// node's general room is full is still admitted at once in the
+	// reserve, rather than waiting behind the builds that filled it.
+	// Unlike AssistantKinds, this reserve is never named to Mesh on a
+	// take: it is purely the node's own local admission. None keeps no
+	// reserve.
+	ValidationKinds []string
 	// DispatcherCap is the most sub-agents one dispatcher lease runs at
 	// once (dispatcher.go; goal one-assistant-dispatcher-per-org-
 	// answers-every-ask P4): a kind's own cap is held to it. 0 is

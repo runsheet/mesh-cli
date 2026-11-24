@@ -1007,3 +1007,57 @@ temperature it now read.
 `TestHeartbeatCarriesTheHostReading`, `TestHostAndDiskGatesTogether`
 and `TestDrainLinesShowTheHostReadingAndItsPeak` (internal/nodev1)
 hold it.
+
+## Amendment, 2026-11-24: a second reserve, for validation, and the scheduler's reserve is now named
+
+The assistant reserve (above) gave `scheduler.Scheduler` a single
+reserve: one `Capacity`, one bool on `Ask` (`Reserved`). A chain
+validation or evaluation offered once builds have filled the node's
+general room waits behind them the same as a build would, even though
+it is usually short and the whole point of a chain is to keep moving;
+it needed a reserve of its own, sized independently of the assistant
+reserve's. Rather than grow a second bespoke bool, the reserve
+mechanism is generalized to names.
+
+1. **`Ask.Reserve` is a name, not a bool.** `""` asks for the node's
+   general room, as before; any other string asks for the reserve of
+   that name. `Scheduler.SetReserve(name string, r Capacity)`,
+   `Reserve(name string)` and `ReserveFree(name string)` replace the
+   single-reserve methods; `Scheduler.reserves` is now
+   `map[string]Capacity`, and a `Held` lease's `reserve string` (was
+   `inReserve bool`) names which one, if any, it was granted into.
+   Each reserve is still bounded to at most a quarter of the node's
+   total capacity (`effectiveReserveLocked`), independently — not a
+   combined bound across every reserve kept at once — and `Free()`
+   still excludes every configured reserve's effective capacity from
+   the general room, summed (`sumReservesLocked`). Two names are
+   defined: `scheduler.ReserveAssistant` (the existing reserve) and
+   `scheduler.ReserveValidation` (new).
+2. **`Runtime.ValidationKinds`** (`internal/nodev1`, short names,
+   `"validate"`/`"evaluate"`) names the kinds a lease's `Brief.Kind`
+   (by `path.Base`) asks `scheduler.ReserveValidation` for, mirroring
+   `AssistantKinds` and `assistantKind`. Unlike an assistant lease's
+   ask, a validation's still takes a job slot and the shared build
+   cache (`Slot: true, Cache: CacheShared`): it is a real build or test
+   job sharing the node's build cache, only never left waiting behind
+   the builds that filled the general room. None keeps no reserve.
+3. **The validation reserve is never named to Mesh.** A take still
+   reports `TakeRequest.Reserved`/`.ReservedKinds` for the assistant
+   reserve alone (`takeReserved`, unchanged) — reporting the
+   validation reserve too would be a platform-contract change, and
+   this item's P1 scope keeps it purely the node's own local
+   admission, invisible outside this process. It is sized by `mesh
+   node run`'s `--validation-reserve-cpus`, `--validation-reserve-mem-gb`
+   (each default 0) and `--validation-kinds` (default `validate`,
+   `evaluate`) flags, each overridden by node.yaml's
+   `v1.validation_reserve.cpus`/`.mem_gb`/`.kinds`
+   (`ReadValidationReserve`, mirroring `ReadAssistantReserve`), and
+   kept only once `Kinds` is non-empty and one of CPUs/MemGB is
+   positive — an operator who sets neither keeps today's behavior, a
+   validation waiting for room like any build.
+
+`TestReserveAdmitsAnAssistantOnAFullNode` and
+`TestReserveBoundedToAQuarter` (internal/scheduler, moved onto the
+named-reserve API with the same assertions), and
+`TestAValidationReserveIsNeverTakenByBuilds` and
+`TestReadValidationReserve` (internal/nodev1) hold it.

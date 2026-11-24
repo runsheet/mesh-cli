@@ -59,15 +59,35 @@ func (r *Runtime) assistantKind(b *meshapi.Brief) bool {
 	return slices.ContainsFunc(r.AssistantKinds, func(a string) bool { return path.Base(a) == k })
 }
 
+// validationKind is whether b is one of the kinds the node keeps its
+// validation reserve for (Runtime.ValidationKinds; goal
+// a-v1-node-reserves-room-for-validations-and-sizes-its-reserves-from-use
+// P1).
+func (r *Runtime) validationKind(b *meshapi.Brief) bool {
+	if b == nil {
+		return false
+	}
+	k := path.Base(b.Kind)
+	return slices.ContainsFunc(r.ValidationKinds, func(v string) bool { return path.Base(v) == k })
+}
+
 // leaseAsk is askOf for the node: an assistant kind's lease asks for the
-// reserve (scheduler.Ask.Reserved), takes no job slot — the reserve is
-// beside the slots — and does not hold the build cache, so neither a
-// full node nor a cache trim keeps it waiting (goal
-// one-assistant-dispatcher-per-org-answers-every-ask P1).
+// assistant reserve (scheduler.ReserveAssistant), takes no job slot —
+// the reserve is beside the slots — and does not hold the build cache,
+// so neither a full node nor a cache trim keeps it waiting (goal
+// one-assistant-dispatcher-per-org-answers-every-ask P1). A validation
+// kind's lease asks for the validation reserve (scheduler.ReserveValidation)
+// instead, keeping its job slot and shared cache hold like any other
+// build: it is a real job, only never left waiting behind one (goal
+// a-v1-node-reserves-room-for-validations-and-sizes-its-reserves-from-use
+// P1).
 func (r *Runtime) leaseAsk(b *meshapi.Brief, lease *meshapi.Lease) scheduler.Ask {
 	ask := askOf(b, lease)
-	if r.assistantKind(b) {
-		ask.Reserved, ask.Slot, ask.Cache = true, false, scheduler.CacheNone
+	switch {
+	case r.assistantKind(b):
+		ask.Reserve, ask.Slot, ask.Cache = scheduler.ReserveAssistant, false, scheduler.CacheNone
+	case r.validationKind(b):
+		ask.Reserve = scheduler.ReserveValidation
 	}
 	return ask
 }
@@ -78,7 +98,7 @@ func (r *Runtime) reserveOpen() bool {
 	if r.Scheduler == nil || len(r.AssistantKinds) == 0 {
 		return false
 	}
-	f := r.Scheduler.ReserveFree()
+	f := r.Scheduler.ReserveFree(scheduler.ReserveAssistant)
 	return f.CPUs > 0 || f.MemGB > 0
 }
 
@@ -86,12 +106,15 @@ func (r *Runtime) reserveOpen() bool {
 // kinds, when it keeps any with room left (Mesh places one of them that
 // fits free and reserved together first); with reservedOnly — a hot
 // host, or no job slot free — the take offers that room alone, its
-// general free zero.
+// general free zero. The validation reserve is not reported here: it
+// is purely local to this node's own admission, not a Mesh wire
+// protocol concern (a change to that would be a platform contract
+// change, out of this item's scope).
 func (r *Runtime) takeReserved(tr *meshapi.TakeRequest, reservedOnly bool) {
 	if !r.reserveOpen() {
 		return
 	}
-	f := r.Scheduler.ReserveFree()
+	f := r.Scheduler.ReserveFree(scheduler.ReserveAssistant)
 	tr.Reserved = &meshapi.Capacity{CPUs: f.CPUs, MemGB: f.MemGB}
 	tr.ReservedKinds = r.AssistantKinds
 	if reservedOnly || (r.Scheduler.Total().Slots > 0 && r.Scheduler.Free().Slots <= 0) {
