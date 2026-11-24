@@ -126,7 +126,8 @@ func (r *Runtime) admit(ctx context.Context, b *meshapi.Brief, sizes []validate.
 			// sidecars (suiteLanes), so holds none of their room
 			svc = meshapi.Resources{}
 		}
-		ask := laneAsk(b, s.Name, room, svc)
+		// a lane draws the validation reserve first, as its lease does
+		ask := r.reserveAsk(b, laneAsk(b, s.Name, room, svc))
 		if i == 0 {
 			// the first lane runs in the lease's own pod, on the lease's
 			// own hold: it asks for what its room and the pod's
@@ -154,8 +155,8 @@ func (r *Runtime) admit(ctx context.Context, b *meshapi.Brief, sizes []validate.
 	free := r.Scheduler.Free()
 	ls, err := r.Scheduler.TryTakeAll(asks)
 	if err != nil {
-		r.logf("nodev1: lease %s: admission waits: asked %g cpus, %s GB for %d lanes, free %g cpus, %s GB (%v)",
-			b.LeaseID, asked.CPUs, num2(asked.MemGB), len(sizes), free.CPUs, num2(free.MemGB), err)
+		r.logf("nodev1: lease %s: admission waits: asked %g cpus, %s GB for %d lanes, free %g cpus, %s GB, waiting on %s (%v)",
+			b.LeaseID, asked.CPUs, num2(asked.MemGB), len(sizes), free.CPUs, num2(free.MemGB), waiterOf(asks[0]).Room(), err)
 		start := time.Now()
 		if ls, err = r.Scheduler.TakeAll(ctx, asks); err != nil {
 			return nil, fmt.Errorf("waiting for the node's room for every lane: %w", err)

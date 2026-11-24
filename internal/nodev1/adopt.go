@@ -234,12 +234,14 @@ func (r *Runtime) adoptOne(ctx context.Context, id, dir string, st *handoffState
 		jobID: b.JobID, kind: b.Kind, started: time.Now(), actor: a, brief: b,
 		pushHeads: st.PushHeads, sidecarDir: st.SidecarDir, egressStarting: st.EgressPID})
 	r.mu.Unlock()
+	r.usageBegan(b.Kind)
 	r.publishStatus()
 	var sec = r.openSecurity(id)
 	defer r.closeSecurity(sec)
 	v := r.openInjected(id)
 	defer r.closeInjected(v)
 	defer func() {
+		r.usageEnded(id)
 		r.mu.Lock()
 		r.leases.Delete(id)
 		r.mu.Unlock()
