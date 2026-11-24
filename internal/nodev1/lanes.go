@@ -513,7 +513,7 @@ func (r *Runtime) holdLane(ctx context.Context, b *meshapi.Brief, p *leasePod, n
 	if r.Scheduler == nil {
 		return &laneHold{room: room}, nil
 	}
-	ask := laneAsk(b, name, room, r.laneServices(p, size))
+	ask := r.reserveAsk(b, laneAsk(b, name, room, r.laneServices(p, size)))
 	readmit := false
 	if a, ok := p.admittedAsk(name, room); ok {
 		// a lane admission took, whose room went back to the node when

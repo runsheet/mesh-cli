@@ -50,6 +50,16 @@ type Runtime struct {
 	// leases ask for it, every take names it to Mesh, and a hot host
 	// still takes them. None keeps no reserve.
 	AssistantKinds []string
+	// ValidationKinds are the kinds (short names, "validate",
+	// "evaluate") the scheduler's validation reserve is kept for
+	// (valreserve.go; goal
+	// a-v1-node-reserves-room-for-validations-and-sizes-its-reserves-from-use
+	// P1). None keeps no reserve.
+	ValidationKinds []string
+	// Meter reads the running containers' cgroups for each lease's CPU
+	// and memory peaks (usage.go; P3 of the same goal); nil reads none,
+	// and the node still counts its leases by kind.
+	Meter UsageMeter
 	// DispatcherCap is the most sub-agents one dispatcher lease runs at
 	// once (dispatcher.go; goal one-assistant-dispatcher-per-org-
 	// answers-every-ask P4): a kind's own cap is held to it. 0 is
@@ -349,6 +359,12 @@ type Runtime struct {
 	// actor's, under --actors): the node keeps no other in-flight state
 	// of a lease (ADR-044; guard_test.go)
 	leases actor.Registry[*running]
+	// reserveNeed is the largest lease the assistant's reserve [0] and
+	// the validation reserve [1] have held (takeReserved)
+	reserveNeed [2]scheduler.Capacity
+	// usage is what each kind's leases used and how many ran at once
+	// (usage.go): the kinds', never a lease's in-flight state
+	usage usageBook
 	// now is the clock a command step's progress is read on and
 	// stepBeat how often a call in flight says it is still running
 	// (stepprogress.go): time.Now and stepProgressEvery but in a test.
@@ -452,6 +468,9 @@ type running struct {
 	jobID   string
 	kind    string
 	started time.Time
+	// peaks are its containers' CPU and memory peaks as read so far
+	// (usage.go)
+	peaks leasePeaks
 	// actor is the lease's job actor, under --actors; pod its pod, and
 	// escalatedAt when the supervisor last escalated it for quiet.
 	actor       *actor.Actor
@@ -675,6 +694,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 		r.HostProbe = &ProcHostProbe{Root: "/"}
 	}
 	go r.WatchHost(hbCtx, r.HostProbePoll)
+	go r.watchPeaks(hbCtx)
 	r.probeCacheMountOnce(ctx)
 
 	var leases sync.WaitGroup

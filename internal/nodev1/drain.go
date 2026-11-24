@@ -66,7 +66,42 @@ type Status struct {
 	// tick, or with no HostProbe set.
 	Host        MachineReading   `json:"host,omitempty"`
 	HostHistory []MachineReading `json:"host_history,omitempty"`
-	At          time.Time        `json:"at"`
+	// Waiting are the asks waiting for the scheduler's room, each
+	// naming the reserve it waits on (goal
+	// a-v1-node-reserves-room-for-validations-and-sizes-its-reserves-from-use
+	// P5); Reserves each reserve's room and what it has free; Usage what
+	// each kind's leases used and how many ran at once (P3, usage.go).
+	Waiting  []WaitingStatus `json:"waiting,omitempty"`
+	Reserves []ReserveStatus `json:"reserves,omitempty"`
+	Usage    []KindUsage     `json:"usage,omitempty"`
+	At       time.Time       `json:"at"`
+}
+
+// WaitingStatus is one ask waiting for the node's room: the lease (and
+// lane) it is for, the reserve it draws first ("" for the general room
+// alone) and the room it waits on in words, what it asks, since when,
+// and why it does not fit.
+type WaitingStatus struct {
+	LeaseID string    `json:"lease_id"`
+	Lane    string    `json:"lane,omitempty"`
+	Reserve string    `json:"reserve,omitempty"`
+	Person  bool      `json:"person,omitempty"`
+	Room    string    `json:"room"`
+	CPUs    float64   `json:"cpus"`
+	MemGB   float64   `json:"mem_gb"`
+	Since   time.Time `json:"since"`
+	Why     string    `json:"why"`
+}
+
+// ReserveStatus is one reserve's room and what it has free.
+type ReserveStatus struct {
+	Name       string  `json:"name"`
+	CPUs       float64 `json:"cpus"`
+	MemGB      float64 `json:"mem_gb"`
+	FreeCPUs   float64 `json:"free_cpus"`
+	FreeMemGB  float64 `json:"free_mem_gb"`
+	PersonCPUs float64 `json:"person_cpus,omitempty"`
+	PersonMem  float64 `json:"person_mem_gb,omitempty"`
 }
 
 // LeaseStatus is one lease the node runs.
@@ -333,6 +368,8 @@ func (r *Runtime) Status() Status {
 		s.Leases = append(s.Leases, LeaseStatus{LeaseID: e.ID, JobID: e.Value.jobID, Kind: e.Value.kind, Since: e.Value.started.UTC(), Adoptable: adoptable, AdoptableReason: reason})
 	}
 	sort.Slice(s.Leases, func(i, j int) bool { return s.Leases[i].Since.Before(s.Leases[j].Since) })
+	s.Waiting, s.Reserves = r.holding()
+	s.Usage = r.usage.report()
 	return s
 }
 
@@ -394,15 +431,15 @@ func (s Status) DrainLines(now time.Time) []string {
 	}
 	if len(s.Leases) == 0 {
 		out = append(out, "Leases: none running.")
-		return out
+	} else {
+		var b strings.Builder
+		fmt.Fprintf(&b, "Leases: %d running:", len(s.Leases))
+		out = append(out, b.String())
+		for _, l := range s.Leases {
+			out = append(out, fmt.Sprintf("  %s  job %s  %s  for %s", l.LeaseID, l.JobID, l.Kind, now.Sub(l.Since).Round(time.Second)))
+		}
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "Leases: %d running:", len(s.Leases))
-	out = append(out, b.String())
-	for _, l := range s.Leases {
-		out = append(out, fmt.Sprintf("  %s  job %s  %s  for %s", l.LeaseID, l.JobID, l.Kind, now.Sub(l.Since).Round(time.Second)))
-	}
-	return out
+	return append(out, s.holdingLines(now)...)
 }
 
 // hostLine renders one MachineReading as a DrainLines line, labelled:
