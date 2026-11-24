@@ -189,6 +189,16 @@ func TestClientSpeaksTheContract(t *testing.T) {
 			decode(t, f.Request, &req)
 			return c.Session(context.Background(), idOf(f.Path, 3), req.JKT)
 		},
+		"ask-session": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.SessionRequest
+			decode(t, f.Request, &req)
+			return c.AskSession(context.Background(), idOf(f.Path, 3), idOf(f.Path, 5), req.JKT)
+		},
+		"ask-finish": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
+			var req meshapi.AskFinishRequest
+			decode(t, f.Request, &req)
+			return c.FinishAsk(context.Background(), idOf(f.Path, 3), idOf(f.Path, 5), req)
+		},
 		"lease-evidence": func(c *meshapi.Client, f meshapitest.Fixture) (any, error) {
 			var req meshapi.EvidenceRequest
 			decode(t, f.Request, &req)

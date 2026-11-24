@@ -1,0 +1,16 @@
+{
+  "name": "ask-session",
+  "method": "POST",
+  "path": "/v1/leases/b88e479f-36b3-5f60-b888-75ed87b10de4/asks/e2373966-bc5a-5ae5-acf4-c1dfae457dfe/session",
+  "caller": "node",
+  "request": {
+    "jkt": "WCEfb2L50-kyg2a8TbVPMo--mf1dmakvdriP6aRWNHg"
+  },
+  "status": 201,
+  "response": {
+    "expires_at": "2026-01-01T00:00:00Z",
+    "request_token": "REDACTED",
+    "request_url": "http://127.0.0.1:PORT/oauth/session-token/request?session=4054ba2e-5f89-5c4f-9ecb-54f88081728a&v=1",
+    "session_id": "4054ba2e-5f89-5c4f-9ecb-54f88081728a"
+  }
+}

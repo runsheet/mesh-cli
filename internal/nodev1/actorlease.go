@@ -79,8 +79,13 @@ func (r *Runtime) runActor(ctx context.Context, tk *meshapi.Take, room *schedule
 	defer cancel(nil)
 	mb := NewMailbox()
 	mb.turns = newTurnLedger(b)
+	asks := r.newLeaseAsks(b)
+	if asks != nil {
+		// a dispatcher's asks are its ledger (dispatcher.go)
+		mb.turns = nil
+	}
 	r.mu.Lock()
-	r.leases.Put(id, &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: turnToolFor(b), jobID: b.JobID, kind: b.Kind, started: time.Now(), actor: a, brief: b})
+	r.leases.Put(id, &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: turnToolFor(b), jobID: b.JobID, kind: b.Kind, started: time.Now(), actor: a, brief: b, asks: asks})
 	r.mu.Unlock()
 	r.publishStatus()
 	sec = r.openSecurity(id)

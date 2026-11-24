@@ -399,21 +399,29 @@ type product struct {
 	failures []string
 	// learned are the learnings each call of learn carried
 	learned []string
+	// by is, for each call, the lease (or "<lease>|ask:<ask>", a
+	// dispatcher's sub-agent's session) its session token was opened for
+	by []string
 }
 
 func (p *product) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if _, err := p.l.checkToken(r, p.url); err != nil {
+	tok, err := p.l.checkToken(r, p.url)
+	if err != nil {
 		p.mu.Lock()
 		p.failures = append(p.failures, err.Error())
 		p.mu.Unlock()
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
+	p.l.mu.Lock()
+	by := p.l.leaseOf[tok]
+	p.l.mu.Unlock()
 	b, _ := io.ReadAll(r.Body)
 	var msg rpcCall
 	json.Unmarshal(b, &msg)
 	p.mu.Lock()
 	p.calls = append(p.calls, msg.Method+" "+msg.Params.Name)
+	p.by = append(p.by, by)
 	if msg.Params.Name == "learn" {
 		p.learned = append(p.learned, string(msg.Params.Arguments.Learnings))
 	}

@@ -49,6 +49,11 @@ type Runtime struct {
 	// leases ask for it, every take names it to Mesh, and a hot host
 	// still takes them. None keeps no reserve.
 	AssistantKinds []string
+	// DispatcherCap is the most sub-agents one dispatcher lease runs at
+	// once (dispatcher.go; goal one-assistant-dispatcher-per-org-
+	// answers-every-ask P4): a kind's own cap is held to it. 0 is
+	// DefaultDispatcherCap.
+	DispatcherCap int
 	// Node is what the node registers as; OS and Arch default to this
 	// build's.
 	Node meshapi.RegisterRequest
@@ -422,6 +427,10 @@ type running struct {
 	// with.
 	mailbox  *Mailbox
 	turnTool string
+	// asks are a dispatcher lease's asks (dispatcher.go): its turns of
+	// kind ask go there, not to the mailbox, and its turns_seen is theirs.
+	// nil for any other lease.
+	asks *askQueue
 	// jobID is the lease's job, for the thread sweep (thread.go); kind
 	// its kind and started when the node took it, for the status.
 	jobID   string

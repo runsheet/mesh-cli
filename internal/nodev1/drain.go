@@ -99,6 +99,11 @@ type LeaseStatus struct {
 // intercepts is adoptable only when its egress runs as a process of its
 // own (ADR-051 decisions 1 and 4) and that process is still alive.
 func adoptability(l *running) (bool, string) {
+	if l.asks != nil {
+		// a dispatcher's sub-agents are this process's own: its unfinished
+		// asks come back to the next lease instead (dispatcher.go)
+		return false, "a dispatcher's sub-agents end with the process"
+	}
 	if l.sidecarDir == "" {
 		return false, ""
 	}

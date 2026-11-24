@@ -965,6 +965,11 @@ type RunSpec struct {
 	// is the session's own; Pids is always the session's. Run and
 	// RunAgent ignore it.
 	Limits Limits
+	// Mounts are an Exec's own, beside the session's, each checked
+	// against its confinement: a dispatcher's sub-agent's own
+	// sessionproxy socket directory, which no other run of the pod
+	// sees (nodev1's dispatcher.go). Run and RunAgent ignore it.
+	Mounts []Mount
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
@@ -1077,6 +1082,12 @@ func (s *Session) Exec(ctx context.Context, spec RunSpec) error {
 	mounts, err := s.CheckedMounts(spec.Workspace)
 	if err != nil {
 		return err
+	}
+	for _, m := range spec.Mounts {
+		if err := s.confine.Check("exec mount", m.Source); err != nil {
+			return err
+		}
+		mounts = append(mounts, m)
 	}
 	s.mu.Lock()
 	started := s.started

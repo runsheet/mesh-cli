@@ -43,6 +43,9 @@ type Fake struct {
 	// when not 0, the lease still live: a Mesh older than a cause
 	// (account_refused) answers 422.
 	RefuseHandBack func(req meshapi.HandBackRequest) int
+	// AskSession answers POST /v1/leases/{id}/asks/{ask}/session for a
+	// dispatcher's sub-agent; the ask-session fixture's answer when nil.
+	AskSession func(leaseID, askID, jkt string) (*meshapi.SessionCredential, int)
 
 	fx      map[string]Fixture
 	mu      sync.Mutex
@@ -60,6 +63,16 @@ type Fake struct {
 	// turns_seen a renewal of the job's lease said.
 	turns map[string][]meshapi.Turn
 	seen  map[string]int64
+	// asksEnded are the asks a dispatcher's lease finished, by ask id
+	// (AskEnded); a renewal never answers one again, as Mesh acks its
+	// turn at the finish
+	asksEnded map[string]AskEnd
+}
+
+// AskEnd is how a dispatcher's lease finished an ask.
+type AskEnd struct {
+	LeaseID string
+	meshapi.AskFinishRequest
 }
 
 type fakeLease struct {
@@ -79,7 +92,7 @@ type Call struct {
 // NewFake is a fake over the contract's fixtures.
 func NewFake(t testing.TB) *Fake {
 	f := &Fake{fx: Load(t), leases: map[string]*fakeLease{}, offered: make(chan struct{}, 1), streams: map[chan meshapi.NodeEvent]struct{}{},
-		turns: map[string][]meshapi.Turn{}, seen: map[string]int64{}}
+		turns: map[string][]meshapi.Turn{}, seen: map[string]int64{}, asksEnded: map[string]AskEnd{}}
 	f.mux = http.NewServeMux()
 	f.mux.HandleFunc("POST /v1/nodes", f.register)
 	f.mux.HandleFunc("POST /v1/nodes/{id}/heartbeat", f.heartbeat)
@@ -88,6 +101,7 @@ func NewFake(t testing.TB) *Fake {
 	f.mux.HandleFunc("GET /v1/nodes/{id}/events", f.events)
 	f.mux.HandleFunc("POST /v1/take", f.take)
 	f.mux.HandleFunc("POST /v1/leases/{id}/{route}", f.lease)
+	f.mux.HandleFunc("POST /v1/leases/{id}/asks/{ask}/{verb}", f.ask)
 	f.mux.HandleFunc("PUT /v1/blobs/{digest}", func(w http.ResponseWriter, r *http.Request) {
 		body := f.record(r, "blob", "")
 		sum := sha256.Sum256(body)
@@ -505,6 +519,11 @@ func (f *Fake) lease(w http.ResponseWriter, r *http.Request) {
 			f.seen[job] = max(f.seen[job], *req.TurnsSeen)
 			resp.TurnsThrough = *req.TurnsSeen
 			for _, t := range f.turns[job] {
+				if _, done := f.asksEnded[t.TurnID]; done && t.Kind == meshapi.TurnKindAsk {
+					// an ask finished is acked: never answered again
+					resp.TurnsThrough = max(resp.TurnsThrough, t.Seq)
+					continue
+				}
 				if t.Seq > *req.TurnsSeen {
 					resp.Turns = append(resp.Turns, t)
 					resp.TurnsThrough = max(resp.TurnsThrough, t.Seq)
@@ -621,4 +640,75 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeErr(w http.ResponseWriter, status int, code, msg string) {
 	writeJSON(w, status, map[string]string{"error": code, "message": msg})
+}
+
+// MarkAskEnded has the ask finished end before the test, as an earlier
+// lease of its dispatcher would have.
+func (f *Fake) MarkAskEnded(askID, end string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.asksEnded[askID] = AskEnd{AskFinishRequest: meshapi.AskFinishRequest{End: end}}
+}
+
+// AskEnded is how a dispatcher's lease finished the ask, ok false while
+// none has.
+func (f *Fake) AskEnded(askID string) (AskEnd, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	e, ok := f.asksEnded[askID]
+	return e, ok
+}
+
+// ask answers a dispatcher's ask routes: its sub-agent's session and its
+// finish (projectmesh-io/api ADR 001 amendment, assistant dispatcher),
+// for an ask that is one of the lease's job's turns of kind ask.
+func (f *Fake) ask(w http.ResponseWriter, r *http.Request) {
+	id, askID, verb := r.PathValue("id"), r.PathValue("ask"), r.PathValue("verb")
+	body := f.record(r, "ask-"+verb, id)
+	f.mu.Lock()
+	l := f.leases[id]
+	live := l != nil && l.ended == ""
+	mine := false
+	if l != nil {
+		for _, t := range f.turns[l.brief.JobID] {
+			mine = mine || (t.TurnID == askID && t.Kind == meshapi.TurnKindAsk)
+		}
+	}
+	f.mu.Unlock()
+	switch {
+	case !live:
+		writeErr(w, http.StatusConflict, "lease_not_live", "lease "+id+" is not live")
+		return
+	case !mine:
+		writeErr(w, http.StatusNotFound, "not_found", "no ask "+askID+" on the lease's job")
+		return
+	}
+	switch verb {
+	case "session":
+		var req meshapi.SessionRequest
+		if json.Unmarshal(body, &req) != nil || req.JKT == "" {
+			writeErr(w, http.StatusBadRequest, "bad_request", "a session needs the key's jkt")
+			return
+		}
+		if f.AskSession != nil {
+			s, status := f.AskSession(id, askID, req.JKT)
+			writeJSON(w, status, s)
+			return
+		}
+		WriteFixture(w, f.fx["ask-session"])
+	case "finish":
+		var req meshapi.AskFinishRequest
+		json.Unmarshal(body, &req)
+		f.mu.Lock()
+		if e, ok := f.asksEnded[askID]; ok && e.End != req.End {
+			f.mu.Unlock()
+			writeErr(w, http.StatusConflict, "conflict", "the ask already ended "+e.End)
+			return
+		}
+		f.asksEnded[askID] = AskEnd{LeaseID: id, AskFinishRequest: req}
+		f.mu.Unlock()
+		writeJSON(w, http.StatusOK, meshapi.AskFinished{AskID: askID, DispatcherJob: l.brief.JobID, End: req.End, EndedAt: time.Now().UTC()})
+	default:
+		writeErr(w, http.StatusNotFound, "not_found", "no route "+verb)
+	}
 }
