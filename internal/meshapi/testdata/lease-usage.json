@@ -43,6 +43,7 @@
         "turns": 1
       }
     ],
+    "provider": "anthropic",
     "stop_rules": null,
     "tokens_cache_read": 0,
     "tokens_cache_write": 0,
@@ -97,6 +98,7 @@
           "turns": 1
         }
       ],
+      "provider": "anthropic",
       "stop_rules": null,
       "tokens_cache_read": 0,
       "tokens_cache_write": 0,
@@ -149,6 +151,7 @@
           "turns": 1
         }
       ],
+      "provider": "anthropic",
       "stop_rules": null,
       "tokens_cache_read": 0,
       "tokens_cache_write": 0,

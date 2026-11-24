@@ -291,7 +291,7 @@ func TestUsageOfAStreamingSession(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			u := usageOf(outcome{result: res, escalations: esc, account: c.account, harness: "claude-code", model: "sonnet"})
 			want := &meshapi.UsageRequest{
-				Harness: "claude-code", Model: "sonnet", AccountRef: c.ref,
+				Harness: "claude-code", Provider: "anthropic", Model: "sonnet", AccountRef: c.ref,
 				TokensInput: 20, TokensOutput: 3, TokensCacheRead: 5, TokensCacheWrite: 1,
 				CostListCents: 21, CostActualCents: c.actualCost, DurationMS: 2000, Turns: 3,
 				Models: []meshapi.ModelUsage{

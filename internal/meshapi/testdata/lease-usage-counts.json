@@ -25,6 +25,7 @@
         "turns": 3
       }
     ],
+    "provider": "anthropic",
     "stop_rules": [
       "error-loop"
     ],
@@ -90,6 +91,7 @@
           "turns": 3
         }
       ],
+      "provider": "anthropic",
       "stop_rules": [
         "error-loop"
       ],
@@ -153,6 +155,7 @@
           "turns": 3
         }
       ],
+      "provider": "anthropic",
       "stop_rules": [
         "error-loop"
       ],

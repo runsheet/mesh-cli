@@ -309,7 +309,7 @@ func (r *Runtime) sessionFor(b *meshapi.Brief) (Session, error) {
 
 // briefRepo is the repository a brief's job works on, owner/name.
 func briefRepo(b *meshapi.Brief) string {
-	if b.Code.Repo.FullName != "" {
+	if b.Code != nil && b.Code.Repo.FullName != "" {
 		return b.Code.Repo.FullName
 	}
 	if b.Git != nil {
