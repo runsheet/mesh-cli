@@ -137,11 +137,15 @@ func suitesUnavailable(res []validate.StepResult, err error) bool {
 // infrastructureCause is the hand-back cause of a lease whose session
 // could not start, or was stopped, for the infrastructure's sake:
 // credential_timeout (product, when Latchkey refused the product's
-// configuration), tool_unavailable, or none ("").
+// configuration), tool_unavailable, a harnessError's own cause
+// (cannot_run, model_rate_limited; harnessroute.go), or none ("").
 func infrastructureCause(err error) string {
 	var ce *credentialError
 	var te *toolUnavailableError
+	var he *harnessError
 	switch {
+	case errors.As(err, &he):
+		return he.cause
 	case errors.As(err, &ce) && ce.product:
 		return meshapi.CauseProduct
 	case errors.As(err, &ce):

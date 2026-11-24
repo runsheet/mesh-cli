@@ -124,7 +124,10 @@ func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace s
 			}
 			out = append(out, sr.Tool())
 		case EscalateTool:
-			_, codex := r.Session.(*CodexSession)
+			// the lease's own session's, by the harness its brief names
+			// (harnessroute.go)
+			sess, _ := r.sessionFor(b)
+			_, codex := sess.(*CodexSession)
 			out = append(out, escalateTool(ladder, mb, codex))
 		case RequestTimeTool:
 			if tb == nil {

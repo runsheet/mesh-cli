@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -125,6 +126,16 @@ runs, and finish or hand back.`,
 		if err != nil {
 			return err
 		}
+		// the harness registry: both harnesses' sessions, the --harness
+		// one shared, for the leases node.yaml's v1.harness_routes route
+		// (nodev1/harnessroute.go); with no route set every lease runs
+		// on the --harness session, as before
+		sessions := nodeRunSessions(harnesses[0], sess, nodeRunUnattended, os.Stderr, logger.Printf)
+		routes, err := nodev1.ReadHarnessRoutes(capPath)
+		if err != nil {
+			return err
+		}
+		harnesses = nodeRunRegistered(harnesses, routes)
 		capacityReload := make(chan struct{}, 1)
 		sandboxLimitsReload := make(chan struct{}, 1)
 		buildCacheReload := make(chan struct{}, 1)
@@ -159,6 +170,8 @@ runs, and finish or hand back.`,
 			GitUpstream:          gitUpstream(),
 			NoMirrors:            nodeRunNoMirrors,
 			Session:              sess,
+			Sessions:             sessions,
+			HarnessRoutesPath:    capPath,
 			// the session runs on the host here, so run_suite's steps
 			// may too; a sandboxed node never runs them there
 			HostSuites: true,
@@ -445,6 +458,42 @@ func nodeRunSessionOf(kind string, unattended bool, stderr io.Writer, logf func(
 	default:
 		return nil, nil, fmt.Errorf("mesh node run: --harness must be claude-code or codex, not %q", kind)
 	}
+}
+
+// nodeRunSessions is the node's harness registry: the --harness
+// session under its own name, and a session of the other harness beside
+// it — the Codex app-server session (CodexSession) or claude -p
+// (ClaudeSession) — for the leases a harness route sends to it.
+func nodeRunSessions(own string, sess nodev1.Session, unattended bool, stderr io.Writer, logf func(string, ...any)) map[string]nodev1.Session {
+	out := map[string]nodev1.Session{own: sess}
+	for _, h := range []string{nodev1.HarnessClaudeCode, nodev1.HarnessCodex} {
+		if _, ok := out[h]; ok {
+			continue
+		}
+		if _, s, err := nodeRunSessionOf(h, unattended, stderr, logf); err == nil {
+			out[h] = s
+		}
+	}
+	return out
+}
+
+// nodeRunRegistered are the harnesses the node registers: its --harness
+// one, and every harness node.yaml's routes name at start (an either
+// route names both); with no route, the --harness one alone, as before.
+func nodeRunRegistered(own []string, routes []nodev1.HarnessRoute) []string {
+	out := slices.Clone(own)
+	for _, r := range routes {
+		names := []string{r.Harness}
+		if r.Harness == nodev1.HarnessEither {
+			names = []string{nodev1.HarnessClaudeCode, nodev1.HarnessCodex}
+		}
+		for _, h := range names {
+			if !slices.Contains(out, h) {
+				out = append(out, h)
+			}
+		}
+	}
+	return out
 }
 
 // nodeRunPods is the sandbox each lease's session and services run in

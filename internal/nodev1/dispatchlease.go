@@ -136,7 +136,11 @@ func (r *Runtime) runAsk(ctx context.Context, b *meshapi.Brief, tmpl SessionSpec
 		}
 		spec.InPod = lp.askRun(workspace, sockDir)
 	}
-	res, err := r.Session.Run(ctx, spec)
+	sess, err := r.sessionFor(b)
+	if err != nil {
+		return endedWith(meshapi.AskEndHandedBack, "", err.Error()), nil
+	}
+	res, err := sess.Run(ctx, spec)
 	if ctx.Err() != nil {
 		return askEnd{}, errAskNotRun
 	}

@@ -185,6 +185,24 @@ type TakeRequest struct {
 	// reserve.
 	Reserved      *Capacity `json:"reserved,omitempty"`
 	ReservedKinds []string  `json:"reserved_kinds,omitempty"`
+	// Routes are the node's harness routes (node.yaml's
+	// v1.harness_routes): a job of a routed kind is placed on one of
+	// its route's harnesses, the first whose account has room. Left out
+	// when the node sets none, so a take is as it always was.
+	Routes []TakeRoute `json:"routes,omitempty"`
+}
+
+// TakeRoute is one harness route a take carries: the kind (its short
+// name, or * for every kind), the tenant or repository (owner/name) it
+// is held to, if either, and the harnesses a job it matches may run on
+// — one, or both for a route of either. Mesh takes the most specific
+// route that matches a job: a repository's, then a tenant's, then one
+// for every tenant, and the kind's own before *'s.
+type TakeRoute struct {
+	Kind      string   `json:"kind"`
+	Tenant    string   `json:"tenant,omitempty"`
+	Repo      string   `json:"repo,omitempty"`
+	Harnesses []string `json:"harnesses"`
 }
 
 // Take is a take's answer: a lease and its brief, or Waiting — why no
@@ -862,7 +880,11 @@ type ModelUsage struct {
 // one at Mesh. AccountRef is the account the node ran the session on;
 // Mesh books the one its take picked whatever the node names.
 type UsageRequest struct {
-	Harness          string       `json:"harness"`
+	Harness string `json:"harness"`
+	// Provider is the model provider the session ran on: its account's
+	// vendor, else the harness's own (anthropic, openai). Left out for a
+	// Mesh that does not take it yet (Runtime.postUsage).
+	Provider         string       `json:"provider,omitempty"`
 	Model            string       `json:"model"`
 	AccountRef       string       `json:"account_ref"`
 	TokensInput      int64        `json:"tokens_input"`
@@ -1011,6 +1033,9 @@ const (
 	// vendor (401 or 403): Mesh does not count it against the job, cools
 	// the account down and offers the job again on another (ADR-048).
 	CauseAccountRefused = "account_refused"
+	// CauseModelRateLimited is a lease whose model account its vendor
+	// limits now: Mesh offers the job again once an account has room.
+	CauseModelRateLimited = "model_rate_limited"
 	// CauseEgressDied was the node's own name for the lease's egress
 	// process — its own process group, outside the node's and the
 	// pod's — ending on its own while the lease was still live. Mesh
@@ -1030,7 +1055,7 @@ var HandBackCauses = []string{
 	CauseCannotRun, CausePodKilled, CauseStalled, CauseNodeUpdate, CauseNodeRestart,
 	CausePanic, CauseRevoked, CauseParked, CauseProduct, CausePlatform, CauseInfrastructure,
 	CauseCancelled, CauseNoFinish, CauseCredentialTimeout, CauseToolUnavailable,
-	CauseAccountRefused, "model_rate_limited",
+	CauseAccountRefused, CauseModelRateLimited,
 }
 
 // FailCauses are the causes Mesh takes on a fail: work and the two

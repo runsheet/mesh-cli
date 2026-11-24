@@ -431,7 +431,7 @@ func (r *Runtime) adoptOne(ctx context.Context, id, dir string, st *handoffState
 		rcancel()
 	}
 
-	out := outcome{finish: fin.result(), handBack: hb.asked(), cause: cause, evidence: rec.IDs(), account: account, harness: b.Harness.Name}
+	out := outcome{finish: fin.result(), handBack: hb.asked(), cause: cause, evidence: rec.IDs(), account: account, harness: b.Harness.Name, provider: providerOf(account, b.Harness.Name)}
 	out.nodeEnding = ctx.Err() != nil
 	a.ReleaseNow(holdProxy, holdGrant)
 	r.releaseCarried(id)

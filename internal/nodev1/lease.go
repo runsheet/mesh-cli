@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -74,9 +75,11 @@ type outcome struct {
 	// account is what the session ran on: the job's model account or
 	// the node's own login.
 	account *sessionAccount
-	// harness and model are the session's harness and the model it
-	// ended on, for the usage report.
-	harness, model string
+	// harness, provider and model are the session's harness, the model
+	// provider it ran on (its account's vendor, else the harness's own)
+	// and the model it ended on, for the usage report: the lease's
+	// provenance (harnessroute.go).
+	harness, provider, model string
 	// counts are the session's content-free counts and stopped the stop
 	// rule that ended it, nil when none did (stoprules.go).
 	counts  meshapi.Counts
@@ -225,6 +228,13 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 			closers[i]()
 		}
 	}()
+	// the session the brief's harness names: a lease on a harness outside
+	// its route, or one this node cannot start, is handed back naming the
+	// harness before anything is minted (harnessroute.go)
+	sess, err := r.sessionFor(b)
+	if err != nil {
+		return outcome{err: err}
+	}
 	// a node tool the kind names that this node does not have is handed
 	// back tool_unavailable before anything is minted (causes.go)
 	if name := unservedTool(b); name != "" {
@@ -272,6 +282,15 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	account, err := openAccount(ctx, b.CredentialRef, tokens, os.Environ())
 	if err != nil {
 		return outcome{err: credentialFailed(err), cause: context.Cause(ctx)}
+	}
+	// a routed lease whose account the node last read as limited is
+	// handed back model_rate_limited, naming its harness, before any
+	// checkout (harnessroute.go)
+	if err := r.noHeadroom(b, account.ref(), time.Now()); err != nil {
+		return outcome{err: err, cause: context.Cause(ctx)}
+	}
+	if len(r.Sessions) > 0 {
+		r.logf("nodev1: lease %s runs on %s (%s, %s)", b.LeaseID, cmp.Or(b.Harness.Name, "the node's own harness"), providerOf(account, b.Harness.Name), cmp.Or(b.Harness.Model.Default, "the CLI's own model"))
 	}
 	// the values the relay injects: redacted, and canaries in every model
 	// request and through the tunnel (canary.go)
@@ -683,10 +702,13 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		// and the lease runs no session (dispatcher.go)
 		res, err = r.serveDispatcher(sctx, b, spec, lp)
 	} else {
-		res, err = r.Session.Run(sctx, spec)
+		res, err = sess.Run(sctx, spec)
+		// a routed session that never started is its harness's failure,
+		// named in the hand-back (harnessroute.go)
+		err = r.harnessDidNotStart(b, res, err, sctx)
 	}
 	o := outcome{result: res, err: err, finish: fin.result(), handBack: hb.asked(), escalations: taken(ladder.Steps()), evidence: rec.IDs(),
-		account: account, harness: b.Harness.Name, model: ladder.Model(), parked: res.Parked, counts: watch.close()}
+		account: account, harness: b.Harness.Name, provider: providerOf(account, b.Harness.Name), model: ladder.Model(), parked: res.Parked, counts: watch.close()}
 	o.counts.Tools = sl.usage(o.counts.Tools)
 	if e := vals.exposure(); e != nil {
 		o.exposed, o.err = e, nil
@@ -1112,9 +1134,29 @@ func (r *Runtime) postUsage(id string, o outcome) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
 	defer cancel()
-	if err := r.API.Usage(ctx, id, *u); err != nil {
+	if r.noProvider.Load() {
+		u.Provider = ""
+	}
+	err := r.API.Usage(ctx, id, *u)
+	if u.Provider != "" && providerRefused(err) {
+		// a Mesh that does not take provider yet refuses the field
+		// (its strict decoding): the report goes again without it, and
+		// the node leaves it out from now on, so no usage is lost
+		r.noProvider.Store(true)
+		r.logf("nodev1: lease %s: Mesh does not take a usage report's provider yet; reporting without it", id)
+		u.Provider = ""
+		err = r.API.Usage(ctx, id, *u)
+	}
+	if err != nil {
 		r.logf("nodev1: lease %s: usage: %v", id, err)
 	}
+}
+
+// providerRefused is whether err is Mesh refusing a usage report's
+// provider field as one it does not know.
+func providerRefused(err error) bool {
+	var me *meshapi.Error
+	return errors.As(err, &me) && me.Status == http.StatusBadRequest && strings.Contains(me.Message, `unknown field "provider"`)
 }
 
 // fail reports the lease failed with cause: work ends the job, any
@@ -1185,12 +1227,15 @@ func usageOf(o outcome) *meshapi.UsageRequest {
 		return 0
 	}
 	u := &meshapi.UsageRequest{
-		Harness: o.harness, Model: o.model, AccountRef: o.account.ref(),
+		Harness: o.harness, Provider: o.provider, Model: o.model, AccountRef: o.account.ref(),
 		Turns: int64(res.Turns), DurationMS: res.Duration.Milliseconds(),
 		Models: []meshapi.ModelUsage{}, Escalations: o.escalations, Counts: o.counts,
 	}
 	if u.Harness == "" {
 		u.Harness = "claude-code"
+	}
+	if u.Provider == "" {
+		u.Provider = providerOf(o.account, u.Harness)
 	}
 	if u.Escalations == nil {
 		u.Escalations = []meshapi.Escalation{}

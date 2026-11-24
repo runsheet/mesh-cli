@@ -24,6 +24,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/actor"
@@ -85,8 +86,17 @@ type Runtime struct {
 	// refuses its end while its finish tool is owed (stophook.go);
 	// DefaultStopRefusals when zero.
 	StopRefusals int
-	// Session runs each lease's session.
+	// Session runs each lease's session: the node's own harness's
+	// (--harness), and every lease's when Sessions is empty.
 	Session Session
+	// Sessions are the node's harness registry, a session by harness
+	// name (claude-code, codex): a lease runs on the one its brief's
+	// harness names (harnessroute.go). Empty, every lease runs on
+	// Session, as before harness routes.
+	Sessions map[string]Session
+	// HarnessRoutesPath is node.yaml, whose v1.harness_routes the node
+	// reads again before every take (harnessroute.go); "" sets none.
+	HarnessRoutesPath string
 	// LatchkeyHTTP reaches Latchkey for a lease's session tokens and git
 	// tokens; a plain client when nil.
 	LatchkeyHTTP *http.Client
@@ -351,6 +361,12 @@ type Runtime struct {
 	// accounts are the model accounts' latest standing, from their
 	// sessions' rate-limit readings, for the heartbeat (accounts.go)
 	accounts map[string]*accountReading
+	// routes are node.yaml's harness routes as last read
+	// (harnessroute.go), under their own lock
+	routes routesCache
+	// noProvider is set once Mesh refused a usage report's provider
+	// (lease.go's postUsage): later reports leave it out
+	noProvider atomic.Bool
 	// hostGateReason is the host gate's current reason, "" when open, so
 	// noteHostGate logs only a crossing, never the same state twice
 	hostGateReason string
@@ -709,6 +725,11 @@ func (r *Runtime) Run(ctx context.Context) error {
 		}
 		r.noteDiskGate("")
 		tr := meshapi.TakeRequest{NodeID: node.NodeID, Free: r.free(), Harnesses: r.Node.Harnesses, WaitS: meshapi.MaxWaitS}
+		// the node's harness routes, read again now (harnessroute.go):
+		// none set leaves the take as it always was
+		if routes := r.harnessRoutes(); len(routes) > 0 {
+			tr.Routes, tr.Harnesses = takeRoutes(routes), r.takeHarnesses(routes)
+		}
 		r.takeReserved(&tr, reservedOnly)
 		tk, err := r.API.Take(ctx, tr)
 		if err != nil {
