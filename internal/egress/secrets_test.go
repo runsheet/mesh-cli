@@ -31,6 +31,30 @@ func TestFindKnownSecret(t *testing.T) {
 			found: true,
 		},
 		{
+			name:  "aws access key id in json",
+			body:  `{"accessKeyId":"ASIAIOSFODNN7EXAMPLE","secretAccessKey":"x"}`,
+			label: SecretAWSAccessKeyID,
+			found: true,
+		},
+		{
+			name:  "aws access key id in a sigv4 credential",
+			body:  "Authorization: AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20150830/us-east-1/s3/aws4_request",
+			label: SecretAWSAccessKeyID,
+			found: true,
+		},
+		{
+			// Next.js's compiled edge runtime inlines wasm as base64; an
+			// OpenNext Worker upload carries runs like this one
+			name:  "the shape inside a base64 run",
+			body:  `e("AGFzbQEAAAABwArAFAAUABQAFAAUABQAFAAUABQAFAAUABQAFAAUABIAEMAUABQAFAAUABQAFAAUABQAFAAUABQAFAAU")`,
+			found: false,
+		},
+		{
+			name:  "the shape at a base64 run's start, the run going on",
+			body:  `"ABIAEMAUABQAFAAUABQAFAAUABQA=="`,
+			found: false,
+		},
+		{
 			name:  "clean miss",
 			body:  `{"hello":"world","note":"an ordinary request body with nothing secret-shaped in it at all"}`,
 			found: false,

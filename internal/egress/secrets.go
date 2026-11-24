@@ -33,7 +33,19 @@ var knownSecretShapes = []struct {
 	label string
 	re    *regexp.Regexp
 }{
-	{SecretAWSAccessKeyID, regexp.MustCompile(`(?:AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}`)},
+	// An AWS access key id stands alone: a character that cannot
+	// continue a base64 run before it, and none that continues the id
+	// after. Unbounded, the shape matched inside base64 — Next.js's
+	// compiled edge runtime inlines wasm as base64 (`…UABIAEMAUABQAFAAUABQA…`),
+	// so every OpenNext Worker upload was refused as carrying a key
+	// (GrapevineNetwork/portal's production deploy, 2026-11-25). No
+	// anchors: a streamed body is scanned in windows whose edges fall
+	// mid-run, so a key must show the character before it; one that is a
+	// body's very first bytes is not seen. Its end may be the input's end
+	// (`AWS_ACCESS_KEY_ID=AKIA…` as a file's last line): a window's edge
+	// reads as a false key only where a base64 run starts exactly twenty
+	// bytes before it.
+	{SecretAWSAccessKeyID, regexp.MustCompile(`[^A-Za-z0-9+/](?:AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}(?:[^A-Za-z0-9]|$)`)},
 	{SecretGitHubToken, regexp.MustCompile(`gh[opsur]_[0-9A-Za-z]{36,}`)},
 	{SecretPEMPrivateKey, regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----`)},
 }
