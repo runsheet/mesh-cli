@@ -40,9 +40,12 @@ var knownSecretShapes = []struct {
 	// so every OpenNext Worker upload was refused as carrying a key
 	// (GrapevineNetwork/portal's production deploy, 2026-11-25). No
 	// anchors: a streamed body is scanned in windows whose edges fall
-	// mid-run, so a key must show the character on each side; one that is
-	// a body's very first or last bytes is not seen.
-	{SecretAWSAccessKeyID, regexp.MustCompile(`[^A-Za-z0-9+/](?:AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}[^A-Za-z0-9]`)},
+	// mid-run, so a key must show the character before it; one that is a
+	// body's very first bytes is not seen. Its end may be the input's end
+	// (`AWS_ACCESS_KEY_ID=AKIA…` as a file's last line): a window's edge
+	// reads as a false key only where a base64 run starts exactly twenty
+	// bytes before it.
+	{SecretAWSAccessKeyID, regexp.MustCompile(`[^A-Za-z0-9+/](?:AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}(?:[^A-Za-z0-9]|$)`)},
 	{SecretGitHubToken, regexp.MustCompile(`gh[opsur]_[0-9A-Za-z]{36,}`)},
 	{SecretPEMPrivateKey, regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----`)},
 }
