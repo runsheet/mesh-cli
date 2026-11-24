@@ -243,6 +243,34 @@ func (c *Client) Session(ctx context.Context, leaseID, jkt string) (*SessionCred
 	return &out, nil
 }
 
+// AskSession has Mesh open the Latchkey session of one ask of the
+// lease's dispatcher job, bound to the sub-agent's own key: POST
+// /v1/leases/{id}/asks/{ask}/session {jkt}. Its job_id is the ask's, so
+// the product scopes it to that ask alone; the dispatcher's own session
+// is never a sub-agent's. An ask not of this lease's job is 404.
+func (c *Client) AskSession(ctx context.Context, leaseID, askID, jkt string) (*SessionCredential, error) {
+	var out SessionCredential
+	if _, _, err := c.do(ctx, http.MethodPost, leasePath(leaseID, "asks/"+url.PathEscape(askID)+"/session"), SessionRequest{JKT: jkt}, &out); err != nil {
+		return nil, err
+	}
+	if out.SessionID == "" || out.RequestURL == "" || out.RequestToken == "" {
+		return nil, errors.New("mesh: the ask's session answer names no session, request url or request token")
+	}
+	return &out, nil
+}
+
+// FinishAsk ends one ask of the lease's dispatcher job: POST
+// /v1/leases/{id}/asks/{ask}/finish {end, result?}. Mesh keeps the
+// result, acks the ask's turn, tells the product and revokes the ask's
+// session; the same end again converges.
+func (c *Client) FinishAsk(ctx context.Context, leaseID, askID string, req AskFinishRequest) (*AskFinished, error) {
+	var out AskFinished
+	if _, _, err := c.do(ctx, http.MethodPost, leasePath(leaseID, "asks/"+url.PathEscape(askID)+"/finish"), req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // Evidence records the lease's signed ToolRecords: POST
 // /v1/leases/{id}/evidence. Mesh answers each record's evidence id.
 func (c *Client) Evidence(ctx context.Context, leaseID string, records []EvidencePost) (*EvidenceResponse, error) {

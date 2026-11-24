@@ -53,6 +53,7 @@ var (
 	nodeRunAssistantCPUs  float64
 	nodeRunAssistantMemGB float64
 	nodeRunAssistantKinds []string
+	nodeRunDispatcherCap  int
 	nodeRunActors         bool
 	nodeRunSupervisor     string
 	nodeRunQuietAfter     time.Duration
@@ -172,10 +173,12 @@ runs, and finish or hand back.`,
 			rt.Scheduler.Logf = logger.Printf
 			reserve, err := nodev1.ReadAssistantReserve(capPath, nodev1.AssistantReserve{
 				CPUs: nodeRunAssistantCPUs, MemGB: nodeRunAssistantMemGB, Kinds: nodeRunAssistantKinds,
+				DispatcherCap: nodeRunDispatcherCap,
 			})
 			if err != nil {
 				return err
 			}
+			rt.DispatcherCap = reserve.DispatcherCap
 			if len(reserve.Kinds) > 0 && (reserve.CPUs > 0 || reserve.MemGB > 0) {
 				rt.AssistantKinds = reserve.Kinds
 				rt.Scheduler.SetReserve(scheduler.Capacity{CPUs: reserve.CPUs, MemGB: reserve.MemGB})
@@ -509,7 +512,8 @@ func init() {
 	f.IntVar(&nodeRunAccountSlots, "account-slots", 0, "with --actors-scheduler, sessions at once per model account (0 is unbounded)")
 	f.Float64Var(&nodeRunAssistantCPUs, "assistant-reserve-cpus", 4, "with --actors-scheduler, CPUs kept for the assistant kinds alone (--assistant-kinds), admitted at once however full the node; at most a quarter of the node; node.yaml's v1.assistant_reserve.cpus wins")
 	f.Float64Var(&nodeRunAssistantMemGB, "assistant-reserve-mem-gb", 8, "with --actors-scheduler, memory in GB kept for the assistant kinds alone; at most a quarter of the node; node.yaml's v1.assistant_reserve.mem_gb wins")
-	f.StringSliceVar(&nodeRunAssistantKinds, "assistant-kinds", []string{"goal-chat"}, "the kinds the assistant reserve is kept for (short names); none keeps no reserve; node.yaml's v1.assistant_reserve.kinds wins")
+	f.StringSliceVar(&nodeRunAssistantKinds, "assistant-kinds", []string{"goal-chat", "assistant"}, "the kinds the assistant reserve is kept for (short names); none keeps no reserve; a dispatcher's lease always uses it; node.yaml's v1.assistant_reserve.kinds wins")
+	f.IntVar(&nodeRunDispatcherCap, "dispatcher-cap", nodev1.DefaultDispatcherCap, "the most sub-agents one assistant dispatcher lease runs at once; its kind's own cap is held to it, and asks past it wait in the dispatcher's queue; node.yaml's v1.dispatcher_cap wins")
 	f.BoolVar(&nodeRunActors, "actors", false, "run each lease as a job actor (ADR-044): it owns the lease's directory, room, grant and proxy, writes actor.json before each state change, releases everything however the lease ends, and hands back pod_killed a session killed from outside; a restarted node releases the actors it left")
 	f.StringVar(&nodeRunSupervisor, "supervisor", "off", "with --actors, the supervisor (ADR-044): off; warn (or report) logs quiet sessions and what the minute's reconcile finds; cancel escalates a quiet session, then hands it back stalled, and removes pods, job directories and grants no actor holds; tidy removes pods, job directories and grants no actor holds like cancel, but never escalates or stalls a quiet session, as warn does not either. Once running, node.yaml's `v1.supervisor` key is read live (ADR-044 amendment, 2026-11-09): editing it and sending SIGHUP (as `mesh node set` does for capacity) changes the mode in force on the next Look or Reconcile, with no restart")
 	f.DurationVar(&nodeRunQuietAfter, "quiet-after", 0, "with --supervisor, how long a session may show no progress before it is escalated, and again before it is stopped (default 15m)")

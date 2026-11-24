@@ -241,14 +241,19 @@ type Brief struct {
 	// fields that waive its record when present and truthy, as the
 	// catalogue wrote it (projectmesh-io/api ADR 001 amendment, evidence
 	// waivers): the stop gate does not ask for a tool the finish waives.
-	WaivedBy      map[string][]string `json:"waived_by,omitempty"`
-	Code          *Code               `json:"code,omitempty"`
-	Git           *Git                `json:"git,omitempty"`
-	Access        *Access             `json:"access,omitempty"`
-	Resources     Resources           `json:"resources"`
-	Pods          []json.RawMessage   `json:"pods,omitempty"`
-	Thread        *Thread             `json:"thread,omitempty"`
-	CredentialRef string              `json:"credential_ref,omitempty"`
+	WaivedBy  map[string][]string `json:"waived_by,omitempty"`
+	Code      *Code               `json:"code,omitempty"`
+	Git       *Git                `json:"git,omitempty"`
+	Access    *Access             `json:"access,omitempty"`
+	Resources Resources           `json:"resources"`
+	Pods      []json.RawMessage   `json:"pods,omitempty"`
+	Thread    *Thread             `json:"thread,omitempty"`
+	// Dispatcher is a dispatcher kind's job's settings
+	// (projectmesh-io/api ADR 001 amendment, assistant dispatcher): its
+	// turns of kind ask are asks the node answers, each through a
+	// sub-agent of its own (dispatcher.go). Nil for any other job.
+	Dispatcher    *BriefDispatcher `json:"dispatcher,omitempty"`
+	CredentialRef string           `json:"credential_ref,omitempty"`
 	// Pushed are the refs the job's earlier leases pushed, ok, the most
 	// recent last; a retried lease's checkout starts from the last.
 	Pushed []BriefPushed `json:"pushed,omitempty"`
@@ -588,6 +593,48 @@ const (
 	TurnFromProduct = "product"
 	TurnFromPerson  = "person"
 )
+
+// BriefDispatcher is a dispatcher job's settings: the kinds it answers
+// asks of, how many sub-agents run at once, how long a thread's
+// sub-agent waits for a follow-up, and AckedThrough, the seq at or below
+// which every ask of the job is finished — a new lease's turns_seen
+// starts there, and its renewals bring every ask above it not yet
+// finished.
+type BriefDispatcher struct {
+	Serves       []string `json:"serves"`
+	Cap          int      `json:"cap"`
+	ThreadIdleS  int      `json:"thread_idle_s"`
+	AckedThrough int64    `json:"acked_through"`
+}
+
+// TurnKindAsk is a dispatcher job's turn: an ask, whose turn_id is the
+// ask's Mesh id (projectmesh-io/api ADR 001 amendment, assistant
+// dispatcher).
+const TurnKindAsk = "ask"
+
+// How an ask ends (POST /v1/leases/{id}/asks/{ask}/finish): its
+// sub-agent answered it, handed it back for the product to answer
+// another way, or failed.
+const (
+	AskEndAnswered   = "answered"
+	AskEndHandedBack = "handed_back"
+	AskEndFailed     = "failed"
+)
+
+// AskFinishRequest is POST /v1/leases/{id}/asks/{ask}/finish's body.
+type AskFinishRequest struct {
+	End    string          `json:"end"`
+	Result json.RawMessage `json:"result,omitempty"`
+}
+
+// AskFinished is its answer.
+type AskFinished struct {
+	AskID         string    `json:"ask_id"`
+	DispatcherJob string    `json:"dispatcher_job"`
+	Seq           int64     `json:"seq"`
+	End           string    `json:"end"`
+	EndedAt       time.Time `json:"ended_at"`
+}
 
 // Thread is a thread job's timing.
 type Thread struct {

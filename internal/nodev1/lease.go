@@ -108,8 +108,13 @@ func (r *Runtime) runLease(ctx context.Context, tk *meshapi.Take, room *schedule
 	defer cancel(nil)
 	mb := NewMailbox()
 	mb.turns = newTurnLedger(b)
+	asks := r.newLeaseAsks(b)
+	if asks != nil {
+		// a dispatcher's asks are its ledger (dispatcher.go)
+		mb.turns = nil
+	}
 	r.mu.Lock()
-	r.leases.Put(id, &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: turnToolFor(b), jobID: b.JobID, kind: b.Kind, started: time.Now(), brief: b})
+	r.leases.Put(id, &running{cancel: cancel, progressAt: time.Now(), mailbox: mb, turnTool: turnToolFor(b), jobID: b.JobID, kind: b.Kind, started: time.Now(), brief: b, asks: asks})
 	r.mu.Unlock()
 	r.publishStatus()
 	// the values the relay injects stay redacted until the lease is
@@ -672,7 +677,14 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	// an injected value seen where it must not go ends the session
 	// (canary.go)
 	vals.onExposed(watch.stop)
-	res, err := r.Session.Run(sctx, spec)
+	var res SessionResult
+	if isDispatcher(b) {
+		// the node is the dispatcher: each ask is a sub-agent of its own,
+		// and the lease runs no session (dispatcher.go)
+		res, err = r.serveDispatcher(sctx, b, spec, lp)
+	} else {
+		res, err = r.Session.Run(sctx, spec)
+	}
 	o := outcome{result: res, err: err, finish: fin.result(), handBack: hb.asked(), escalations: taken(ladder.Steps()), evidence: rec.IDs(),
 		account: account, harness: b.Harness.Name, model: ladder.Model(), parked: res.Parked, counts: watch.close()}
 	o.counts.Tools = sl.usage(o.counts.Tools)

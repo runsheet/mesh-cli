@@ -196,6 +196,12 @@ func (r *Runtime) Upgrade(why string) []string {
 	}
 	for _, e := range r.leases.All() {
 		id, l := e.ID, e.Value
+		if l.asks != nil {
+			// a dispatcher is handed back: its unfinished asks stay unacked
+			// and the next lease has them (dispatcher.go)
+			handBack(id, l)
+			continue
+		}
 		if l.intercepts {
 			if adoptable, _ := adoptability(l); !adoptable {
 				handBack(id, l)

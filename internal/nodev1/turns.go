@@ -165,6 +165,15 @@ func (l *turnLedger) through(turns []meshapi.Turn, through int64) {
 // event stream or a renewal's answer, whichever comes first. An
 // interrupt stops the session's turn in flight first.
 func (r *Runtime) deliverTurn(leaseID string, t meshapi.Turn, via string) {
+	if q := r.leaseAsks(leaseID); q != nil {
+		// a dispatcher's ask waits for a sub-agent (dispatcher.go)
+		if q.offer(t) {
+			r.logf("nodev1: dispatcher %s: ask %s (seq %d) queued, from %s", leaseID, t.TurnID, t.Seq, via)
+		} else if t.Kind != meshapi.TurnKindAsk {
+			r.logf("nodev1: dispatcher %s: turn %s (seq %d, %s) is no ask; a dispatcher answers asks alone", leaseID, t.TurnID, t.Seq, orTurn(t.Kind))
+		}
+		return
+	}
 	tool := r.turnTool(leaseID)
 	l := r.leaseTurns(leaseID)
 	posted, err := l.give(t.Seq, func(sent func(error)) error {
@@ -209,6 +218,9 @@ func (r *Runtime) renewLease(ctx context.Context, leaseID string) (*meshapi.Rene
 		if l := r.leaseTurns(leaseID); l != nil {
 			l.off()
 		}
+		if q := r.leaseAsks(leaseID); q != nil {
+			q.off()
+		}
 		resp, err = r.API.Renew(ctx, leaseID, nil)
 	}
 	if err == nil {
@@ -230,11 +242,34 @@ func (r *Runtime) leaseTurns(leaseID string) *turnLedger {
 
 // renewTurnsSeen is the lease's renewal's turns_seen: nil for a lease
 // whose job takes no turns.
-func (r *Runtime) renewTurnsSeen(leaseID string) *int64 { return r.leaseTurns(leaseID).TurnsSeen() }
+func (r *Runtime) renewTurnsSeen(leaseID string) *int64 {
+	if q := r.leaseAsks(leaseID); q != nil {
+		return q.TurnsSeen()
+	}
+	return r.leaseTurns(leaseID).TurnsSeen()
+}
+
+// leaseAsks is the asks of a dispatcher lease the node holds, nil for
+// any other lease.
+func (r *Runtime) leaseAsks(leaseID string) *askQueue {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if l := r.lease(leaseID); l != nil {
+		return l.asks
+	}
+	return nil
+}
 
 // renewedTurns gives the session the turns a renewal answered, then
 // moves the lease's turns_seen on to the seq Mesh looked through.
 func (r *Runtime) renewedTurns(leaseID string, resp *meshapi.RenewResponse) {
+	if q := r.leaseAsks(leaseID); q != nil && resp != nil {
+		for _, t := range resp.Turns {
+			r.deliverTurn(leaseID, t, "the renewal")
+		}
+		q.raise(resp.TurnsThrough)
+		return
+	}
 	l := r.leaseTurns(leaseID)
 	if l == nil || resp == nil {
 		return

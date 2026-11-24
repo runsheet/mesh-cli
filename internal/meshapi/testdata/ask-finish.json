@@ -1,0 +1,20 @@
+{
+  "name": "ask-finish",
+  "method": "POST",
+  "path": "/v1/leases/b88e479f-36b3-5f60-b888-75ed87b10de4/asks/bb25385d-6b04-54c9-be31-e1c35b84c2e6/finish",
+  "caller": "node",
+  "request": {
+    "end": "answered",
+    "result": {
+      "reply": "r-1"
+    }
+  },
+  "status": 200,
+  "response": {
+    "ask_id": "bb25385d-6b04-54c9-be31-e1c35b84c2e6",
+    "dispatcher_job": "0df737a4-e089-557c-9fcb-354436a61c8c",
+    "end": "answered",
+    "ended_at": "2026-01-01T00:00:00Z",
+    "seq": 1
+  }
+}

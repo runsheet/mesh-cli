@@ -51,6 +51,10 @@ func (r *Runtime) assistantKind(b *meshapi.Brief) bool {
 	if b == nil {
 		return false
 	}
+	if b.Dispatcher != nil {
+		// a dispatcher answers the assistant's asks (dispatcher.go)
+		return true
+	}
 	k := path.Base(b.Kind)
 	return slices.ContainsFunc(r.AssistantKinds, func(a string) bool { return path.Base(a) == k })
 }

@@ -17,6 +17,9 @@ type AssistantReserve struct {
 	MemGB float64
 	// Kinds are short kind names ("goal-chat").
 	Kinds []string
+	// DispatcherCap is the most sub-agents one dispatcher lease runs at
+	// once (Runtime.DispatcherCap; node.yaml's v1.dispatcher_cap).
+	DispatcherCap int
 }
 
 type nodeYAMLAssistantReserve struct {
@@ -26,6 +29,7 @@ type nodeYAMLAssistantReserve struct {
 			MemGB *float64 `yaml:"mem_gb"`
 			Kinds []string `yaml:"kinds"`
 		} `yaml:"assistant_reserve"`
+		DispatcherCap *int `yaml:"dispatcher_cap"`
 	} `yaml:"v1"`
 }
 
@@ -44,11 +48,14 @@ func ReadAssistantReserve(path string, def AssistantReserve) (AssistantReserve, 
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
 		return def, err
 	}
+	out := def
+	if c := cfg.V1.DispatcherCap; c != nil {
+		out.DispatcherCap = *c
+	}
 	a := cfg.V1.AssistantReserve
 	if a == nil {
-		return def, nil
+		return out, nil
 	}
-	out := def
 	if a.CPUs != nil {
 		out.CPUs = *a.CPUs
 	}
