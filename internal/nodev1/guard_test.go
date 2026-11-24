@@ -124,6 +124,7 @@ var longLived = []string{"Runtime", "fleet", "updateNode"}
 var mapsAllowed = map[string]string{
 	"Runtime.accounts":       "a model account's standing, read across its leases for the heartbeat",
 	"Runtime.ModelUpstreams": "configuration, set once before Run: the model relay's origins by provider",
+	"Runtime.Sessions":       "configuration, set once before Run: the harness registry, a session by harness name",
 }
 
 // Actors own everything (ADR-044, Mesh v1 PR 3.9): the node keeps no

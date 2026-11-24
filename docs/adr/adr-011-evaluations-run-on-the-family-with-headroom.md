@@ -1,5 +1,5 @@
 ---
-summary: Before an evaluation starts the node chooses its family per session — Codex when an issued Codex account has headroom for the goal's priority (node.yaml's own-login candidate is gone, amendment 2026-10-02), else Claude; a full gpt-… id pins Codex and waits in evaluating without headroom, a claude-… id pins Claude; the urgent/high second opinion runs on the other family, labelled by family and model; the one usage report names adapter codex and the gpt-6 model of a Codex evaluation; before any Codex session starts the node preflights the built-in context server in the session's own home and env (`codex mcp get` and a tools/list handshake), and a failure moves an unpinned evaluation to Claude, keeps a pinned one waiting and makes a Codex second opinion unavailable. Amended: an unpinned Codex evaluation defaults to gpt-6-sol (opus tier) or gpt-6-luna (sonnet, haiku), astra only when pinned; and a tool failure is never a verdict — a session that saw no context is evaluated again on the other family, or the item waits in evaluating. Amended 2026-09-29: an evaluation that reached no verdict — no VERDICT line, or no context and no other family — is recorded with evaluateWorkItem's outcome no_verdict and its reason, never a fail (a gateway without the field: it waits in evaluating, said once per run); a family blind on the first attempt is not asked for the second opinion; and the preflight probes Codex's sandbox (`codex sandbox -c sandbox_mode="workspace-write" -- true`, the session's own policy), and a Codex session whose every command bubblewrap refused (`Result.SandboxBroken`) is never a verdict either — every `bwrap:` text in the record came from a Codex session. Amended 2026-09-29 again: a Codex evaluation's sandbox gets the network (`sandbox_workspace_write.network_access=true` on `codex exec` and on the probe), so its tests can bind loopback; the probe binds a socket (`mesh sandbox-probe`) instead of running `true`; and a session whose test commands that executed every one died on `socket: operation not permitted` (or `bind:`) is `SandboxBroken` too. The mini's `codex-bwrap` AppArmor profile makes bwrap start; it does not give the sandbox loopback. A Codex session on a sandboxed node runs in its pod, outlives the node and is adopted by the next process (amendment 2026-10-17).
+summary: Amended 2026-11-24 — decision 1 (the per-session headroom choice) is replaced by per-kind harness routes (node.yaml v1.harness_routes naming claude-code, codex or either, live; Mesh places a routed job on the routed harness whose account has room; see the amendment at the end). Before an evaluation starts the node chooses its family per session — Codex when an issued Codex account has headroom for the goal's priority (node.yaml's own-login candidate is gone, amendment 2026-10-02), else Claude; a full gpt-… id pins Codex and waits in evaluating without headroom, a claude-… id pins Claude; the urgent/high second opinion runs on the other family, labelled by family and model; the one usage report names adapter codex and the gpt-6 model of a Codex evaluation; before any Codex session starts the node preflights the built-in context server in the session's own home and env (`codex mcp get` and a tools/list handshake), and a failure moves an unpinned evaluation to Claude, keeps a pinned one waiting and makes a Codex second opinion unavailable. Amended: an unpinned Codex evaluation defaults to gpt-6-sol (opus tier) or gpt-6-luna (sonnet, haiku), astra only when pinned; and a tool failure is never a verdict — a session that saw no context is evaluated again on the other family, or the item waits in evaluating. Amended 2026-09-29: an evaluation that reached no verdict — no VERDICT line, or no context and no other family — is recorded with evaluateWorkItem's outcome no_verdict and its reason, never a fail (a gateway without the field: it waits in evaluating, said once per run); a family blind on the first attempt is not asked for the second opinion; and the preflight probes Codex's sandbox (`codex sandbox -c sandbox_mode="workspace-write" -- true`, the session's own policy), and a Codex session whose every command bubblewrap refused (`Result.SandboxBroken`) is never a verdict either — every `bwrap:` text in the record came from a Codex session. Amended 2026-09-29 again: a Codex evaluation's sandbox gets the network (`sandbox_workspace_write.network_access=true` on `codex exec` and on the probe), so its tests can bind loopback; the probe binds a socket (`mesh sandbox-probe`) instead of running `true`; and a session whose test commands that executed every one died on `socket: operation not permitted` (or `bind:`) is `SandboxBroken` too. The mini's `codex-bwrap` AppArmor profile makes bwrap start; it does not give the sandbox loopback. A Codex session on a sandboxed node runs in its pod, outlives the node and is adopted by the next process (amendment 2026-10-17).
 status: accepted
 ---
 
@@ -23,6 +23,8 @@ amendment): `Credentials.Open` by adapter, the login in the session's
 never pacing Claude. What was missing is the choice.
 
 ## Decision
+
+*Decision 1 below is superseded by the amendment of 2026-11-24 (per-kind harness routes).*
 
 **The family is chosen per session, by headroom.** Before an
 evaluation prepares anything, the `Evaluator` judges the Codex accounts
@@ -625,3 +627,51 @@ retired for sandboxed sessions:**
   and the second opinion, whose job is copied before `Outlive` is set,
   so it runs attached in the pod and a restart mid-second-opinion leaves
   the first verdict to be evaluated again by the next process.
+
+## Amendment 2026-11-24: each kind runs on the harness its route names (goal a-node-runs-each-kind-on-the-harness-its-route-names)
+
+Chris, 2026-11-24: "we only have claude and codex. both AI harnesses
+should work." **Decision 1 — the node choosing a family per session by
+the headroom it reads — is replaced by static per-kind routes.** The v1
+node (`internal/nodev1`) does not run the legacy `Evaluator` this ADR
+describes, and the choice moves to where the v1 node's account is
+picked: Mesh's take.
+
+- **The route.** node.yaml's `v1.harness_routes` is a list of
+  `{kind, tenant?, repo?, harness}`: a kind's short name (or `*`), held
+  to a tenant or a repository (owner/name) if either is named, and the
+  harness — `claude-code`, `codex` or `either`. The node reads it
+  again before every take (`harnessroute.go`, keyed on the file's
+  mtime and size), so a rewrite takes effect on the next take with no
+  restart; a file that does not parse keeps the routes last read.
+- **The take carries the routes** (`TakeRequest.routes`, each with its
+  harnesses: one, or both for `either`) and offers every harness a
+  route names that the node holds a session for. Mesh takes the most
+  specific matching route for a job (repository, then tenant, then
+  every tenant; the kind's own before `*`) and places it on the first
+  of the job's harnesses within the route whose account has room; a
+  route of one harness waits while that harness's accounts are full.
+  Mesh's pick of harness and account at take is why the route is
+  Mesh's to honour, not only the node's.
+- **The node's registry** holds both sessions — `ClaudeSession`
+  (`claude -p`) and the existing Codex app-server `CodexSession` — and
+  a lease runs on the one its brief's harness names. A routed lease is
+  handed back, the harness and why in the reason, when Mesh gave it on
+  a harness outside its route or one the node holds no session for
+  (`cannot_run`), when its session failed before it said anything
+  (`cannot_run`, "could not start"), or when the node last read its
+  account as limited (`model_rate_limited`, "no headroom until …").
+- **Provenance.** Every lease's usage report names its harness, its
+  provider (the account's vendor, else the harness's own: anthropic for
+  claude-code, openai for codex) and its model. A Mesh that refuses
+  `provider` as an unknown field gets the report again without it, and
+  the node leaves it out from then on.
+- **Parity.** With no route set the take carries no routes and offers
+  the `--harness` harness alone, the node registers it alone, and every
+  lease runs on the `--harness` session, exactly as before.
+
+What this does not keep: the per-priority pacing of a Codex account
+(`ChooseAccount`'s thresholds) and the urgent/high second opinion on the
+other family, which belonged to the legacy evaluator. A kind that should
+run on whichever vendor has room is routed `either`.
+

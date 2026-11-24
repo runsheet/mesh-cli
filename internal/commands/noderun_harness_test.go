@@ -65,3 +65,34 @@ func TestNodeRunHarnessUnattended(t *testing.T) {
 		t.Errorf("ExtraArgs = %v, want [--dangerously-skip-permissions]", cs.ExtraArgs)
 	}
 }
+
+// TestNodeRunHarnessRegistry: the node holds both harnesses' sessions —
+// the --harness one shared, the other beside it (the existing Codex
+// app-server session or claude -p) — and registers the routed harnesses
+// beside its own only when node.yaml routes some; with no route it
+// registers its own alone, as before.
+func TestNodeRunHarnessRegistry(t *testing.T) {
+	for _, own := range []string{"claude-code", "codex"} {
+		harnesses, sess, err := nodeRunSessionOf(own, false, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reg := nodeRunSessions(harnesses[0], sess, false, nil, nil)
+		if reg[own] != sess {
+			t.Fatalf("--harness %s: the registry's %s session is not the node's own", own, own)
+		}
+		if _, ok := reg["codex"].(*nodev1.CodexSession); !ok {
+			t.Fatalf("--harness %s: the registry's codex session is %T", own, reg["codex"])
+		}
+		if _, ok := reg["claude-code"].(*nodev1.ClaudeSession); !ok {
+			t.Fatalf("--harness %s: the registry's claude-code session is %T", own, reg["claude-code"])
+		}
+	}
+	if got := nodeRunRegistered([]string{"claude-code"}, nil); len(got) != 1 || got[0] != "claude-code" {
+		t.Fatalf("with no route the node registers %v", got)
+	}
+	got := nodeRunRegistered([]string{"claude-code"}, []nodev1.HarnessRoute{{Kind: "deploy", Harness: "either"}})
+	if len(got) != 2 || got[0] != "claude-code" || got[1] != "codex" {
+		t.Fatalf("with deploy → either the node registers %v", got)
+	}
+}

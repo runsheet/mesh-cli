@@ -1,6 +1,7 @@
 package meshapitest
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -43,6 +44,9 @@ type Fake struct {
 	// when not 0, the lease still live: a Mesh older than a cause
 	// (account_refused) answers 422.
 	RefuseHandBack func(req meshapi.HandBackRequest) int
+	// RefuseProvider, set, refuses a usage report that names provider
+	// 400, as a Mesh that does not take the field yet does.
+	RefuseProvider bool
 	// AskSession answers POST /v1/leases/{id}/asks/{ask}/session for a
 	// dispatcher's sub-agent; the ask-session fixture's answer when nil.
 	AskSession func(leaseID, askID, jkt string) (*meshapi.SessionCredential, int)
@@ -563,7 +567,14 @@ func (f *Fake) lease(w http.ResponseWriter, r *http.Request) {
 			ids[i] = "sha256:" + hex.EncodeToString(sum[:])
 		}
 		writeJSON(w, http.StatusCreated, meshapi.EvidenceResponse{IDs: ids})
-	case "access", "usage":
+	case "usage":
+		// as a Mesh before provider: its strict decoding refuses the field
+		if f.RefuseProvider && bytes.Contains(body, []byte(`"provider"`)) {
+			writeErr(w, http.StatusBadRequest, "bad_request", `the body does not parse: json: unknown field "provider"`)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	case "access":
 		w.WriteHeader(http.StatusNoContent)
 	case "progress":
 		// the lease's newest note, counted as Mesh's LeaseProgress counts
