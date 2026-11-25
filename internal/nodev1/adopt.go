@@ -56,9 +56,11 @@ import (
 // refuses the fresh credentials, or cannot be reached at all, is
 // stopped instead (stopUnclaimedEgress): Upgrade disowned it the
 // moment the hand-off was written (handoff.go), so nothing else is
-// left to claim or stop it (ADR-051 decision 4). The lease's pod
-// session is not reattached, so the node tools that run through it
-// (run_suite, stop_suite) are not served again. A hand-off that cannot
+// left to claim or stop it (ADR-051 decision 4). The lease's pod itself
+// is never stopped, so run_suite and stop_suite are served again
+// against it (adoptedTools, suiteRunner) -- its lanes, if it had any,
+// only held of the scheduler again (adoptLanes), not reattached to a
+// later run. A hand-off that cannot
 // be adopted this way -- unreadable, no sidecar named, its model
 // account unreadable, or the sidecar refuses the new credentials -- is
 // handed back node_update instead, the same cause
@@ -484,16 +486,19 @@ func restoreTurnLedger(ht *handoffTurns) *turnLedger {
 // adopts, those of the kind's that need nothing but the hand-off, the
 // lease's new session and its relay sidecar: result, hand_back and
 // progress, through which a session ends its lease or says how far it
-// got, and push, which every sidecar lease's session makes through the
-// sidecar anyway (relaysidecar.PushClient). The rest stay unserved after
-// a restart, each needing what only the process that started the lease
-// held: run_suite and stop_suite its pod session, apply_onto its own git
-// grant, request_time its time budget, escalate its harness, which read
-// the mailbox the escalation is left in, and sign_release its Fulcio
-// signer's session. A session calling one of those after a restart is
-// told the node does not have it, where before every node tool was
-// answered 404.
-var adoptedNodeTools = []string{nodetools.ResultTool, nodetools.HandBackTool, nodetools.ProgressTool, nodetools.PushTool}
+// got, push, which every sidecar lease's session makes through the
+// sidecar anyway (relaysidecar.PushClient), and run_suite and
+// stop_suite, whose steps run in the lease's own pod (podsuites.go) --
+// never stopped by the hand-off, only never reattached before now
+// (adoptedTools). The rest stay unserved after a restart, each needing
+// what only the process that started the lease held: apply_onto its own
+// git grant, request_time its time budget, escalate its harness, which
+// read the mailbox the escalation is left in, and sign_release its
+// Fulcio signer's session. A session calling one of those after a
+// restart is told the node does not have it, where before every node
+// tool was answered 404.
+var adoptedNodeTools = []string{nodetools.ResultTool, nodetools.HandBackTool, nodetools.ProgressTool, nodetools.PushTool,
+	nodetools.RunSuiteTool, nodetools.StopSuiteTool}
 
 // adoptedTools are the adopted lease's node tools (adoptedNodeTools of
 // the kind's), the kind's tool slots applied as at a fresh start
@@ -513,7 +518,12 @@ func (r *Runtime) adoptedTools(ctx context.Context, b *meshapi.Brief, workspace 
 		r.logf("nodev1: lease %s: adopted without node tool(s) %s, which only the node that started it could serve", b.LeaseID, strings.Join(unserved, ", "))
 	}
 	pusher := sidecarPusher(filepath.Join(sidecarDir, relayControlDir, relayControlSocket))
-	tools, rec := r.nodeTools(&served, nil, workspace, tokens, escalate.New(b.Harness.Model), mb, nil, pusher, leaseClock{ctx: ctx, began: time.Now(), budget: r.suiteBudget(&served, workspace)}, nil, nil)
+	// run_suite's steps run in the lease's own pod, never stopped by the
+	// hand-off (adoptedNodeTools): its lanes, if it had any, are not
+	// reattached (adoptLanes holds their room alone), so a run after
+	// adoption is the lease's base pod's.
+	suites := r.suiteRunner(b, PodName(b.LeaseID))
+	tools, rec := r.nodeTools(&served, nil, workspace, tokens, escalate.New(b.Harness.Model), mb, suites, pusher, leaseClock{ctx: ctx, began: time.Now(), budget: r.suiteBudget(&served, workspace)}, nil, nil)
 	tools = append(tools, r.endTools(&served, fin, hb, mb)...)
 	if sl, err := slotsOf(b); err == nil {
 		tools = sl.nodeTools(tools)

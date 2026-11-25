@@ -12,6 +12,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -20,8 +22,11 @@ import (
 	"projectmesh.io/mesh-cli/internal/actor"
 	"projectmesh.io/mesh-cli/internal/dpop"
 	"projectmesh.io/mesh-cli/internal/meshapi"
+	"projectmesh.io/mesh-cli/internal/nodetools"
 	"projectmesh.io/mesh-cli/internal/relaysidecar"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/scheduler"
+	"projectmesh.io/mesh-cli/internal/sessionproxy"
 	"projectmesh.io/mesh-cli/internal/sockettest"
 )
 
@@ -961,6 +966,124 @@ func TestStatusDistinguishesStillAdoptingFromAdoptionCompleteAtStart(t *testing.
 
 	driveObserve(t, nodeSocket, "conform", `{"id":1,"method":"tools/call","params":{"name":"submit"}}`,
 		`{"id":1,"result":{"content":[{"type":"text","text":"{\"ok\":true}"}]}}`)
+	waitFor(t, "the adopted lease to finish", func() bool {
+		return len(g.fake.Calls("finish")) > 0
+	})
+}
+
+// rpcToolCallResult is a tools/call JSON-RPC answer, enough of it to
+// tell a run's result apart from a refusal: a top-level Error is a
+// method the server does not serve at all (an unknown tool, -32601,
+// what run_suite answered before this change, when adoptedNodeTools
+// left it out); Result.IsError is the tool's own refusal (ErrNoSuiteRunner,
+// when the lease has nowhere to run its steps).
+type rpcToolCallResult struct {
+	Error *struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+	Result struct {
+		IsError bool `json:"isError"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	} `json:"result"`
+}
+
+// An adopted lease's pod is never stopped by the hand-off (the opening
+// paragraph of adopt.go), so run_suite and stop_suite -- whose steps run
+// in it -- are reattached at adoption, the same runner a fresh lease
+// with no pod session would get (suiteRunner, podsuites.go): calling
+// run_suite over the adopted lease's node socket runs the checkout's
+// validate.yml in the fake sandbox's pod, rather than answering the
+// "unknown tool" refusal an unserved node tool answered before this
+// change.
+func TestAdoptedLeaseServesRunSuite(t *testing.T) {
+	g := newRig(t, nil)
+	sb := &sandbox.Fake{}
+	g.rt.Sandbox = sb
+	g.rt.PodImage = "mesh-pod:test"
+	g.rt.Scheduler = scheduler.New(scheduler.Capacity{CPUs: 4, MemGB: 8, Slots: 1})
+
+	leaseID, brief := mintLease(t, g, func(b *meshapi.Brief) {
+		b.FinishTool = "submit"
+		b.NodeTools = []string{nodetools.RunSuiteTool, nodetools.StopSuiteTool}
+	})
+
+	sidecarDir := socketDir(t, "sidecar")
+	startFakeSidecarControl(t, sidecarDir)
+
+	// the hand-off's lease directory, and the pod it names: the hand-off
+	// never stopped it (adoptOne touches nothing of the lease's pod), so
+	// the fake sandbox already has it running when adoption picks the
+	// lease back up.
+	dir := g.rt.leaseDir(leaseID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("making the lease directory: %v", err)
+	}
+	sb.Standing = append(sb.Standing, sandbox.PodInfo{Name: PodName(leaseID)})
+
+	workspace := filepath.Join(dir, "work")
+	if err := os.MkdirAll(filepath.Join(workspace, ".runsheet"), 0o755); err != nil {
+		t.Fatalf("making the adopted lease's workspace: %v", err)
+	}
+	yml := "suites:\n  - name: unit\n    kind: unit\n    command: true\n"
+	if err := os.WriteFile(filepath.Join(workspace, ".runsheet", "validate.yml"), []byte(yml), 0o644); err != nil {
+		t.Fatalf("writing the adopted lease's validate.yml: %v", err)
+	}
+
+	writeHandoffFixture(t, g, leaseID, &handoffState{Brief: brief, SidecarDir: sidecarDir})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	g.rt.adoptHandoffs(ctx)
+
+	nodeSocket := filepath.Join(sidecarDir, relayNodeSocket)
+	waitFor(t, "the adopted lease's node socket", func() bool {
+		_, err := os.Stat(nodeSocket)
+		return err == nil
+	})
+
+	var res rpcToolCallResult
+	postNodeSocket(t, nodeSocket, sessionproxy.Prefix+NodeToolsServer,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_suite","arguments":{}}}`, &res)
+
+	if res.Error != nil {
+		t.Fatalf("run_suite over the adopted lease's node socket answered the refusal %+v, want a run result", res.Error)
+	}
+	if res.Result.IsError {
+		t.Fatalf("run_suite refused: %+v", res.Result.Content)
+	}
+	if len(res.Result.Content) != 1 || res.Result.Content[0].Type != "text" {
+		t.Fatalf("run_suite's answer %+v", res.Result)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(res.Result.Content[0].Text), &out); err != nil {
+		t.Fatalf("run_suite's answer is not JSON: %v (%s)", err, res.Result.Content[0].Text)
+	}
+	steps, _ := out["steps"].([]any)
+	if len(steps) != 1 {
+		t.Fatalf("run_suite's answer named %d step(s), want 1: %+v", len(steps), out)
+	}
+
+	var suiteAgent *sandbox.AgentSpec
+	for i, a := range sb.AgentSpecs() {
+		if strings.Contains(a.Name, PodName(leaseID)+"-suite-") {
+			suiteAgent = &sb.AgentSpecs()[i]
+		}
+	}
+	if suiteAgent == nil {
+		t.Fatalf("no suite step ran as a container of the adopted lease's pod %s: %+v", PodName(leaseID), sb.AgentSpecs())
+	}
+	if !slices.Equal(suiteAgent.Command, []string{"sh", "-c", "true"}) || suiteAgent.Image != "mesh-pod:test" {
+		t.Fatalf("the suite step %+v", suiteAgent)
+	}
+
+	// finish the lease cleanly, as a session's own submit would, so
+	// nothing of adoptOne's goroutine races the test's own clean-up.
+	driveObserve(t, nodeSocket, "conform", `{"id":2,"method":"tools/call","params":{"name":"submit"}}`,
+		`{"id":2,"result":{"content":[{"type":"text","text":"{\"ok\":true}"}]}}`)
 	waitFor(t, "the adopted lease to finish", func() bool {
 		return len(g.fake.Calls("finish")) > 0
 	})
