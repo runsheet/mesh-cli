@@ -405,7 +405,15 @@ type SuiteStep struct {
 	StopReason string `json:"stop_reason,omitempty"`
 	// Reason is why the node called the step red when its command's own
 	// exit did not: "ran 0 tests" under the suite's min_tests.
-	Reason string `json:"reason,omitempty"` // Hung is a run whose go test ended in its timeout panic twice, the
+	Reason string `json:"reason,omitempty"`
+	// Class is the supervisor's own read of why the step is red, or
+	// recovered (validate.StepResult.Class): "real" for a confirmed
+	// failure, "flaky" for a unit every one of whose failures passed on
+	// retry, "infrastructure" for a unit the environment interrupted
+	// (a stalled test, a shard whose lane never opened) before its code
+	// could be judged. Empty for a plain pass, or a failure never
+	// classified.
+	Class string `json:"class,omitempty"` // Hung is a run whose go test ended in its timeout panic twice, the
 	// second time in a fresh lane (validate's hung.go): a hang, never a
 	// failing test of the change's; HungTests are the tests the panic
 	// named as running, and Rerun what the node's re-run found (also
@@ -437,7 +445,10 @@ type SuiteShard struct {
 	// own: its Exit is still non-zero, never 0, and StopReason names why.
 	Stopped    bool   `json:"stopped,omitempty"`
 	StopReason string `json:"stop_reason,omitempty"`
-	Reason     string `json:"reason,omitempty"` // Hung is a run whose go test ended in its timeout panic twice, the
+	Reason     string `json:"reason,omitempty"`
+	// Class is the shard's own read, as SuiteStep.Class is for the
+	// merged step.
+	Class string `json:"class,omitempty"` // Hung is a run whose go test ended in its timeout panic twice, the
 	// second time in a fresh lane (validate's hung.go): a hang, never a
 	// failing test of the change's; HungTests are the tests the panic
 	// named as running, and Rerun what the node's re-run found (also
@@ -472,6 +483,12 @@ type TestResult struct {
 	// retry it passed on, on a fail the retries it failed again on — a
 	// confirmed failure.
 	Retries int `json:"retries,omitempty"`
+	// Class is the supervisor's read of this test's own red or
+	// recovered result (validate.TestResult.Class): "real" for a fail
+	// that stood, "flaky" for one that passed on retry,
+	// "infrastructure" for one the environment interrupted. Empty for a
+	// pass, a skip, or a fail never classified.
+	Class string `json:"class,omitempty"`
 }
 
 // answerTestsCap bounds run_suite's answer's "tests" list in marshaled
@@ -489,6 +506,7 @@ type answerTest struct {
 	DurationMs int64  `json:"duration_ms"`
 	Output     string `json:"output,omitempty"`
 	Retries    int    `json:"retries,omitempty"`
+	Class      string `json:"class,omitempty"`
 }
 
 // answerTestsOf is tests (a step's own TestResult, a package-level
@@ -500,7 +518,7 @@ func answerTestsOf(tests []TestResult) ([]answerTest, bool) {
 			continue
 		}
 		list = append(list, answerTest{Name: t.Test, Package: t.Package, Outcome: t.Action,
-			DurationMs: int64(math.Round(t.Elapsed * 1000)), Output: t.Output, Retries: t.Retries})
+			DurationMs: int64(math.Round(t.Elapsed * 1000)), Output: t.Output, Retries: t.Retries, Class: t.Class})
 	}
 	truncated := false
 	for marshaledLen(list) > answerTestsCap {
@@ -548,6 +566,7 @@ func (s *RunSuite) Tool() mcptool.Tool {
 			"one that then passes is named with outcome flaky (in flaky_tests) and does not fail its step, and one that fails again (retries on its entry) is a confirmed failure, " +
 			"which stops the rest of the run unless its suite says run_to_end; a step or shard whose tests all fall silent past its suite's stall limit is stopped, the tests it was running named with outcome stalled (one slow test beside others that still report is not a stall); " +
 			"and a step that exits 0 having run no tests is red with reason \"ran 0 tests\". " +
+			"A test or step the supervisor read as red or recovered also carries class: real for a failure that stood, flaky for one that passed on retry, infrastructure for one the environment interrupted before its code could be judged (named in infrastructure_tests and infrastructure_steps too). " +
 			"A run still going after a while answers {run_id, status: running} instead: call run_suite {run_id} again to wait for it, as often as it takes; " +
 			"a call naming no run_id while a run of the same suites is still going on this lease starts nothing: it answers that run, exactly as run_suite {run_id} would (and a run that ended unanswered answers its result to a call for the same suites, targets and tests). " +
 			"Two runs of one suite never run at once: a call whose suites overlap a running run's — whatever targets or tests either names — answers that run with a note, and you call again once it ends to run your own selection; " +
@@ -1061,9 +1080,13 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 	passed, failed, skipped, timedOut, flaky, stalled, exit := 0, 0, 0, 0, 0, 0, 0
 	var failing []string
 	flakyTests, stalledTests := []string{}, []string{}
+	var infrastructureTests, infrastructureSteps []string
 	for _, st := range out.Steps {
 		if st.Exit != 0 {
 			exit = 1
+		}
+		if st.Class == validate.ClassInfrastructure {
+			infrastructureSteps = append(infrastructureSteps, st.Name)
 		}
 	}
 	if len(results) < len(steps) || outOfTime {
@@ -1095,6 +1118,9 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 			if len(stalledTests) < 20 {
 				stalledTests = append(stalledTests, t.Package+"."+t.Test)
 			}
+		}
+		if t.Class == validate.ClassInfrastructure && len(infrastructureTests) < 20 {
+			infrastructureTests = append(infrastructureTests, t.Package+"."+t.Test)
 		}
 	}
 	summary := fmt.Sprintf("%d of %d steps passed; %d tests passed, %d failed, %d skipped", countOK(out.Steps), len(steps), passed, failed, skipped)
@@ -1167,6 +1193,12 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 	if len(stalledTests) > 0 {
 		answer["stalled_tests"] = stalledTests
 	}
+	if len(infrastructureTests) > 0 {
+		answer["infrastructure_tests"] = infrastructureTests
+	}
+	if len(infrastructureSteps) > 0 {
+		answer["infrastructure_steps"] = infrastructureSteps
+	}
 	if hung := hungTestsOf(results); len(hung) > 0 {
 		answer["hung_tests"] = hung
 	}
@@ -1203,7 +1235,7 @@ func Normalise(results []validate.StepResult) SuiteOutput {
 	for _, r := range results {
 		out.Steps = append(out.Steps, SuiteStep{Name: r.Name, Command: r.Command, Exit: r.ExitCode, DurationMs: r.DurationMs,
 			TestsRun: r.TestsRun, TestsPassed: r.TestsPassed, TestsFailed: r.TestsFailed, TestsFlaky: r.TestsFlaky, Shards: shardsOf(r.Shards),
-			Stopped: r.Stopped, StopReason: r.StopReason, Reason: r.Reason,
+			Stopped: r.Stopped, StopReason: r.StopReason, Reason: r.Reason, Class: r.Class,
 			Hung: r.Hung, HungTests: r.HungTests, Rerun: r.Rerun, LogEvidence: r.LogEvidence, LogDigest: r.LogDigest})
 		if len(r.Tests) > 0 {
 			out.Tests = append(out.Tests, testResultsFrom(r.Tests)...)
@@ -1222,7 +1254,7 @@ func Normalise(results []validate.StepResult) SuiteOutput {
 func testResultsFrom(tests []validate.TestResult) []TestResult {
 	out := make([]TestResult, len(tests))
 	for i, t := range tests {
-		out[i] = TestResult{Package: t.Package, Test: t.Name, Action: t.Action, Elapsed: float64(t.ElapsedMs) / 1000, Output: t.Output, Retries: t.Retries}
+		out[i] = TestResult{Package: t.Package, Test: t.Name, Action: t.Action, Elapsed: float64(t.ElapsedMs) / 1000, Output: t.Output, Retries: t.Retries, Class: t.Class}
 	}
 	return out
 }
@@ -1244,7 +1276,7 @@ func shardsOf(shards []validate.ShardResult) []SuiteShard {
 		}
 		out[sh.Index] = SuiteShard{Index: sh.Index, Total: total, Exit: sh.ExitCode, DurationMs: sh.DurationMs,
 			TestsRun: sh.TestsRun, TestsPassed: sh.TestsPassed, TestsFailed: sh.TestsFailed, TestsFlaky: sh.TestsFlaky,
-			Stopped: sh.Stopped, StopReason: sh.StopReason, Reason: sh.Reason,
+			Stopped: sh.Stopped, StopReason: sh.StopReason, Reason: sh.Reason, Class: sh.Class,
 			Hung: sh.Hung, HungTests: sh.HungTests, Rerun: sh.Rerun, LogEvidence: sh.LogEvidence, LogDigest: sh.LogDigest}
 	}
 	return out

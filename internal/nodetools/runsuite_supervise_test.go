@@ -66,32 +66,40 @@ func TestRunSuiteAnswersWhatTheSupervisorFound(t *testing.T) {
 		}
 	}
 	for _, c := range []struct {
-		name        string
-		yml         string
-		script      func(cmd string, retry bool) ([]string, int)
-		wantExit    int
-		wantOutcome map[string]string
-		wantRetries map[string]int
-		wantFlaky   []string
-		wantFailing []string
-		wantStalled []string
-		wantSummary string
-		wantStep    SuiteStep
-		wantCmds    int
+		name          string
+		yml           string
+		script        func(cmd string, retry bool) ([]string, int)
+		wantExit      int
+		wantOutcome   map[string]string
+		wantRetries   map[string]int
+		wantClass     map[string]string
+		wantFlaky     []string
+		wantFailing   []string
+		wantStalled   []string
+		wantInfraTest []string
+		wantInfraStep []string
+		wantSummary   string
+		wantStep      SuiteStep
+		wantCmds      int
 	}{
 		{
+			// item d2fd88ce: a test that fails then passes on retry is
+			// named flaky, class "flaky", on the test and on its step.
 			name:        "flaky: passes on retry, the run is green",
 			yml:         "suites:\n  - name: unit\n    kind: unit\n    command: go test\n",
 			script:      failThenPass("TestFlaky"),
 			wantExit:    0,
 			wantOutcome: map[string]string{"TestOK": "pass", "TestFlaky": "flaky"},
 			wantRetries: map[string]int{"TestFlaky": 1},
+			wantClass:   map[string]string{"TestFlaky": "flaky"},
 			wantFlaky:   []string{"pkg.TestFlaky"},
 			wantSummary: "1 of 1 steps passed; 1 tests passed, 0 failed, 0 skipped, 1 flaky (failed, then passed when the node ran them again)",
-			wantStep:    SuiteStep{Name: "unit", Command: "go test", TestsRun: 2, TestsPassed: 1, TestsFlaky: 1},
+			wantStep:    SuiteStep{Name: "unit", Command: "go test", TestsRun: 2, TestsPassed: 1, TestsFlaky: 1, Class: "flaky"},
 			wantCmds:    2,
 		},
 		{
+			// item d2fd88ce: a test that fails on both its run and its
+			// retry is a confirmed failure, class "real", exit != 0.
 			name: "confirmed: fails again, the run is red and says how often it was retried",
 			yml:  "suites:\n  - name: unit\n    kind: unit\n    command: go test\n",
 			script: func(string, bool) ([]string, int) {
@@ -100,22 +108,30 @@ func TestRunSuiteAnswersWhatTheSupervisorFound(t *testing.T) {
 			wantExit:    1,
 			wantOutcome: map[string]string{"TestBroken": "fail"},
 			wantRetries: map[string]int{"TestBroken": 1},
+			wantClass:   map[string]string{"TestBroken": "real"},
 			wantFailing: []string{"pkg.TestBroken"},
 			wantSummary: "0 of 1 steps passed; 0 tests passed, 1 failed, 0 skipped",
-			wantStep:    SuiteStep{Name: "unit", Command: "go test", Exit: 1, TestsRun: 1, TestsFailed: 1},
+			wantStep:    SuiteStep{Name: "unit", Command: "go test", Exit: 1, TestsRun: 1, TestsFailed: 1, Class: "real"},
 			wantCmds:    2,
 		},
 		{
+			// item d2fd88ce: a stalled step is the environment
+			// interrupting the unit, not its code: class
+			// "infrastructure" on the test and on the step, named in
+			// infrastructure_tests and infrastructure_steps.
 			name: "stalled: the silent test is named and its step stopped",
 			yml:  "suites:\n  - name: unit\n    kind: unit\n    command: go test\n    stall: 30ms\n",
 			script: func(string, bool) ([]string, int) {
 				return []string{goEvent("run", "TestHangs")}, -1
 			},
-			wantExit:    1,
-			wantOutcome: map[string]string{"TestHangs": "stalled"},
-			wantStalled: []string{"pkg.TestHangs"},
-			wantSummary: "0 skipped, 1 stalled",
-			wantStep: SuiteStep{Name: "unit", Command: "go test", Exit: -1, Stopped: true,
+			wantExit:      1,
+			wantOutcome:   map[string]string{"TestHangs": "stalled"},
+			wantClass:     map[string]string{"TestHangs": "infrastructure"},
+			wantStalled:   []string{"pkg.TestHangs"},
+			wantInfraTest: []string{"pkg.TestHangs"},
+			wantInfraStep: []string{"unit"},
+			wantSummary:   "0 skipped, 1 stalled",
+			wantStep: SuiteStep{Name: "unit", Command: "go test", Exit: -1, Stopped: true, Class: "infrastructure",
 				StopReason: "stalled: pkg.TestHangs produced no event for 30ms (validate.yml stall:)"},
 			wantCmds: 1,
 		},
@@ -144,13 +160,16 @@ func TestRunSuiteAnswersWhatTheSupervisorFound(t *testing.T) {
 			if summary, _ := ans["summary"].(string); !strings.Contains(summary, c.wantSummary) {
 				t.Fatalf("summary %q, want %q", summary, c.wantSummary)
 			}
-			outcome, retries := map[string]string{}, map[string]int{}
+			outcome, retries, class := map[string]string{}, map[string]int{}, map[string]string{}
 			tests, _ := ans["tests"].([]any)
 			for _, raw := range tests {
 				e := raw.(map[string]any)
 				outcome[e["name"].(string)] = e["outcome"].(string)
 				if n, ok := e["retries"].(float64); ok {
 					retries[e["name"].(string)] = int(n)
+				}
+				if cl, ok := e["class"].(string); ok {
+					class[e["name"].(string)] = cl
 				}
 			}
 			if !reflect.DeepEqual(outcome, c.wantOutcome) {
@@ -159,7 +178,11 @@ func TestRunSuiteAnswersWhatTheSupervisorFound(t *testing.T) {
 			if want := c.wantRetries; (len(want) > 0 || len(retries) > 0) && !reflect.DeepEqual(retries, want) {
 				t.Fatalf("retries %v, want %v", retries, want)
 			}
-			for key, want := range map[string][]string{"flaky_tests": c.wantFlaky, "failing_tests": c.wantFailing, "stalled_tests": c.wantStalled} {
+			if want := c.wantClass; (len(want) > 0 || len(class) > 0) && !reflect.DeepEqual(class, want) {
+				t.Fatalf("classes %v, want %v", class, want)
+			}
+			for key, want := range map[string][]string{"flaky_tests": c.wantFlaky, "failing_tests": c.wantFailing, "stalled_tests": c.wantStalled,
+				"infrastructure_tests": c.wantInfraTest, "infrastructure_steps": c.wantInfraStep} {
 				var got []string
 				if list, ok := ans[key].([]any); ok {
 					for _, v := range list {
@@ -207,23 +230,24 @@ func TestRunSuiteAnswersWhatTheSupervisorFound(t *testing.T) {
 }
 
 // Normalise carries a flaky test's action and retries, the step's flaky
-// count and its reason: none of it is dropped on the way to the blob.
+// count and its reason, and each test's, step's and shard's own class
+// (item d2fd88ce): none of it is dropped on the way to the blob.
 func TestNormaliseKeepsWhatTheSupervisorFound(t *testing.T) {
-	got := Normalise([]validate.StepResult{{Name: "unit", Command: "go test", TestsRun: 2, TestsPassed: 1, TestsFlaky: 1, Reason: "r",
+	got := Normalise([]validate.StepResult{{Name: "unit", Command: "go test", TestsRun: 2, TestsPassed: 1, TestsFlaky: 1, Reason: "r", Class: validate.ClassFlaky,
 		Tests: []validate.TestResult{
-			{Name: "TestFlaky", Package: "pkg", Action: validate.ActionFlaky, ElapsedMs: 20, Output: "boom\n", Retries: 1},
-			{Name: "TestHangs", Package: "pkg", Action: validate.ActionStalled, ElapsedMs: 1},
+			{Name: "TestFlaky", Package: "pkg", Action: validate.ActionFlaky, ElapsedMs: 20, Output: "boom\n", Retries: 1, Class: validate.ClassFlaky},
+			{Name: "TestHangs", Package: "pkg", Action: validate.ActionStalled, ElapsedMs: 1, Class: validate.ClassInfrastructure},
 		},
 		Shards: []validate.ShardResult{
-			{Index: 0, Total: 2, StepResult: validate.StepResult{TestsRun: 2, TestsFlaky: 1}},
+			{Index: 0, Total: 2, StepResult: validate.StepResult{TestsRun: 2, TestsFlaky: 1, Class: validate.ClassFlaky}},
 			{Index: 1, Total: 2, StepResult: validate.StepResult{ExitCode: 1, Reason: "ran 0 tests"}},
 		}}})
 	want := SuiteOutput{
-		Steps: []SuiteStep{{Name: "unit", Command: "go test", TestsRun: 2, TestsPassed: 1, TestsFlaky: 1, Reason: "r",
-			Shards: []SuiteShard{{Index: 0, Total: 2, TestsRun: 2, TestsFlaky: 1}, {Index: 1, Total: 2, Exit: 1, Reason: "ran 0 tests"}}}},
+		Steps: []SuiteStep{{Name: "unit", Command: "go test", TestsRun: 2, TestsPassed: 1, TestsFlaky: 1, Reason: "r", Class: validate.ClassFlaky,
+			Shards: []SuiteShard{{Index: 0, Total: 2, TestsRun: 2, TestsFlaky: 1, Class: validate.ClassFlaky}, {Index: 1, Total: 2, Exit: 1, Reason: "ran 0 tests"}}}},
 		Tests: []TestResult{
-			{Package: "pkg", Test: "TestFlaky", Action: "flaky", Elapsed: 0.02, Output: "boom\n", Retries: 1},
-			{Package: "pkg", Test: "TestHangs", Action: "stalled", Elapsed: 0.001},
+			{Package: "pkg", Test: "TestFlaky", Action: "flaky", Elapsed: 0.02, Output: "boom\n", Retries: 1, Class: validate.ClassFlaky},
+			{Package: "pkg", Test: "TestHangs", Action: "stalled", Elapsed: 0.001, Class: validate.ClassInfrastructure},
 		},
 	}
 	if !reflect.DeepEqual(got, want) {
