@@ -201,6 +201,12 @@ type Selection struct {
 // name: Mesh refuses a record naming more.
 const maxSelection = 500
 
+// maxRunSuites is how many suites one run_suite call may name (suite
+// or suites): a call naming more is refused, naming the ones over the
+// cap, rather than running some of them and silently dropping the
+// rest.
+const maxRunSuites = 50
+
 // SelectionEnv is the selection as its suite's command reads it:
 // MESH_SUITE_TARGETS and MESH_SUITE_TESTS, each space separated, each
 // absent when the selection names none.
@@ -545,7 +551,9 @@ func (s *RunSuite) Tool() mcptool.Tool {
 			"A run still going after a while answers {run_id, status: running} instead: call run_suite {run_id} again to wait for it, as often as it takes; " +
 			"a call naming no run_id while a run of the same suites is still going on this lease starts nothing: it answers that run, exactly as run_suite {run_id} would (and a run that ended unanswered answers its result to a call for the same suites, targets and tests). " +
 			"Two runs of one suite never run at once: a call whose suites overlap a running run's — whatever targets or tests either names — answers that run with a note, and you call again once it ends to run your own selection; " +
-			"suites that overlap no running run start their own run beside it. A run past the repository's budget is stopped and answered red with out_of_time: finish red, saying it ran out of time.",
+			"suites that overlap no running run start their own run beside it. A run past the repository's budget is stopped and answered red with out_of_time: finish red, saying it ran out of time. " +
+			fmt.Sprintf("A call names at most %d suites: one naming more is refused, naming the ones over that cap it will not run. ", maxRunSuites) +
+			"Every suite a call names either runs or is named in the answer's error as one that did not: a call never runs only some of the suites it named and answers success with the rest silently missing.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -640,6 +648,9 @@ func (s *RunSuite) call(ctx context.Context, args map[string]any) (string, error
 	}
 	if one, _ := args["suite"].(string); strings.TrimSpace(one) != "" && !slices.Contains(names, strings.TrimSpace(one)) {
 		names = append([]string{strings.TrimSpace(one)}, names...)
+	}
+	if len(names) > maxRunSuites {
+		return "", fmt.Errorf("a call names at most %d suites; %s will not run", maxRunSuites, strings.Join(names[maxRunSuites:], ", "))
 	}
 	sel, err := selectionArg(args)
 	if err != nil {
@@ -964,6 +975,25 @@ func (s *RunSuite) deadline() time.Time {
 	return s.Began.Add(s.Budget)
 }
 
+// missingSteps are steps whose name is not among results' — a lane
+// that never opened (a genuine runErr, not fail fast's deliberate skip,
+// which answers no error at all), left out of results with no trace of
+// its own: named here so the call can refuse rather than answer success
+// with them silently dropped.
+func missingSteps(steps []validate.Step, results []validate.StepResult) []string {
+	got := make(map[string]bool, len(results))
+	for _, r := range results {
+		got[r.Name] = true
+	}
+	var missing []string
+	for _, st := range steps {
+		if !got[st.Name] {
+			missing = append(missing, st.Name)
+		}
+	}
+	return missing
+}
+
 // execute runs the steps to their end — or to the lease's budget — and
 // records the run: its answer, as the call that sees it end returns it.
 func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, sel *Selection, failFast bool, profile *infer.Profile) (string, error) {
@@ -1015,8 +1045,10 @@ func (s *RunSuite) execute(r *suiteRun, run SuiteRunner, steps []validate.Step, 
 	// passed whole, and not the lease's own end
 	complete := len(results) == len(steps) && !slices.ContainsFunc(results, func(r validate.StepResult) bool { return r.ExitCode != 0 })
 	outOfTime := !deadline.IsZero() && errors.Is(ctx.Err(), context.DeadlineExceeded) && base.Err() == nil && !complete
-	if runErr != nil && len(results) == 0 && !outOfTime {
-		return "", fmt.Errorf("the suites could not run: %v", runErr)
+	if runErr != nil && !outOfTime {
+		if missing := missingSteps(steps, results); len(missing) > 0 {
+			return "", fmt.Errorf("run_suite could not run %s: %w", strings.Join(missing, ", "), runErr)
+		}
 	}
 	s.keepLogs(readCtx, results)
 	s.noteCoverage(steps, results, start)
