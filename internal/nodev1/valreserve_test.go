@@ -396,3 +396,23 @@ func TestHoldingNamesTheReserveALeaseWaitsFor(t *testing.T) {
 		t.Fatalf("node.log does not name the reserve:\n%s", said)
 	}
 }
+
+// A lease's first reading is a baseline: the CPU its containers used
+// before it (a lease adopted across a restart, its containers hours
+// old) is never read as one window's, and the next reading's window is
+// what it used since.
+func TestALeasesFirstReadingIsABaseline(t *testing.T) {
+	var p leasePeaks
+	t0 := time.Now()
+	// adopted: an agent that has used 2 hours of CPU since long before
+	p.add(t0, []ContainerUse{{Name: "a", CPUUsec: 7200e6, MemNow: 1 << 30}})
+	if p.cpu != 0 || p.mem != 1<<30 {
+		t.Fatalf("after the first reading: cpu %g, mem %d; want no cpu, the memory read", p.cpu, p.mem)
+	}
+	// 10 s later it has used 20 s more: 2 cores; a step started since
+	// used 5 s: half a core
+	p.add(t0.Add(10*time.Second), []ContainerUse{{Name: "a", CPUUsec: 7220e6}, {Name: "step", CPUUsec: 5e6}})
+	if p.cpu < 2.49 || p.cpu > 2.51 {
+		t.Fatalf("cpu peak %g after the second reading, want 2.5 cores", p.cpu)
+	}
+}
