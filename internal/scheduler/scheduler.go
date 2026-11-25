@@ -113,6 +113,16 @@ type Ask struct {
 	// one that already holds some.
 	Person bool
 	Repo   string
+	// Build is an ordinary build (goal
+	// a-waiting-gate-validation-goes-ahead-of-new-builds-on-the-node):
+	// while any Gate ask waits for room, a new Build ask is refused
+	// rather than claiming the general room piecemeal
+	// (buildBehindGateLocked).
+	Build bool
+	// Gate is a merge-gate validation: Build asks wait behind it until
+	// the general room has, all at once, enough free for every Gate ask
+	// waiting.
+	Gate bool
 }
 
 // reserveName is the reserve ask draws from first, "" for none.
@@ -158,6 +168,11 @@ type Scheduler struct {
 	Now func() time.Time
 	// Logf hears leases that lapse; nothing is logged when nil.
 	Logf func(format string, args ...any)
+	// BuildAging is how long a Build ask (by Owner, across tries) may be
+	// held behind a waiting Gate ask before it is let through anyway,
+	// logged by Logf; 0 never ages one out (goal
+	// a-waiting-gate-validation-goes-ahead-of-new-builds-on-the-node).
+	BuildAging time.Duration
 
 	mu    sync.Mutex
 	total Capacity
@@ -177,6 +192,9 @@ type Scheduler struct {
 	// waiters are the asks waiting for room in Take and TakeAll, for
 	// the node's holding report (Waiting).
 	waiters []*waiter
+	// buildAged is when a Build ask (by Owner) was first held behind a
+	// waiting Gate ask, for BuildAging.
+	buildAged map[string]time.Time
 }
 
 // New is a scheduler of total.
@@ -340,6 +358,9 @@ func (s *Scheduler) fitWhereLocked(ask Ask) (draw, error) {
 	for _, r := range eff {
 		t.CPUs -= r.room.CPUs
 		t.MemGB -= r.room.MemGB
+	}
+	if err := s.buildBehindGateLocked(ask, u, t); err != nil {
+		return draw{}, err
 	}
 	d := drawOf(ask, u, eff)
 	rest := ask
