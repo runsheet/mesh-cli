@@ -32,6 +32,69 @@ func TestLimitEnv(t *testing.T) {
 	}
 }
 
+// LimitArgs sets memory.high from the request (l.Memory) and memory.max
+// from the limit (l.Limit) directly, rather than the old
+// MemoryGuardFactor guess, the moment a limit is given; a request with
+// no limit still falls back to that guard. cpu.weight comes from
+// l.Priority, PriorityMergePath above PriorityBuild, so a merge-queue
+// validation is not starved of CPU by ordinary build work.
+func TestLimitArgsSetsCgroupFromRequestLimitAndPriority(t *testing.T) {
+	const sixGiB = 6 << 30
+	const twelveGiBInMiB = "12288m"
+
+	args := LimitArgs(Limits{Memory: "6g", Limit: "12g", Priority: PriorityMergePath})
+	if got := flagValues(args, "--cgroup-conf"); !slices.Equal(got, []string{
+		"memory.high=" + strconv.Itoa(sixGiB), "cpu.weight=200",
+	}) {
+		t.Fatalf("cgroup-conf = %v", got)
+	}
+	if got := flagValues(args, "--memory"); len(got) != 1 || got[0] != twelveGiBInMiB {
+		t.Fatalf("--memory = %v, want the limit %s, not the old 2x guard", got, twelveGiBInMiB)
+	}
+	if got := flagValues(args, "--memory-swap"); len(got) != 1 || got[0] != twelveGiBInMiB {
+		t.Fatalf("--memory-swap = %v, want %s", got, twelveGiBInMiB)
+	}
+
+	buildArgs := LimitArgs(Limits{Memory: "6g", Limit: "12g", Priority: PriorityBuild})
+	mergeWeight := weightOf(t, flagValues(args, "--cgroup-conf")[1])
+	buildWeight := weightOf(t, flagValues(buildArgs, "--cgroup-conf")[1])
+	if mergeWeight <= buildWeight {
+		t.Fatalf("cpu.weight: merge-path %d must outweigh build %d", mergeWeight, buildWeight)
+	}
+
+	// With no limit, the old 2x guard still applies.
+	guardArgs := LimitArgs(Limits{Memory: "6g"})
+	wantGuard := strconv.Itoa(sixGiB*MemoryGuardFactor>>20) + "m"
+	if got := flagValues(guardArgs, "--memory"); len(got) != 1 || got[0] != wantGuard {
+		t.Fatalf("no limit: --memory = %v, want the old guard %s", got, wantGuard)
+	}
+	if got := flagValues(guardArgs, "--memory-swap"); len(got) != 1 || got[0] != wantGuard {
+		t.Fatalf("no limit: --memory-swap = %v, want %s", got, wantGuard)
+	}
+
+	// A limit that is not 2x the request proves the limit is used
+	// literally, not just read back as the guard's own number: 6 GiB's
+	// guard would be 12288m, but a 9 GiB limit must win.
+	offRatioArgs := LimitArgs(Limits{Memory: "6g", Limit: "9g"})
+	if got := flagValues(offRatioArgs, "--memory"); len(got) != 1 || got[0] != "9216m" {
+		t.Fatalf("a 9 GiB limit on a 6 GiB request = %v, want 9216m (not the 2x guard 12288m)", got)
+	}
+}
+
+// weightOf is the number in a "cpu.weight=<n>" --cgroup-conf value.
+func weightOf(t *testing.T, conf string) int {
+	t.Helper()
+	n, ok := strings.CutPrefix(conf, "cpu.weight=")
+	if !ok {
+		t.Fatalf("%q is not a cpu.weight cgroup-conf value", conf)
+	}
+	w, err := strconv.Atoi(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return w
+}
+
 // agentArgs (through AgentRunArgs) and SidecarRunArgs pass the derived
 // env by name, `--env NAME`, its value in podman's own environment
 // (AgentProcessEnv), and keep an explicitly set value over the derived
