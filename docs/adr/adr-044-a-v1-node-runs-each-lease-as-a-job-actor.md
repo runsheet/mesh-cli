@@ -1213,6 +1213,19 @@ now runs the whole validation itself (`internal/nodev1/validatelease.go`).
 6. **Restarts.** No agent runs in a machine validation's pod, so it
    ends with the node's process: an upgrade hands it back rather than
    handing it off (`adoptability`).
+6a. **Under Mesh's body limit** (2026-11-26). Mesh refuses a finish
+   body over 1 MiB, and the first machine validation of runsheet's own
+   suites (about 9,500 passing unit tests plus e2e) listed every test
+   and lost its result that way. `tests` now lists only the failing and
+   timed-out tests; a passing one is counted in its suite's `passed` and
+   kept in run_suite's signed evidence, as runsheet's schema allows
+   (`tests` is optional). The result is bound to 512 KiB
+   (`boundFinish`): past it, `tests`, the triage's `failing_tests` and
+   `flaked` are halved in turn and the note says how many names were
+   left out; `green`, `candidate`, `suites` and `evidence` are never
+   cut. Every finish the node sends, a session's too, is held under the
+   limit at the last step (`withinBodyLimit`): its `tests`, then its
+   `coverage`, are left out rather than the finish refused.
 7. **A red's diagnosis.** A green, a conflict and a reuse make no model
    call. A red's result is frozen the moment the node has written it;
    then exactly one session — the kind's own harness, on its ladder's
@@ -1240,7 +1253,11 @@ now runs the whole validation itself (`internal/nodev1/validatelease.go`).
 `TestAMachineValidationIsNotAdoptable`,
 `TestARedIsDiagnosedByOneSessionThatCannotChangeIt`,
 `TestARedWhoseDiagnosisFailsFinishesAsTheNodeMadeIt` and
-`TestNoValidateDiagnosisStartsNoSession` (internal/nodev1) cover it.
+`TestNoValidateDiagnosisStartsNoSession`,
+`TestATenThousandTestValidationFinishesUnderTheBodyLimit`,
+`TestBoundFinishCutsFailingTestsWithAMarker` and
+`TestWithinBodyLimitLeavesOutTestsThenCoverage` (internal/nodev1) cover
+it.
 
 ## Amendment, 2026-11-25: an adopted lease serves apply_onto again
 
