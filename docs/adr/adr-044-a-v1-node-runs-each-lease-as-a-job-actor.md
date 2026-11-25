@@ -1007,3 +1007,65 @@ temperature it now read.
 `TestHeartbeatCarriesTheHostReading`, `TestHostAndDiskGatesTogether`
 and `TestDrainLinesShowTheHostReadingAndItsPeak` (internal/nodev1)
 hold it.
+
+## Amendment, 2026-11-24: named reserves, a validation reserve with a person share, peaks by kind, and the reserve a waiter waits on
+
+Goal `a-v1-node-reserves-room-for-validations-and-sizes-its-reserves-from-use`.
+On 24 Nov dl360 logged 153 admission waits for validations: median 4
+minutes, 90th percentile 22, longest 44. Builds and reviews filled the
+admission budget, and hand pull request validations starved behind
+automated item validations.
+
+1. **The scheduler keeps named reserves.** The assistant's reserve
+   (2026-11-24, #1953) is now one named reserve among others
+   (`SetNamedReserve`; `SetReserve` is the assistant's). An ask that
+   names its reserve (`Ask.Reserve`, or `Reserved` for the assistant's)
+   draws what that reserve has free first, and the rest from the
+   general room, which is the total less every reserve. No other ask is
+   ever granted room in a reserve. The assistant's reserve is at most a
+   quarter of each dimension, and all reserves together are at most
+   three quarters, so the general room always keeps a quarter.
+2. **The validation reserve.** This is node.yaml's
+   `v1.validation_reserve` (`cpus`, `mem_gb`, `person_cpus`,
+   `person_mem_gb`, `kinds`), or the `--validation-reserve-*` and
+   `--validation-kinds` flags. The default kinds are `validate` and
+   `evaluate`. A validation's lease hold and each of its lanes (admission
+   and `holdLane`) draw it first. Each take names it to Mesh beside the
+   assistant's, in the same `reserved`/`reserved_kinds`. A take carries
+   one reserved room for all the kinds it names, so each reserve is
+   named only while it has room for the largest lease of its kinds the
+   node has held. The validation reserve is never named on a hot host's
+   take, or when no job slot is free. With no room set, the node
+   admits as before.
+3. **The person share.** This is room inside the validation reserve
+   that only a person's pull request validation draws. The node applies
+   runsheet's `validate_for=<repo>:person` rule itself: the brief's
+   subject is a `pull_request`, and the repository is
+   `code.repo.full_name`. A person's all-or-nothing lane take waits
+   ahead of every automated one. Among people's validations, a
+   repository holding none of the share goes ahead of one that holds
+   some, so each repository gets a lane before any repository gets a
+   second.
+4. **Peaks by kind.** Every 15 seconds the node runs `podman ps` to get
+   each container's name and pid, then reads that pid's cgroup:
+   `cpu.stat` `usage_usec`, `memory.current` and `memory.peak`. Each
+   lease keeps in its record the most cores its containers used
+   together over one reading's window, and the larger of their summed
+   `memory.current` and any one container's `memory.peak`. At the
+   lease's end these fold into its kind's median, 95th percentile and
+   highest. The kind also records how many of its leases ran at once.
+   All of it appears in `mesh node status` (`usage`), and node.log gets
+   a line per lease. A node without the sandbox reads no peaks and
+   still counts its leases.
+5. **The holding report names the reserve.** `mesh node status`
+   (`waiting`, `reserves`) lists every ask waiting for room, with the
+   room it waits on, what it asks, since when and why. It also lists
+   each reserve's room and what it has free. The admission and lease
+   wait lines in node.log name the reserve too.
+
+`TestAValidationReserveIsNeverTakenByBuilds`,
+`TestAHandPRValidationIsNotStarved`, `TestLeasePeaksAreRecordedByKind`,
+`TestHoldingNamesTheReserveALeaseWaitsFor`,
+`TestNoValidationReserveAdmitsAsBefore` (internal/nodev1), and
+`TestPersonValidationsTakeTurnsByRepo` and `TestReservesAreBounded`
+(internal/scheduler) cover it.

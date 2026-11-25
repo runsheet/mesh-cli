@@ -99,6 +99,31 @@ type Ask struct {
 	// room, whatever else waits, and in the node's general room when it
 	// does not. No other ask is ever granted in the reserve.
 	Reserved bool
+	// Reserve names the reserve the ask draws from first (SetNamedReserve;
+	// goal a-v1-node-reserves-room-for-validations-and-sizes-its-reserves-from-use
+	// P1): what the reserve has free is drawn first, the rest from the
+	// general room, so a reserve's kinds also use any free room beyond
+	// it. "" with Reserved is AssistantReserve; "" without is none.
+	Reserve string
+	// Person is a person's pull request validation (runsheet's
+	// validate_for=<repo>:person; P2): it draws from its reserve's person
+	// share first, which no other ask may use, and waits ahead of every
+	// other all-or-nothing take; Repo is the repository it validates,
+	// and a repository holding none of the person share goes ahead of
+	// one that already holds some.
+	Person bool
+	Repo   string
+}
+
+// reserveName is the reserve ask draws from first, "" for none.
+func (a Ask) reserveName() string {
+	if a.Reserve != "" {
+		return a.Reserve
+	}
+	if a.Reserved {
+		return AssistantReserve
+	}
+	return ""
 }
 
 // ErrNoRoom is an ask that does not fit now; the error names why.
@@ -113,8 +138,10 @@ type Lease struct {
 	since   time.Time
 	expires time.Time
 	gone    bool
-	// inReserve is a Reserved ask granted in the node's reserve.
-	inReserve bool
+	// drawn is what the lease holds of its ask's reserve: person of the
+	// reserve's person share, rest of the rest of it; the remainder of
+	// its ask is the general room's.
+	drawn draw
 }
 
 // Held is one lease as the ledger lists it.
@@ -134,18 +161,22 @@ type Scheduler struct {
 
 	mu    sync.Mutex
 	total Capacity
-	// reserve is room kept for Reserved asks alone (SetReserve), inside
-	// total: the rest of the node's asks fit in total less reserve.
-	reserve Capacity
-	leases  []*Lease
-	n       uint64
-	changed chan struct{}
+	// reserves are the rooms kept for one group of asks alone
+	// (SetReserve, SetNamedReserve), inside total: every ask fits in the
+	// total less them, beside what its own reserve has free.
+	reserves []reserveSpec
+	leases   []*Lease
+	n        uint64
+	changed  chan struct{}
 	// exclusiveWaiting counts exclusive cache asks waiting in Take.
 	exclusiveWaiting int
-	// allWaiting is the tickets of the all-or-nothing takes waiting in
-	// TakeAll, oldest first, and allN the last ticket given (takeall.go).
-	allWaiting []uint64
+	// allWaiting is the all-or-nothing takes waiting in TakeAll, oldest
+	// first, and allN the last ticket given (takeall.go).
+	allWaiting []allWaiter
 	allN       uint64
+	// waiters are the asks waiting for room in Take and TakeAll, for
+	// the node's holding report (Waiting).
+	waiters []*waiter
 }
 
 // New is a scheduler of total.
@@ -175,32 +206,13 @@ func (s *Scheduler) SetTotal(total Capacity) {
 // each dimension of the total (effectiveReserve), so a small node is
 // never left no room for its other work. Waiters look again.
 func (s *Scheduler) SetReserve(r Capacity) {
-	s.mu.Lock()
-	s.reserve = Capacity{CPUs: math.Max(r.CPUs, 0), MemGB: math.Max(r.MemGB, 0)}
-	s.broadcastLocked()
-	s.mu.Unlock()
+	s.SetNamedReserve(AssistantReserve, r, Capacity{})
 }
 
 // Reserve is the room the node keeps for Reserved asks, as it applies
 // now (at most a quarter of each dimension of the total).
 func (s *Scheduler) Reserve() Capacity {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.effectiveReserveLocked()
-}
-
-// effectiveReserveLocked is the reserve bounded to a quarter of each
-// dimension of the total; none in a dimension the total leaves
-// unbounded (0).
-func (s *Scheduler) effectiveReserveLocked() Capacity {
-	r := Capacity{}
-	if s.total.CPUs > 0 {
-		r.CPUs = math.Min(s.reserve.CPUs, s.total.CPUs/4)
-	}
-	if s.total.MemGB > 0 {
-		r.MemGB = math.Min(s.reserve.MemGB, s.total.MemGB/4)
-	}
-	return r
+	return s.ReserveOf(AssistantReserve)
 }
 
 // ReserveFree is what the reserve has left now, in CPUs and memory: the
@@ -208,12 +220,7 @@ func (s *Scheduler) effectiveReserveLocked() Capacity {
 // reports. Free answers zero during a trim; the reserve's room stays,
 // for an ask that does not build with the cache.
 func (s *Scheduler) ReserveFree() Capacity {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.lapseLocked(s.now())
-	u := s.usedLocked()
-	r := s.effectiveReserveLocked()
-	return Capacity{CPUs: math.Max(r.CPUs-u.rcpus, 0), MemGB: math.Max(r.MemGB-u.rmem, 0)}
+	return s.ReserveFreeOf(AssistantReserve)
 }
 
 // Total is what the node offers.
@@ -278,23 +285,25 @@ func ttlOf(a Ask) time.Duration {
 
 // used is what the live leases hold.
 type used struct {
-	// cpus and mem are the general room's; rcpus and rmem the reserve's
+	// cpus and mem are the general room's; res each reserve's, by name
 	cpus, mem      float64
-	rcpus, rmem    float64
+	res            map[string]draw
+	personRepos    map[string]bool
 	slots          int
 	accounts       map[string]int
 	shared, exclus int
 }
 
 func (s *Scheduler) usedLocked() used {
-	u := used{accounts: map[string]int{}}
+	u := used{accounts: map[string]int{}, res: map[string]draw{}, personRepos: map[string]bool{}}
 	for _, l := range s.leases {
-		if l.inReserve {
-			u.rcpus += l.ask.CPUs
-			u.rmem += l.ask.MemGB
-		} else {
-			u.cpus += l.ask.CPUs
-			u.mem += l.ask.MemGB
+		u.cpus += math.Max(l.ask.CPUs-l.drawn.cpus(), 0)
+		u.mem += math.Max(l.ask.MemGB-l.drawn.mem(), 0)
+		if name := l.ask.reserveName(); name != "" {
+			u.res[name] = u.res[name].add(l.drawn)
+			if l.drawn.person.CPUs > 0 || l.drawn.person.MemGB > 0 {
+				u.personRepos[name+"\x00"+l.ask.Repo] = true
+			}
 		}
 		if l.ask.Slot {
 			u.slots++
@@ -320,42 +329,34 @@ func (s *Scheduler) fitLocked(ask Ask) error {
 	return err
 }
 
-// fitInReserveLocked is whether a Reserved ask fits the reserve's room
-// now, in CPUs and memory; its slot, account and cache are checked as
-// any ask's (fitLocked's rest).
-func (s *Scheduler) fitInReserveLocked(ask Ask, u used) bool {
-	if !ask.Reserved {
-		return false
-	}
-	r := s.effectiveReserveLocked()
-	if r.CPUs <= 0 && r.MemGB <= 0 {
-		return false
-	}
-	return u.rcpus+ask.CPUs <= r.CPUs+eps && u.rmem+ask.MemGB <= r.MemGB+eps
-}
-
-// fitWhereLocked is nil when ask fits, and whether it fits in the
-// reserve (a Reserved ask the reserve has room for) or the general room.
-func (s *Scheduler) fitWhereLocked(ask Ask) (bool, error) {
+// fitWhereLocked is nil when ask fits, and what it draws of its
+// reserve when it does: the reserve's free room first (its person share
+// first for a person's validation), the rest of the ask from the
+// general room, the total less every reserve.
+func (s *Scheduler) fitWhereLocked(ask Ask) (draw, error) {
 	u := s.usedLocked()
 	t := s.total
-	r := s.effectiveReserveLocked()
-	// every ask but one the reserve takes fits in the total less it
-	t.CPUs -= r.CPUs
-	t.MemGB -= r.MemGB
-	inReserve := s.fitInReserveLocked(ask, u)
-	if err := s.fitRestLocked(ask, u, t, inReserve); err != nil {
-		return false, err
+	eff := s.effectiveReservesLocked()
+	for _, r := range eff {
+		t.CPUs -= r.room.CPUs
+		t.MemGB -= r.room.MemGB
 	}
-	return inReserve, nil
+	d := drawOf(ask, u, eff)
+	rest := ask
+	rest.CPUs = math.Max(ask.CPUs-d.cpus(), 0)
+	rest.MemGB = math.Max(ask.MemGB-d.mem(), 0)
+	if err := s.fitRestLocked(rest, u, t); err != nil {
+		if name := ask.reserveName(); name != "" && errors.Is(err, ErrNoRoom) {
+			err = fmt.Errorf("%w; the %s reserve has %s free", err, name, freeLine(reserveFree(ask, u, eff)))
+		}
+		return draw{}, err
+	}
+	return d, nil
 }
 
-// fitRestLocked is fitLocked's checks against general room t, the CPU
-// and memory ones skipped for an ask the reserve takes.
-func (s *Scheduler) fitRestLocked(ask Ask, u used, t Capacity, inReserve bool) error {
-	if inReserve {
-		ask.CPUs, ask.MemGB = 0, 0
-	}
+// fitRestLocked is fitLocked's checks against general room t, for what
+// of ask its reserve does not take.
+func (s *Scheduler) fitRestLocked(ask Ask, u used, t Capacity) error {
 	if t.CPUs > 0 && ask.CPUs > 0 && u.cpus+ask.CPUs > t.CPUs+eps && !(ask.CPUs > t.CPUs && u.cpus < eps) {
 		return fmt.Errorf("%w: %s cpus asked, %s of %s free", ErrNoRoom, num(ask.CPUs), num(math.Max(t.CPUs-u.cpus, 0)), num(t.CPUs))
 	}
@@ -399,12 +400,12 @@ func (s *Scheduler) TryTake(ask Ask) (*Lease, error) {
 func (s *Scheduler) grantLocked(ask Ask) (*Lease, error) {
 	now := s.now()
 	s.lapseLocked(now)
-	inReserve, err := s.fitWhereLocked(ask)
+	d, err := s.fitWhereLocked(ask)
 	if err != nil {
 		return nil, err
 	}
 	s.n++
-	l := &Lease{s: s, n: s.n, ask: ask, since: now, expires: now.Add(ttlOf(ask)), inReserve: inReserve}
+	l := &Lease{s: s, n: s.n, ask: ask, since: now, expires: now.Add(ttlOf(ask)), drawn: d}
 	s.leases = append(s.leases, l)
 	s.broadcastLocked()
 	return l, nil
@@ -424,12 +425,21 @@ func (s *Scheduler) Take(ctx context.Context, ask Ask) (*Lease, error) {
 			s.mu.Unlock()
 		}()
 	}
+	var w *waiter
+	defer func() {
+		if w != nil {
+			s.mu.Lock()
+			s.dropWaiterLocked(w)
+			s.mu.Unlock()
+		}
+	}()
 	for {
 		l, err := s.grantLocked(ask)
 		if err == nil {
 			s.mu.Unlock()
 			return l, nil
 		}
+		w = s.noteWaiterLocked(w, ask, err)
 		if s.changed == nil {
 			s.changed = make(chan struct{})
 		}
@@ -462,7 +472,7 @@ func (s *Scheduler) Free() Capacity {
 	s.lapseLocked(s.now())
 	u := s.usedLocked()
 	t := s.total
-	r := s.effectiveReserveLocked()
+	r := sumRooms(s.effectiveReservesLocked())
 	f := Capacity{CPUs: math.Max(t.CPUs-r.CPUs-u.cpus, 0), MemGB: math.Max(t.MemGB-r.MemGB-u.mem, 0), Slots: max(t.Slots-u.slots, 0), AccountSlots: t.AccountSlots}
 	trim := u.exclus > 0 || s.exclusiveWaiting > 0
 	if trim {

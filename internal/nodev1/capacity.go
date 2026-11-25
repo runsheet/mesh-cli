@@ -64,12 +64,17 @@ func (r *Runtime) assistantKind(b *meshapi.Brief) bool {
 // beside the slots — and does not hold the build cache, so neither a
 // full node nor a cache trim keeps it waiting (goal
 // one-assistant-dispatcher-per-org-answers-every-ask P1).
+//
+// A validation kind's lease draws the validation reserve first (P1 of
+// goal a-v1-node-reserves-room-for-validations-and-sizes-its-reserves-from-use;
+// reserveAsk), and keeps its slot and cache as before.
 func (r *Runtime) leaseAsk(b *meshapi.Brief, lease *meshapi.Lease) scheduler.Ask {
 	ask := askOf(b, lease)
 	if r.assistantKind(b) {
 		ask.Reserved, ask.Slot, ask.Cache = true, false, scheduler.CacheNone
+		return ask
 	}
-	return ask
+	return r.reserveAsk(b, ask)
 }
 
 // reserveOpen is whether the node keeps a reserve for its assistant
@@ -87,16 +92,76 @@ func (r *Runtime) reserveOpen() bool {
 // fits free and reserved together first); with reservedOnly — a hot
 // host, or no job slot free — the take offers that room alone, its
 // general free zero.
+//
+// The validation reserve is named beside it (goal
+// a-v1-node-reserves-room-for-validations-and-sizes-its-reserves-from-use
+// P1) while it has room and a job slot is free — a validation takes
+// one — but never on a hot host's take. A take names one reserved room
+// for all its kinds, so each reserve is named only while it has room
+// for the largest lease of its kinds the node has held (reserveNeed):
+// Mesh then never places one of them in the other's room.
 func (r *Runtime) takeReserved(tr *meshapi.TakeRequest, reservedOnly bool) {
-	if !r.reserveOpen() {
+	noSlot := r.Scheduler != nil && r.Scheduler.Total().Slots > 0 && r.Scheduler.Free().Slots <= 0
+	var room meshapi.Capacity
+	var kinds []string
+	if r.reserveOpen() && r.reserveFits(scheduler.AssistantReserve) {
+		f := r.Scheduler.ReserveFree()
+		room.CPUs, room.MemGB = room.CPUs+f.CPUs, room.MemGB+f.MemGB
+		kinds = append(kinds, r.AssistantKinds...)
+	}
+	if !reservedOnly && !noSlot && len(r.ValidationKinds) > 0 && r.reserveFits(ValidationReserveName) {
+		// the rest of it alone: its person share is for a person's
+		// validation, and Mesh would place an automated one there too
+		f := r.Scheduler.ReserveFreeFor(ValidationReserveName, false)
+		room.CPUs, room.MemGB = room.CPUs+f.CPUs, room.MemGB+f.MemGB
+		kinds = append(kinds, r.ValidationKinds...)
+	}
+	if len(kinds) == 0 {
 		return
 	}
-	f := r.Scheduler.ReserveFree()
-	tr.Reserved = &meshapi.Capacity{CPUs: f.CPUs, MemGB: f.MemGB}
-	tr.ReservedKinds = r.AssistantKinds
-	if reservedOnly || (r.Scheduler.Total().Slots > 0 && r.Scheduler.Free().Slots <= 0) {
+	tr.Reserved = &room
+	tr.ReservedKinds = kinds
+	if reservedOnly || noSlot {
 		tr.Free = &meshapi.Capacity{}
 	}
+}
+
+// reserveFits is whether reserve name has room free now for the
+// largest lease of its kinds the node has held (any room, before it has
+// held one).
+func (r *Runtime) reserveFits(name string) bool {
+	if r.Scheduler == nil {
+		return false
+	}
+	f := r.Scheduler.ReserveFreeFor(name, false)
+	if f.CPUs <= 0 && f.MemGB <= 0 {
+		return false
+	}
+	r.mu.Lock()
+	need := r.reserveNeed[0]
+	if name == ValidationReserveName {
+		need = r.reserveNeed[1]
+	}
+	r.mu.Unlock()
+	return f.CPUs+1e-9 >= need.CPUs && f.MemGB+1e-9 >= need.MemGB
+}
+
+// noteReserveNeed keeps ask's room as its reserve's largest lease yet
+// (reserveFits).
+func (r *Runtime) noteReserveNeed(ask scheduler.Ask) {
+	i := -1
+	if ask.Reserved {
+		i = 0
+	} else if ask.Reserve == ValidationReserveName {
+		i = 1
+	}
+	if i < 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := &r.reserveNeed[i]
+	n.CPUs, n.MemGB = max(n.CPUs, ask.CPUs), max(n.MemGB, ask.MemGB)
 }
 
 // holdCapacity takes the lease's room in the scheduler, waiting at most
@@ -106,12 +171,24 @@ func (r *Runtime) holdCapacity(ctx context.Context, b *meshapi.Brief, lease *mes
 		return nil, nil
 	}
 	ask := r.leaseAsk(b, lease)
-	if l, err := r.Scheduler.TryTake(ask); err == nil {
+	r.noteReserveNeed(ask)
+	l, err := r.Scheduler.TryTake(ask)
+	if err == nil {
 		return l, nil
 	}
+	r.logf("nodev1: lease %s (%s) waits for room in %s: %v", lease.LeaseID, path.Base(b.Kind), waiterOf(ask).Room(), err)
 	wctx, cancel := context.WithTimeout(ctx, roomWait)
 	defer cancel()
 	return r.Scheduler.Take(wctx, ask)
+}
+
+// waiterOf is ask as the holding report names a waiter.
+func waiterOf(ask scheduler.Ask) scheduler.Waiter {
+	w := scheduler.Waiter{Owner: ask.Owner, Reserve: ask.Reserve, Person: ask.Person, Repo: ask.Repo, CPUs: ask.CPUs, MemGB: ask.MemGB}
+	if ask.Reserved && w.Reserve == "" {
+		w.Reserve = scheduler.AssistantReserve
+	}
+	return w
 }
 
 // waitForSlot waits until the scheduler has a job slot free, so the node

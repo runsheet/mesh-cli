@@ -60,6 +60,12 @@ func (p *Podman) runner(ctx context.Context, _ string, args ...string) ([]byte, 
 
 // output runs a short podman command and returns its stdout, with its
 // stderr in the error.
+// Output runs podman with args and answers its stdout: a read-only
+// query such as `ps` (nodev1's PodmanMeter).
+func (p *Podman) Output(ctx context.Context, args []string) (string, error) {
+	return p.output(ctx, args, nil)
+}
+
 func (p *Podman) output(ctx context.Context, args []string, stdin io.Reader) (string, error) {
 	var out, errb bytes.Buffer
 	if err := p.run(ctx, args, podmanEnv(os.Environ(), nil), stdin, &out, &errb); err != nil {
