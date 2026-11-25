@@ -42,7 +42,11 @@ import (
 //
 // A lease's CPU peak is the most cores its containers used together
 // over one reading's window: the usage_usec they gained since the last
-// reading (a container first seen, all it used) over the time between.
+// reading (a container first seen after the lease's first reading, all
+// it used) over the time between. A lease's first reading is a baseline
+// alone: its containers may have run long before it (a lease adopted
+// across a restart), so what they used is not the window's (dl360,
+// 2026-11-25: adopted leases read 49 and 96 cores).
 // Its memory peak is the larger of its containers' memory.current
 // summed at one reading and any one container's memory.peak. Both are
 // a little low: a container that lived less than peakEvery, and a
@@ -83,15 +87,12 @@ type leasePeaks struct {
 	mem uint64
 }
 
-// add keeps one reading of the lease's containers at now; started is
-// when the lease began, the window of its first reading.
-func (p *leasePeaks) add(now, started time.Time, cs []ContainerUse) {
+// add keeps one reading of the lease's containers at now. The first
+// reads their memory and keeps their CPU as the baseline the next
+// reading's window starts from.
+func (p *leasePeaks) add(now time.Time, cs []ContainerUse) {
 	if len(cs) == 0 {
 		return
-	}
-	since := started
-	if p.read {
-		since = p.at
 	}
 	var gained, together, one uint64
 	usec := make(map[string]uint64, len(cs))
@@ -108,7 +109,7 @@ func (p *leasePeaks) add(now, started time.Time, cs []ContainerUse) {
 		together += c.MemNow
 		one = max(one, c.MemPeak)
 	}
-	if w := now.Sub(since).Seconds(); w > 0 {
+	if w := now.Sub(p.at).Seconds(); p.read && w > 0 {
 		cores := float64(gained) / 1e6 / w
 		p.cpu = max(p.cpu, math.Min(cores, float64(runtime.NumCPU())))
 	}
@@ -282,7 +283,7 @@ func (r *Runtime) readPeaks(ctx context.Context, only ...string) {
 				mine = append(mine, c)
 			}
 		}
-		e.Value.peaks.add(now, e.Value.started, mine)
+		e.Value.peaks.add(now, mine)
 	}
 }
 
