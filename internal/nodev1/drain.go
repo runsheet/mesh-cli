@@ -125,6 +125,35 @@ type LeaseStatus struct {
 	// lease whose egress ran as a process of its own: that process,
 	// once it has died. Empty in every other case.
 	AdoptableReason string `json:"adoptable_reason,omitempty"`
+	// Limit is the lease's hard cap (its brief's declared resources,
+	// goal a-job-is-sized-by-request-and-limit); Request what the node
+	// holds of its own scheduler for it, learned from its kind's
+	// measured peaks once there are enough to trust (learnedrequest.go),
+	// the declared figure otherwise; Now its containers' latest reading;
+	// Peak the most they have used together so far (usage.go). Every
+	// field zero for a lease with no brief recorded yet (adoption, or a
+	// bare *running* a test put directly).
+	LimitCPUs    float64 `json:"limit_cpus,omitempty"`
+	LimitMemGB   float64 `json:"limit_mem_gb,omitempty"`
+	RequestCPUs  float64 `json:"request_cpus,omitempty"`
+	RequestMemGB float64 `json:"request_mem_gb,omitempty"`
+	NowCPUs      float64 `json:"now_cpus,omitempty"`
+	NowMemGB     float64 `json:"now_mem_gb,omitempty"`
+	PeakCPUs     float64 `json:"peak_cpus,omitempty"`
+	PeakMemGB    float64 `json:"peak_mem_gb,omitempty"`
+}
+
+// resourceLine is l's limit, request, now and peak (goal
+// a-job-is-sized-by-request-and-limit), for its `mesh node status` line.
+func (l LeaseStatus) resourceLine() string {
+	return fmt.Sprintf("limit %s, request %s, now %s, peak %s",
+		cpuMemLine(l.LimitCPUs, l.LimitMemGB), cpuMemLine(l.RequestCPUs, l.RequestMemGB),
+		cpuMemLine(l.NowCPUs, l.NowMemGB), cpuMemLine(l.PeakCPUs, l.PeakMemGB))
+}
+
+// cpuMemLine is cpus and memGB as resourceLine's words show them.
+func cpuMemLine(cpus, memGB float64) string {
+	return fmt.Sprintf("%.2f cpus/%.2f GB", cpus, memGB)
 }
 
 // adoptability is whether l's hand-off could pick it back up, and why
@@ -370,7 +399,16 @@ func (r *Runtime) Status() Status {
 	}
 	for _, e := range r.leases.All() {
 		adoptable, reason := adoptability(e.Value)
-		s.Leases = append(s.Leases, LeaseStatus{LeaseID: e.ID, JobID: e.Value.jobID, Kind: e.Value.kind, Since: e.Value.started.UTC(), Adoptable: adoptable, AdoptableReason: reason})
+		ls := LeaseStatus{LeaseID: e.ID, JobID: e.Value.jobID, Kind: e.Value.kind, Since: e.Value.started.UTC(), Adoptable: adoptable, AdoptableReason: reason}
+		if b := e.Value.brief; b != nil {
+			ls.LimitCPUs, ls.LimitMemGB = b.Resources.CPUs, b.Resources.MemGB
+			req := r.leaseRequest(b)
+			ls.RequestCPUs, ls.RequestMemGB = req.CPUs, req.MemGB
+		}
+		p := e.Value.peaks
+		ls.NowCPUs, ls.NowMemGB = p.nowCPU, float64(p.nowMem)/(1<<30)
+		ls.PeakCPUs, ls.PeakMemGB = p.cpu, float64(p.mem)/(1<<30)
+		s.Leases = append(s.Leases, ls)
 	}
 	sort.Slice(s.Leases, func(i, j int) bool { return s.Leases[i].Since.Before(s.Leases[j].Since) })
 	s.Waiting, s.Reserves = r.holding()
@@ -441,7 +479,7 @@ func (s Status) DrainLines(now time.Time) []string {
 		fmt.Fprintf(&b, "Leases: %d running:", len(s.Leases))
 		out = append(out, b.String())
 		for _, l := range s.Leases {
-			out = append(out, fmt.Sprintf("  %s  job %s  %s  for %s", l.LeaseID, l.JobID, l.Kind, now.Sub(l.Since).Round(time.Second)))
+			out = append(out, fmt.Sprintf("  %s  job %s  %s  for %s  %s", l.LeaseID, l.JobID, l.Kind, now.Sub(l.Since).Round(time.Second), l.resourceLine()))
 		}
 	}
 	return append(out, s.holdingLines(now)...)

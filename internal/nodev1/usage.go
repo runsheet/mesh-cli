@@ -81,6 +81,12 @@ type leasePeaks struct {
 	// cpu is the most cores used at once; mem the most bytes held
 	cpu float64
 	mem uint64
+	// nowCPU and nowMem are the latest reading alone, not the peak:
+	// nowCPU the cores used over the window up to it, nowMem the
+	// containers' summed memory.current at it (`mesh node status`'s
+	// "now", beside "peak").
+	nowCPU float64
+	nowMem uint64
 }
 
 // add keeps one reading of the lease's containers at now; started is
@@ -110,8 +116,10 @@ func (p *leasePeaks) add(now, started time.Time, cs []ContainerUse) {
 	}
 	if w := now.Sub(since).Seconds(); w > 0 {
 		cores := float64(gained) / 1e6 / w
-		p.cpu = max(p.cpu, math.Min(cores, float64(runtime.NumCPU())))
+		p.nowCPU = math.Min(cores, float64(runtime.NumCPU()))
+		p.cpu = max(p.cpu, p.nowCPU)
 	}
+	p.nowMem = together
 	p.mem = max(p.mem, together, one)
 	p.usec, p.at, p.read = usec, now, true
 }
@@ -211,16 +219,35 @@ func (b *usageBook) report() []KindUsage {
 // quantiles is xs's median, 95th percentile (nearest rank) and highest,
 // each to two places.
 func quantiles(xs []float64) (p50, p95, top float64) {
+	return percentile(xs, 0.5), percentile(xs, 0.95), percentile(xs, 1)
+}
+
+// percentile is xs's qth percentile (nearest rank), to two places; 0
+// for an empty xs.
+func percentile(xs []float64, q float64) float64 {
 	if len(xs) == 0 {
-		return 0, 0, 0
+		return 0
 	}
 	s := append([]float64(nil), xs...)
 	sort.Float64s(s)
-	at := func(q float64) float64 {
-		i := int(math.Ceil(q*float64(len(s)))) - 1
-		return math.Round(s[max(min(i, len(s)-1), 0)]*100) / 100
+	i := int(math.Ceil(q*float64(len(s)))) - 1
+	return math.Round(s[max(min(i, len(s)-1), 0)]*100) / 100
+}
+
+// kindPercentiles is kind's measured CPU (cores) and memory (GiB) peaks'
+// 75th and 95th percentiles, and how many leases of it are measured;
+// measured 0, with both percentiles 0, for a kind the node has run none
+// of, or measured none of, yet. Used to learn a kind's request
+// (learnedrequest.go) without handing out usageBook's own slices, which
+// append grows and replaces under its lock.
+func (b *usageBook) kindPercentiles(kind string) (cpuP75, memP95 float64, measured int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	k := b.kinds[kind]
+	if k == nil {
+		return 0, 0, 0
 	}
-	return at(0.5), at(0.95), at(1)
+	return percentile(k.cpu, 0.75), percentile(k.mem, 0.95), len(k.cpu)
 }
 
 // usageBegan counts a lease of kind as running.
