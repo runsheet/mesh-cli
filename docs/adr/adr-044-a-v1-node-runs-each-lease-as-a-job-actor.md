@@ -1069,3 +1069,42 @@ automated item validations.
 `TestNoValidationReserveAdmitsAsBefore` (internal/nodev1), and
 `TestPersonValidationsTakeTurnsByRepo` and `TestReservesAreBounded`
 (internal/scheduler) cover it.
+
+## Amendment, 2026-11-25: a lane needing no room is admitted at once, and waiting leases yield their own holds
+
+Goal `a-validation-needing-no-room-is-admitted-at-once`. Two incidents on
+dl360 on 25 Nov had the same cause. From 18:00 to 18:50 AEDT, a
+projectmesh-io/mesh-specs#227 lint whose one lane asked "0 cpus, 0 GB"
+waited 14m39s, then 34+ minutes, behind "an older validation waits for
+its lanes' room first". From 18:50 to 21:45, the node admitted nothing
+at all. Fourteen validations each held their lease's own 4 cpus while
+their lanes waited, and those holds filled the general room and the
+validation reserve. Every lane waited for room only those same holds
+took up. Meanwhile the load was 5 of 96 and 232 GB were free. The node
+was restarted without the reserve to clear it.
+
+1. **No room, no line.** An all-or-nothing take that asks no CPUs and
+   no memory is granted at once, whatever waits; it takes nothing an
+   older waiter needs. node.log says `admitted ahead of N waiting:
+   needs no extra room`. Among takes that need room the order is
+   unchanged: the oldest is granted first, so a big take ages to the
+   head and is never passed over.
+2. **A waiting lease yields its own hold** (`Scheduler.TakeAllYielding`,
+   used by lane admission). While its lanes wait, its own hold is room
+   the all-or-nothing takes may be granted, the oldest first. It takes
+   that hold back with its lanes, all at once, or as its wait ends.
+   Single takes (a new lease's own hold, a shard's lane) and `Free`
+   still count the hold as held, so Mesh is offered no new lease into
+   it. The cost is a brief over-commit by the idle pods of waiting
+   leases. Their CPU is unused while they wait.
+3. **The validation reserve is named to Mesh only with room for a
+   whole admission.** That means the largest lease's own hold plus its
+   lanes it has admitted, not the own hold alone. Mesh no longer places
+   validations into it four cpus at a time while their lanes cannot fit.
+
+`TestAZeroRoomTakeIsGrantedAheadOfAWaiter` and
+`TestWaitingLeasesYieldTheirOwnHolds` (internal/scheduler), and
+`TestALintNeedingNoRoomIsAdmittedAheadOfAWaiter`,
+`TestWaitingValidationsDoNotDeadlockTheNode` and
+`TestTheReserveIsNamedOnlyWithRoomForAWholeAdmission` (internal/nodev1)
+cover it. Each fails on 33dcfd29.
