@@ -30,6 +30,26 @@ import (
 // repository already holds some, so every repository gets its lane
 // before any gets a second (dl360, 2026-11-24: hand pull request
 // validations starved for hours behind item validations).
+//
+// Two exceptions keep the line from locking the node (goal
+// a-validation-needing-no-room-is-admitted-at-once; dl360, 2026-11-25
+// 18:50–21:45 AEDT: 14 validations each held their lease's own 4 cpus
+// while their lanes waited, the general room and the validation reserve
+// were all such holds, load was 5 of 96, and nothing was admitted for
+// three hours):
+//
+//   - a take asking no CPUs and no memory is granted at once, whoever
+//     waits: it takes nothing an older waiter needs (a lint whose one
+//     lane fits its lease's own hold);
+//   - a lease waiting for its lanes (TakeAllYielding) yields its own
+//     hold while it waits: the all-or-nothing takes may be granted that
+//     room, oldest first, so the holds of waiting leases never block
+//     every lane on the node. Its holder gets it back with its lanes,
+//     all at once, or as its wait ends. Every other ask, and Free,
+//     still count a yielded hold as held, so the node is offered no new
+//     lease into it. Among takes that need room the order is unchanged:
+//     the oldest is granted first, so a big one ages to the head and is
+//     never passed over.
 
 // combined is asks as one ask for fitLocked: their CPUs and memory
 // summed, the cache mode of the most demanding, a slot when any takes one.
@@ -112,19 +132,34 @@ func (s *Scheduler) dropTicketLocked(ticket uint64) {
 	}
 }
 
-func (s *Scheduler) grantAllLocked(asks []Ask, ticket uint64) ([]*Lease, error) {
+// noRoom is whether c asks no CPUs and no memory.
+func noRoom(c Ask) bool { return c.CPUs <= eps && c.MemGB <= eps }
+
+func (s *Scheduler) grantAllLocked(asks []Ask, ticket uint64, own *Lease) ([]*Lease, error) {
 	now := s.now()
 	s.lapseLocked(now)
-	if why := s.aheadLocked(waiterOf(asks, ticket)); why != "" {
-		return nil, fmt.Errorf("%w: %s", ErrNoRoom, why)
+	reclaim := own != nil && own.yielded && !own.gone
+	if !noRoom(combined(asks)) || reclaim {
+		if why := s.aheadLocked(waiterOf(asks, ticket)); why != "" {
+			return nil, fmt.Errorf("%w: %s", ErrNoRoom, why)
+		}
 	}
 	for _, a := range asks {
 		if a.Account != "" {
 			return nil, fmt.Errorf("scheduler: an all-or-nothing take names account %s; it takes none", a.Account)
 		}
 	}
-	if err := s.fitLocked(combined(asks)); err != nil {
+	// granted beside what is held less the yielded holds; a yielded own
+	// hold is taken back with the lanes, so it is asked for with them
+	need := asks
+	if reclaim {
+		need = append(append([]Ask(nil), asks...), own.ask)
+	}
+	if _, err := s.fitInLocked(combined(need), s.usedViewLocked(true)); err != nil {
 		return nil, err
+	}
+	if reclaim {
+		own.yielded = false
 	}
 	out := make([]*Lease, 0, len(asks))
 	eff := s.effectiveReservesLocked()
@@ -132,7 +167,7 @@ func (s *Scheduler) grantAllLocked(asks []Ask, ticket uint64) ([]*Lease, error) 
 		s.n++
 		// each lane draws what its reserve has left after the lanes
 		// before it: together they draw what the combined ask did
-		l := &Lease{s: s, n: s.n, ask: a, since: now, expires: now.Add(ttlOf(a)), drawn: drawOf(a, s.usedLocked(), eff)}
+		l := &Lease{s: s, n: s.n, ask: a, since: now, expires: now.Add(ttlOf(a)), drawn: drawOf(a, s.usedViewLocked(true), eff)}
 		s.leases = append(s.leases, l)
 		out = append(out, l)
 	}
@@ -144,28 +179,46 @@ func (s *Scheduler) grantAllLocked(asks []Ask, ticket uint64) ([]*Lease, error) 
 func (s *Scheduler) TryTakeAll(asks []Ask) ([]*Lease, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.grantAllLocked(asks, 0)
+	return s.grantAllLocked(asks, 0, nil)
 }
 
 // TakeAll waits until every ask fits at once and grants them all, or ends
 // with ctx's error naming why they did not fit; it never holds some of
 // them while waiting for the rest.
 func (s *Scheduler) TakeAll(ctx context.Context, asks []Ask) ([]*Lease, error) {
+	return s.TakeAllYielding(ctx, asks, nil)
+}
+
+// TakeAllYielding is TakeAll for the holder of own, a lease of the same
+// holder (its lease's own hold): while the take waits, own is yielded
+// (Lease.yielded) — its room may be granted to the all-or-nothing takes
+// that wait, the oldest first — and it is taken back with the asks, all
+// at once, so a waiting lease never holds room its own lanes, or an
+// older lease's, need. A wait that ends ungranted takes own back as it
+// stands. A nil or ended own is TakeAll.
+func (s *Scheduler) TakeAllYielding(ctx context.Context, asks []Ask, own *Lease) ([]*Lease, error) {
+	if own != nil && own.s != s {
+		own = nil
+	}
 	s.mu.Lock()
 	var ticket uint64
 	var w *waiter
 	defer func() {
-		if ticket != 0 || w != nil {
-			s.mu.Lock()
+		s.mu.Lock()
+		if ticket != 0 {
 			s.dropTicketLocked(ticket)
-			if w != nil {
-				s.dropWaiterLocked(w)
-			}
-			s.mu.Unlock()
 		}
+		if w != nil {
+			s.dropWaiterLocked(w)
+		}
+		if own != nil && own.yielded {
+			own.yielded = false
+			s.broadcastLocked()
+		}
+		s.mu.Unlock()
 	}()
 	for {
-		ls, err := s.grantAllLocked(asks, ticket)
+		ls, err := s.grantAllLocked(asks, ticket, own)
 		if err == nil {
 			if ticket != 0 {
 				s.dropTicketLocked(ticket)
@@ -179,6 +232,10 @@ func (s *Scheduler) TakeAll(ctx context.Context, asks []Ask) ([]*Lease, error) {
 			s.allN++
 			ticket = s.allN
 			s.allWaiting = append(s.allWaiting, waiterOf(asks, ticket))
+			if own != nil && !own.gone && !own.yielded {
+				own.yielded = true
+				s.broadcastLocked()
+			}
 		}
 		w = s.noteWaiterLocked(w, combined(asks), err)
 		if s.changed == nil {
@@ -197,4 +254,19 @@ func (s *Scheduler) TakeAll(ctx context.Context, asks []Ask) ([]*Lease, error) {
 		t.Stop()
 		s.mu.Lock()
 	}
+}
+
+// LeaseOf is the live lease owner holds (the oldest, if it holds more
+// than one), nil for none: a lease's own hold, found by its lease id, for
+// TakeAllYielding.
+func (s *Scheduler) LeaseOf(owner string) *Lease {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lapseLocked(s.now())
+	for _, l := range s.leases {
+		if l.ask.Owner == owner {
+			return l
+		}
+	}
+	return nil
 }

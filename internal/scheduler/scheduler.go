@@ -142,6 +142,11 @@ type Lease struct {
 	// reserve's person share, rest of the rest of it; the remainder of
 	// its ask is the general room's.
 	drawn draw
+	// yielded is a lease whose holder waits in TakeAllYielding for more
+	// room beside it: its CPUs and memory are room the all-or-nothing
+	// takes may be granted (takeall.go), though every other ask and Free
+	// still count them held.
+	yielded bool
 }
 
 // Held is one lease as the ledger lists it.
@@ -295,11 +300,20 @@ type used struct {
 }
 
 func (s *Scheduler) usedLocked() used {
+	return s.usedViewLocked(false)
+}
+
+// usedViewLocked is usedLocked, its CPUs and memory leaving out the
+// yielded leases' when skipYielded (what an all-or-nothing take may be
+// granted).
+func (s *Scheduler) usedViewLocked(skipYielded bool) used {
 	u := used{accounts: map[string]int{}, res: map[string]draw{}, personRepos: map[string]bool{}}
 	for _, l := range s.leases {
-		u.cpus += math.Max(l.ask.CPUs-l.drawn.cpus(), 0)
-		u.mem += math.Max(l.ask.MemGB-l.drawn.mem(), 0)
-		if name := l.ask.reserveName(); name != "" {
+		if !(skipYielded && l.yielded) {
+			u.cpus += math.Max(l.ask.CPUs-l.drawn.cpus(), 0)
+			u.mem += math.Max(l.ask.MemGB-l.drawn.mem(), 0)
+		}
+		if name := l.ask.reserveName(); name != "" && !(skipYielded && l.yielded) {
 			u.res[name] = u.res[name].add(l.drawn)
 			if l.drawn.person.CPUs > 0 || l.drawn.person.MemGB > 0 {
 				u.personRepos[name+"\x00"+l.ask.Repo] = true
@@ -334,7 +348,11 @@ func (s *Scheduler) fitLocked(ask Ask) error {
 // first for a person's validation), the rest of the ask from the
 // general room, the total less every reserve.
 func (s *Scheduler) fitWhereLocked(ask Ask) (draw, error) {
-	u := s.usedLocked()
+	return s.fitInLocked(ask, s.usedLocked())
+}
+
+// fitInLocked is fitWhereLocked beside what u says is held.
+func (s *Scheduler) fitInLocked(ask Ask, u used) (draw, error) {
 	t := s.total
 	eff := s.effectiveReservesLocked()
 	for _, r := range eff {
