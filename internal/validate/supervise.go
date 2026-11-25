@@ -52,6 +52,22 @@ const (
 	ActionStalled = "stalled"
 )
 
+// The Classes the supervisor writes on a TestResult's or a StepResult's
+// Class: its own read of why a red result stood, or a red one
+// recovered — real, flaky or infrastructure, never a fourth.
+const (
+	// ClassReal is a failure that stood: a test that failed and was
+	// never retried, or failed again when it was.
+	ClassReal = "real"
+	// ClassFlaky is a failure that passed on a second hearing: a test's
+	// Action flaky, or a unit every one of whose failures was.
+	ClassFlaky = "flaky"
+	// ClassInfrastructure is a result the environment interrupted
+	// before the code could be judged: a test's Action stalled, or a
+	// shard whose lane never opened (run.go's merge).
+	ClassInfrastructure = "infrastructure"
+)
+
 type selectionKey struct{}
 
 // WithSelection is ctx saying the run's commands were told to run only
@@ -295,12 +311,21 @@ func stallReason(names []testKey, limit time.Duration) string {
 func (s *supervisor) parse(step Step, out *ran) {
 	out.run, out.passed, out.failed, out.report, out.tests, out.parseErr = parseResults(s.dir, step, out.stdout.Bytes())
 	out.counted = step.Results != "" || isGoTestStream(out.stdout.Bytes())
+	for i, t := range out.tests {
+		if t.Action == "fail" {
+			out.tests[i].Class = ClassReal
+		}
+	}
 	if len(out.stalled) == 0 {
 		return
 	}
+	// the environment interrupted the unit, not its code: the unit's
+	// own class says so, whatever the retry that never runs would have
+	out.class = ClassInfrastructure
 	for i, t := range out.tests {
 		if t.Action == "timeout" && slices.Contains(out.stalled, testKey{t.Package, t.Name}) {
 			out.tests[i].Action = ActionStalled
+			out.tests[i].Class = ClassInfrastructure
 		}
 	}
 }
@@ -328,11 +353,13 @@ func (s *supervisor) retry(ctx context.Context, r Runner, step Step, cmd string,
 	}
 	if why := notRetried(failed, out.tests, resultsStream(s.dir, step, out.stdout.Bytes())); why != "" {
 		out.confirmed = true
+		out.class = ClassReal
 		note("%d failing tests not retried: %s", len(failed), why)
 		return
 	}
 	if !s.budget.take(len(failed)) {
 		out.confirmed = true
+		out.class = ClassReal
 		note("%d failing tests not retried: a run retries at most %d in all", len(failed), MaxRetriedTests)
 		return
 	}
@@ -390,6 +417,7 @@ func (s *supervisor) retry(ctx context.Context, r Runner, step Step, cmd string,
 		out.tests[i].Retries = tries[k]
 		if flaky[k] {
 			out.tests[i].Action = ActionFlaky
+			out.tests[i].Class = ClassFlaky
 			out.flaky++
 		} else {
 			out.failed++
@@ -399,10 +427,12 @@ func (s *supervisor) retry(ctx context.Context, r Runner, step Step, cmd string,
 		// every failure passed when run again: the unit is green, its
 		// flaky tests named
 		out.exitCode = 0
+		out.class = ClassFlaky
 		return
 	}
 	if _, stopped := ls.stopped(); !stopped && ctx.Err() == nil {
 		out.confirmed = true
+		out.class = ClassReal
 	}
 }
 

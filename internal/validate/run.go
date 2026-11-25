@@ -402,7 +402,11 @@ type ran struct {
 	stalled                    []testKey
 	confirmed                  bool
 	reason                     string
-	notes                      strings.Builder
+	// class is the supervisor's read of why the unit is red, or
+	// recovered (ClassReal, ClassFlaky, ClassInfrastructure); empty for
+	// a plain pass or a failure it never classified.
+	class string
+	notes strings.Builder
 
 	// hung is a run that ended in go test's timeout panic, hungTests the
 	// tests it named, rerun what the node's re-run of it found and
@@ -753,6 +757,7 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 				Report:      out.report,
 				Tests:       out.tests,
 				Reason:      out.reason,
+				Class:       out.class,
 				TimedOut:    out.exitCode == 124,
 				Artifacts:   artifacts,
 				Stopped:     out.stopped,
@@ -884,14 +889,23 @@ func merge(shards []ShardResult, concurrent bool, started int) StepResult {
 	}
 	out.Report = report.String()
 	if len(shards) < started && failed < 0 {
-		// a shard that never ran (its lane did not open) is no pass
+		// a shard that never ran (its lane did not open) is no pass,
+		// and no code of its own to blame: the environment never gave
+		// it a lane to run in
 		out.ExitCode = -1
+		out.Class = ClassInfrastructure
+		for k := range started {
+			if !slices.ContainsFunc(shards, func(s ShardResult) bool { return s.Index == k }) {
+				out.Reason = fmt.Sprintf("shard %d/%d never ran: its lane did not open", k+1, shards[0].Total)
+				break
+			}
+		}
 	}
 	if failed >= 0 {
 		f := shards[failed]
 		// a failing shard's tail is the step's: what the node logs
 		out.ExitCode, out.EnvironmentKind, out.Tail = f.ExitCode, f.EnvironmentKind, f.Tail
-		out.Stopped, out.StopReason, out.Reason = f.Stopped, f.StopReason, f.Reason
+		out.Stopped, out.StopReason, out.Reason, out.Class = f.Stopped, f.StopReason, f.Reason, f.Class
 		lines.WriteString(fmt.Sprintf("shard %d/%d failed:\n", f.Index+1, f.Total))
 		lines.WriteString(f.Output)
 		out.Output = failTail(lines.String())

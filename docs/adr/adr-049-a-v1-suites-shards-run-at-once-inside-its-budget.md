@@ -1,5 +1,5 @@
 ---
-summary: On a v1 node run_suite runs a sharded suite's shards (and its groups) at once, the first in the lease's pod and each other in a pod of its own beside it with its own copy of the lease's services, on the lease's HOME, network and egress (amended 2026-11-02: a lane sees what its lease's pod sees), on the room its suite asks for in validate.yml (cpus, memory; the node's sandbox default when it names none), held of the node's scheduler and the limit of its steps (amended 2026-11-15; before, the lease's resources), and on the lease's warm cache (ADR-044, amended 2026-11-15); a run longer than the call's wait (10 minutes) answers {run_id, status: running}, which the session polls with run_suite {run_id}, never an MCP timeout; fail_fast stops the other shards at the first failure; a validate lease is held to its validate.yml budget from the lease's start, past which the run is stopped and answered red, out_of_time, with its signed record; the record stays one per run, its output blob naming each shard. run_suite also supervises its units: a red unit's failed tests are retried by name, a confirmed failure stops the run, a stalled test is named and a unit that ran 0 tests is red (amended 2026-11-15); a stall is the unit's whole stream falling silent, never one test's silence while the others still report (amended 2026-11-16).
+summary: On a v1 node run_suite runs a sharded suite's shards (and its groups) at once, the first in the lease's pod and each other in a pod of its own beside it with its own copy of the lease's services, on the lease's HOME, network and egress (amended 2026-11-02: a lane sees what its lease's pod sees), on the room its suite asks for in validate.yml (cpus, memory; the node's sandbox default when it names none), held of the node's scheduler and the limit of its steps (amended 2026-11-15; before, the lease's resources), and on the lease's warm cache (ADR-044, amended 2026-11-15); a run longer than the call's wait (10 minutes) answers {run_id, status: running}, which the session polls with run_suite {run_id}, never an MCP timeout; fail_fast stops the other shards at the first failure; a validate lease is held to its validate.yml budget from the lease's start, past which the run is stopped and answered red, out_of_time, with its signed record; the record stays one per run, its output blob naming each shard. run_suite also supervises its units: a red unit's failed tests are retried by name, a confirmed failure stops the run, a stalled test is named and a unit that ran 0 tests is red (amended 2026-11-15); a stall is the unit's whole stream falling silent, never one test's silence while the others still report (amended 2026-11-16); a red or recovered TestResult and StepResult carry an explicit Class, real, flaky or infrastructure, and a shard whose lane never opened names itself in Reason (amended 2026-11-25).
 status: accepted
 ---
 
@@ -569,3 +569,54 @@ stall; `TestAStalledTestIsNamedAndItsUnitStopped` still holds; and
 `TestALaneRefusedRoomRunsOnItsOwnRoomAndTheOthersWait`
 (internal/nodev1) holds the first lane's room and the other lanes'
 wait.
+
+## Amendment 2026-11-25: a red or recovered result carries an explicit class
+
+Goal `a-rerun-classifies-real-flaky-or-infrastructure`. Extends the
+2026-11-15 amendment "run_suite supervises the tests it runs": that
+amendment named three outcomes — a flaky test, a confirmed failure, a
+stalled test — but only in `Action`'s string and in prose; a product
+could not tell a confirmed failure from a stall without parsing
+`Reason` or `StopReason`. It also extends the original Decision's "The
+record is one per run": a shard whose lane never opened answered
+`exit: -1` and named nothing, no reason and no class, of why.
+
+**Decision.** `TestResult` and `StepResult` (`internal/validate`) each
+carry a `Class`, beside their existing `Action`/`ExitCode`: the
+supervisor's own read of why a red, or recovered, result is what it
+is — one of three values, never a fourth, and empty where it does not
+apply:
+
+- `ClassReal` — a failure that stood: a test's own `fail` never
+  retried, or one that failed again when it was (`supervise.go`'s
+  `parse` and `retry`); a step or shard whose exit is non-zero for its
+  own code's sake.
+- `ClassFlaky` — a failure that passed on a second hearing: a test's
+  `Action` `flaky`, or a step every one of whose failing tests was
+  (`retry`).
+- `ClassInfrastructure` — a result the environment interrupted before
+  its code could be judged: a test's `Action` `stalled` and the unit
+  the stall watch stopped (`parse`), or a shard whose lane never opened
+  (`run.go`'s `merge`) — which now also names which shard in `Reason`
+  ("shard 2/4 never ran: its lane did not open") rather than leaving it
+  silent.
+
+Class is empty for a plain pass, a skip, or a failure the supervisor
+never read (a runner error, a step's own timeout): those are no new
+contract, only what `ExitCode`, `EnvironmentKind` and `Stopped` already
+said. A stalled unit is never retried and never confirmed: its `Class`
+is `infrastructure`, not `real`, so a product reading `Class` does not
+count it as a failure the change caused. `nodetools.Normalise` builds
+its own narrower mirror, field by field, and is unchanged; `Class` is
+`internal/validate`'s own field, read by a product from the signed
+attestation directly.
+
+**Consequences.** A product can tell a confirmed failure from a stall
+or a never-opened lane without parsing `Reason`'s or `StopReason`'s
+prose. Mesh's finish guard and the predicate's shape are unchanged:
+`Class` is additive, as `TestsFlaky` and `Reason` were before it.
+
+`TestAFlakyTestsClassIsFlaky`, `TestARealFailuresClassIsReal`,
+`TestAStalledUnitsClassIsInfrastructure` and
+`TestMergeNamesTheNeverRanShardAsInfrastructure` (internal/validate)
+hold it.

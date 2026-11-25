@@ -33,6 +33,12 @@ type TestResult struct {
 	// retries it failed again on — a confirmed failure. Zero for a test
 	// never retried.
 	Retries int `json:"retries,omitempty"`
+	// Class is the supervisor's read of a red (or recovered) test's
+	// Action (supervise.go): ClassReal for a fail that stood, ClassFlaky
+	// for one that passed on retry (Action flaky), ClassInfrastructure
+	// for one the environment interrupted (Action stalled). Empty for a
+	// pass, a skip, or a fail never read by the supervisor.
+	Class string `json:"class,omitempty"`
 }
 
 // ParseGoTestJSON counts `go test -json` events: each Action of pass,
