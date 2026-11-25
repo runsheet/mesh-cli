@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/meshapi"
+	"projectmesh.io/mesh-cli/internal/nodetools"
 	"projectmesh.io/mesh-cli/internal/relaysidecar"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/scheduler"
@@ -111,20 +112,29 @@ type restartRound struct {
 	Round int       `json:"round"`
 	At    time.Time `json:"at"`
 	// Model is the model call's HTTP status; MCP the product's tool
-	// call's and Tool the node's own tool's, each with its JSON-RPC
-	// error, if any; Git is `git fetch`'s exit code (0 fetched).
-	Model    int    `json:"model"`
-	MCP      int    `json:"mcp"`
-	MCPError string `json:"mcp_error,omitempty"`
-	Tool     int    `json:"tool"`
-	ToolErr  string `json:"tool_error,omitempty"`
-	Git      int    `json:"git"`
-	GitOut   string `json:"git_out,omitempty"`
+	// call's and Tool the node's own progress tool's, each with its
+	// JSON-RPC error, if any; RunSuite and ApplyOnto are the node's own
+	// run_suite and apply_onto tools, the same way; Git is `git fetch`'s
+	// exit code (0 fetched).
+	Model        int    `json:"model"`
+	MCP          int    `json:"mcp"`
+	MCPError     string `json:"mcp_error,omitempty"`
+	Tool         int    `json:"tool"`
+	ToolErr      string `json:"tool_error,omitempty"`
+	RunSuite     int    `json:"run_suite"`
+	RunSuiteErr  string `json:"run_suite_error,omitempty"`
+	ApplyOnto    int    `json:"apply_onto"`
+	ApplyOntoErr string `json:"apply_onto_error,omitempty"`
+	Git          int    `json:"git"`
+	GitOut       string `json:"git_out,omitempty"`
 }
 
 func (r restartRound) ok() bool {
 	return r.Model == http.StatusOK && r.MCP == http.StatusOK && r.MCPError == "" &&
-		r.Tool == http.StatusOK && r.ToolErr == "" && r.Git == 0
+		r.Tool == http.StatusOK && r.ToolErr == "" &&
+		r.RunSuite == http.StatusOK && r.RunSuiteErr == "" &&
+		r.ApplyOnto == http.StatusOK && r.ApplyOntoErr == "" &&
+		r.Git == 0
 }
 
 // maybeRunRestartRole runs this test binary as the node or the agent
@@ -210,8 +220,26 @@ func runRestartNode() int {
 		return nil
 	}
 	// the agent's container: this binary as the stand-in session, on the
-	// agent's own environment, workdir and stdio files
+	// agent's own environment, workdir and stdio files. A suite step --
+	// run_suite's, before the restart (Session.Exec, "<pod>-exec-<n>")
+	// or after the adoption (podsuites.go, "<pod>-suite-<n>") -- is a
+	// different container of the same pod, and must run its own
+	// command for real rather than the stand-in session.
 	sb.Agent = func(ctx context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
+		if strings.Contains(spec.Name, "-exec-") || strings.Contains(spec.Name, "-suite-") {
+			step := exec.CommandContext(ctx, spec.Command[0], spec.Command[1:]...)
+			step.Dir = spec.Workdir
+			step.Env = append(append([]string(nil), spec.Env...), "PATH="+os.Getenv("PATH"))
+			step.Stdout, step.Stderr = spec.Stdout, spec.Stderr
+			err := step.Run()
+			if ee, ok := err.(*exec.ExitError); ok {
+				return sandbox.Exit{Code: ee.ExitCode()}, nil
+			}
+			if err != nil {
+				return sandbox.Exit{}, err
+			}
+			return sandbox.Exit{Code: 0}, nil
+		}
 		cmd := exec.Command(cfg.Self, "-test.run=^$")
 		cmd.Dir = spec.Workdir
 		cmd.Env = append(append([]string(nil), spec.Env...),
@@ -276,6 +304,7 @@ func runRestartNode() int {
 		}},
 		RelaySidecar:  true,
 		gitBridgePort: cfg.GitPort,
+		PodImage:      "mesh-node:test",
 	}
 	// SIGHUP is `mesh node upgrade`'s restart (noderun.go): every lease's
 	// hand-off written and the process gone, nothing of the lease
@@ -444,6 +473,8 @@ func runRestartSession() int {
 		r.Model = model()
 		r.MCP, r.MCPError = mcp("conform", "brief", "{}", round)
 		r.Tool, r.ToolErr = mcp(NodeToolsServer, "progress", fmt.Sprintf(`{"note":"round %d"}`, round), round)
+		r.RunSuite, r.RunSuiteErr = mcp(NodeToolsServer, nodetools.RunSuiteTool, "{}", round)
+		r.ApplyOnto, r.ApplyOntoErr = mcp(NodeToolsServer, nodetools.ApplyOntoTool, "{}", round)
 		r.Git, r.GitOut = gitFetch()
 		line, _ := json.Marshal(r)
 		results.Write(append(line, '\n'))
@@ -627,9 +658,53 @@ func TestASessionSurvivesANodeRestartE2E(t *testing.T) {
 			t.Logf("the product refused %d of %d call(s): %v", len(failures), len(calls), failures)
 		}
 	})
+	// a validate.yml on main, for run_suite, and a second commit at a
+	// pull-request ref, for apply_onto's Code.Apply (ChangeRef is the
+	// identity for an empty, GitHub, vendor) -- the same fixture shape
+	// TestAdoptedLeaseServesApplyOnto uses.
+	gitBin, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("no git")
+	}
+	seed := t.TempDir()
+	seedGit := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command(gitBin, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "HOME="+seed,
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@x", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@x")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	seedGit(seed, "clone", "-q", g.github.bare, seed)
+	if err := os.MkdirAll(filepath.Join(seed, ".runsheet"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	validateYML := "suites:\n  - name: unit\n    kind: unit\n    command: true\n"
+	if err := os.WriteFile(filepath.Join(seed, ".runsheet", "validate.yml"), []byte(validateYML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seedGit(seed, "add", ".")
+	seedGit(seed, "commit", "-qm", "validate.yml")
+	seedGit(seed, "push", "-q", g.github.bare, "HEAD:main")
+	g.github.head = seedGit(seed, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(seed, "change.txt"), []byte("the change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seedGit(seed, "add", ".")
+	seedGit(seed, "commit", "-qm", "the change")
+	change := seedGit(seed, "rev-parse", "HEAD")
+	seedGit(seed, "push", "-q", g.github.bare, "HEAD:refs/pull/9/head")
+
 	job := g.offer(t, func(b *meshapi.Brief) {
 		b.Servers = []meshapi.Server{{Name: "conform", URL: prod.url}}
 		b.RenewEveryS = 1
+		b.NodeTools = append(b.NodeTools, nodetools.RunSuiteTool, nodetools.ApplyOntoTool)
+		b.Code.Onto = &meshapi.Onto{SHA: g.github.head}
+		b.Code.Apply = []meshapi.Apply{{SHA: change, Ref: "refs/pull/9/head"}}
 	})
 
 	// --- the first node takes the lease; its session works through the
@@ -698,6 +773,12 @@ func TestASessionSurvivesANodeRestartE2E(t *testing.T) {
 		}
 		if r.Tool != http.StatusOK || r.ToolErr != "" {
 			broken = append(broken, fmt.Sprintf("round %d: the node's own tools answered %d %s", r.Round, r.Tool, r.ToolErr))
+		}
+		if r.RunSuite != http.StatusOK || r.RunSuiteErr != "" {
+			broken = append(broken, fmt.Sprintf("round %d: run_suite answered %d %s", r.Round, r.RunSuite, r.RunSuiteErr))
+		}
+		if r.ApplyOnto != http.StatusOK || r.ApplyOntoErr != "" {
+			broken = append(broken, fmt.Sprintf("round %d: apply_onto answered %d %s", r.Round, r.ApplyOnto, r.ApplyOntoErr))
 		}
 		if r.Git != 0 {
 			broken = append(broken, fmt.Sprintf("round %d: git fetch exited %d: %s", r.Round, r.Git, r.GitOut))
