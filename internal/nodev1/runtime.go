@@ -190,6 +190,12 @@ type Runtime struct {
 	// without --sandbox). A node with a Sandbox never does, whatever this
 	// says; the zero value never does (podsuites.go).
 	HostSuites bool
+	// ValidateWithSession keeps a validate lease in a session, as before
+	// 2026-11-25 (`--validate-with-session`): the session builds, pushes
+	// and runs the suites with the node's tools and writes the finish.
+	// The zero value has the node do all of it itself, with no model
+	// (validatelease.go, ADR-044 amendment 2026-11-25).
+	ValidateWithSession bool
 	// SuiteWait is how long a run_suite call waits on its run before it
 	// answers the run's handle for the session to poll
 	// (nodetools.DefaultSuiteWait when zero; ADR-049).
@@ -497,6 +503,10 @@ type running struct {
 	// (handoff.go, adopt.go) needs it to reach the sidecar's control
 	// socket again.
 	sidecarDir string
+	// machine is a validation the node runs itself (validatelease.go):
+	// no agent runs in its pod, so it ends with the process and is never
+	// handed off to be adopted
+	machine bool
 	// egressPID and egressControl name the lease's egress process
 	// (ADR-051 decision 1), for its hand-off file beside sidecarDir;
 	// egressPID 0 for a lease with none (in-process relay, or no

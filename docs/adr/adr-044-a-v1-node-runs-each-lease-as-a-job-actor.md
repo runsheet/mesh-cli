@@ -1069,3 +1069,75 @@ automated item validations.
 `TestNoValidationReserveAdmitsAsBefore` (internal/nodev1), and
 `TestPersonValidationsTakeTurnsByRepo` and `TestReservesAreBounded`
 (internal/scheduler) cover it.
+
+## Amendment, 2026-11-25: the node validates a lease itself, with no model
+
+A validate lease asks for no judgment: build the candidate, push it,
+run the suites, say what they did. Until now a cheap-model session did
+all four with the node's tools, and when it skipped a step the
+platform refused its finish — about 25 chain validations across eight
+repositories between 19 and 25 November named no candidate, or a
+candidate that did not hold, and each chain that lost two tries needed
+a person's `/merge`. Moving the candidate's construction alone would
+not end that while a model still had to remember to run the tests and
+submit the result (Codex's review of the throughput plan). So the node
+now runs the whole validation itself (`internal/nodev1/validatelease.go`).
+
+1. **Which leases.** Every validate lease (`validationKind`) whose kind
+   names `run_suite`, one-shot (no thread, no dispatcher)
+   (`machineValidates`). The brief may still name a harness — runsheet's
+   validate kind does — and no session runs all the same. A node started
+   with `--validate-with-session` (`Runtime.ValidateWithSession`) keeps
+   every validate lease in its session, as before.
+2. **Where it runs.** At the point a session would start: after the
+   checkout, the pod and its services, the relay (sidecar or the node's
+   own) and the stop gate are set up exactly as for a session. The node
+   calls the lease's own `apply_onto`, `push` and `run_suite` — the
+   instances `nodeTools` built, on the lease's pod lanes, pusher and
+   recorder, with no model escalation — so each records its signed
+   evidence as it would for a session. A session on such a lease is
+   served none of them (`machineOnlyTools`).
+3. **The steps.** (a) When the brief names `code.onto` and `code.apply`,
+   `apply_onto` builds the candidate; a conflict finishes at once with
+   `{green: false, conflict {index, paths}}`, nothing pushed and nothing
+   run. Otherwise the candidate is the checkout's `HEAD`. (b) When the
+   brief names `code.push_to`, the candidate is pushed there, once more
+   under the lease of where the job found the ref if a plain push is
+   refused. (c) The product's brief is read through the lease's proxy
+   (`brief_tool`, as a session would call it): a candidate whose tree
+   is one of `validate.proven` runs nothing and finishes
+   `{green: true, reused, candidate}`; `validate.e2e` narrows the
+   `integration` suite to its selected tests on their shards, in a
+   `run_suite` call beside every other suite's. A brief the node cannot
+   read runs every suite whole. (d) Every call is waited on to its end.
+4. **The result.** `green` is every run's exit; `candidate {sha, tree}`
+   is apply_onto's (named when the brief has a `push_to`); `suites`
+   and `tests` are run_suite's answers; `evidence` every record the
+   lease's tools signed; `flaked` the tests the node's supervisor found
+   flaky; a red's `triage` the node's own reading of the answers
+   (`machineTriage`): `hung` when a step hung twice (its tests and log
+   evidence), `infra` when a run ran out of the repository's budget or
+   could not run its steps, `flake` when every failing test is in
+   `validate.known_flaky`, else `code`, naming each failing test as
+   `<package> <test>`. `suite_config_sha` (validate.yml's hash, ADR 032)
+   and `environment {release, image}` bind it to what ran; any key the
+   kind's `finish_schema` does not name is left out when the schema
+   closes its object (`finishFor`), so a product that has not yet named
+   them still takes the result.
+5. **Bound to its tree.** Every `run_suite` answer must name the
+   candidate's commit and tree, and the checkout must still hold that
+   tree when the node writes the finish. Otherwise the lease is handed
+   back with `the candidate's tree changed between build and finish`
+   (`errTreeMoved`), never finished with a result of another tree.
+6. **Restarts.** No agent runs in a machine validation's pod, so it
+   ends with the node's process: an upgrade hands it back rather than
+   handing it off (`adoptability`).
+
+`TestTheNodeValidatesAChainWithNoSession`,
+`TestTheNodeFinishesAConflictingChainWithTheConflict`,
+`TestTheNodeFinishesARedSuiteRedWithItsFailingTests`,
+`TestTheNodeRefusesAResultWhoseTreeMovedBeforeTheFinish`,
+`TestValidateWithSessionKeepsTheSession`,
+`TestFinishForKeepsWhatTheSchemaTakes`,
+`TestSuiteCallsFollowTheBriefsE2ESelection` and
+`TestAMachineValidationIsNotAdoptable` (internal/nodev1) cover it.

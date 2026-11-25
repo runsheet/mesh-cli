@@ -139,6 +139,11 @@ func adoptability(l *running) (bool, string) {
 		// asks come back to the next lease instead (dispatcher.go)
 		return false, "a dispatcher's sub-agents end with the process"
 	}
+	if l.machine {
+		// no agent runs in a machine validation's pod: the node's own
+		// process is the validation (validatelease.go)
+		return false, "a validation the node runs itself ends with the process"
+	}
 	if l.sidecarDir == "" {
 		return false, ""
 	}
