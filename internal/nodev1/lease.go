@@ -535,7 +535,24 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		tb.fixed = held
 		defer tb.Stop()
 	}
-	tools, rec := r.nodeTools(b, grant, workspace, tokens, ladder, mb, suites, pusher, clock, tb, tnt.Tainted)
+	// a validation the node runs itself (validatelease.go) calls the
+	// node's own tools; its tools escalate no model, and a session on it
+	// (a red's diagnosis) is served none of them
+	machine := r.machineValidates(b)
+	toolLadder := ladder
+	if machine {
+		toolLadder = nil
+	}
+	tools, rec := r.nodeTools(b, grant, workspace, tokens, toolLadder, mb, suites, pusher, clock, tb, tnt.Tainted)
+	var machineTools map[string]mcptool.Tool
+	if machine {
+		r.setMachine(b.LeaseID)
+		machineTools = map[string]mcptool.Tool{}
+		for _, t := range tools {
+			machineTools[t.Name] = t
+		}
+		tools = withoutMachineTools(tools)
+	}
 	hb := &sessionHandBack{}
 	tools = sl.nodeTools(append(tools, r.endTools(b, fin, hb, mb)...))
 	var (
@@ -693,6 +710,22 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 			// a cancelled actor does not run its session
 			return outcome{err: err, cause: context.Cause(ctx)}
 		}
+	}
+	if machine {
+		// the node validates the lease itself, and no session runs
+		// (validatelease.go)
+		mv, err := r.validateByMachine(ctx, b, machineTools, rec, sock, workspace)
+		o := outcome{err: err, evidence: rec.IDs()}
+		if err != nil {
+			o.cause = context.Cause(ctx)
+			return o
+		}
+		if o.finish, o.err = finishFor(b.FinishSchema, mv.finish); o.err != nil {
+			return o
+		}
+		o.finish = r.finalPin(ctx, b, grant, pusher, workspace, o.finish)
+		o.finish = withCoverage(o.finish, clock.coverage.get())
+		return o
 	}
 	sctx, watch := r.watchLease(sctx, b, workspace, mb, ladder, &spec, tokens, grant, account, vals)
 	// an injected value seen where it must not go ends the session
