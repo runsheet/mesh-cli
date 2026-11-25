@@ -245,9 +245,6 @@ func buildWorkspace(b *strings.Builder, in PromptInput) {
 // item back already done, with evidence, when the acceptance holds there.
 func checkMainFirst(b *strings.Builder, in PromptInput) {
 	base := in.BaseRef
-	if base == "" {
-		base = "main"
-	}
 	b.WriteString("# Check main first\n\n")
 	fmt.Fprintf(b, "Before you write any code, look for this item's work on `origin/%s` — it may have merged already, under this goal or another:\n\n", base)
 	fmt.Fprintf(b, "- `git log origin/%s` since the goal was set (the checkout carries the base ref's history; `git fetch origin %s` if it looks short), by the item's title and the brief's keywords;\n", base, base)
