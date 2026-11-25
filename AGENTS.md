@@ -279,7 +279,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
     one lease at a time (wave 0) against Mesh's v1 node API
     (`internal/meshapi`, `DefaultURL = "https://api.projectmesh.io"`),
     runs the lease's harnessed session, renews the lease while it
-    runs, and finishes or hands it back.
+    runs, and finishes or hands it back. A lease's session reports in
+    one event shape whichever vendor runs it: `ClaudeSession`'s output
+    is already stream-json (`harness.Event`), and `CodexSession`'s own
+    `codexTranslator` rewrites `codex app-server`'s notifications into
+    the same shape, so the lease's transcript upload, liveness and
+    account tracking read either harness the same way; see
+    `docs/event-format.md` for the event types and fields each side
+    carries, and what Codex has no equivalent for.
   - `internal/actor`: a lease's own job actor (wave 3) — states
     taken → preparing → running → reporting → releasing → done,
     persisted as `actor.json` in the lease's own job directory;
