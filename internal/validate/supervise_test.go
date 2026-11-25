@@ -366,6 +366,53 @@ func TestRunRetriesFailingTestsByName(t *testing.T) {
 	}
 }
 
+// A test that passes on retry is flaky: its own Class and the unit's
+// agree, and the unit is green.
+func TestAFlakyTestsClassIsFlaky(t *testing.T) {
+	runner := &supervisedRunner{script: func(c call, _ int) []string {
+		if c.retry {
+			return passing("TestFlaky")
+		}
+		return failing("TestFlaky")
+	}}
+	steps := []Step{{Name: "unit", Command: "go test", Timeout: time.Minute, Retries: 1}}
+	results, err := Run(context.Background(), steps, runner, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := results[0]
+	if got.ExitCode != 0 {
+		t.Fatalf("exit %d, want 0: a test flaky on retry is green", got.ExitCode)
+	}
+	if got.Class != ClassFlaky {
+		t.Fatalf("step class %q, want %q", got.Class, ClassFlaky)
+	}
+	if len(got.Tests) != 1 || got.Tests[0].Action != ActionFlaky || got.Tests[0].Class != ClassFlaky {
+		t.Fatalf("tests %+v, want TestFlaky flaky/%s", got.Tests, ClassFlaky)
+	}
+}
+
+// A test that fails again on retry is real: the unit stays red and its
+// Class says the failure stood.
+func TestARealFailuresClassIsReal(t *testing.T) {
+	runner := &supervisedRunner{script: func(call, int) []string { return failing("TestBroken") }}
+	steps := []Step{{Name: "unit", Command: "go test", Timeout: time.Minute, Retries: 1}}
+	results, err := Run(context.Background(), steps, runner, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := results[0]
+	if got.ExitCode == 0 {
+		t.Fatal("exit 0, want red: the retry failed again")
+	}
+	if got.Class != ClassReal {
+		t.Fatalf("step class %q, want %q", got.Class, ClassReal)
+	}
+	if len(got.Tests) != 1 || got.Tests[0].Action != "fail" || got.Tests[0].Class != ClassReal {
+		t.Fatalf("tests %+v, want TestBroken fail/%s", got.Tests, ClassReal)
+	}
+}
+
 // A retry happens after its unit has ended, never inside the unit's
 // stream: while shard 0's retry is held, shard 1's tests go on reaching
 // OnTest, and the retry's own events never do. A confirmed failure then
@@ -528,6 +575,31 @@ func TestAStalledTestIsNamedAndItsUnitStopped(t *testing.T) {
 	}
 	if len(runner.retried()) != 0 {
 		t.Fatal("a stopped unit was retried")
+	}
+}
+
+// A stalled unit is infrastructure, not a confirmed failure: the
+// environment stopped it before its code could be judged, so it is
+// never retried.
+func TestAStalledUnitsClassIsInfrastructure(t *testing.T) {
+	runner := &supervisedRunner{script: func(call, int) []string {
+		return []string{ev("run", "TestHangs")}
+	}}
+	hung := &hangs{supervisedRunner: runner}
+	steps := []Step{{Name: "unit", Command: "go test", Timeout: time.Minute, Stall: 40 * time.Millisecond, Retries: 1}}
+	results, err := Run(context.Background(), steps, hung, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := results[0]
+	if got.ExitCode == 0 {
+		t.Fatal("exit 0, want red: the stall stopped the unit")
+	}
+	if got.Class != ClassInfrastructure {
+		t.Fatalf("step class %q, want %q", got.Class, ClassInfrastructure)
+	}
+	if len(runner.retried()) != 0 {
+		t.Fatal("a stalled unit was retried: it is infrastructure, not a confirmed failure")
 	}
 }
 

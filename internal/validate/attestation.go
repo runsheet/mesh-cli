@@ -51,6 +51,15 @@ type StepResult struct {
 	// command's own exit did not: "ran 0 tests" for a unit that exited 0
 	// under its suite's min_tests.
 	Reason string `json:"reason,omitempty"`
+	// Class is the supervisor's own read of why the step is red, or
+	// recovered (supervise.go, run.go's merge): ClassReal for a
+	// confirmed failure, ClassFlaky for a unit every one of whose
+	// failures passed on retry, ClassInfrastructure for a unit the
+	// environment stopped (a stalled test, a shard whose lane never
+	// opened) before its code could be judged. Empty for a pass the
+	// supervisor read as plain, or a failure it never classified (a
+	// runner error, a step's own timeout).
+	Class string `json:"class,omitempty"`
 	// Tail is a failing step's last TailLines lines of its combined
 	// stdout and stderr, redacted, for the node's log; never part of the
 	// signed attestation (Output carries its share there).

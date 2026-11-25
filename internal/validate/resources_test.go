@@ -122,3 +122,21 @@ func TestMergeNamesShardsNotStarted(t *testing.T) {
 		t.Fatalf("a full run missing shards: exit %d, want -1", got.ExitCode)
 	}
 }
+
+// A shard that never ran is infrastructure, not a confirmed failure: the
+// environment never gave it a lane, and the reason names it.
+func TestMergeNamesTheNeverRanShardAsInfrastructure(t *testing.T) {
+	ok := func(k int) ShardResult {
+		return ShardResult{Index: k, Total: 4, StepResult: StepResult{Name: "integration"}}
+	}
+	got := merge([]ShardResult{ok(0)}, true, 2)
+	if got.ExitCode != -1 {
+		t.Fatalf("exit %d, want -1: a started shard never ran", got.ExitCode)
+	}
+	if got.Class != ClassInfrastructure {
+		t.Fatalf("class %q, want %q", got.Class, ClassInfrastructure)
+	}
+	if !strings.Contains(got.Reason, "shard 2/4") {
+		t.Fatalf("reason %q, want it to name shard 2/4", got.Reason)
+	}
+}
