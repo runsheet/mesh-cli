@@ -270,6 +270,71 @@ func TestAnAdmittedLaneGivesItsRoomBackWhenItEnds(t *testing.T) {
 	}
 }
 
+// A lease whose lanes ask for nothing beyond its own hold is admitted
+// at once, even behind an older validation still waiting for its
+// lanes' room: it draws no CPUs or memory the waiter is waiting for
+// (goal a-validation-needing-no-room-is-admitted-at-once; dl360/
+// mesh-specs#227).
+func TestAdmitNeedingNoRoomJumpsTheQueue(t *testing.T) {
+	rt := testRuntime(t)
+	rt.Scheduler = scheduler.New(scheduler.Capacity{CPUs: 20, MemGB: 100})
+	var mu sync.Mutex
+	var logged []string
+	rt.Logf = func(format string, args ...any) {
+		mu.Lock()
+		logged = append(logged, fmt.Sprintf(format, args...))
+		mu.Unlock()
+	}
+	if _, err := rt.Scheduler.TryTakeAll([]scheduler.Ask{{Owner: "running", CPUs: 16}}); err != nil {
+		t.Fatal(err)
+	}
+	older := make(chan error, 1)
+	go func() {
+		_, err := rt.Scheduler.TakeAll(context.Background(), []scheduler.Ask{{Owner: "older", CPUs: 10}})
+		older <- err
+	}()
+	// the older take is in line
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if len(rt.Scheduler.Waiting()) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the older take never waited")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// its one lane's room (4 cpus, 8 GB) fits inside its own lease's
+	// hold (b.Resources): it asks the scheduler for nothing beyond that
+	b := &meshapi.Brief{LeaseID: "lease-z", JobID: "job-z", Kind: "runsheet/validate", Resources: meshapi.Resources{CPUs: 4, MemGB: 8}}
+	sizes := []validate.LaneSize{{Name: "checks", Resources: validate.Resources{CPUs: 4, Memory: "8g"}}}
+	got, err := rt.admit(context.Background(), b, sizes, meshapi.Resources{})
+	if err != nil {
+		t.Fatalf("admit refused a lease needing no extra room: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("%d lanes admitted, want 1", len(got))
+	}
+	defer got[0].l.Release()
+
+	select {
+	case err := <-older:
+		t.Fatalf("the older waiter was admitted instead of still waiting: %v", err)
+	default:
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	said := strings.Join(logged, "\n")
+	if !strings.Contains(said, "lease lease-z: admitted ahead of 1 waiting: needs no extra room") {
+		t.Fatalf("node.log lacks the zero-room admission line:\n%s", said)
+	}
+	if strings.Contains(said, "lease lease-z: admission waits") {
+		t.Fatalf("node.log says lease-z waited, want it admitted at once:\n%s", said)
+	}
+}
+
 // The lanes a lease runs are in its hand-off (goal
 // a-validation-is-admitted-for-every-lane-it-runs): a node restarted
 // mid-lease reads them from handoff.json, adopts the lease's running

@@ -1069,3 +1069,32 @@ automated item validations.
 `TestNoValidationReserveAdmitsAsBefore` (internal/nodev1), and
 `TestPersonValidationsTakeTurnsByRepo` and `TestReservesAreBounded`
 (internal/scheduler) cover it.
+
+## Amendment, 2026-11-25: a validation needing no room is admitted at once, not FIFO-queued
+
+Goal `a-validation-needing-no-room-is-admitted-at-once`. dl360/
+mesh-specs#227: a lease whose single lane's room fit inside its own
+lease's hold — it asked the scheduler for nothing beyond that (`admit`'s
+`i == 0` subtraction left it 0 CPUs and 0 memory) — still queued behind
+an older validation waiting for its lanes' CPUs and memory, because
+`TakeAll`'s FIFO order (the 2026-11-22 amendment above `grantAllLocked`
+predates) held every all-or-nothing take behind an older waiter of its
+class regardless of what it asked for. A take that asks for nothing
+takes nothing the older waiter is waiting for, so there was no reason
+to make it wait too.
+
+`Scheduler.grantAllLocked` (`internal/scheduler/takeall.go`) now skips
+the FIFO ordering check (`aheadLocked`) for an all-or-nothing take whose
+combined ask (`combined`, every lane's ask summed) needs no CPUs and no
+memory (`needsNoRoom`): it is granted (or refused for some other
+reason, e.g. the build cache held exclusively) exactly as `fitLocked`
+says, never held behind an older waiter. An ask that does need room —
+even 1 CPU — still waits behind an older waiter of its class, FIFO
+order unchanged for it. `internal/nodev1`'s `admit` logs the zero-room
+case apart from the ordinary wait: `"admitted ahead of %d waiting: needs
+no extra room"` when it was admitted at once beside one or more
+waiters, instead of the `"admission waits"` line a room-needing take
+that misses logs.
+
+`TestAZeroRoomTakeIsAdmittedAheadOfAnOlderWaiter` (internal/scheduler)
+and `TestAdmitNeedingNoRoomJumpsTheQueue` (internal/nodev1) cover it.

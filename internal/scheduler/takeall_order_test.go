@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -65,6 +66,55 @@ func TestTakeAllAdmitsTheOldestWaiterFirst(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("the younger take was not admitted once the older one was")
+	}
+}
+
+// A take that needs no extra room is admitted at once even behind an
+// older waiter: it takes nothing the waiter is waiting for (dl360/
+// mesh-specs#227). An ask that does need room, though, still waits
+// behind the older one: ordering among room-needing asks is unchanged.
+func TestAZeroRoomTakeIsAdmittedAheadOfAnOlderWaiter(t *testing.T) {
+	s := New(Capacity{CPUs: 88, MemGB: 400})
+	if _, err := s.TryTakeAll([]Ask{{Owner: "running", CPUs: 86}}); err != nil {
+		t.Fatal(err)
+	}
+	older := make(chan error, 1)
+	go func() {
+		_, err := s.TakeAll(context.Background(), []Ask{{Owner: "older", CPUs: 12}})
+		older <- err
+	}()
+	// the older take is in line
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		s.mu.Lock()
+		n := len(s.allWaiting)
+		s.mu.Unlock()
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the older take never waited")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// a take asking for no room at all is admitted at once, the older
+	// waiter still waiting
+	zero, err := s.TryTakeAll([]Ask{{CPUs: 0, MemGB: 0}})
+	if err != nil {
+		t.Fatalf("a zero-room take was refused: %v", err)
+	}
+	select {
+	case err := <-older:
+		t.Fatalf("the older take was admitted by the zero-room take's grant: %v", err)
+	default:
+	}
+	zero[0].Release()
+
+	// an ask that does need room still waits behind the older one: only
+	// 2 cpus are free, and it asks for 6
+	if _, err := s.TryTakeAll([]Ask{{CPUs: 6}}); !errors.Is(err, ErrNoRoom) || !strings.Contains(err.Error(), "an older validation waits for its lanes' room first") {
+		t.Fatalf("a room-needing take jumped the line: %v", err)
 	}
 }
 

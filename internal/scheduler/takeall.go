@@ -30,6 +30,17 @@ import (
 // repository already holds some, so every repository gets its lane
 // before any gets a second (dl360, 2026-11-24: hand pull request
 // validations starved for hours behind item validations).
+//
+// An all-or-nothing take that asks for no CPUs and no memory beyond
+// what is already held (goal
+// a-validation-needing-no-room-is-admitted-at-once; dl360/mesh-specs#227:
+// a lease whose first lane's room fit inside its own lease's hold
+// waited behind another validation's lanes for CPUs and memory it
+// never asked for) is granted at once, ahead of an older waiter: it
+// takes nothing from the room the waiter is waiting for, so granting it
+// leaves the waiter no worse off. The FIFO order above still governs
+// every take that does need room: one of those still waits behind an
+// older waiter of its class, unchanged.
 
 // combined is asks as one ask for fitLocked: their CPUs and memory
 // summed, the cache mode of the most demanding, a slot when any takes one.
@@ -97,6 +108,14 @@ func (s *Scheduler) aheadLocked(me allWaiter) string {
 	return ""
 }
 
+// needsNoRoom is whether c, an all-or-nothing take's combined ask,
+// needs no CPUs and no memory beyond what already fits: granting it
+// never takes room an older waiter is waiting for, so the FIFO order
+// aheadLocked enforces does not apply to it.
+func needsNoRoom(c Ask) bool {
+	return c.CPUs <= eps && c.MemGB <= eps
+}
+
 func waiterOf(asks []Ask, ticket uint64) allWaiter {
 	c := combined(asks)
 	return allWaiter{ticket: ticket, person: c.Person, reserve: c.reserveName(), repo: c.Repo}
@@ -115,15 +134,18 @@ func (s *Scheduler) dropTicketLocked(ticket uint64) {
 func (s *Scheduler) grantAllLocked(asks []Ask, ticket uint64) ([]*Lease, error) {
 	now := s.now()
 	s.lapseLocked(now)
-	if why := s.aheadLocked(waiterOf(asks, ticket)); why != "" {
-		return nil, fmt.Errorf("%w: %s", ErrNoRoom, why)
+	c := combined(asks)
+	if !needsNoRoom(c) {
+		if why := s.aheadLocked(waiterOf(asks, ticket)); why != "" {
+			return nil, fmt.Errorf("%w: %s", ErrNoRoom, why)
+		}
 	}
 	for _, a := range asks {
 		if a.Account != "" {
 			return nil, fmt.Errorf("scheduler: an all-or-nothing take names account %s; it takes none", a.Account)
 		}
 	}
-	if err := s.fitLocked(combined(asks)); err != nil {
+	if err := s.fitLocked(c); err != nil {
 		return nil, err
 	}
 	out := make([]*Lease, 0, len(asks))

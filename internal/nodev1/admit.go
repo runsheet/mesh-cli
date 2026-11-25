@@ -106,7 +106,12 @@ func (r *Runtime) keepAdmitted(b *meshapi.Brief, p *leasePod, got []admittedLane
 
 // admit takes every lane's room of sizes, for b's lease, of the node's
 // scheduler at once, waiting as long as ctx allows; errNeverFits when
-// they could never fit beside the lease's own hold.
+// they could never fit beside the lease's own hold. A lease whose
+// lanes ask for nothing beyond its own hold (its first lane's room
+// fits inside b.Resources) is admitted at once even behind an older
+// validation still waiting for its lanes' room: it draws nothing the
+// waiter needs (scheduler.TakeAll's zero-room admission; dl360/
+// mesh-specs#227).
 //
 // services is what each lane's own sidecars run on (servicesRoom), held
 // beside its room for a lane whose suites run services
@@ -153,6 +158,7 @@ func (r *Runtime) admit(ctx context.Context, b *meshapi.Brief, sizes []validate.
 		return nil, fmt.Errorf("%w: its %d lanes need %s GB with the lease's own %g, the node has %g GB in all", errNeverFits, len(sizes), num2(need.MemGB), b.Resources.MemGB, total.MemGB)
 	}
 	free := r.Scheduler.Free()
+	waiting := len(r.Scheduler.Waiting())
 	ls, err := r.Scheduler.TryTakeAll(asks)
 	if err != nil {
 		r.logf("nodev1: lease %s: admission waits: asked %g cpus, %s GB for %d lanes, free %g cpus, %s GB, waiting on %s (%v)",
@@ -163,6 +169,13 @@ func (r *Runtime) admit(ctx context.Context, b *meshapi.Brief, sizes []validate.
 		}
 		r.logf("nodev1: lease %s: admission waited %s", b.LeaseID, time.Since(start).Round(time.Second))
 		free = scheduler.Capacity{CPUs: r.Scheduler.Free().CPUs + asked.CPUs, MemGB: r.Scheduler.Free().MemGB + asked.MemGB}
+	} else if waiting > 0 && asked.CPUs <= 0 && asked.MemGB <= 0 {
+		// its lanes fit inside the lease's own hold: granting it takes no
+		// room any older waiter is waiting for, so it is admitted ahead of
+		// them rather than queued behind (goal
+		// a-validation-needing-no-room-is-admitted-at-once;
+		// dl360/mesh-specs#227).
+		r.logf("nodev1: lease %s: admitted ahead of %d waiting: needs no extra room", b.LeaseID, waiting)
 	}
 	held := r.Scheduler.Total()
 	after := r.Scheduler.Free()
