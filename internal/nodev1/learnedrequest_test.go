@@ -53,12 +53,18 @@ func TestLearnedRequestFromPeakHistory(t *testing.T) {
 		r.usage.ended(kind, leasePeaks{read: true, cpu: cpu[i], mem: uint64(mem[i] * (1 << 30))})
 	}
 	b := &meshapi.Brief{Kind: kind, Resources: meshapi.Resources{CPUs: 4, MemGB: 16}}
-	ask := r.leaseAsk(b, leaseOf("new-build"))
-	if ask.CPUs != 1.2 {
-		t.Fatalf("ask.CPUs = %g, want the measured 75th percentile 1.2", ask.CPUs)
+	req := r.leaseRequest(b)
+	if req.CPUs != 1.2 {
+		t.Fatalf("request CPUs = %g, want the measured 75th percentile 1.2", req.CPUs)
 	}
-	if ask.MemGB != 5.625 {
-		t.Fatalf("ask.MemGB = %g, want the measured 95th percentile 4.5 plus 25%% headroom, 5.625", ask.MemGB)
+	if req.MemGB != 5.625 {
+		t.Fatalf("request MemGB = %g, want the measured 95th percentile 4.5 plus 25%% headroom, 5.625", req.MemGB)
+	}
+	// admitted on requests (v1.admit_on), the lease's own hold is that
+	// CPU request; its memory stays the declared size in this first cut
+	r.AdmitOn = AdmitOnRequests
+	if ask := r.leaseAsk(b, leaseOf("new-build")); ask.CPUs != 1.2 || ask.MemGB != 16 {
+		t.Fatalf("admit_on=requests: ask %g cpus, %g GB; want 1.2 cpus, the declared 16 GB", ask.CPUs, ask.MemGB)
 	}
 }
 
@@ -73,6 +79,7 @@ func TestLearnedRequestFallsBackWithFewMeasuredLeases(t *testing.T) {
 		r.usage.ended(kind, leasePeaks{read: true, cpu: 9, mem: 9 << 30})
 	}
 	b := &meshapi.Brief{Kind: kind, Resources: meshapi.Resources{CPUs: 3, MemGB: 6}}
+	r.AdmitOn = AdmitOnRequests
 	ask := r.leaseAsk(b, leaseOf("new-small"))
 	if ask.CPUs != 3 || ask.MemGB != 6 {
 		t.Fatalf("ask = %g cpus, %g GB; want the declared 3 cpus, 6 GB (only %d measured, fewer than %d)",

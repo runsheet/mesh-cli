@@ -1356,3 +1356,36 @@ that kind's measured peaks once there are enough to trust.
 `TestLearnedRequestNeverAboveLimitOrBelowFloor` and
 `TestStatusLeaseLineReportsLimitRequestNowAndPeak` (internal/nodev1)
 cover it.
+
+## Amendment, 2026-11-26: v1.admit_on chooses what a lease is admitted on
+
+This is item 3 of goal `a-job-is-sized-by-request-and-limit`. Item 2 taught
+the node a request for each kind, learned from its measured peaks. Its merge
+also made every lease's own hold that learned request, for CPU and memory,
+on every node, with no switch. This amendment puts that behind a setting
+and narrows it to CPU for now.
+
+1. **`v1.admit_on`** in node.yaml, or `mesh node run --admit-on`, takes one
+   of two values. `declared`, the default, admits a lease on its brief's
+   declared resources, as every node did before item 2. `requests` admits
+   a lease's CPU on its kind's learned request. Its memory stays admitted
+   on the declared size, since memory headroom is goal
+   `a-jobs-memory-limit-keeps-burst-headroom`. Any other value refuses to
+   start the node.
+2. **The hard cap is unchanged.** Either way, a lease's sandbox limit
+   stays its declared size, so a build admitted on a 1-cpu request may
+   still burst to its declared 12 when CPU is free. Its cpu.weight still
+   follows its priority, as item 4 set it.
+3. **The reserves keep their floor.** The validation reserve and its
+   person share are room in the scheduler, so an ask counts against them
+   in whatever units it was sized. A validation admitted on its request
+   draws the reserve first, exactly as a declared one does.
+4. **`mesh node status` shows each lease's limit, request, now and peak**
+   whatever the setting, so a person can compare them before turning
+   `requests` on. Turning it on is that person's call.
+
+`TestAdmitOnRequestsSumsRequests` covers the requests side: 48 CPUs admit at
+least 40 builds requesting 1 CPU with a limit of 12, and a 9-CPU request then
+waits. `TestAdmitOnDeclaredSumsDeclaredSizes` covers the default: the same
+room admits 12 builds declared at 4. `TestReadAdmitOn` covers the setting
+itself. All three are in internal/nodev1.
