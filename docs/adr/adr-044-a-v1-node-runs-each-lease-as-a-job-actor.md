@@ -1069,3 +1069,32 @@ automated item validations.
 `TestNoValidationReserveAdmitsAsBefore` (internal/nodev1), and
 `TestPersonValidationsTakeTurnsByRepo` and `TestReservesAreBounded`
 (internal/scheduler) cover it.
+
+## Amendment, 2026-11-25: a waiting gate validation goes ahead of new builds
+
+Goal `a-waiting-gate-validation-goes-ahead-of-new-builds-on-the-node`.
+
+1. **Ask.Build and Ask.Gate.** A Build ask is an ordinary build; a Gate
+   ask is a merge-gate validation. While any Gate ask waits in Take for
+   room, a new Build ask is refused (`behind gate validation`) rather
+   than claiming the general room piecemeal as it frees: it is admitted
+   only once the general room has, all at once, enough free for every
+   waiting Gate ask's need, so a stream of builds taking room a little
+   at a time never leaves a gate validation waiting forever for the
+   room it needs in one piece. The waiting Gate ask's own Take then
+   proceeds ahead of any further build (`buildgate.go`,
+   `buildBehindGateLocked`).
+2. **Scheduler.BuildAging.** A Build ask (by its Owner, across tries)
+   held behind a waiting Gate ask for longer than `BuildAging` (0 never
+   ages one out) is let through anyway, Logf hearing it, so a slow or
+   oversized gate validation cannot stall every build indefinitely.
+3. **Scope.** This lands the scheduler primitive alone
+   (`internal/scheduler`); no job kind in `internal/nodev1` sets
+   `Ask.Build` or `Ask.Gate` yet, so it is additive and inert in the
+   running node until a later item wires a build lease's and a
+   merge-gate validation lease's own ask to it, alongside the existing
+   `validationReserved`/`reserveAsk` kind dispatch.
+
+`TestANewBuildIsRefusedBehindAWaitingGateValidation` and
+`TestABuildPastItsAgingIsAdmittedAheadOfAWaitingGateValidation`
+(internal/scheduler) cover it.
