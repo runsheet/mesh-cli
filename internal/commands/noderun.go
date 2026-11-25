@@ -71,6 +71,7 @@ var (
 	nodeRunSandbox               bool
 	nodeRunRelaySidecar          bool
 	nodeRunValidateWithSession   bool
+	nodeRunValidateNoDiagnosis   bool
 	// nodeRunSandboxRuntime is the runtime --sandbox opens its pods on:
 	// rootless podman, substituted for a test double (sandbox.Fake) so a
 	// test can exercise --sandbox with no podman installed.
@@ -186,6 +187,7 @@ runs, and finish or hand back.`,
 			// may too; a sandboxed node never runs them there
 			HostSuites:          true,
 			ValidateWithSession: nodeRunValidateWithSession,
+			NoValidateDiagnosis: nodeRunValidateNoDiagnosis,
 			Once:                nodeRunOnce,
 			Logf:                logger.Printf,
 		}
@@ -604,6 +606,7 @@ func init() {
 	f.BoolVar(&nodeRunSelfUpdate, "self-update", false, "keep the node on the newest release: drain, hand back node_update what still runs after 30 minutes, install the verified release and exit for the service manager to restart it")
 	f.BoolVar(&nodeRunRelaySidecar, "relay-sidecar", false, "with --sandbox, run each lease's relay as a sidecar in its pod on the lease's credentials alone, the pod with no network but its loopback (projectmesh-io/api ADR 001 amendment \"relay sidecar\"); defaults on with --sandbox, since a lease with no sidecar cannot be adopted across a restart -- pass --relay-sidecar=false to run one unadoptable")
 	f.BoolVar(&nodeRunValidateWithSession, "validate-with-session", false, "run each validate lease in a model session, as before 2026-11-25; by default the node builds the candidate, pushes it, runs every suite and writes the finish itself, with no model (ADR-044 amendment 2026-11-25)")
+	f.BoolVar(&nodeRunValidateNoDiagnosis, "validate-no-diagnosis", false, "start no session to diagnose a red validation the node ran itself; by default one session, on the kind's cheapest model, reads the red's evidence and adds a diagnosis, never changing the result")
 	f.BoolVar(&nodeRunSandbox, "sandbox", false, "with --actors, run each lease's session and its services (the checkout's .mesh/services.yml and the brief's pods) in a rootless podman pod of the lease's own, on node.yaml's sandbox settings and the brief's CPUs and memory; the relay is reached only through the lease's socket")
 	nodeCmd.AddCommand(nodeRunCmd)
 }
