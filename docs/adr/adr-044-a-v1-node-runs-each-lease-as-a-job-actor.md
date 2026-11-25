@@ -890,16 +890,16 @@ serves it, as far as the hand-off allows:
    pushes made after a restart reach Mesh.
 5. **The node tools that need nothing the old process held are served
    again.** These are `result`, `hand_back` and `progress`, through
-   which a session ends its lease or reports how far it got, and
-   `push`, which goes through the sidecar's control socket as every
-   sidecar lease's push does (`adoptedNodeTools`). The rest are not
-   served after a restart. `run_suite` and `stop_suite` need the lease's
-   pod session, `apply_onto` the node's own git grant, `request_time`
-   the lease's time budget, `escalate` the harness that read its
-   mailbox, and `sign_release` the signer's session. A session calling
-   one of those is told the node does not have it, and the node logs
-   which tools it left out. Rebuilding run_suite for an adopted lease
-   is a later item.
+   which a session ends its lease or reports how far it got, `push`,
+   which goes through the sidecar's control socket as every sidecar
+   lease's push does, and `run_suite` and `stop_suite`, whose steps run
+   in the lease's own pod, never stopped by the hand-off (see the
+   amendment below) (`adoptedNodeTools`). The rest are not served after
+   a restart. `apply_onto` needs the node's own git grant,
+   `request_time` the lease's time budget, `escalate` the harness that
+   read its mailbox, and `sign_release` the signer's session. A session
+   calling one of those is told the node does not have it, and the node
+   logs which tools it left out.
 6. **The session's own output moves progress.** The hand-off notes how
    far into `agent.stdout` the node had read (`agentOutputPath`). The
    adopting node follows the file from there (`followAgentOutput`), and
@@ -1069,3 +1069,43 @@ automated item validations.
 `TestNoValidationReserveAdmitsAsBefore` (internal/nodev1), and
 `TestPersonValidationsTakeTurnsByRepo` and `TestReservesAreBounded`
 (internal/scheduler) cover it.
+
+## Amendment, 2026-11-25: an adopted lease serves run_suite and stop_suite again
+
+`run_suite` and `stop_suite` were left off `adoptedNodeTools`
+(2026-11-16 amendment, point 5) on the reasoning that they needed the
+lease's own pod session, which adoption does not rebuild. That reasoning
+was wider than the need: `run_suite`'s runner only needs the node's own
+sandbox and the pod's name, both of which adoption already has -- the
+hand-off never stops the lease's pod (the opening paragraph above), and
+its name is deterministic (`PodName(leaseID)`, `internal/nodev1/actorlease.go`).
+What adoption does not rebuild is the pod *session* object (`leasePod`),
+which a fresh start also uses for admission bookkeeping and for routing
+a run's lanes to their own pods (ADR-049's amendment, 2026-11-15); an
+adopted lease has neither.
+
+1. **`adoptedNodeTools` carries `run_suite` and `stop_suite`.** They join
+   `result`, `hand_back`, `progress` and `push`
+   (`internal/nodev1/adopt.go`).
+2. **`adoptedTools` builds the same runner a fresh lease with no pod
+   session would get.** `r.suiteRunner(b, PodName(b.LeaseID))`
+   (`internal/nodev1/podsuites.go`) runs each step as a short container
+   beside the lease's pod, the same as `lease.go`'s own `suites := r.suiteRunner(b, pod)`
+   before a `leasePod` overrides it with lane routing. The runner is
+   passed to `nodeTools` in place of `nil`, so `run_suite` and
+   `stop_suite` are built and served like any other node tool the
+   kind's brief names.
+3. **A lease's lanes, if it had any, are not reattached to a later
+   run.** `adoptLanes` (2026-11-06 amendment, `internal/nodev1/admit.go`)
+   already keeps their pods running and holds their room of the
+   scheduler again, but only as bookkeeping towards the lease's end;
+   `adoptedTools` does not route a run's steps across them. A run_suite
+   call after adoption runs every step in the lease's own base pod,
+   never a lane's. Giving an adopted lease's lanes back to a later
+   run_suite call is a later item, if one is ever asked for.
+
+`TestAdoptedLeaseServesRunSuite` (internal/nodev1) adopts a hand-off
+naming `run_suite` and `stop_suite`, with a `sandbox.Fake` standing in
+for the node's own sandbox and a pod already running under
+`PodName(leaseID)`, and calls `run_suite` over the adopted lease's node
+socket.
