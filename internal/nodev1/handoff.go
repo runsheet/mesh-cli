@@ -202,7 +202,8 @@ func (r *Runtime) Upgrade(why string) []string {
 			handBack(id, l)
 			continue
 		}
-		if l.intercepts {
+		if l.intercepts || l.machine {
+			// a validation the node runs itself has no agent to adopt
 			if adoptable, _ := adoptability(l); !adoptable {
 				handBack(id, l)
 				continue

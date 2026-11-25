@@ -173,20 +173,27 @@ func productServer(b *meshapi.Brief) string {
 // sock: initialize, initialized, then the call, over streamable HTTP. A
 // call the server answers with isError is an error.
 func callProductTool(ctx context.Context, sock, server, tool string, args json.RawMessage) error {
+	_, err := productToolText(ctx, sock, server, tool, args)
+	return err
+}
+
+// productToolText is callProductTool answering the call's text: its
+// content's texts, joined.
+func productToolText(ctx context.Context, sock, server, tool string, args json.RawMessage) (string, error) {
 	c := &mcpClient{url: "http://relay" + sessionproxy.Prefix + server, http: &http.Client{Timeout: 30 * time.Second,
 		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", sock)
 		}}}}
 	if _, err := c.rpc(ctx, 1, "initialize", map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{},
 		"clientInfo": map[string]any{"name": "mesh-node", "version": "1"}}); err != nil {
-		return fmt.Errorf("initialize: %w", err)
+		return "", fmt.Errorf("initialize: %w", err)
 	}
 	if _, err := c.rpc(ctx, 0, "notifications/initialized", nil); err != nil {
-		return fmt.Errorf("initialized: %w", err)
+		return "", fmt.Errorf("initialized: %w", err)
 	}
 	res, err := c.rpc(ctx, 2, "tools/call", map[string]any{"name": tool, "arguments": args})
 	if err != nil {
-		return err
+		return "", err
 	}
 	var out struct {
 		Content []struct {
@@ -195,16 +202,16 @@ func callProductTool(ctx context.Context, sock, server, tool string, args json.R
 		IsError bool `json:"isError"`
 	}
 	if err := json.Unmarshal(res, &out); err != nil {
-		return err
+		return "", err
+	}
+	var text []string
+	for _, c := range out.Content {
+		text = append(text, c.Text)
 	}
 	if out.IsError {
-		var text []string
-		for _, c := range out.Content {
-			text = append(text, c.Text)
-		}
-		return fmt.Errorf("%s refused: %s", tool, strings.Join(text, " "))
+		return "", fmt.Errorf("%s refused: %s", tool, strings.Join(text, " "))
 	}
-	return nil
+	return strings.Join(text, ""), nil
 }
 
 // mcpClient is the least of a streamable-HTTP MCP client: one request

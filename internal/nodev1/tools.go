@@ -47,15 +47,7 @@ func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace s
 	if len(b.NodeTools) == 0 {
 		return nil, nil
 	}
-	signer := &nodetools.Signer{Sigstore: r.Sigstore, NodeKey: r.SigningKey}
-	if tokens != nil {
-		signer.Token = tokens.SigningToken
-	}
-	rec := &nodetools.Recorder{
-		Lease: nodetools.Lease{JobID: b.JobID, LeaseID: b.LeaseID, LeaseN: b.LeaseN, Product: b.Product, Tenant: b.Tenant,
-			NodeID: r.NodeID(), EvidenceRequired: b.EvidenceRequired},
-		Signer: signer, Mesh: r.API,
-	}
+	rec := r.recorderFor(b, tokens)
 	var g nodetools.Grant
 	repo := ""
 	if grant != nil {
@@ -145,6 +137,22 @@ func (r *Runtime) nodeTools(b *meshapi.Brief, grant *gitrelay.Grant, workspace s
 		}
 	}
 	return r.reportsWhileRunning(clock.ctx, b.LeaseID, out), rec
+}
+
+// recorderFor is the lease's own Recorder: every node tool a session's
+// (nodeTools) and a no-session validate lease's (serveValidate) build
+// shares the one construction, signed keylessly as the lease's session
+// when tokens is set, else by the node's own key.
+func (r *Runtime) recorderFor(b *meshapi.Brief, tokens *sessionTokens) *nodetools.Recorder {
+	signer := &nodetools.Signer{Sigstore: r.Sigstore, NodeKey: r.SigningKey}
+	if tokens != nil {
+		signer.Token = tokens.SigningToken
+	}
+	return &nodetools.Recorder{
+		Lease: nodetools.Lease{JobID: b.JobID, LeaseID: b.LeaseID, LeaseN: b.LeaseN, Product: b.Product, Tenant: b.Tenant,
+			NodeID: r.NodeID(), EvidenceRequired: b.EvidenceRequired},
+		Signer: signer, Mesh: r.API,
+	}
 }
 
 // escalateOn is a node tool's escalation on trigger on: when the kind

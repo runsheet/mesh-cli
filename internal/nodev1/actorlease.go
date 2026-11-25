@@ -270,6 +270,15 @@ func (r *Runtime) setSidecarDir(id, dir string) {
 	}
 }
 
+// setMachine marks the lease a validation the node runs itself.
+func (r *Runtime) setMachine(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if l := r.lease(id); l != nil {
+		l.machine = true
+	}
+}
+
 // setEgress records the lease's egress process (ADR-051 decision 1),
 // for its hand-off file beside SidecarDir (handoff.go, decision 3) and
 // for Status to report once adopted (decision 4, adopt.go): adoptOne
