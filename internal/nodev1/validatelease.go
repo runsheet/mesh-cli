@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -146,6 +147,7 @@ type suiteAnswer struct {
 		Package    string `json:"package"`
 		Outcome    string `json:"outcome"`
 		DurationMs int64  `json:"duration_ms"`
+		Output     string `json:"output"`
 	} `json:"tests"`
 	FlakyTests []string `json:"flaky_tests"`
 	HungTests  []string `json:"hung_tests"`
@@ -533,4 +535,128 @@ func finishFor(schema json.RawMessage, finish map[string]any) (json.RawMessage, 
 		finish = kept
 	}
 	return json.Marshal(finish)
+}
+
+// A red's diagnosis (ADR-044 amendment 2026-11-25): the result is frozen
+// the moment the node has written it, and only then does one session —
+// on the kind's own harness and its cheapest model, the ladder's
+// default — read the red's evidence and say why it is red. Its one tool
+// is the node's result, taking {diagnosis}; it is served none of the
+// node's building tools (machineOnlyTools) and none of the product's
+// servers. What it says is added to the result as diagnosis, and to the
+// triage's note; the colour, the candidate, the suites, the tests and
+// the evidence are the node's, byte for byte, whatever the session does
+// — and a session that errors, stops or says nothing leaves the result
+// as the node made it. No second session is ever started.
+
+// diagnosisSchema is the diagnosis session's finish: one string.
+var diagnosisSchema = json.RawMessage(`{"type":"object","additionalProperties":false,"required":["diagnosis"],"properties":{"diagnosis":{"type":"string","minLength":1,"description":"why the validation is red: for each failing test, what its output shows and whether the change, main, a flake or the infrastructure is to blame"}}}`)
+
+// diagnoseBrief is b as its diagnosis session works to it: no product
+// tool to call first or to finish with, no learnings tool, no evidence
+// owed, and the node's result, taking diagnosisSchema, as its one tool.
+func diagnoseBrief(b *meshapi.Brief) *meshapi.Brief {
+	d := *b
+	d.BriefTool, d.FinishTool, d.LearningsTool, d.TurnTool = "", "", "", ""
+	d.FinishSchema = diagnosisSchema
+	d.NodeTools = []string{nodetools.ResultTool}
+	d.EvidenceRequired, d.WaivedBy = nil, nil
+	return &d
+}
+
+// diagnoses is whether the node starts a session to diagnose mv: a red
+// with a triage (never a conflict or a reuse), on a kind naming a
+// harness, on a node that diagnoses (NoValidateDiagnosis unset).
+func (r *Runtime) diagnoses(b *meshapi.Brief, mv *machineValidation) bool {
+	if r.NoValidateDiagnosis || mv == nil || mv.green || b.Harness.Name == "" || b.Harness.Name == "none" {
+		return false
+	}
+	_, red := mv.finish["triage"]
+	return red
+}
+
+// onlyNodeTools is a session's MCP servers less every product server:
+// the diagnosis reaches the node's own tools alone.
+func onlyNodeTools(servers map[string]any) map[string]any {
+	out := map[string]any{}
+	if s, ok := servers[NodeToolsServer]; ok {
+		out[NodeToolsServer] = s
+	}
+	return out
+}
+
+// diagnosisEvidenceCap bounds the failing output the diagnosis prompt
+// carries.
+const diagnosisEvidenceCap = 24 * 1024
+
+// diagnosePrompt is the diagnosis session's prompt: what the node ran
+// and found — each red step's summary, and each failing test with its
+// output — and what to answer.
+func diagnosePrompt(b *meshapi.Brief, mv *machineValidation) string {
+	var sb strings.Builder
+	repo := ""
+	if b.Git != nil {
+		repo = b.Git.Repo
+	}
+	fmt.Fprintf(&sb, "You are diagnosing a red validation (job %s, %s %s, repository %s). ", b.JobID, b.Subject.Type, b.Subject.ID, repo)
+	sb.WriteString("The node has already built the commit checked out in your workspace, run every suite on it and written the result: it is red, and nothing you do changes that. ")
+	sb.WriteString("Read the failing tests' output below and the code they exercise in your checkout, and say why the validation is red: for each failing test, what its output shows and whether the change, main itself, a flake or the infrastructure is to blame. ")
+	sb.WriteString("Do not edit, build, push or run anything: you have no tool for it, and the evidence is below.\n\n")
+	if t, ok := mv.finish["triage"].(map[string]any); ok {
+		fmt.Fprintf(&sb, "The node's triage: class %v. %v\n\n", t["class"], t["note"])
+	}
+	used := 0
+	for _, raw := range mv.answers {
+		var a suiteAnswer
+		if json.Unmarshal([]byte(raw), &a) != nil {
+			continue
+		}
+		for _, st := range a.Steps {
+			if st.Exit != 0 {
+				fmt.Fprintf(&sb, "Suite %s exited %d (%d passed, %d failed).\n", st.Name, st.Exit, st.TestsPassed, st.TestsFailed)
+			}
+		}
+		for _, t := range a.Tests {
+			if t.Outcome != "fail" && t.Outcome != "timeout" {
+				continue
+			}
+			fmt.Fprintf(&sb, "\n### %s %s (%s)\n", t.Package, t.Name, t.Outcome)
+			if out := strings.TrimSpace(t.Output); out != "" && used < diagnosisEvidenceCap {
+				out = clip(out, diagnosisEvidenceCap-used)
+				used += len(out)
+				fmt.Fprintf(&sb, "```\n%s\n```\n", out)
+			}
+		}
+	}
+	fmt.Fprintf(&sb, "\nWhen you know, call `%s` once with {\"result\": {\"diagnosis\": \"...\"}}: a few plain sentences, naming each failing test. That is your whole answer.\n", nodetools.ResultTool)
+	return sb.String()
+}
+
+// diagnosisOf is the diagnosis a session's finish carried, "" for none.
+func diagnosisOf(finish json.RawMessage) string {
+	var d struct {
+		Diagnosis string `json:"diagnosis"`
+	}
+	if len(finish) == 0 || json.Unmarshal(finish, &d) != nil {
+		return ""
+	}
+	return clip(strings.TrimSpace(d.Diagnosis), 8000)
+}
+
+// withDiagnosis is finish with diag added, as diagnosis and on the end
+// of the triage's note; every other key as it was. A blank diag adds
+// nothing.
+func withDiagnosis(finish map[string]any, diag string) map[string]any {
+	out := maps.Clone(finish)
+	if diag == "" {
+		return out
+	}
+	out["diagnosis"] = diag
+	if t, ok := finish["triage"].(map[string]any); ok {
+		t = maps.Clone(t)
+		note, _ := t["note"].(string)
+		t["note"] = strings.TrimSpace(note + "\n\ndiagnosis: " + diag)
+		out["triage"] = t
+	}
+	return out
 }

@@ -478,7 +478,15 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	}
 
 	ladder := escalate.New(b.Harness.Model)
-	fin := &finishCapture{tool: b.FinishTool, learningsTool: b.LearningsTool, onFinish: mb.Finish}
+	// a validation the node runs itself (validatelease.go): its session,
+	// when it has one, only diagnoses a red, and works to sb — the
+	// diagnosis brief (diagnoseBrief) — never to the validation's own
+	machine := r.machineValidates(b)
+	sb := b
+	if machine {
+		sb = diagnoseBrief(b)
+	}
+	fin := &finishCapture{tool: sb.FinishTool, learningsTool: sb.LearningsTool, onFinish: mb.Finish}
 	// the lease's taint lockdown (taint.go, ADR-046's 2026-11 amendment):
 	// a tool answer marked result._meta["mesh/untrusted"] taints it, and
 	// its push and egress are refused for the rest of the lease
@@ -538,7 +546,6 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 	// a validation the node runs itself (validatelease.go) calls the
 	// node's own tools; its tools escalate no model, and a session on it
 	// (a red's diagnosis) is served none of them
-	machine := r.machineValidates(b)
 	toolLadder := ladder
 	if machine {
 		toolLadder = nil
@@ -554,14 +561,19 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		tools = withoutMachineTools(tools)
 	}
 	hb := &sessionHandBack{}
-	tools = sl.nodeTools(append(tools, r.endTools(b, fin, hb, mb)...))
+	if machine {
+		// the diagnosis's one tool is the node's result, taking it
+		tools = append(tools, r.endTools(sb, fin, hb, mb)...)
+	} else {
+		tools = sl.nodeTools(append(tools, r.endTools(b, fin, hb, mb)...))
+	}
 	var (
 		servers map[string]any
 		sock    string
 		gate    *stopGate
 	)
 	if rs != nil {
-		gate = r.openStopGate(b, filepath.Join(rs.dir, relayNodeSocket), fin, hb, rec)
+		gate = r.openStopGate(sb, filepath.Join(rs.dir, relayNodeSocket), fin, hb, rec)
 		if gate != nil {
 			keep("the stop gate", func() error { gate.close(); return nil })
 		}
@@ -613,7 +625,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 			// does, on its socket (lanes.go)
 			lp.setLaneSocket(sock)
 		}
-		gate = r.openStopGate(b, sock, fin, hb, rec)
+		gate = r.openStopGate(sb, sock, fin, hb, rec)
 		if gate != nil {
 			keep("the stop gate", func() error { gate.close(); return nil })
 		}
@@ -711,6 +723,7 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 			return outcome{err: err, cause: context.Cause(ctx)}
 		}
 	}
+	var frozen *machineValidation
 	if machine {
 		// the node validates the lease itself, and no session runs
 		// (validatelease.go)
@@ -720,12 +733,26 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 			o.cause = context.Cause(ctx)
 			return o
 		}
-		if o.finish, o.err = finishFor(b.FinishSchema, mv.finish); o.err != nil {
+		if !r.diagnoses(b, mv) {
+			if o.finish, o.err = finishFor(b.FinishSchema, mv.finish); o.err != nil {
+				return o
+			}
+			o.finish = r.finalPin(ctx, b, grant, pusher, workspace, o.finish)
+			o.finish = withCoverage(o.finish, clock.coverage.get())
 			return o
 		}
-		o.finish = r.finalPin(ctx, b, grant, pusher, workspace, o.finish)
-		o.finish = withCoverage(o.finish, clock.coverage.get())
-		return o
+		// a red: its result is frozen now, and one session on the kind's
+		// cheapest model reads the evidence and diagnoses it; whatever it
+		// does, the finish is this result, with its diagnosis or without
+		frozen = mv
+		if r.onFrozen != nil {
+			if raw, err := finishFor(b.FinishSchema, mv.finish); err == nil {
+				r.onFrozen(raw)
+			}
+		}
+		spec.Prompt = diagnosePrompt(b, mv)
+		spec.Servers = onlyNodeTools(spec.Servers)
+		r.logf("nodev1: lease %s: the validation is red: one session on %s diagnoses it", b.LeaseID, spec.Model)
 	}
 	sctx, watch := r.watchLease(sctx, b, workspace, mb, ladder, &spec, tokens, grant, account, vals)
 	// an injected value seen where it must not go ends the session
@@ -769,10 +796,26 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		// last message when that fits the kind's finish_schema, or none
 		// (settle.go); the learnings the finish carried go to the
 		// product's learnings tool while the proxy is still open
-		st := settle(b, fin, res.Text, gate.refused())
+		st := settle(sb, fin, res.Text, gate.refused())
 		o.finish, o.noFinish = st.result, st.noFinish
-		r.handInLearnings(ctx, b, sock, fin, st.learnings)
+		r.handInLearnings(ctx, sb, sock, fin, st.learnings)
 		if o.noFinish == "" {
+			o.finish = r.finalPin(ctx, b, grant, pusher, workspace, o.finish)
+			o.finish = withCoverage(o.finish, clock.coverage.get())
+		}
+	}
+	if frozen != nil && o.exposed == nil && ctx.Err() == nil {
+		// the diagnosis session ended, however it ended: the finish is
+		// the node's frozen result, its diagnosis added when it gave one
+		diag := ""
+		if o.err == nil && o.noFinish == "" && o.stopped == nil && o.handBack == nil && !o.budgetSpent {
+			diag = diagnosisOf(o.finish)
+		}
+		if diag == "" {
+			r.logf("nodev1: lease %s: the red's diagnosis gave none (%v); the result finishes as the node made it", b.LeaseID, cmpOr(o.noFinish, fmt.Sprint(o.err)))
+		}
+		o.err, o.noFinish, o.stopped, o.handBack, o.budgetSpent = nil, "", nil, nil, false
+		if o.finish, o.err = finishFor(b.FinishSchema, withDiagnosis(frozen.finish, diag)); o.err == nil {
 			o.finish = r.finalPin(ctx, b, grant, pusher, workspace, o.finish)
 			o.finish = withCoverage(o.finish, clock.coverage.get())
 		}
