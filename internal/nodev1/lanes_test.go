@@ -531,10 +531,12 @@ type laneAnswer struct {
 }
 
 // laneSession writes yml as the lease's .runsheet/validate.yml, calls
-// run_suite with no selection on the host (unsandboxed), and keeps its
-// answer on ans.
-func laneSession(t *testing.T, yml string, ans *laneAnswer, refused *bool) *stubSession {
-	return &stubSession{result: SessionResult{SessionID: "sess-lanes", Text: "ran"}, inspect: func(spec SessionSpec) {
+// run_suite with no selection on the host (unsandboxed), keeps its
+// answer on ans, and — finish set — calls the kind's own finish tool
+// (conform/submit) afterwards so the lease actually ends with it,
+// rather than failing no_finish on the stub's own unfinished text.
+func laneSession(t *testing.T, yml string, ans *laneAnswer, refused *bool, finish bool) *stubSession {
+	s := &stubSession{result: SessionResult{SessionID: "sess-lanes", Text: "ran"}, inspect: func(spec SessionSpec) {
 		if err := os.MkdirAll(filepath.Join(spec.Workspace, ".runsheet"), 0o755); err != nil {
 			t.Error(err)
 			return
@@ -553,15 +555,21 @@ func laneSession(t *testing.T, yml string, ans *laneAnswer, refused *bool) *stub
 			t.Errorf("run_suite's answer %q: %v", text, err)
 		}
 	}}
+	if finish {
+		s.calls = []string{"conform/submit"}
+	}
+	return s
 }
 
 // laneLease offers a job that runs run_suite on the host (no sandbox, no
-// pod) against yml, and runs it to completion.
-func laneLease(t *testing.T, yml string) (*rig, string, laneAnswer) {
+// pod) against yml, and runs it to completion. finish set has the
+// session call the kind's own finish tool after run_suite answers, so
+// the lease ends as the session's own outcome rather than no_finish.
+func laneLease(t *testing.T, yml string, finish bool) (*rig, string, laneAnswer) {
 	t.Helper()
 	var ans laneAnswer
 	var refused bool
-	sess := laneSession(t, yml, &ans, &refused)
+	sess := laneSession(t, yml, &ans, &refused, finish)
 	g := newRig(t, sess)
 	g.rt.HostSuites = true
 	job := g.offer(t, func(b *meshapi.Brief) { b.NodeTools = []string{nodetools.RunSuiteTool} })
@@ -588,7 +596,7 @@ func TestALaneThatFailsOnceThenPassesIsFlakyAndTheStepIsGreen(t *testing.T) {
         exit 1
       fi
 `
-	g, job, ans := laneLease(t, yml)
+	g, job, ans := laneLease(t, yml, false)
 	if ans.Exit != 0 {
 		t.Fatalf("exit %d, want 0 (flaky): %+v", ans.Exit, ans)
 	}
@@ -618,8 +626,8 @@ func TestALaneThatFailsOnceThenPassesIsFlakyAndTheStepIsGreen(t *testing.T) {
 
 // A unit's test that fails again when the supervisor runs it again by
 // name is a confirmed failure, class real: the step and the overall run
-// are red, and the lease ends as the session's own outcome (this stub
-// never submits, so no_finish), never handed back as the infrastructure's.
+// are red, and the lease still finishes with the session's own answer
+// (actor.ReportFinish) — never handed back as the infrastructure's.
 func TestALaneThatFailsTwiceIsRealAndTheLeaseIsNotHandedBack(t *testing.T) {
 	yml := `suites:
   - name: unit
@@ -628,7 +636,7 @@ func TestALaneThatFailsTwiceIsRealAndTheLeaseIsNotHandedBack(t *testing.T) {
       printf '%s\n' '{"Action":"run","Package":"pkg","Test":"TestReal"}' '{"Action":"fail","Package":"pkg","Test":"TestReal"}'
       exit 1
 `
-	g, job, ans := laneLease(t, yml)
+	g, job, ans := laneLease(t, yml, true)
 	if ans.Exit == 0 {
 		t.Fatalf("exit 0, want non-zero (a confirmed failure): %+v", ans)
 	}
@@ -651,8 +659,8 @@ func TestALaneThatFailsTwiceIsRealAndTheLeaseIsNotHandedBack(t *testing.T) {
 	if hb := g.fake.Calls("hand-back"); len(hb) != 0 {
 		t.Fatalf("a confirmed failure handed the lease back: %+v", hb)
 	}
-	if ended := g.fake.Ended(g.fake.LeaseOf(job)); ended == "hand-back" {
-		t.Fatalf("the lease ended %q, want the session's own end", ended)
+	if ended := g.fake.Ended(g.fake.LeaseOf(job)); ended != "finish" {
+		t.Fatalf("the lease ended %q, want finish (the session's own end)", ended)
 	}
 }
 
@@ -670,7 +678,7 @@ func TestALaneThatTimesOutBeforeATestHandsBackToolUnavailable(t *testing.T) {
 `
 	var ans laneAnswer
 	var refused bool
-	sess := laneSession(t, yml, &ans, &refused)
+	sess := laneSession(t, yml, &ans, &refused, false)
 	g, sb := actorRig(t, sess)
 	g.rt.PodImage = "mesh-pod:test"
 	sb.Agent = func(ctx context.Context, _ sandbox.AgentSpec) (sandbox.Exit, error) {
@@ -685,5 +693,48 @@ func TestALaneThatTimesOutBeforeATestHandsBackToolUnavailable(t *testing.T) {
 	hb := onlyHandBack(t, g, job)
 	if hb.Cause != meshapi.CauseToolUnavailable || hb.Reason == "" {
 		t.Fatalf("hand-back %+v", hb)
+	}
+}
+
+// A lane that times out AFTER a test already ran and was judged is never
+// tool_unavailable: timedOutBeforeATest (causes.go) tells this case apart
+// from TestALaneThatTimesOutBeforeATestHandsBackToolUnavailable's by
+// TestsRun alone, so a regression that drops that guard — treating every
+// timed-out lane as the infrastructure's, having run tests or not — would
+// hand this one back too and go undetected without this test.
+func TestALaneThatTimesOutAfterATestIsNotHandedBackToolUnavailable(t *testing.T) {
+	yml := `suites:
+  - name: hang
+    kind: unit
+    command: sleep
+    timeout: 200ms
+`
+	var ans laneAnswer
+	var refused bool
+	sess := laneSession(t, yml, &ans, &refused, false)
+	g, sb := actorRig(t, sess)
+	g.rt.PodImage = "mesh-pod:test"
+	sb.Agent = func(ctx context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
+		fmt.Fprintln(spec.Stdout, `{"Action":"run","Package":"pkg","Test":"TestSlow"}`)
+		fmt.Fprintln(spec.Stdout, `{"Action":"pass","Package":"pkg","Test":"TestSlow"}`)
+		<-ctx.Done()
+		return sandbox.Exit{}, ctx.Err()
+	}
+	g.offer(t, func(b *meshapi.Brief) {
+		b.NodeTools = []string{nodetools.RunSuiteTool}
+		b.Pods = []json.RawMessage{json.RawMessage(`{"name":"db","image":"postgres:17"}`)}
+	})
+	run(t, g, context.Background())
+	for _, hb := range g.fake.Calls("hand-back") {
+		var req meshapi.HandBackRequest
+		if err := json.Unmarshal(hb.Body, &req); err != nil {
+			t.Fatal(err)
+		}
+		if req.Cause == meshapi.CauseToolUnavailable {
+			t.Fatalf("a lane that ran a test before timing out was handed back tool_unavailable: %+v", req)
+		}
+	}
+	if ans.Steps[0].Exit == 0 {
+		t.Fatalf("step %+v, want the timeout reported as a red step, not swallowed", ans.Steps)
 	}
 }
