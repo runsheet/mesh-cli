@@ -39,11 +39,37 @@ type Mount struct {
 // Limits cap one container: CPUs (podman --cpus), Memory (--memory, a
 // podman size such as "6g") and Pids (--pids-limit). A zero value is
 // no flag.
+//
+// Memory is the request alone (goal a-job-is-sized-by-request-and-
+// limit): cgroup v2's soft memory.high, where the container is
+// reclaimed and slowed rather than killed. Limit, when given, is the
+// hard cap, memory.max, past which the kernel kills it; with no Limit,
+// LimitArgs falls back to the old guard, MemoryGuardFactor times the
+// request. Priority is the container's place in the node's CPU,
+// cgroup v2's cpu.weight (PriorityWeight): a named priority such as
+// PriorityMergePath outweighs PriorityBuild so it is not starved of
+// CPU by ordinary build work on a loaded node.
 type Limits struct {
-	CPUs   float64
-	Memory string
-	Pids   int
+	CPUs     float64
+	Memory   string
+	Limit    string
+	Pids     int
+	Priority string
 }
+
+// The sandbox priorities LimitArgs' cpu.weight knows by name
+// (PriorityWeight); any other string, or none, gets cgroup v2's own
+// default weight.
+const (
+	// PriorityBuild is an ordinary build or evaluate session's
+	// priority: cgroup v2's own default weight.
+	PriorityBuild = "build"
+	// PriorityMergePath is a merge-queue validation's priority (the
+	// catalogue's class 1, "merge path"): weighted above PriorityBuild
+	// so it finishes ahead of new builds contending for the same
+	// node's CPU.
+	PriorityMergePath = "merge-path"
+)
 
 // PodSpec is a session's pod: its name and labels, and the network
 // rules loaded into it before anything else runs there.

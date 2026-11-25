@@ -666,3 +666,51 @@ outside the pod. `TestProbeSessionE2E` greps the pod's env and files for
 `ghs_`, `TestSandboxedSessionsE2E`'s stub agent greps its container for
 `ghs_` and `mesh-session`, and `TestJobContainerHoldsNoCredential` and
 `TestBuildRunsAsSessionStepsE2E` prove it on `sandbox.Fake`.
+
+## Amendment: a container is sized by its request, its limit and its priority
+
+Goal `a-job-is-sized-by-request-and-limit`. `sandbox.Limits` (used by
+both `AgentSpec.Limits` and `SidecarSpec.Limits`) carries `Memory` (the
+request) and now a `Limit` (the hard cap) and a `Priority` beside it:
+
+- **Memory stays two cgroup v2 numbers, but the hard one can be
+  given rather than guessed.** `Memory` is still the soft limit alone:
+  `--cgroup-conf memory.high=<bytes>`, where the kernel reclaims the
+  container's pages and slows it rather than killing it. `Limit`, when
+  set, is `memory.max` (`--memory`, `--memory-swap` the same) taken
+  directly from the caller's own hard cap, not derived. With no
+  `Limit`, `LimitArgs` falls back to the old guess, `MemoryGuardFactor`
+  (2×) times the request — the behaviour before this amendment, kept
+  for a caller that still names a request alone. A `Limit` podman takes
+  but `parseSize` does not (sidecars.go) stays the old hard cap, used
+  literally; so does an unparseable `Memory` with no `Limit`, as
+  before.
+- **Priority is cgroup v2's `cpu.weight`.** `LimitArgs` adds
+  `--cgroup-conf cpu.weight=<n>` whenever `Priority` is set, from
+  `PriorityWeight` (`internal/sandbox/podman.go`): cgroup v2's own
+  default, 100, for `PriorityBuild` and for a priority `PriorityWeight`
+  does not name, and twice that, 200, for `PriorityMergePath` — the
+  catalogue's class 1, "merge path" (`internal/catalogue`'s `Kind.Class`
+  comment) — so a merge-queue validation is not starved of CPU by
+  ordinary build work contending for the same node. An empty
+  `Priority` adds no flag at all, cgroup v2's own default applying as
+  it always did.
+- **Nothing wires a caller's job kind to a `Priority` yet.** This
+  amendment is `internal/sandbox` alone: `LimitArgs`, `Limits.Limit`
+  and `Limits.Priority` exist and are tested, but no `AgentSpec` this
+  node builds sets `Limit` or `Priority` today; a later item of the
+  same goal is where a lease's request, limit and priority (from the
+  catalogue's `resources` and `class`) reach `sandbox.Limits`.
+
+### Tests
+
+`internal/sandbox/podman_test.go`'s
+`TestLimitArgsSetsCgroupFromRequestLimitAndPriority`: a request of 6
+GiB and a limit of 12 GiB set `memory.high=6442450944` and
+`--memory`/`--memory-swap 12288m`; `PriorityMergePath`'s `cpu.weight`
+outweighs `PriorityBuild`'s; a request with no limit still gets the old
+2× guess (also 12288m at this ratio, so the test checks it as its own
+case); and, since a 12 GiB limit on a 6 GiB request cannot alone tell
+the limit path from the guard's coincidence at exactly 2×, a 9 GiB
+limit on the same 6 GiB request proves the limit wins literally
+(9216m, not the guard's 12288m).

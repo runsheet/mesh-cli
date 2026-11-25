@@ -292,19 +292,41 @@ func TmpfsArgs(mounts []Tmpfs) []string {
 	return args
 }
 
-// MemoryGuardFactor is how far past its soft memory limit a container
-// may grow before the kernel kills it: memory.max is the runaway guard,
-// memory.high the limit a container is reclaimed and slowed at.
+// MemoryGuardFactor is how far past its request a container may grow
+// before the kernel kills it, when no explicit Limit is given:
+// memory.max is the runaway guard, memory.high the request a container
+// is reclaimed and slowed at.
 const MemoryGuardFactor = 2
 
-// LimitArgs are --cpus, the memory limits and --pids-limit, each only
-// when set. Memory is a soft limit: cgroup v2's memory.high at l.Memory
-// (--cgroup-conf), where the kernel reclaims the container's pages and
-// slows it rather than killing it, and memory.max (--memory, swap the
-// same) at MemoryGuardFactor times that, only a runaway guard. A host
-// with memory to spare lets a job past its estimate run slower, not die
-// (Chris, 2026-10-28: share memory rather than limit it). A size podman
-// takes but parseSize does not stays the old hard cap.
+// PriorityWeight is LimitArgs' cpu.weight for a named Priority: cgroup
+// v2's own default (100) for an unnamed or unrecognised priority and
+// for PriorityBuild, twice that for PriorityMergePath.
+var PriorityWeight = map[string]int{
+	PriorityBuild:     100,
+	PriorityMergePath: 200,
+}
+
+// cpuWeight is PriorityWeight for priority, cgroup v2's own default
+// (100) when priority names none of it.
+func cpuWeight(priority string) int {
+	if w, ok := PriorityWeight[priority]; ok {
+		return w
+	}
+	return 100
+}
+
+// LimitArgs are --cpus, the memory limits, cpu.weight and
+// --pids-limit, each only when set. Memory is the request alone:
+// cgroup v2's memory.high at l.Memory (--cgroup-conf), where the
+// kernel reclaims the container's pages and slows it rather than
+// killing it. memory.max (--memory, swap the same) is l.Limit, the
+// hard cap, when one is given; with none, it falls back to the old
+// guard, MemoryGuardFactor times the request — a host with memory to
+// spare lets a job past its estimate run slower, not die (Chris,
+// 2026-10-28: share memory rather than limit it, before a job's own
+// limit was known). A size podman takes but parseSize does not stays
+// the old hard cap, of l.Limit when one is given, else l.Memory
+// itself. l.Priority is cpu.weight (--cgroup-conf, cpuWeight).
 func LimitArgs(l Limits) []string {
 	var args []string
 	if l.CPUs > 0 {
@@ -312,12 +334,25 @@ func LimitArgs(l Limits) []string {
 	}
 	if l.Memory != "" {
 		if high, ok := parseSize(l.Memory); ok {
-			guard := strconv.FormatInt(high*MemoryGuardFactor>>20, 10) + "m"
-			args = append(args, "--memory", guard, "--memory-swap", guard,
+			guardBytes := high * MemoryGuardFactor
+			cap := strconv.FormatInt(guardBytes>>20, 10) + "m"
+			if l.Limit != "" {
+				if lim, ok := parseSize(l.Limit); ok {
+					cap = strconv.FormatInt(lim>>20, 10) + "m"
+				} else {
+					cap = l.Limit
+				}
+			}
+			args = append(args, "--memory", cap, "--memory-swap", cap,
 				"--cgroup-conf", "memory.high="+strconv.FormatInt(high, 10))
 		} else {
 			args = append(args, "--memory", l.Memory, "--memory-swap", l.Memory)
 		}
+	} else if l.Limit != "" {
+		args = append(args, "--memory", l.Limit, "--memory-swap", l.Limit)
+	}
+	if l.Priority != "" {
+		args = append(args, "--cgroup-conf", fmt.Sprintf("cpu.weight=%d", cpuWeight(l.Priority)))
 	}
 	if l.Pids > 0 {
 		args = append(args, "--pids-limit", strconv.Itoa(l.Pids))
