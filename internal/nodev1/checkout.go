@@ -145,7 +145,10 @@ type resumePoint struct {
 // fetch tolerates damage a --reference clone does not — is named in the
 // log with the clone's error, set aside (resources.Mirrors.SetAside) so
 // the next lease builds a fresh one, and the clone is retried without it
-// (goal a-bad-mirror-never-stops-a-checkout).
+// (goal a-bad-mirror-never-stops-a-checkout). An un-pinned base_ref of
+// literal "main" — Mesh's own guess when it does not know the item's
+// real base — is never fetched blind (guessedMain, below): the clone's
+// own HEAD, whatever branch that is, already stands.
 func checkout(ctx context.Context, grant *gitrelay.Grant, b *meshapi.Brief, workspace string, mirrors *resources.Mirrors, logf func(string, ...any)) (*resumePoint, error) {
 	git := leaseGitRun(ctx)
 	origin := grant.Base() + b.Git.Repo + ".git"
@@ -180,7 +183,18 @@ func checkout(ctx context.Context, grant *gitrelay.Grant, b *meshapi.Brief, work
 	if b.Code == nil {
 		return nil, nil
 	}
-	if ref := b.Code.BaseRef; ref != "" {
+	// guessedMain is Mesh naming "main" as the item's base when it does
+	// not actually know one -- the same guess resolve.go's and baseOf's
+	// BaseRef once made before goal
+	// a-job-checks-out-the-repos-default-branch-never-a-hard-coded-main
+	// stopped them making it. With no base_sha pinning it, that literal
+	// name is never fetched blind: the clone already checked out
+	// origin's own HEAD, whatever branch that is, and an un-pinned
+	// "main" that isn't really there would cost a fetch this checkout
+	// does not need and the job a refusal (refGoneError, below) it does
+	// not deserve.
+	guessedMain := b.Code.BaseRef == "main" && b.Code.BaseSHA == ""
+	if ref := b.Code.BaseRef; ref != "" && !guessedMain {
 		if _, err := git(workspace, "fetch", "-q", "origin", ref); err != nil {
 			if refGone(git, workspace, ref, err) {
 				return nil, &refGoneError{repo: b.Git.Repo, ref: ref, err: err}
@@ -201,7 +215,7 @@ func checkout(ctx context.Context, grant *gitrelay.Grant, b *meshapi.Brief, work
 		if _, err := git(workspace, "fetch", "-q", "origin", target); err != nil {
 			return nil, err
 		}
-	case b.Code.BaseRef != "":
+	case b.Code.BaseRef != "" && !guessedMain:
 		target = "FETCH_HEAD"
 	}
 	if target != "" {
