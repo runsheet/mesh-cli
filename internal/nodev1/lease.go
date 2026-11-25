@@ -399,6 +399,15 @@ func (r *Runtime) work(ctx context.Context, b *meshapi.Brief, mb *Mailbox, a *ac
 		}
 	}
 	r.setPushHeads(b.LeaseID, pushHeads)
+	// a validate lease with no harness builds, pushes and validates its
+	// own candidate: no sidecar, no pod, no session (validatelease.go)
+	if isNoSessionValidate(b) {
+		finish, evidence, err := r.serveValidate(ctx, b, grant, workspace, tokens, r.suiteRunner(b, pod))
+		if err != nil {
+			return outcome{err: err, cause: context.Cause(ctx)}
+		}
+		return outcome{finish: finish, evidence: evidence}
+	}
 	// the lease's relay sidecar, named here, before its pod: its egress
 	// process (ADR-051), started later once rs.open runs, is held before
 	// the pod's hold so Release's reverse-of-order stops it after the

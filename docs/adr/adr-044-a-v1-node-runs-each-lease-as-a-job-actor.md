@@ -1069,3 +1069,49 @@ automated item validations.
 `TestNoValidationReserveAdmitsAsBefore` (internal/nodev1), and
 `TestPersonValidationsTakeTurnsByRepo` and `TestReservesAreBounded`
 (internal/scheduler) cover it.
+
+## Amendment, 2026-11-25: a validate lease with no harness builds and runs its own candidate, with no session
+
+A chain's own validation needs no session: the candidate is the
+brief's own `code.onto`/`code.apply`, applying it is `apply_onto`,
+running its suites is `run_suite`, and nothing about either asks a
+harness's judgment. A validate lease the brief names no harness for
+(`harness.name` "" or "none") skips the pod, the relay sidecar and the
+session entirely (`isNoSessionValidate`, `internal/nodev1/validatelease.go`):
+the node itself calls `apply_onto`, `push` and `run_suite` in sequence,
+on the grant and checkout `work` already built for the ordinary,
+session-driven path.
+
+1. **The trigger.** `isNoSessionValidate(b)` is true for a validation
+   kind (`validationKind`, `path.Base(b.Kind) == "validate"`) whose
+   `harness.name` is empty or `"none"`, with a `code.onto` to apply
+   onto. A validate lease that names a harness runs the ordinary path,
+   unchanged.
+2. **The no-session path (`serveValidate`).** Right after `work` sets
+   up the lease's checkout, grant and push heads — before the relay
+   sidecar, the pod or any session machinery starts — a no-session
+   validate lease takes a branch of its own: `apply_onto` {} applies
+   the brief's changes. A conflict finishes at once with `{conflict:
+   {index, head, paths}}` carried straight through; no suite runs and
+   nothing is pushed. Otherwise `push` {} pushes the checkout's
+   `HEAD` (apply_onto's candidate, left checked out detached) to the
+   brief's `code.push_to`, then `run_suite` {} runs every suite the
+   checkout's `validate.yml` declares, on the lease's own pod lane
+   (`suiteRunner`) or the host (`hostSuites`) exactly as the
+   session-driven path would. Each of the three tools records its own
+   signed evidence through the lease's one `Recorder`
+   (`recorderFor`, shared with the session-driven path's `nodeTools`),
+   whose ids the finish carries.
+3. **The finish.** `verdict` is `"pass"` or `"fail"` from `run_suite`'s
+   own exit; `candidate` is apply_onto's `{sha, tree}`; `validation` is
+   `run_suite`'s own answer in full; `suite_config_sha` is the
+   checkout's `validate.yml` hashed the platform's own way
+   (`internal/validate.Config.Hash`, ADR 032); `environment` is
+   `"host:<hostname>"`, the unsandboxed shape `internal/validate`'s
+   attestation already uses for `RunnerImage`. A conflict's finish
+   carries only `conflict`, none of the above.
+
+`TestANoHarnessValidateLeaseBuildsPushesAndRunsItsSuitesWithNoSession`
+and
+`TestANoHarnessValidateLeaseWithAConflictingApplyFinishesWithTheConflict`
+(internal/nodev1) cover it.
