@@ -68,8 +68,20 @@ func (r *Runtime) assistantKind(b *meshapi.Brief) bool {
 // A validation kind's lease draws the validation reserve first (P1 of
 // goal a-v1-node-reserves-room-for-validations-and-sizes-its-reserves-from-use;
 // reserveAsk), and keeps its slot and cache as before.
+//
+// What it holds of the node is its learned request (learnedrequest.go),
+// not the brief's declared resources, once its kind has run enough
+// measured leases to trust (goal a-job-is-sized-by-request-and-limit):
+// the lease's own hard cap (the sandbox's limitsOf(b.Resources)) is
+// unchanged either way.
 func (r *Runtime) leaseAsk(b *meshapi.Brief, lease *meshapi.Lease) scheduler.Ask {
 	ask := askOf(b, lease)
+	req := r.leaseRequest(b)
+	if req.CPUs != b.Resources.CPUs || req.MemGB != b.Resources.MemGB {
+		r.logf("nodev1: lease %s (%s) holds a learned request of %g cpus, %g GB; its declared (and hard cap) is %g cpus, %g GB",
+			lease.LeaseID, path.Base(b.Kind), req.CPUs, req.MemGB, b.Resources.CPUs, b.Resources.MemGB)
+	}
+	ask.CPUs, ask.MemGB = req.CPUs, req.MemGB
 	if r.assistantKind(b) {
 		ask.Reserved, ask.Slot, ask.Cache = true, false, scheduler.CacheNone
 		return ask

@@ -1069,3 +1069,45 @@ automated item validations.
 `TestNoValidationReserveAdmitsAsBefore` (internal/nodev1), and
 `TestPersonValidationsTakeTurnsByRepo` and `TestReservesAreBounded`
 (internal/scheduler) cover it.
+
+## Amendment, 2026-11-25: a lease's request is learned from its kind's peak history
+
+Goal `a-job-is-sized-by-request-and-limit`. Peaks by kind (the amendment
+above) showed most leases of a kind use far less than its declared
+resources: holding the declared figure for every lease of a kind books
+room the scheduler never gives back, the same waiting room a kind's
+leases rarely need. A lease's declared resources, from its brief, stay
+its hard cap — what the sandbox limits its containers to — but what the
+node holds of its own scheduler for it, its request, is learned from
+that kind's measured peaks once there are enough to trust.
+
+1. **`learnedRequest`** (`internal/nodev1/learnedrequest.go`) is a
+   kind's request: its declared resources until `minMeasuredForLearning`
+   (20) of its leases have a measured peak (usage.go); then CPUs at the
+   measured 75th percentile and memory at the measured 95th percentile
+   plus `requestHeadroom` (25%) — CPU is only throttled past its
+   request, never killed, so its 75th percentile alone needs no
+   headroom; memory past its request is reclaimed, but a hard overrun
+   is killed, so its request keeps some room past the worst seen.
+   Neither ever goes above the kind's declared resources (its hard cap)
+   or below `requestFloorCPUs`/`requestFloorMemGB` (0.25 cpus, 0.5 GB),
+   however a kind's peaks run. `Runtime.leaseRequest` reads it from
+   `usageBook.kindPercentiles`, and `leaseAsk` holds it of the
+   scheduler in place of the brief's declared resources (`askOf`'s
+   figure before this amendment); `limitsOf(b.Resources)`, the
+   sandbox's own cap on the lease's containers, is unchanged either
+   way, so a lease that outgrows its learned request is only throttled
+   or reclaimed by its own hard cap, never cut off at the request.
+2. **`mesh node status` reports it.** Each running lease's line now
+   carries its limit (the declared resources), its request (learned or
+   declared), and its containers' latest reading and peak so far
+   (`now`, `peak`; `LeaseStatus`'s `LimitCPUs`/`LimitMemGB`,
+   `RequestCPUs`/`RequestMemGB`, `NowCPUs`/`NowMemGB`,
+   `PeakCPUs`/`PeakMemGB`), so a learned request can be read against
+   what a lease is actually using. node.log gets a line the moment a
+   lease's learned request first differs from its declared resources.
+
+`TestLearnedRequestFromPeakHistory`, `TestLearnedRequestFallsBackWithFewMeasuredLeases`,
+`TestLearnedRequestNeverAboveLimitOrBelowFloor` and
+`TestStatusLeaseLineReportsLimitRequestNowAndPeak` (internal/nodev1)
+cover it.
