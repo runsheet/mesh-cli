@@ -64,14 +64,17 @@ var (
 	nodeRunValidationPersonMemGB float64
 	nodeRunValidationKinds       []string
 	nodeRunDispatcherCap         int
-	nodeRunActors                bool
-	nodeRunSupervisor            string
-	nodeRunQuietAfter            time.Duration
-	nodeRunSelfUpdate            bool
-	nodeRunSandbox               bool
-	nodeRunRelaySidecar          bool
-	nodeRunValidateWithSession   bool
-	nodeRunValidateNoDiagnosis   bool
+	// what an ordinary lease holds of the node's scheduler while it
+	// runs (goal a-job-is-sized-by-request-and-limit item 3)
+	nodeRunAdmitOn             string
+	nodeRunActors              bool
+	nodeRunSupervisor          string
+	nodeRunQuietAfter          time.Duration
+	nodeRunSelfUpdate          bool
+	nodeRunSandbox             bool
+	nodeRunRelaySidecar        bool
+	nodeRunValidateWithSession bool
+	nodeRunValidateNoDiagnosis bool
 	// nodeRunSandboxRuntime is the runtime --sandbox opens its pods on:
 	// rootless podman, substituted for a test double (sandbox.Fake) so a
 	// test can exercise --sandbox with no podman installed.
@@ -224,6 +227,14 @@ runs, and finish or hand back.`,
 					scheduler.Capacity{CPUs: vr.PersonCPUs, MemGB: vr.PersonMemGB})
 				r, p := rt.Scheduler.ReserveOf(nodev1.ValidationReserveName), rt.Scheduler.PersonShareOf(nodev1.ValidationReserveName)
 				logger.Printf("nodev1: reserve: %g cpus, %g GB kept for %s alone, %g cpus, %g GB of it for people's pull requests", r.CPUs, r.MemGB, strings.Join(vr.Kinds, ", "), p.CPUs, p.MemGB)
+			}
+			admitOn, err := nodev1.ReadAdmitOn(capPath, nodev1.AdmitOn(nodeRunAdmitOn))
+			if err != nil {
+				return err
+			}
+			rt.AdmitOn = admitOn
+			if admitOn == nodev1.AdmitOnDeclared {
+				logger.Printf("nodev1: v1.admit_on=declared: every lease holds the node's scheduler to its declared resources, not its kind's learned request")
 			}
 		}
 		rt.Host, rt.Machine = nodeRunHost(logger)
@@ -600,6 +611,7 @@ func init() {
 	f.StringSliceVar(&nodeRunValidationKinds, "validation-kinds", []string{"validate", "evaluate"}, "the kinds the validation reserve is kept for (short names); node.yaml's v1.validation_reserve.kinds wins")
 	f.StringSliceVar(&nodeRunAssistantKinds, "assistant-kinds", []string{"goal-chat", "assistant"}, "the kinds the assistant reserve is kept for (short names); none keeps no reserve; a dispatcher's lease always uses it; node.yaml's v1.assistant_reserve.kinds wins")
 	f.IntVar(&nodeRunDispatcherCap, "dispatcher-cap", nodev1.DefaultDispatcherCap, "the most sub-agents one assistant dispatcher lease runs at once; its kind's own cap is held to it, and asks past it wait in the dispatcher's queue; node.yaml's v1.dispatcher_cap wins")
+	f.StringVar(&nodeRunAdmitOn, "admit-on", string(nodev1.AdmitOnRequests), "with --actors-scheduler, what an ordinary lease holds of the node's scheduler while it runs: requests (default) is its kind's learned request (goal a-job-is-sized-by-request-and-limit), declared is the brief's declared resources, as every kind held before that goal; the reserve and its person share are always sized from requests, whichever this picks; node.yaml's v1.admit_on wins")
 	f.BoolVar(&nodeRunActors, "actors", false, "run each lease as a job actor (ADR-044): it owns the lease's directory, room, grant and proxy, writes actor.json before each state change, releases everything however the lease ends, and hands back pod_killed a session killed from outside; a restarted node releases the actors it left")
 	f.StringVar(&nodeRunSupervisor, "supervisor", "off", "with --actors, the supervisor (ADR-044): off; warn (or report) logs quiet sessions and what the minute's reconcile finds; cancel escalates a quiet session, then hands it back stalled, and removes pods, job directories and grants no actor holds; tidy removes pods, job directories and grants no actor holds like cancel, but never escalates or stalls a quiet session, as warn does not either. Once running, node.yaml's `v1.supervisor` key is read live (ADR-044 amendment, 2026-11-09): editing it and sending SIGHUP (as `mesh node set` does for capacity) changes the mode in force on the next Look or Reconcile, with no restart")
 	f.DurationVar(&nodeRunQuietAfter, "quiet-after", 0, "with --supervisor, how long a session may show no progress before it is escalated, and again before it is stopped (default 15m)")

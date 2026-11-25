@@ -1356,3 +1356,45 @@ that kind's measured peaks once there are enough to trust.
 `TestLearnedRequestNeverAboveLimitOrBelowFloor` and
 `TestStatusLeaseLineReportsLimitRequestNowAndPeak` (internal/nodev1)
 cover it.
+
+## Amendment, 2026-11-25: `v1.admit_on` picks requests or declared sizes; the reserve floor is always requests
+
+Goal `a-job-is-sized-by-request-and-limit`, item 3. The amendment above
+makes `leaseAsk` hold every ordinary lease to its kind's learned
+request rather than its brief's declared resources. A node that has not
+yet trusted a kind's learned figures — or an operator who wants the old
+sizing back for a time — needs a way to hold every lease to its
+declared resources again, without rebuilding: `v1.admit_on`.
+
+1. **`AdmitOn`** (`internal/nodev1/admiton.go`) is a `Runtime` field,
+   `AdmitOnRequests` (the zero value) or `AdmitOnDeclared`.
+   `leaseAsk` sizes `ask.CPUs`/`ask.MemGB` from `leaseRequest(b)` under
+   `AdmitOnRequests`, from `b.Resources` — the brief's declared
+   resources — under `AdmitOnDeclared`. Either way `askOf`'s other
+   fields (the job slot, the account session, the shared build cache,
+   the TTL) and the sandbox's own hard cap (`limitsOf(b.Resources)`)
+   are unchanged: `admit_on` only picks what a lease holds of the
+   node's own scheduler, never what a kind's containers are allowed to
+   use.
+2. **The reserve's floor is always a kind's learned request, whichever
+   `admit_on` holds ordinary admission to.** `holdCapacity` passes
+   `noteReserveNeed` a figure built from `leaseRequest(b)` on its own,
+   not from the `ask` `leaseAsk` actually drew — so under
+   `AdmitOnDeclared` a validation or assistant kind's reserve (and its
+   person share, assistantreserve.go) is still advertised to Mesh only
+   once it has room for the kind's learned request, never inflated to
+   wait for room a declared figure the kind rarely uses would need.
+   `reserveFits`/`takeReserved` read that same floor unchanged.
+3. **`ReadAdmitOn`** (`internal/nodev1/admiton.go`) is the node.yaml
+   pattern the validation reserve already used (`ReadValidationReserve`):
+   node.yaml's `v1.admit_on` (`"requests"` or `"declared"`) wins over
+   the default a CLI flag supplies, a missing file or block keeps the
+   default, and any other value is refused, naming it. `mesh node run
+   --admit-on requests|declared` (default `requests`) is that flag,
+   read only with `--actors-scheduler`; node.yaml's `v1.admit_on` still
+   overrides it the same way every other `v1.*` knob does.
+
+`TestAdmitOnRequestsSumsLearnedRequests`,
+`TestAdmitOnDeclaredSumsDeclaredSizes`, `TestAdmitOnZeroValueIsRequests`,
+`TestAdmitOnDeclaredNeverInflatesTheReserveFloor` and `TestReadAdmitOn`
+(internal/nodev1) cover it.

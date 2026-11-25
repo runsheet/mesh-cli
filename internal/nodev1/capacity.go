@@ -71,17 +71,22 @@ func (r *Runtime) assistantKind(b *meshapi.Brief) bool {
 //
 // What it holds of the node is its learned request (learnedrequest.go),
 // not the brief's declared resources, once its kind has run enough
-// measured leases to trust (goal a-job-is-sized-by-request-and-limit):
-// the lease's own hard cap (the sandbox's limitsOf(b.Resources)) is
-// unchanged either way.
+// measured leases to trust (goal a-job-is-sized-by-request-and-limit) --
+// unless v1.admit_on holds every lease to its declared resources
+// instead (admiton.go, AdmitOnDeclared, goal
+// a-job-is-sized-by-request-and-limit item 3): the lease's own hard cap
+// (the sandbox's limitsOf(b.Resources)) is unchanged either way.
 func (r *Runtime) leaseAsk(b *meshapi.Brief, lease *meshapi.Lease) scheduler.Ask {
 	ask := askOf(b, lease)
-	req := r.leaseRequest(b)
-	if req.CPUs != b.Resources.CPUs || req.MemGB != b.Resources.MemGB {
-		r.logf("nodev1: lease %s (%s) holds a learned request of %g cpus, %g GB; its declared (and hard cap) is %g cpus, %g GB",
-			lease.LeaseID, path.Base(b.Kind), req.CPUs, req.MemGB, b.Resources.CPUs, b.Resources.MemGB)
+	size := r.leaseRequest(b)
+	if r.AdmitOn.declared() {
+		size = b.Resources
 	}
-	ask.CPUs, ask.MemGB = req.CPUs, req.MemGB
+	if size.CPUs != b.Resources.CPUs || size.MemGB != b.Resources.MemGB {
+		r.logf("nodev1: lease %s (%s) holds a learned request of %g cpus, %g GB; its declared (and hard cap) is %g cpus, %g GB",
+			lease.LeaseID, path.Base(b.Kind), size.CPUs, size.MemGB, b.Resources.CPUs, b.Resources.MemGB)
+	}
+	ask.CPUs, ask.MemGB = size.CPUs, size.MemGB
 	if r.assistantKind(b) {
 		ask.Reserved, ask.Slot, ask.Cache = true, false, scheduler.CacheNone
 		return ask
@@ -183,7 +188,12 @@ func (r *Runtime) holdCapacity(ctx context.Context, b *meshapi.Brief, lease *mes
 		return nil, nil
 	}
 	ask := r.leaseAsk(b, lease)
-	r.noteReserveNeed(ask)
+	// the reserve's floor is always a kind's learned request, whichever
+	// size v1.admit_on actually holds ask to: a reserve's advertised
+	// room never swells with a declared figure just because admit_on
+	// holds the kind's general-room leases to it (admiton.go)
+	req := r.leaseRequest(b)
+	r.noteReserveNeed(scheduler.Ask{Reserved: ask.Reserved, Reserve: ask.Reserve, CPUs: req.CPUs, MemGB: req.MemGB})
 	l, err := r.Scheduler.TryTake(ask)
 	if err == nil {
 		return l, nil

@@ -57,6 +57,11 @@ type Runtime struct {
 	// a-v1-node-reserves-room-for-validations-and-sizes-its-reserves-from-use
 	// P1). None keeps no reserve.
 	ValidationKinds []string
+	// AdmitOn is how leaseAsk sizes an ordinary lease's hold of the
+	// node's scheduler (admiton.go; goal a-job-is-sized-by-request-and-limit):
+	// AdmitOnRequests (the zero value) holds it to its kind's learned
+	// request, AdmitOnDeclared to its brief's declared resources.
+	AdmitOn AdmitOn
 	// Meter reads the running containers' cgroups for each lease's CPU
 	// and memory peaks (usage.go; P3 of the same goal); nil reads none,
 	// and the node still counts its leases by kind.
