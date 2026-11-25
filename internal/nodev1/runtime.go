@@ -15,6 +15,7 @@ package nodev1
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -196,6 +197,14 @@ type Runtime struct {
 	// The zero value has the node do all of it itself, with no model
 	// (validatelease.go, ADR-044 amendment 2026-11-25).
 	ValidateWithSession bool
+	// NoValidateDiagnosis leaves a red validation the node ran itself
+	// undiagnosed (`--validate-no-diagnosis`): no session at all. The
+	// zero value starts one session, on the kind's cheapest model, to
+	// diagnose each red (validatelease.go).
+	NoValidateDiagnosis bool
+	// onFrozen, set by a test, hears a red machine validation's result
+	// as it stood before its diagnosis session started.
+	onFrozen func(json.RawMessage)
 	// SuiteWait is how long a run_suite call waits on its run before it
 	// answers the run's handle for the session to poll
 	// (nodetools.DefaultSuiteWait when zero; ADR-049).

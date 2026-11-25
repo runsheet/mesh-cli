@@ -1211,6 +1211,22 @@ now runs the whole validation itself (`internal/nodev1/validatelease.go`).
 6. **Restarts.** No agent runs in a machine validation's pod, so it
    ends with the node's process: an upgrade hands it back rather than
    handing it off (`adoptability`).
+7. **A red's diagnosis.** A green, a conflict and a reuse make no model
+   call. A red's result is frozen the moment the node has written it;
+   then exactly one session — the kind's own harness, on its ladder's
+   default, cheapest model — reads the red's evidence (each red step's
+   summary, each failing test and its output, in its prompt) and says
+   why it is red. It works to a brief of its own (`diagnoseBrief`): no
+   product tool to read or finish with, no learnings tool, no evidence
+   owed, and the node's `result` tool, taking `{diagnosis}`, as its one
+   tool; it is served no product server and none of the node's
+   building tools. What it says is added to the finish as `diagnosis`
+   and at the end of the triage's `note`; `green`, `candidate`,
+   `suites`, `tests`, `evidence`, `suite_config_sha` and `environment`
+   are the frozen result's, byte for byte. A session that errors, is
+   stopped or gives no diagnosis leaves the frozen result as it is, and
+   no second session starts. `--validate-no-diagnosis`
+   (`Runtime.NoValidateDiagnosis`) starts none at all.
 
 `TestTheNodeValidatesAChainWithNoSession`,
 `TestTheNodeFinishesAConflictingChainWithTheConflict`,
@@ -1219,4 +1235,7 @@ now runs the whole validation itself (`internal/nodev1/validatelease.go`).
 `TestValidateWithSessionKeepsTheSession`,
 `TestFinishForKeepsWhatTheSchemaTakes`,
 `TestSuiteCallsFollowTheBriefsE2ESelection` and
-`TestAMachineValidationIsNotAdoptable` (internal/nodev1) cover it.
+`TestAMachineValidationIsNotAdoptable`,
+`TestARedIsDiagnosedByOneSessionThatCannotChangeIt`,
+`TestARedWhoseDiagnosisFailsFinishesAsTheNodeMadeIt` and
+`TestNoValidateDiagnosisStartsNoSession` (internal/nodev1) cover it.
