@@ -152,13 +152,26 @@ func (r *Runtime) admit(ctx context.Context, b *meshapi.Brief, sizes []validate.
 		r.logf("nodev1: lease %s: admission refused: its %d lanes need %s GB with the lease's own, the node has %g GB in all", b.LeaseID, len(sizes), num2(need.MemGB), total.MemGB)
 		return nil, fmt.Errorf("%w: its %d lanes need %s GB with the lease's own %g, the node has %g GB in all", errNeverFits, len(sizes), num2(need.MemGB), b.Resources.MemGB, total.MemGB)
 	}
+	// the validation reserve is named to Mesh only while it has room
+	// for a whole admission like this one, not for the lease's own hold
+	// alone (takeReserved; dl360, 2026-11-25: validations were placed
+	// into it four cpus at a time while their lanes could never fit)
+	r.noteReserveNeed(scheduler.Ask{Reserve: asks[0].Reserve, Reserved: asks[0].Reserved, CPUs: need.CPUs, MemGB: need.MemGB})
 	free := r.Scheduler.Free()
+	waiting := len(r.Scheduler.Waiting())
 	ls, err := r.Scheduler.TryTakeAll(asks)
+	if err == nil && waiting > 0 && asked.CPUs <= 0 && asked.MemGB <= 0 {
+		r.logf("nodev1: lease %s: admitted ahead of %d waiting: needs no extra room", b.LeaseID, waiting)
+	}
 	if err != nil {
 		r.logf("nodev1: lease %s: admission waits: asked %g cpus, %s GB for %d lanes, free %g cpus, %s GB, waiting on %s (%v)",
 			b.LeaseID, asked.CPUs, num2(asked.MemGB), len(sizes), free.CPUs, num2(free.MemGB), waiterOf(asks[0]).Room(), err)
 		start := time.Now()
-		if ls, err = r.Scheduler.TakeAll(ctx, asks); err != nil {
+		// the lease's own hold is yielded while it waits: room the oldest
+		// waiting lanes may take, so waiting leases never hold all the
+		// room their lanes need (goal
+		// a-validation-needing-no-room-is-admitted-at-once)
+		if ls, err = r.Scheduler.TakeAllYielding(ctx, asks, r.Scheduler.LeaseOf(b.LeaseID)); err != nil {
 			return nil, fmt.Errorf("waiting for the node's room for every lane: %w", err)
 		}
 		r.logf("nodev1: lease %s: admission waited %s", b.LeaseID, time.Since(start).Round(time.Second))
