@@ -91,7 +91,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   tests, else 0) — a unit that exits 0 under it is red, reason "ran 0
   tests". `Normalise` carries all of it into run_suite's answer and the
   signed record's blob. A suite's command must honour
-  `MESH_SUITE_TESTS`, or say `retries: 0`.
+  `MESH_SUITE_TESTS`, or say `retries: 0`. A lane (a step or a shard)
+  that spends its own hard timeout having run not a single test is
+  never the builder's failure: it stalled silent before validate's own
+  stall watch had a running test to follow, so `internal/nodev1/causes.go`
+  ends the lease a hand-back, cause `tool_unavailable`, rather than
+  report it to the session as a red step.
 - `internal/latchkey/` + `internal/auth/token.go`: the machine
   credential — Latchkey's device flow, the rotating refresh grant, and
   the `~/.mesh/token` that holds either shape behind one `TokenSource`

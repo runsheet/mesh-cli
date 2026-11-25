@@ -514,3 +514,176 @@ func TestALaneReachesTheLeasesRelay(t *testing.T) {
 		t.Fatalf("the lanes' bridge is not in the lease's HOME: %v", err)
 	}
 }
+
+// laneAnswer is run_suite's answer, the parts these tests read.
+type laneAnswer struct {
+	Exit  int `json:"exit"`
+	Steps []struct {
+		Name  string `json:"name"`
+		Exit  int    `json:"exit"`
+		Class string `json:"class"`
+	} `json:"steps"`
+	Tests []struct {
+		Test   string `json:"name"`
+		Action string `json:"outcome"`
+		Class  string `json:"class"`
+	} `json:"tests"`
+}
+
+// laneSession writes yml as the lease's .runsheet/validate.yml, calls
+// run_suite with no selection on the host (unsandboxed), and keeps its
+// answer on ans.
+func laneSession(t *testing.T, yml string, ans *laneAnswer, refused *bool) *stubSession {
+	return &stubSession{result: SessionResult{SessionID: "sess-lanes", Text: "ran"}, inspect: func(spec SessionSpec) {
+		if err := os.MkdirAll(filepath.Join(spec.Workspace, ".runsheet"), 0o755); err != nil {
+			t.Error(err)
+			return
+		}
+		if err := os.WriteFile(filepath.Join(spec.Workspace, ".runsheet", "validate.yml"), []byte(yml), 0o644); err != nil {
+			t.Error(err)
+			return
+		}
+		text, ref, err := callTool(context.Background(), spec.Servers[NodeToolsServer], nodetools.RunSuiteTool, map[string]any{})
+		if err != nil {
+			t.Errorf("run_suite: %v", err)
+			return
+		}
+		*refused = ref
+		if err := json.Unmarshal([]byte(text), ans); err != nil {
+			t.Errorf("run_suite's answer %q: %v", text, err)
+		}
+	}}
+}
+
+// laneLease offers a job that runs run_suite on the host (no sandbox, no
+// pod) against yml, and runs it to completion.
+func laneLease(t *testing.T, yml string) (*rig, string, laneAnswer) {
+	t.Helper()
+	var ans laneAnswer
+	var refused bool
+	sess := laneSession(t, yml, &ans, &refused)
+	g := newRig(t, sess)
+	g.rt.HostSuites = true
+	job := g.offer(t, func(b *meshapi.Brief) { b.NodeTools = []string{nodetools.RunSuiteTool} })
+	run(t, g, context.Background())
+	if refused {
+		t.Fatal("run_suite refused on an unsandboxed host")
+	}
+	return g, job, ans
+}
+
+// A unit's test that fails once and passes when the supervisor runs it
+// again by name (its only failure) is flaky: the test is action and
+// class flaky, the step itself stays green, and the lease is never
+// handed back.
+func TestALaneThatFailsOnceThenPassesIsFlakyAndTheStepIsGreen(t *testing.T) {
+	yml := `suites:
+  - name: unit
+    kind: unit
+    command: |
+      if [ -n "$MESH_SUITE_TESTS" ]; then
+        printf '%s\n' '{"Action":"run","Package":"pkg","Test":"TestFlaky"}' '{"Action":"pass","Package":"pkg","Test":"TestFlaky"}'
+      else
+        printf '%s\n' '{"Action":"run","Package":"pkg","Test":"TestFlaky"}' '{"Action":"fail","Package":"pkg","Test":"TestFlaky"}'
+        exit 1
+      fi
+`
+	g, job, ans := laneLease(t, yml)
+	if ans.Exit != 0 {
+		t.Fatalf("exit %d, want 0 (flaky): %+v", ans.Exit, ans)
+	}
+	if len(ans.Steps) != 1 || ans.Steps[0].Exit != 0 || ans.Steps[0].Class != "flaky" {
+		t.Fatalf("step %+v, want exit 0 and class flaky (every failure recovered)", ans.Steps)
+	}
+	var found bool
+	for _, test := range ans.Tests {
+		if test.Test != "TestFlaky" {
+			continue
+		}
+		found = true
+		if test.Action != "flaky" || test.Class != "flaky" {
+			t.Fatalf("test %+v, want action and class flaky", test)
+		}
+	}
+	if !found {
+		t.Fatalf("TestFlaky missing from %+v", ans.Tests)
+	}
+	if hb := g.fake.Calls("hand-back"); len(hb) != 0 {
+		t.Fatalf("a flaky (green) run handed the lease back: %+v", hb)
+	}
+	if ended := g.fake.Ended(g.fake.LeaseOf(job)); ended == "hand-back" {
+		t.Fatalf("the lease ended %q", ended)
+	}
+}
+
+// A unit's test that fails again when the supervisor runs it again by
+// name is a confirmed failure, class real: the step and the overall run
+// are red, and the lease ends as the session's own outcome (this stub
+// never submits, so no_finish), never handed back as the infrastructure's.
+func TestALaneThatFailsTwiceIsRealAndTheLeaseIsNotHandedBack(t *testing.T) {
+	yml := `suites:
+  - name: unit
+    kind: unit
+    command: |
+      printf '%s\n' '{"Action":"run","Package":"pkg","Test":"TestReal"}' '{"Action":"fail","Package":"pkg","Test":"TestReal"}'
+      exit 1
+`
+	g, job, ans := laneLease(t, yml)
+	if ans.Exit == 0 {
+		t.Fatalf("exit 0, want non-zero (a confirmed failure): %+v", ans)
+	}
+	if len(ans.Steps) != 1 || ans.Steps[0].Exit == 0 || ans.Steps[0].Class != "real" {
+		t.Fatalf("step %+v, want a non-zero exit and class real", ans.Steps)
+	}
+	var found bool
+	for _, test := range ans.Tests {
+		if test.Test != "TestReal" {
+			continue
+		}
+		found = true
+		if test.Action != "fail" || test.Class != "real" {
+			t.Fatalf("test %+v, want action fail and class real", test)
+		}
+	}
+	if !found {
+		t.Fatalf("TestReal missing from %+v", ans.Tests)
+	}
+	if hb := g.fake.Calls("hand-back"); len(hb) != 0 {
+		t.Fatalf("a confirmed failure handed the lease back: %+v", hb)
+	}
+	if ended := g.fake.Ended(g.fake.LeaseOf(job)); ended == "hand-back" {
+		t.Fatalf("the lease ended %q, want the session's own end", ended)
+	}
+}
+
+// A lane that spends its own hard timeout having run not a single test
+// is never the builder's fault: validate's own stall watch only follows
+// tests already running, so a unit that never starts one is left with no
+// class of its own, and the lease is handed back tool_unavailable rather
+// than reported to the session as a red step.
+func TestALaneThatTimesOutBeforeATestHandsBackToolUnavailable(t *testing.T) {
+	yml := `suites:
+  - name: hang
+    kind: unit
+    command: sleep
+    timeout: 200ms
+`
+	var ans laneAnswer
+	var refused bool
+	sess := laneSession(t, yml, &ans, &refused)
+	g, sb := actorRig(t, sess)
+	g.rt.PodImage = "mesh-pod:test"
+	sb.Agent = func(ctx context.Context, _ sandbox.AgentSpec) (sandbox.Exit, error) {
+		<-ctx.Done()
+		return sandbox.Exit{}, ctx.Err()
+	}
+	job := g.offer(t, func(b *meshapi.Brief) {
+		b.NodeTools = []string{nodetools.RunSuiteTool}
+		b.Pods = []json.RawMessage{json.RawMessage(`{"name":"db","image":"postgres:17"}`)}
+	})
+	run(t, g, context.Background())
+	hb := onlyHandBack(t, g, job)
+	if hb.Cause != meshapi.CauseToolUnavailable || hb.Reason == "" {
+		t.Fatalf("hand-back %+v", hb)
+	}
+}
