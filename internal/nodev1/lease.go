@@ -1174,6 +1174,7 @@ func (r *Runtime) report(id string, b *meshapi.Brief, o outcome) (end actor.End)
 	if result == nil {
 		result, _ = json.Marshal(map[string]string{"text": clip(o.result.Text, 16<<10)})
 	}
+	result = withinBodyLimit(result, func(format string, args ...any) { r.logf("nodev1: lease %s: "+format, append([]any{id}, args...)...) })
 	st, err := r.API.Finish(ctx, id, meshapi.FinishRequest{Result: result, SessionRef: o.result.SessionID, Evidence: o.evidence})
 	if err != nil {
 		r.logf("nodev1: lease %s: finish: %v", id, err)
