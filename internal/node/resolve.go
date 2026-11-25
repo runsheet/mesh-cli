@@ -18,7 +18,10 @@ type Resolved struct {
 // Branch is the item's branch name.
 func (r *Resolved) Branch() string { return BranchName(r.Goal.Slug, r.Item.Seq) }
 
-// BaseRef is the item's base ref, or the repo's default branch.
+// BaseRef is the item's base ref, or the repo's default branch; "" when
+// neither is known — never a guessed name, since the repo's actual
+// default may be anything. A caller holding the checkout (workspace.go's
+// Prepare) reads origin's own default branch itself when this is empty.
 func (r *Resolved) BaseRef() string {
 	if r.Item.BaseRef != "" {
 		return r.Item.BaseRef
@@ -26,7 +29,7 @@ func (r *Resolved) BaseRef() string {
 	if r.Repo != nil && r.Repo.DefaultBranch != "" {
 		return r.Repo.DefaultBranch
 	}
-	return "main"
+	return ""
 }
 
 // Resolve reads the item's goal, project and repo.

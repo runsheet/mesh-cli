@@ -8,6 +8,25 @@ import (
 	"projectmesh.io/mesh-cli/internal/tools"
 )
 
+// checkMainFirst's "Check main first" section names whatever BaseRef
+// actually resolved to — master when that's the repo's real default,
+// main when it is — and never substitutes a guessed "main" of its own.
+func TestDefaultBranchCheckFirstNamesTheResolvedBase(t *testing.T) {
+	for _, base := range []string{"master", "main"} {
+		t.Run(base, func(t *testing.T) {
+			p := BuildPrompt(PromptInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: base})
+			want := "look for this item's work on `origin/" + base + "`"
+			if !strings.Contains(p, want) {
+				t.Fatalf("build prompt missing %q:\n%s", want, p)
+			}
+			other := map[string]string{"master": "main", "main": "master"}[base]
+			if strings.Contains(p, "origin/"+other) {
+				t.Fatalf("build prompt named origin/%s instead of origin/%s:\n%s", other, base, p)
+			}
+		})
+	}
+}
+
 func TestPlanPromptAcceptanceTheEvaluatorCanSee(t *testing.T) {
 	p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p"})
 	for _, want := range []string{

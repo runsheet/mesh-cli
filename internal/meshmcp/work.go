@@ -54,11 +54,20 @@ type HeldStatus struct {
 	Error string `json:"error,omitempty"`
 }
 
-func baseOf(h HeldItem) string {
+// baseOf is the held item's base ref: Base, when join-time resolution
+// (node.Resolved.BaseRef) found one, else origin's own default branch,
+// read fresh from the checkout — never a guessed name, since the item's
+// repo may default to anything. "" when the checkout has no origin/HEAD
+// either.
+func baseOf(ctx context.Context, h HeldItem) string {
 	if h.Base != "" {
 		return h.Base
 	}
-	return "main"
+	out, err := gitOutput(ctx, h.Path, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(out, "origin/")
 }
 
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
@@ -77,7 +86,11 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 
 // commitsPastBase counts the checkout's commits past origin/<base>.
 func commitsPastBase(ctx context.Context, h HeldItem) (int, error) {
-	out, err := gitOutput(ctx, h.Path, "rev-list", "--count", "refs/remotes/origin/"+baseOf(h)+"..HEAD")
+	base := baseOf(ctx, h)
+	if base == "" {
+		return 0, fmt.Errorf("no base ref and no origin default branch")
+	}
+	out, err := gitOutput(ctx, h.Path, "rev-list", "--count", "refs/remotes/origin/"+base+"..HEAD")
 	if err != nil {
 		return 0, err
 	}
@@ -439,7 +452,7 @@ func (p *Personal) switchItem(ctx context.Context, args map[string]any) (string,
 		}
 	}
 	if n > 0 {
-		note += fmt.Sprintf(" (%s pushed, %d commit(s) past %s)", h.Branch, n, baseOf(h))
+		note += fmt.Sprintf(" (%s pushed, %d commit(s) past %s)", h.Branch, n, baseOf(ctx, h))
 	}
 	if err := p.Join.note(ctx, h.ItemID, note); err != nil {
 		return hostedRefused("mesh_switch", err)
