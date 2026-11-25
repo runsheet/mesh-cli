@@ -577,7 +577,7 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 	stopped := false
 	done := make(map[unit]*ran)
 	var mu sync.Mutex
-	var laneErr error
+	var laneErrs []error
 	// cancelled says the run was stopped by fail fast, not by ctx: what
 	// a unit or lane then answers is no result of its own
 	cancelled := func() bool {
@@ -697,7 +697,7 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 						return
 					}
 					mu.Lock()
-					laneErr = cmp.Or(laneErr, fmt.Errorf("lane %s: %w", l.name, err))
+					laneErrs = append(laneErrs, fmt.Errorf("lane %s: %w", l.name, err))
 					mu.Unlock()
 					return
 				}
@@ -820,8 +820,8 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 	if runErr != nil {
 		return results, runErr
 	}
-	if laneErr != nil {
-		return results, Classify(laneErr)
+	if len(laneErrs) > 0 {
+		return results, Classify(errors.Join(laneErrs...))
 	}
 	return results, nil
 }
