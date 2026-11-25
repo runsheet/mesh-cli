@@ -1,5 +1,5 @@
 ---
-summary: On a v1 node run_suite runs a sharded suite's shards (and its groups) at once, the first in the lease's pod and each other in a pod of its own beside it with its own copy of the lease's services, on the lease's HOME, network and egress (amended 2026-11-02: a lane sees what its lease's pod sees), on the room its suite asks for in validate.yml (cpus, memory; the node's sandbox default when it names none), held of the node's scheduler and the limit of its steps (amended 2026-11-15; before, the lease's resources), and on the lease's warm cache (ADR-044, amended 2026-11-15); a run longer than the call's wait (10 minutes) answers {run_id, status: running}, which the session polls with run_suite {run_id}, never an MCP timeout; fail_fast stops the other shards at the first failure; a validate lease is held to its validate.yml budget from the lease's start, past which the run is stopped and answered red, out_of_time, with its signed record; the record stays one per run, its output blob naming each shard. run_suite also supervises its units: a red unit's failed tests are retried by name, a confirmed failure stops the run, a stalled test is named and a unit that ran 0 tests is red (amended 2026-11-15); a stall is the unit's whole stream falling silent, never one test's silence while the others still report (amended 2026-11-16); a red or recovered TestResult and StepResult carry an explicit Class, real, flaky or infrastructure, and a shard whose lane never opened names itself in Reason (amended 2026-11-25).
+summary: On a v1 node run_suite runs a sharded suite's shards (and its groups) at once, the first in the lease's pod and each other in a pod of its own beside it with its own copy of the lease's services, on the lease's HOME, network and egress (amended 2026-11-02: a lane sees what its lease's pod sees), on the room its suite asks for in validate.yml (cpus, memory; the node's sandbox default when it names none), held of the node's scheduler and the limit of its steps (amended 2026-11-15; before, the lease's resources), and on the lease's warm cache (ADR-044, amended 2026-11-15); a run longer than the call's wait (10 minutes) answers {run_id, status: running}, which the session polls with run_suite {run_id}, never an MCP timeout; fail_fast stops the other shards at the first failure; a validate lease is held to its validate.yml budget from the lease's start, past which the run is stopped and answered red, out_of_time, with its signed record; the record stays one per run, its output blob naming each shard. run_suite also supervises its units: a red unit's failed tests are retried by name, a confirmed failure stops the run, a stalled test is named and a unit that ran 0 tests is red (amended 2026-11-15); a stall is the unit's whole stream falling silent, never one test's silence while the others still report (amended 2026-11-16); a red or recovered TestResult and StepResult carry an explicit Class, real, flaky or infrastructure, and a shard whose lane never opened names itself in Reason (amended 2026-11-25); run_suite's own answer, live and finished, carries Class too, in infrastructure_tests and infrastructure_steps beside flaky_tests and stalled_tests (amended 2026-11-25).
 status: accepted
 ---
 
@@ -620,3 +620,26 @@ prose. Mesh's finish guard and the predicate's shape are unchanged:
 `TestAStalledUnitsClassIsInfrastructure` and
 `TestMergeNamesTheNeverRanShardAsInfrastructure` (internal/validate)
 hold it.
+
+## Amendment 2026-11-25: run_suite's own answer carries Class too
+
+Goal `a-rerun-classifies-real-flaky-or-infrastructure`. Corrects the
+amendment above: "`nodetools.Normalise` builds its own narrower mirror,
+field by field, and is unchanged; `Class` is `internal/validate`'s own
+field, read by a product from the signed attestation directly" did not
+hold once a session needed `Class` from a run still going, not only from
+the finished, signed record.
+
+**Decision.** `nodetools.Normalise` carries `Class` into its own
+`SuiteStep`, `SuiteShard` and `TestResult` (`Class string
+json:"class,omitempty"`, each from the matching `validate` type's
+field), so it is no longer the narrowed mirror the 2026-11-25 Decision
+described. `run_suite`'s own JSON answer — live, on a running poll, and
+finished — names every infrastructure-classed test and step in
+`infrastructure_tests` and `infrastructure_steps`, as `flaky_tests` and
+`stalled_tests` already do, and its tool description says so. A product
+now reads `Class` from `run_suite`'s answer directly, not only from the
+signed attestation afterwards.
+
+`TestRunSuiteAnswersWhatTheSupervisorFound` and
+`TestNormaliseKeepsWhatTheSupervisorFound` (internal/nodetools) hold it.
