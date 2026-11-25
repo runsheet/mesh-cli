@@ -296,6 +296,13 @@ func (r *Runtime) validateByMachine(ctx context.Context, b *meshapi.Brief, tools
 			suites = append(suites, map[string]any{"name": st.Name, "exit": st.Exit, "passed": st.TestsPassed, "failed": st.TestsFailed, "duration_ms": st.DurationMs})
 		}
 		for _, t := range a.Tests {
+			// a passing (or skipped, or in the end flaky) test is counted
+			// in its suite's passed and kept in run_suite's evidence, never
+			// listed: runsheet's suite ran 9,500 of them, and the list
+			// passed Mesh's 1 MB body limit (2026-11-26)
+			if o := schemaOutcome(t.Outcome); o != "fail" && o != "timeout" {
+				continue
+			}
 			entry := map[string]any{"name": t.Name, "package": t.Package, "outcome": schemaOutcome(t.Outcome), "duration_ms": max(t.DurationMs, 0)}
 			if a.suite != "" {
 				entry["suite"] = a.suite
@@ -534,7 +541,80 @@ func finishFor(schema json.RawMessage, finish map[string]any) (json.RawMessage, 
 		}
 		finish = kept
 	}
-	return json.Marshal(finish)
+	return boundFinish(finish, maxMachineFinish)
+}
+
+// maxMachineFinish is the most a machine validation's result may
+// marshal to: Mesh refuses a finish body over 1 MiB, and the body also
+// carries the evidence ids and, on main's validation, an e2e coverage
+// map of up to nodetools.MaxCoverage added after this bound.
+const maxMachineFinish = 512 << 10
+
+// boundFinish is finish marshaled within max bytes, never refused: the
+// failing tests' entries (tests), the triage's failing_tests and flaked
+// are each halved in turn until it fits, and the triage's note says how many
+// were left out — run_suite's signed evidence still holds every one.
+// green, candidate, suites, evidence and the rest are never cut; a
+// result that still does not fit is answered as it stands.
+func boundFinish(finish map[string]any, max int) (json.RawMessage, error) {
+	raw, err := json.Marshal(finish)
+	if err != nil || len(raw) <= max {
+		return raw, err
+	}
+	finish = maps.Clone(finish)
+	triage, _ := finish["triage"].(map[string]any)
+	if triage != nil {
+		triage = maps.Clone(triage)
+		finish["triage"] = triage
+	}
+	cut := 0
+	halve := func(get func() int, set func(n int)) bool {
+		n := get()
+		if n == 0 {
+			return false
+		}
+		keep := n / 2
+		cut += n - keep
+		set(keep)
+		return true
+	}
+	lists := []struct {
+		get func() int
+		set func(n int)
+	}{
+		{func() int { l, _ := finish["tests"].([]any); return len(l) }, func(n int) { finish["tests"] = finish["tests"].([]any)[:n] }},
+		{func() int {
+			if triage == nil {
+				return 0
+			}
+			l, _ := triage["failing_tests"].([]string)
+			return len(l)
+		}, func(n int) { triage["failing_tests"] = triage["failing_tests"].([]string)[:n] }},
+		{func() int { l, _ := finish["flaked"].([]string); return len(l) }, func(n int) { finish["flaked"] = finish["flaked"].([]string)[:n] }},
+	}
+	// each list halved in turn, so no one of them is emptied while
+	// another still runs long
+	for len(raw) > max {
+		cutAny := false
+		for _, l := range lists {
+			if len(raw) <= max || !halve(l.get, l.set) {
+				continue
+			}
+			cutAny = true
+			if raw, err = json.Marshal(finish); err != nil {
+				return nil, err
+			}
+		}
+		if !cutAny {
+			break
+		}
+	}
+	if cut > 0 && triage != nil {
+		note, _ := triage["note"].(string)
+		triage["note"] = strings.TrimSpace(fmt.Sprintf("[mesh: %d test names left out to keep the finish under Mesh's 1 MB body limit; run_suite's evidence holds them all] %s", cut, note))
+		raw, err = json.Marshal(finish)
+	}
+	return raw, err
 }
 
 // A red's diagnosis (ADR-044 amendment 2026-11-25): the result is frozen
@@ -659,4 +739,39 @@ func withDiagnosis(finish map[string]any, diag string) map[string]any {
 		out["triage"] = t
 	}
 	return out
+}
+
+// maxFinishResult is the most of a finish's result the node sends:
+// under Mesh's 1 MiB body limit, with room for the evidence ids beside
+// it.
+const maxFinishResult = 960 << 10
+
+// withinBodyLimit is result as the finish sends it: unchanged when it
+// fits maxFinishResult; otherwise, its tests list and then its coverage
+// map left out — each named in logf — rather than a finish Mesh refuses
+// and a result lost (2026-11-26: a 9,500-test validation's finish).
+func withinBodyLimit(result json.RawMessage, logf func(string, ...any)) json.RawMessage {
+	if len(result) <= maxFinishResult {
+		return result
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(result, &obj) != nil {
+		logf("the finish's result is %d bytes, over Mesh's body limit, and not an object to cut", len(result))
+		return result
+	}
+	for _, k := range []string{"tests", "coverage"} {
+		if _, ok := obj[k]; !ok {
+			continue
+		}
+		delete(obj, k)
+		out, err := json.Marshal(obj)
+		if err != nil {
+			return result
+		}
+		logf("the finish's result was %d bytes, over Mesh's body limit: its %s left out (%d bytes now)", len(result), k, len(out))
+		if result = out; len(result) <= maxFinishResult {
+			return result
+		}
+	}
+	return result
 }
