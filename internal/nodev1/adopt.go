@@ -313,6 +313,49 @@ func (r *Runtime) adoptOne(ctx context.Context, id, dir string, st *handoffState
 
 	nodeSock := filepath.Join(st.SidecarDir, relayNodeSocket)
 
+	// apply_onto needs the node's own git grant (lease.go's work, the
+	// checkout's and apply_onto's alone -- never the sidecar's, whose
+	// renewal above mints its own, nor push's, which an adopted lease
+	// always makes through the sidecar). Nothing of it survived the
+	// restart, so adoption reconstructs one, only when the kind still
+	// names apply_onto, the same way a fresh lease's checkout opens it:
+	// the same policy, minting through this new session's tokens. A
+	// lease whose brief names no repository, whose kind no longer names
+	// apply_onto, or whose relay refuses the reconstruction, is adopted
+	// with no apply_onto, same as before this (logged, never handed back
+	// over it alone).
+	var grant *gitrelay.Grant
+	if b.Git != nil && b.Git.Repo != "" && slices.Contains(b.NodeTools, nodetools.ApplyOntoTool) {
+		if r.relay == nil {
+			r.logf("nodev1: lease %s: no git relay to reconstruct its grant on; adopted without apply_onto", id)
+		} else {
+			gpolicy := policyOf(b.Git)
+			if r.sidecarMode() {
+				gpolicy.Access, gpolicy.Push, gpolicy.ReadRepos = gitrelay.Read, nil, nil
+			}
+			gmint := func(ctx context.Context, repo string, access gitrelay.Access) (gitrelay.Token, error) {
+				t, err := tokens.MintSource(ctx, sourceRequestFor(b.Git, repo, access))
+				if err != nil {
+					r.logf("nodev1: lease %s: minting its git token for %s (%s access) failed: %v", id, repo, access, err)
+					return t, err
+				}
+				v.addGitToken(b.Git, repo, t)
+				return t, nil
+			}
+			if g, err := r.relay.Open(id, gpolicy, gmint, tokens.RevokeSource); err != nil {
+				r.logf("nodev1: lease %s: reconstructing its git grant: %v; adopted without apply_onto", id, err)
+			} else {
+				grant = g
+				a.Hold(holdGrant, func() error {
+					if err := grant.Close(); err != nil {
+						r.logf("nodev1: lease %s: %v", id, err)
+					}
+					return nil
+				})
+			}
+		}
+	}
+
 	// the node's side of the lease's socket past the tunnel, as rs.open
 	// serves it for a lease it starts: the model forwarder and the node
 	// tools the session reaches through the sidecar (nodeProxy), whose
@@ -324,7 +367,7 @@ func (r *Runtime) adoptOne(ctx context.Context, id, dir string, st *handoffState
 	// the job's account refused by its vendor ends the lease, handed
 	// back account_refused (accountrefused.go)
 	account.onRefused = func(err error) { cancel(err) }
-	tools, rec := r.adoptedTools(leaseCtx, b, filepath.Join(dir, "work"), tokens, mb, fin, hb, st.SidecarDir)
+	tools, rec := r.adoptedTools(leaseCtx, b, filepath.Join(dir, "work"), tokens, mb, fin, hb, st.SidecarDir, grant)
 	np, err := r.nodeProxy(b, tools, account, "")
 	if err != nil {
 		end := actor.End{Report: actor.ReportHandBack, Cause: meshapi.CauseNodeUpdate, Reason: fmt.Sprintf("its model relay: %v", err)}
@@ -487,23 +530,27 @@ func restoreTurnLedger(ht *handoffTurns) *turnLedger {
 // lease's new session and its relay sidecar: result, hand_back and
 // progress, through which a session ends its lease or says how far it
 // got, push, which every sidecar lease's session makes through the
-// sidecar anyway (relaysidecar.PushClient), and run_suite and
-// stop_suite, whose steps run in the lease's own pod (podsuites.go) --
-// never stopped by the hand-off, only never reattached before now
-// (adoptedTools). The rest stay unserved after a restart, each needing
-// what only the process that started the lease held: apply_onto its own
-// git grant, request_time its time budget, escalate its harness, which
-// read the mailbox the escalation is left in, and sign_release its
-// Fulcio signer's session. A session calling one of those after a
-// restart is told the node does not have it, where before every node
-// tool was answered 404.
+// sidecar anyway (relaysidecar.PushClient), run_suite and stop_suite,
+// whose steps run in the lease's own pod (podsuites.go) -- never stopped
+// by the hand-off, only never reattached before now (adoptedTools), and
+// apply_onto, whose own git grant adoptOne reconstructs on the new
+// session's tokens before adoptedTools is called. The rest stay
+// unserved after a restart, each needing what only the process that
+// started the lease held: request_time its time budget, escalate its
+// harness, which read the mailbox the escalation is left in, and
+// sign_release its Fulcio signer's session. A session calling one of
+// those after a restart is told the node does not have it, where before
+// every node tool was answered 404.
 var adoptedNodeTools = []string{nodetools.ResultTool, nodetools.HandBackTool, nodetools.ProgressTool, nodetools.PushTool,
-	nodetools.RunSuiteTool, nodetools.StopSuiteTool}
+	nodetools.RunSuiteTool, nodetools.StopSuiteTool, nodetools.ApplyOntoTool}
 
 // adoptedTools are the adopted lease's node tools (adoptedNodeTools of
 // the kind's), the kind's tool slots applied as at a fresh start
-// (slots.go), and the recorder their evidence goes to.
-func (r *Runtime) adoptedTools(ctx context.Context, b *meshapi.Brief, workspace string, tokens *sessionTokens, mb *Mailbox, fin *finishCapture, hb *sessionHandBack, sidecarDir string) ([]mcptool.Tool, *nodetools.Recorder) {
+// (slots.go), and the recorder their evidence goes to. grant, set, is
+// the node's own git grant adoptOne reconstructed for apply_onto; nil
+// for a lease with no repository or whose reconstruction failed, same
+// as a fresh lease with neither.
+func (r *Runtime) adoptedTools(ctx context.Context, b *meshapi.Brief, workspace string, tokens *sessionTokens, mb *Mailbox, fin *finishCapture, hb *sessionHandBack, sidecarDir string, grant *gitrelay.Grant) ([]mcptool.Tool, *nodetools.Recorder) {
 	served := *b
 	served.NodeTools = nil
 	var unserved []string
@@ -523,7 +570,7 @@ func (r *Runtime) adoptedTools(ctx context.Context, b *meshapi.Brief, workspace 
 	// reattached (adoptLanes holds their room alone), so a run after
 	// adoption is the lease's base pod's.
 	suites := r.suiteRunner(b, PodName(b.LeaseID))
-	tools, rec := r.nodeTools(&served, nil, workspace, tokens, escalate.New(b.Harness.Model), mb, suites, pusher, leaseClock{ctx: ctx, began: time.Now(), budget: r.suiteBudget(&served, workspace)}, nil, nil)
+	tools, rec := r.nodeTools(&served, grant, workspace, tokens, escalate.New(b.Harness.Model), mb, suites, pusher, leaseClock{ctx: ctx, began: time.Now(), budget: r.suiteBudget(&served, workspace)}, nil, nil)
 	tools = append(tools, r.endTools(&served, fin, hb, mb)...)
 	if sl, err := slotsOf(b); err == nil {
 		tools = sl.nodeTools(tools)
