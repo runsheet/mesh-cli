@@ -21,6 +21,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/actor"
 	"projectmesh.io/mesh-cli/internal/dpop"
+	"projectmesh.io/mesh-cli/internal/gitrelay"
 	"projectmesh.io/mesh-cli/internal/meshapi"
 	"projectmesh.io/mesh-cli/internal/nodetools"
 	"projectmesh.io/mesh-cli/internal/relaysidecar"
@@ -1078,6 +1079,111 @@ func TestAdoptedLeaseServesRunSuite(t *testing.T) {
 	}
 	if !slices.Equal(suiteAgent.Command, []string{"sh", "-c", "true"}) || suiteAgent.Image != "mesh-pod:test" {
 		t.Fatalf("the suite step %+v", suiteAgent)
+	}
+
+	// finish the lease cleanly, as a session's own submit would, so
+	// nothing of adoptOne's goroutine races the test's own clean-up.
+	driveObserve(t, nodeSocket, "conform", `{"id":2,"method":"tools/call","params":{"name":"submit"}}`,
+		`{"id":2,"result":{"content":[{"type":"text","text":"{\"ok\":true}"}]}}`)
+	waitFor(t, "the adopted lease to finish", func() bool {
+		return len(g.fake.Calls("finish")) > 0
+	})
+}
+
+// TestAdoptedLeaseServesApplyOnto is apply_onto's analogue of
+// TestAdoptedLeaseServesRunSuite: apply_onto needs the node's own git
+// grant (nodetools.ApplyOnto.Grant), which died with the process that
+// held it, same as run_suite needed its pod; adoptOne reconstructs the
+// grant on the adopted lease's fresh session (adopt.go), the same way
+// a fresh lease's checkout opens one (lease.go).
+func TestAdoptedLeaseServesApplyOnto(t *testing.T) {
+	g := newRig(t, nil)
+
+	gitBin, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("no git")
+	}
+	seed := t.TempDir()
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command(gitBin, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "HOME="+seed,
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@x", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@x")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	// a second commit on the fixture, at a pull-request ref apply_onto
+	// fetches by (ChangeRef is the identity for an empty, GitHub, vendor).
+	git(seed, "clone", "-q", g.github.bare, seed)
+	if err := os.WriteFile(filepath.Join(seed, "change.txt"), []byte("the change\n"), 0o644); err != nil {
+		t.Fatalf("writing the change: %v", err)
+	}
+	git(seed, "add", ".")
+	git(seed, "commit", "-qm", "the change")
+	change := git(seed, "rev-parse", "HEAD")
+	git(seed, "push", "-q", g.github.bare, "HEAD:refs/pull/9/head")
+
+	// the node's process-wide git relay, started here as Run would
+	// before adopting anything: mintLease bypasses Run entirely.
+	g.rt.relay = &gitrelay.Server{Upstream: g.rt.GitUpstream, HTTP: g.rt.GitHTTP, Audit: g.rt.audit}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := g.rt.relay.Start(ctx); err != nil {
+		t.Fatalf("starting the node's git relay: %v", err)
+	}
+
+	leaseID, brief := mintLease(t, g, func(b *meshapi.Brief) {
+		b.FinishTool = "submit"
+		b.NodeTools = []string{nodetools.ApplyOntoTool}
+		b.Code.Onto = &meshapi.Onto{SHA: g.github.head}
+		b.Code.Apply = []meshapi.Apply{{SHA: change, Ref: "refs/pull/9/head"}}
+	})
+
+	sidecarDir := socketDir(t, "sidecar")
+	startFakeSidecarControl(t, sidecarDir)
+
+	dir := g.rt.leaseDir(leaseID)
+	workspace := filepath.Join(dir, "work")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatalf("making the adopted lease's workspace: %v", err)
+	}
+	if out, err := exec.Command(gitBin, "init", "-q", "-b", "main", workspace).CombinedOutput(); err != nil {
+		t.Fatalf("git init the adopted lease's workspace: %v: %s", err, out)
+	}
+
+	writeHandoffFixture(t, g, leaseID, &handoffState{Brief: brief, SidecarDir: sidecarDir})
+
+	g.rt.adoptHandoffs(ctx)
+
+	nodeSocket := filepath.Join(sidecarDir, relayNodeSocket)
+	waitFor(t, "the adopted lease's node socket", func() bool {
+		_, err := os.Stat(nodeSocket)
+		return err == nil
+	})
+
+	var res rpcToolCallResult
+	postNodeSocket(t, nodeSocket, sessionproxy.Prefix+NodeToolsServer,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"apply_onto","arguments":{}}}`, &res)
+
+	if res.Error != nil {
+		t.Fatalf("apply_onto over the adopted lease's node socket answered the refusal %+v, want a run result", res.Error)
+	}
+	if res.Result.IsError {
+		t.Fatalf("apply_onto refused: %+v", res.Result.Content)
+	}
+	if len(res.Result.Content) != 1 || res.Result.Content[0].Type != "text" {
+		t.Fatalf("apply_onto's answer %+v", res.Result)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(res.Result.Content[0].Text), &out); err != nil {
+		t.Fatalf("apply_onto's answer is not JSON: %v (%s)", err, res.Result.Content[0].Text)
+	}
+	if out["sha"] == nil || out["tree"] == nil || out["evidence_id"] == nil {
+		t.Fatalf("apply_onto's answer %+v, want sha, tree and evidence_id", out)
 	}
 
 	// finish the lease cleanly, as a session's own submit would, so

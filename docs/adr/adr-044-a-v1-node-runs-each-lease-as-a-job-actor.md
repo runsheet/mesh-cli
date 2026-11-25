@@ -892,14 +892,16 @@ serves it, as far as the hand-off allows:
    again.** These are `result`, `hand_back` and `progress`, through
    which a session ends its lease or reports how far it got, `push`,
    which goes through the sidecar's control socket as every sidecar
-   lease's push does, and `run_suite` and `stop_suite`, whose steps run
+   lease's push does, `run_suite` and `stop_suite`, whose steps run
    in the lease's own pod, never stopped by the hand-off (see the
-   amendment below) (`adoptedNodeTools`). The rest are not served after
-   a restart. `apply_onto` needs the node's own git grant,
-   `request_time` the lease's time budget, `escalate` the harness that
-   read its mailbox, and `sign_release` the signer's session. A session
-   calling one of those is told the node does not have it, and the node
-   logs which tools it left out.
+   amendment below), and `apply_onto`, whose own git grant adoption
+   reconstructs on the new session (see the 2026-11-25 amendment, "an
+   adopted lease serves apply_onto again") (`adoptedNodeTools`). The
+   rest are not served after a restart. `request_time` needs the
+   lease's time budget, `escalate` the harness that read its mailbox,
+   and `sign_release` the signer's session. A session calling one of
+   those is told the node does not have it, and the node logs which
+   tools it left out.
 6. **The session's own output moves progress.** The hand-off notes how
    far into `agent.stdout` the node had read (`agentOutputPath`). The
    adopting node follows the file from there (`followAgentOutput`), and
@@ -1239,3 +1241,59 @@ now runs the whole validation itself (`internal/nodev1/validatelease.go`).
 `TestARedIsDiagnosedByOneSessionThatCannotChangeIt`,
 `TestARedWhoseDiagnosisFailsFinishesAsTheNodeMadeIt` and
 `TestNoValidateDiagnosisStartsNoSession` (internal/nodev1) cover it.
+
+## Amendment, 2026-11-25: an adopted lease serves apply_onto again
+
+`apply_onto` was left off `adoptedNodeTools` (2026-11-16 amendment,
+point 5) on the reasoning that it needed the node's own git grant
+(`nodetools.ApplyOnto.Grant`, `internal/gitrelay.Grant`), which lived
+in the process that opened it and died with that process on restart.
+That reasoning named a real gap, but not one adoption has to leave
+open: the grant is a capability on the node's relay server
+(`internal/gitrelay.Server.Open`), opened the same way at a fresh
+lease's checkout (`lease.go`'s `work`) and at adoption alike -- a
+policy built from the brief's `Git`, and a mint function closing over
+whichever session's tokens are current. A fresh lease has a live
+session's tokens to mint with; so does an adopted one, once `adoptOne`
+has opened its own (`openOrResumeTokens`). Nothing about the grant
+itself is the old process's alone to hold.
+
+1. **`adoptOne` reconstructs the grant before building the adopted
+   lease's tools**, only when the brief still names `apply_onto` and
+   the lease still names a repository: `policyOf(b.Git)` (reduced to
+   read-only under `sidecarMode`, as a fresh lease's own grant is), and
+   a mint closure on the adopted session's `tokens.MintSource`, opened
+   through `r.relay.Open(id, policy, mint, tokens.RevokeSource)`
+   (`internal/nodev1/adopt.go`). The result is held and closed on
+   release the same way a fresh lease's grant is (`a.Hold(holdGrant,
+   ...)`). A lease whose brief names no repository, whose kind no
+   longer names `apply_onto`, or whose relay refuses the
+   reconstruction, is adopted with no `apply_onto`, logged and never
+   handed back over it alone -- the same fallback the 2026-11-16
+   amendment already used for every node tool adoption cannot rebuild.
+2. **The reconstruction is skipped, not attempted and swallowed, for
+   every adopted lease that does not need it.** It runs only when the
+   kind's brief still names `apply_onto` in `NodeTools`: a lease with
+   no git grant to rebuild (most adopted leases, since `push` reaches
+   the vendor through the sidecar's own renewed credentials, never the
+   node's grant) never calls `r.relay.Open`, and so never depends on
+   `r.relay` already being started. In production `Run` always starts
+   `r.relay` before `adoptHandoffs` runs; a test that adopts a lease
+   without running `Run` (most of this package's do, through
+   `mintLease`) only needs to start one itself when its brief actually
+   names `apply_onto`.
+3. **`adoptedNodeTools` carries `apply_onto`.** It joins `result`,
+   `hand_back`, `progress`, `push`, `run_suite` and `stop_suite`
+   (`internal/nodev1/adopt.go`). **`adoptedTools` takes the
+   reconstructed grant as a parameter** (`*gitrelay.Grant`, nil when
+   there is none to serve apply_onto with) and passes it to
+   `nodeTools` the same way a fresh lease's `work` does.
+
+`TestAdoptedLeaseServesApplyOnto` (internal/nodev1) adopts a hand-off
+whose brief names `apply_onto`, with `code.onto` naming the fixture's
+base commit and `code.apply` a second commit pushed to a
+`refs/pull/9/head`-shaped ref of the same fake git upstream other
+nodev1 tests use (`newFakeGitHub`), starts the node's relay server
+itself (since `mintLease` does not run `Run`), adopts the hand-off, and
+calls `apply_onto` over the adopted lease's node socket, asserting the
+answer carries `sha`, `tree` and `evidence_id`.
