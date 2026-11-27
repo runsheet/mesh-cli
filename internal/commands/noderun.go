@@ -63,15 +63,18 @@ var (
 	nodeRunValidationPersonCPUs  float64
 	nodeRunValidationPersonMemGB float64
 	nodeRunValidationKinds       []string
-	nodeRunDispatcherCap         int
-	nodeRunActors                bool
-	nodeRunSupervisor            string
-	nodeRunQuietAfter            time.Duration
-	nodeRunSelfUpdate            bool
-	nodeRunSandbox               bool
-	nodeRunRelaySidecar          bool
-	nodeRunValidateWithSession   bool
-	nodeRunValidateNoDiagnosis   bool
+	// what a lease's own hold is admitted on (goal
+	// a-job-is-sized-by-request-and-limit): declared or requests
+	nodeRunAdmitOn             string
+	nodeRunDispatcherCap       int
+	nodeRunActors              bool
+	nodeRunSupervisor          string
+	nodeRunQuietAfter          time.Duration
+	nodeRunSelfUpdate          bool
+	nodeRunSandbox             bool
+	nodeRunRelaySidecar        bool
+	nodeRunValidateWithSession bool
+	nodeRunValidateNoDiagnosis bool
 	// nodeRunSandboxRuntime is the runtime --sandbox opens its pods on:
 	// rootless podman, substituted for a test double (sandbox.Fake) so a
 	// test can exercise --sandbox with no podman installed.
@@ -210,6 +213,14 @@ runs, and finish or hand back.`,
 				rt.Scheduler.SetReserve(scheduler.Capacity{CPUs: reserve.CPUs, MemGB: reserve.MemGB})
 				r := rt.Scheduler.Reserve()
 				logger.Printf("nodev1: reserve: %g cpus, %g GB kept for %s alone", r.CPUs, r.MemGB, strings.Join(reserve.Kinds, ", "))
+			}
+			admitOn, err := nodev1.ReadAdmitOn(capPath, nodeRunAdmitOn)
+			if err != nil {
+				return fmt.Errorf("mesh node run: %w", err)
+			}
+			rt.AdmitOn = admitOn
+			if admitOn == nodev1.AdmitOnRequests {
+				logger.Printf("nodev1: admit_on: requests: a lease's CPU is admitted on its kind's learned request, capped at its declared limit; memory on its declared size")
 			}
 			vr, err := nodev1.ReadValidationReserve(capPath, nodev1.ValidationReserve{
 				CPUs: nodeRunValidationCPUs, MemGB: nodeRunValidationMemGB,
@@ -593,6 +604,7 @@ func init() {
 	f.IntVar(&nodeRunAccountSlots, "account-slots", 0, "with --actors-scheduler, sessions at once per model account (0 is unbounded)")
 	f.Float64Var(&nodeRunAssistantCPUs, "assistant-reserve-cpus", 4, "with --actors-scheduler, CPUs kept for the assistant kinds alone (--assistant-kinds), admitted at once however full the node; at most a quarter of the node; node.yaml's v1.assistant_reserve.cpus wins")
 	f.Float64Var(&nodeRunAssistantMemGB, "assistant-reserve-mem-gb", 8, "with --actors-scheduler, memory in GB kept for the assistant kinds alone; at most a quarter of the node; node.yaml's v1.assistant_reserve.mem_gb wins")
+	f.StringVar(&nodeRunAdmitOn, "admit-on", nodev1.AdmitOnDeclared, "with --actors-scheduler, what a lease's own hold is admitted on: declared (its brief's declared size, as before) or requests (its CPU at its kind's learned request, its declared size still the hard cap; memory stays declared); node.yaml's v1.admit_on wins")
 	f.Float64Var(&nodeRunValidationCPUs, "validation-reserve-cpus", 0, "with --actors-scheduler, CPUs kept for the validation kinds alone (--validation-kinds): builds, plans, reviews and every other kind never take them, and validations also use the general room beyond them; 0 keeps no reserve; all reserves together are at most three quarters of the node; node.yaml's v1.validation_reserve.cpus wins")
 	f.Float64Var(&nodeRunValidationMemGB, "validation-reserve-mem-gb", 0, "with --actors-scheduler, memory in GB kept for the validation kinds alone; node.yaml's v1.validation_reserve.mem_gb wins")
 	f.Float64Var(&nodeRunValidationPersonCPUs, "validation-person-cpus", 0, "of the validation reserve, CPUs only people's pull request validations (validate_for=<repo>:person) may use; node.yaml's v1.validation_reserve.person_cpus wins")

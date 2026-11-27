@@ -74,14 +74,22 @@ func (r *Runtime) assistantKind(b *meshapi.Brief) bool {
 // measured leases to trust (goal a-job-is-sized-by-request-and-limit):
 // the lease's own hard cap (the sandbox's limitsOf(b.Resources)) is
 // unchanged either way.
+//
+// Which it holds is v1.admit_on (admiton.go): declared, the default,
+// holds the brief's declared resources as before; requests holds the
+// learned CPU request in their place. Memory is admitted on its declared
+// size either way in this first cut (its headroom is goal
+// a-jobs-memory-limit-keeps-burst-headroom).
 func (r *Runtime) leaseAsk(b *meshapi.Brief, lease *meshapi.Lease) scheduler.Ask {
 	ask := askOf(b, lease)
-	req := r.leaseRequest(b)
-	if req.CPUs != b.Resources.CPUs || req.MemGB != b.Resources.MemGB {
-		r.logf("nodev1: lease %s (%s) holds a learned request of %g cpus, %g GB; its declared (and hard cap) is %g cpus, %g GB",
-			lease.LeaseID, path.Base(b.Kind), req.CPUs, req.MemGB, b.Resources.CPUs, b.Resources.MemGB)
+	if r.AdmitOn == AdmitOnRequests {
+		req := r.leaseRequest(b)
+		if req.CPUs != b.Resources.CPUs {
+			r.logf("nodev1: lease %s (%s) is admitted on a learned request of %g cpus; its declared (and hard cap) is %g cpus",
+				lease.LeaseID, path.Base(b.Kind), req.CPUs, b.Resources.CPUs)
+		}
+		ask.CPUs = req.CPUs
 	}
-	ask.CPUs, ask.MemGB = req.CPUs, req.MemGB
 	if r.assistantKind(b) {
 		ask.Reserved, ask.Slot, ask.Cache = true, false, scheduler.CacheNone
 		return ask
