@@ -952,6 +952,29 @@ Tests: `internal/selfupdate/verify_test.go` (`TestVerifyPlatformRelease`,
 `TestPlatformRootIsEmbedded`, `TestPlatformRootPrefersTheFetchedThenCachedThenEmbeddedCopy`),
 `internal/selfupdate/reference_test.go` (`TestReferenceReleaseVerifiesOffline`).
 
+## Amendment: sign_release signs a product release's sums too (goal `sign-release-signs-a-product-releases-sums`, 2026-11-27)
+
+The `sign_release` node tool (`internal/nodetools/signrelease.go`) refused
+any `SHA256SUMS` that did not name `mesh-version`, so it could sign only
+mesh-cli's own release. A runsheet product other than mesh-cli builds its
+own release with its own versioned file, `release.json`, not
+`mesh-version`; its deploy job's `SHA256SUMS` therefore named no
+`mesh-version` and the tool refused it.
+
+`checkSums` now accepts a `SHA256SUMS` naming either `mesh-version` (a
+mesh-cli release, unchanged) or `release.json` (a product release); one
+naming neither is refused `SHA256SUMS names neither mesh-version nor
+release.json`. Nothing else about `sign_release` changes: it still signs
+only a file literally named `SHA256SUMS`, inside the lease's own
+workspace, and only when the node holds a signer.
+
+mesh's own `mesh-version` signing (`internal/release`, `mesh release
+build`) is unchanged; this amendment only widens what `sign_release`
+will sign, not what mesh-cli itself builds.
+
+Tests: `internal/nodetools/signrelease_test.go` (`TestCheckSums`,
+`TestSignReleaseSignsReleaseJSONSums`, `TestSignReleaseRefuses`).
+
 ## Consequences
 
 - Renaming an asset, the workflow file, or the repo breaks every
