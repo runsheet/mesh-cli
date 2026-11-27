@@ -109,23 +109,29 @@ func insideWorkspace(ws, rel string) (string, error) {
 	return full, nil
 }
 
-// checkSums refuses anything but a short sha256sum file naming
-// mesh-version: what the node signs is a release's sums and nothing else.
+// checkSums refuses anything but a short sha256sum file naming mesh-version
+// (mesh-cli's own release) or release.json (another product's): what the
+// node signs is a release's sums and nothing else.
 func checkSums(b []byte) error {
 	if len(b) == 0 || len(b) > maxSums {
 		return fmt.Errorf("refused: SHA256SUMS is %d bytes", len(b))
 	}
-	version := false
+	named := false
 	for _, line := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
 		if !sumsLine.MatchString(line) {
 			return fmt.Errorf("refused: %q is not a sha256sum line", line)
 		}
-		if strings.HasSuffix(line, " mesh-version") || strings.HasSuffix(line, "*mesh-version") {
-			version = true
+		if namesSum(line, "mesh-version") || namesSum(line, "release.json") {
+			named = true
 		}
 	}
-	if !version {
-		return fmt.Errorf("refused: SHA256SUMS names no mesh-version; build the release with mesh release build")
+	if !named {
+		return fmt.Errorf("refused: SHA256SUMS names neither mesh-version nor release.json")
 	}
 	return nil
+}
+
+// namesSum reports whether line, a sha256sum line, names the given file.
+func namesSum(line, name string) bool {
+	return strings.HasSuffix(line, " "+name) || strings.HasSuffix(line, "*"+name)
 }
